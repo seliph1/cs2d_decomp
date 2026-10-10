@@ -1,0 +1,93 @@
+# =============================================================================
+# Compilados e Artefatos de Build (C / MinGW / MSVC)
+# =============================================================================
+cs2d_client.exe
+test_cs2d.exe
+*.o
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.a
+*.so
+*.dylib
+*.out
+*.def
+*.aps
+*.res
+build/
+bin/
+out/
+Debug/
+Release/
+x64/
+
+# =============================================================================
+# Binários Originais do CS2D e Runtime Steam
+# =============================================================================
+CS2D.exe
+cs2d_dedicated.exe
+Launcher.exe
+steam_api64.dll
+steam_appid.txt
+CS2D -directx.bat
+CS2D -fullscreen -directx.bat
+CS2D -fullscreen.bat
+
+# =============================================================================
+# Bancos de Dados de Engenharia Reversa (Hopper / IDA / Ghidra / Binary Ninja)
+# =============================================================================
+*.hop
+*.idb
+*.i64
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+*.gpr
+*.rep/
+*.bndb
+
+# =============================================================================
+# Logs, Caches, Credenciais e Capturas de Tela em Tempo de Execução
+# =============================================================================
+sys/logs/
+sys/cache/
+sys/stats/
+sys/core/*.cache
+sys/core/started.cfg
+sys/usgn.dat
+sys/usgn_upw
+sys/recentlyjoined.lst
+sys/favorites.lst
+screens/
+*.log
+*.dmp
+
+# =============================================================================
+# IDEs, Editores e Arquivos Temporários do Sistema Operacional
+# =============================================================================
+.vscode/
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+Makefile
+*~
+*.swp
+*.swo
+*.tmp
+*.bak
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
