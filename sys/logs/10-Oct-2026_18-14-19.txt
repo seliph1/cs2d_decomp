@@ -1,0 +1,20 @@
+CS2D 1.0.1.8 Logfile - 10 Oct 2026, 18:14:19
+
+[18:14:19] #######################################################
+[18:14:19] Unreal Software's CS2D Dedicated Server
+[18:14:19] > visit www.CS2D.com for info and updates <
+[18:14:19] Game Version: 1.0.1.8 p1
+[18:14:19] Server Build for 1.0.1.8 p1: 1.0
+[18:14:19] System Time: 10 Oct 2026 - 18:14:19
+[18:14:19] Operating System: Microsoft Windows
+[18:14:19] #######################################################
+[18:14:19] UDP socket initialized using port 36963
+[18:14:20] U.S.G.N.: Your game version is up to date!
+[18:14:20] Starting server...
+[18:14:20] load map 'de_dust2'
+[18:14:20] ----- Server started -----
+[18:14:20] U.S.G.N.: Server added to serverlist
+[18:14:23] real is using IP 127.0.0.1:61288, no U.S.G.N. ID and no Steam
+[18:15:06] U.S.G.N.: Serverlist entry updated
+[18:15:52] "  (1x)
+[18:16:37] "  (1x)

@@ -1,0 +1,162 @@
+Unreal Software's CS2D Map Format
+------------------------------------------------------------------------------------
+
+Version:
+This specification is compatible with CS2D 1.0.0.7
+The map format is backwards compatible to (most) older CS2D versions.
+It is also probably compatible with newer versions, otherwise you should find the
+latest version of this document at:
+http://unrealsoftware.de/files_pub/cs2d_spec_map_format.txt
+
+Data types:
+BYTE = unsigned byte, 8 bit, values from 0 to 255
+SHORT = unsigned short, 16 bit, values from 0 to 65535
+INT = signed integer, 32 bit, values from -2^31 to 2^31-1
+STRING = string, 8 bit per character, ended with a 2 byte linebreak consisting of CR and LF
+
+BYTE/SHORT/INT defaults to the value 0 (use default when -unused-)
+STRING defaults to an empty string with linebreak (use default when -unused-)
+
+------------------------------------------------------------------------------------
+
+(1) HEADER
+
+	STRING header, must contain the string "Unreal Software's CS2D Map File" (since 1.0.0.3)
+		or the string "Unreal Software's Counter-Strike 2D Map File" (deprecated)
+		" (max)" is added at the end since CS2D Beta 0.1.0.5 (codename "CS2D Max")
+	
+	----- 10 bytes for map settings / info
+	BYTE scroll map like tiles? (0 no / 1 yes)
+	BYTE use modifiers in this map (blending, tile rotation, tile brightness) (0 no / 1 yes)
+	BYTE save tile heights with map? (0 no / 1 / 2) - this value defaults to 2 since 1.0.0.3, was 0 before
+	BYTE use 64x64 pixel tiles? (0 no / 1 yes) - this defaults to 0 which means 32x32 pixel tiles
+	BYTE - unused -
+	BYTE - unused -
+	BYTE - unused -
+	BYTE - unused -
+	BYTE - unused -
+	BYTE - unused -
+
+	----- 10 ints for map settings / info
+	INT Uptime of system (in millisecs) when map has been saved
+	INT USGN ID of the map author with an offset of +51 (0 if author was not logged in)
+	INT Map daylight time: value from 0 to 360 + 1000 (0 if not specified, will fall back to 225 then)
+	INT - unused -
+	INT - unused -
+	INT - unused -
+	INT - unused -
+	INT - unused -
+	INT - unused -
+	INT - unused -
+	
+	----- 10 strings for map settings / info
+	STRING name of the map author
+	STRING name of the program used to save the map (since 1.0.0.3, e.g.: "CS2D Client 1.0.0.3")
+	STRING - unused -
+	STRING - unused -
+	STRING - unused -
+	STRING - unused -
+	STRING - unused -
+	STRING - unused -
+	STRING - unused -
+	STRING - unused -
+
+	----- More map settings
+	STRING string which is built this way (map_xsize (in tiles) * map_ysize (in tiles)) + "x" + tile_count + "$" + CurrentSystemTime (HHMMSS) + "%" + SystemUpTime (in Milliseconds)
+	STRING filename of the tilset image (without path but with extension, "aztec.bmp" for example)
+	BYTE number of tiles required from this tileset (tile_count) -1 (because it starts at 0)
+		(either full number of tiles in that set or at least frame of highest tile that has been used in map)
+	INT map width (map_xsize) in tiles -1 (because it starts at 0)
+	INT map height (map_ysize) in tiles -1 (because it starts at 0)
+	STRING filename of map background image (without path but with extension
+	INT map background scroll x speed
+	INT map background scroll y speed
+	BYTE map background color red
+	BYTE map background color green
+	BYTE map background color blue
+
+	----- Header Test
+	STRING string to test if header is okay with value "ed.erawtfoslaernu" (unrealsoftware.de backwards)
+
+(2) Tile Modes
+
+	----- The following byte is saved tile_count+1 times (for each used tile, in a single loop, for i=0 to tile_count; ...)
+	BYTE tile mode for tile with that frame/index (starting with frame/index 0 for the first tile in the tileset)
+		Tile modes are:
+		0  normal floor without sound
+		1  wall
+		2  obstacle
+		3  wall without shadow
+		4  obstacle without shadow
+		5  wall that is rendered at floor level
+		10 floor dirt
+		11 floor snow (with footprints and fx)
+		12 floor step
+		13 floor tile
+		14 floor wade (water with wave fx)
+		15 floor metal
+		16 floor wood
+		50 deadly normal
+		51 deadly toxic
+		52 deadly explosion
+		53 deadly abyss
+		
+(3) Tile Heights
+
+	----- The tile heights are only saved if "save tile heights" (header) is greater than 0
+	----- This is a feature introduced with CS2D 1.0.0.3. Older versions can't load maps with this additional data!
+	----- If the above condition is true, the following data is saved tile_count+1 times
+	
+	If "save tile heights" is 1 (only used in 1.0.0.3 pre-release):
+		INT tile height in pixels (for 3D mode)
+	Else If "save tile heights" is 2 (default since 1.0.0.3):
+		SHORT tile height in pixels (for 3D mode)
+		BYTE tile 3D modifier (for 3D mode, bit flags)
+	
+	----- If heights are not saved, the default heights are 32 for walls, 16 for obstacles and 0 for everything else
+	----- If 3D modifiers are not saved, they default to 0
+	
+(4) Map
+
+	----- The following byte is saved in a nested loop (for x=0 to map_xsize; for y=0 to map_ysize; ...)
+	BYTE tile index for tile at that map position (starting with frame/index 0 for the first tile in the tileset)
+
+	----- The following stuff is only saved if "use map modifiers" (header) is 1 (for each tile in the same way as above in a nested loop)
+	----- Modifiers have been added with Beta 0.1.1.9 and improved in later versions. They are not available in earlier versions.
+	BYTE tile modifier at that map position
+		Depending on the value of that byte there can be additional stuff saved:
+		(the following stuff is not used in current versions at all but should be implemented for compatibility with future versions)
+		If the bits for the values 64 OR 128 are 1 in that byte:
+			If the bits for 64 AND 128 are 1
+				STRING - unused -
+			Else If the bit for 64 is 1 and the bit for 128 is 0:
+				BYTE frame for tile modification
+			Else (the bit for 64 is 0 and the bit for 128 is 1):
+				BYTE tile color red
+				BYTE tile color green
+				BYTE tile color blue
+				BYTE tile overlay frame
+
+(5) Entities
+
+	INT number of entities in the map (entity_count)
+
+	----- The following set of data is saved entity_count times (for i=1 to entity_count; ...)
+	STRING entity name (editor name field content)
+	BYTE entity type (see http://www.cs2d.com/entities.php for reference)
+	INT entity x position on map (tile)
+	INT entity y position on map (tile)
+	STRING entity trigger(s) (editor trigger field content)
+	
+		----- The following two values are saved 10 times per entity (INT,STRING,INT,STRING,INT,STRING ....; or for i=1 to 10; ...)
+		----- See http://www.cs2d.com/entities.php for reference how which fields are used with which entity types
+		INT entity integer setting, value depending on entity type (-unused- for some entities)
+		STRING entity string setting, value depending on entity type (-unused- for some entities)
+
+(6) End of file
+
+
+------------------------------------------------------------------------------------
+Unreal Software, 14.05.2026
+www.UnrealSoftware.de
+www.CS2D.com

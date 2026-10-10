@@ -1,0 +1,117 @@
+recv 7 fire
+recv 8 attack 2 / mode
+recv 9 select weapon
+recv 10 pos - run
+recv 11 pos - walk
+recv 12 rot
+recv 13 posrot
+recv 14 posrot
+recv 15 setpos
+recv 16 reload
+recv 17 damage
+recv 19 kill
+recv 20 team
+recv 21 spawn
+recv 22 roundstart
+recv 23 buy
+recv 24 drop
+recv 25 collect
+recv 26 use
+recv 27 projectile
+recv 28 spray
+recv 29 hostage
+recv 30 process
+recv 31 entityevent
+recv 32 specpos
+recv 33 spawnitem
+recv 34 build
+recv 35 dynamic object remove
+recv 36 dynamic object mode
+recv 37 dynamic object health
+recv 38 dynamic object data
+recv 39 respawn request
+recv 40 kill dropped weapon
+recv 41 kill projectile
+recv 42 playerdata
+recv 43 vote
+recv 44 move r
+
+recv 45 move w
+recv 46 move r + dir
+recv 45 move w + dir
+recv 48 FX
+recv 49 do spawn
+recv 50 portalfire
+recv 51 dynamicimage
+recv 52 spawn ground projectile
+recv 53 clientdata
+
+recv 54 tween
+recv 55 kill projectile
+recv 56 weapon impulse
+recv 57 flashlight
+recv 58 spawnprojectile
+recv 59 imagehitzone
+recv 60 specflash
+recv 61 setammo
+recv 62 settile
+recv 63 move projectile
+recv 64 setteamscores
+recv 65 positionalsound
+recv 66 setbackground
+recv 67 clientspec
+recv 68 firedirection
+recv 69 weapon data
+recv 70 rot
+recv 71 posrot
+recv 72 posrot
+
+recv 115 serverstate
+
+recv 80 physics players update
+recv 81 physics items update
+recv 82 physics projectiles update
+recv 83 physics platforms update
+recv 84 physics controller update
+recv 85 physics parse
+recv 86 physics objects update
+
+recv 98 connect
+recv 97 Notification
+
+recv 100 join
+recv 101 Ping
+recv 102 Ping result
+recv 110 Lobby Data
+
+recv 111 Lobby Data
+recv 112 Scoreboard Entry
+
+recv 224 lua bind data
+recv 225 voice chat data
+recv 226 msg
+recv 227 luabind (Press)
+recv 228 luabind (Release)
+recv 229 clock ping (in-game)
+
+recv 230 leaderboard
+recv 232 clientsettings
+recv 234 hudtxt
+recv 235 luamenu
+recv 236 rconcheck
+recv 237 changesettings
+recv 238 change name
+recv 239 change map
+recv 240 msg
+recv 241 rcon
+recv 242 public rcon
+
+recv 247 pinglist
+recv 248 playerjoins
+recv 249 ping (in-game)
+recv 250 ping (serverlist)
+recv 251 info
+
+recv 253 leave
+recv 252 join
+

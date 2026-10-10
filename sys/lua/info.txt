@@ -1,0 +1,87 @@
+Counter-Strike 2D supports Lua scripts since Beta 0.1.1.4
+
+It uses the Lua engine Version 5.1.4
+Please visit the Lua homepage for a documentation and manual
+www.Lua.org/manual/5.1/manual.html
+
+Lua scripting in CS2D is based on events/hooks
+Hooks work only SERVERSIDE and NOT CLIENTSIDE! (due to security reasons)
+
+!!! ATTENTION !!!
+Using many/complex Lua scripts can make the game slower. Wrong or excessive usage of certain
+commands can lead to strange behavior, increased traffic, lags, connection loss or even crashs.
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+LIST OF AVAILABLE LUA HOOKS @ http://www.cs2d.com/help.php?hookcat=all
+LIST OF AVAILABLE LUA COMMANDS @ http://www.cs2d.com/help.php?luacat=all
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+AUTOMATICALLY EXECUTED FILES:
+
+[sys\lua\server.lua]
+CS2D will automatically load and execute "sys\lua\server.lua" when hosting a server.
+(only if the setting "mp_luaserver" is "server.lua")
+
+[All Lua files in sys\lua\autorun]
+All files in the autorun folder will be executed in alphabetic order.
+This happens after loading "server.lua" and before loading the map Lua file and the AI file.
+
+[maps\MAPNAME.lua]
+In addition CS2D will execute "maps\MAPNAME.lua" when loading a map as server (MAPNAME = name of map)
+This happens AFTER executing "server.lua" and only if there is a Lua file for the current map!
+(the setting "mp_luamap" has to be "1" as well)
+
+[bots\Standard AI.lua]
+This file contains the bot AI Lua script and will be run automatically when starting a server.
+It is loaded and executed AFTER all the other Lua files.
+You can simply remove or rename this file if you do not want to use bots.
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+HOW TO HOOK
+
+The following hooks are available. You have to create Lua functions and then you have to attach
+these functions to the hook by using the command
+addhook("hook", "function" [,priority])
+CS2D will execute all attached functions whenever the corresponding hook action occurs in-game.
+
+Priority is only important if there is more than one function attachted to the same hook!
+Default is 0, higher numbers = higher priority, lower numbers (also negative) = lower priority.
+The attached function with the HIGHEST priority is the LAST function which will be executed.
+Moreover CS2D will take the return value of this function (if there is any)!
+In most cases you will just omit the priority parameter (yes, it is [optional])!
+
+CS2D will pass parameters to most functions. You can use these parameters but you don't have to!
+
+Some of the hook-functions can also have a return value. This return value influences the way how
+CS2D behaves. Returning nothing is like returning 0, "" or nil.
+In many cases you can skip the actual action in CS2D by returning 1 (return 1).
+
+Always use just the name of the hook/function for adhook! Don't enter the brackets or parameters!
+Always write quotation marks around the hook- and the function-name when using addhook!
+RIGHT: addhook("leave","myleavehook")							<- do it this way!
+WRONG: addhook("leave(id,reason)","myleavehook(id,reason)")		<- this is NOT going to work!
+WRONG: addhook(leave,myleavehook)								<- this is NOT going to work!
+
+Also see http://www.cs2d.com/help.php?luacat=all&luacmd=addhook#cmd
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You can use all Lua commands in your CS2D Lua scripts.
+Note that there are "CS2D Lua Commands" and ordinary "CS2D Commands". You need to use the "parse"
+command to execute ordinary CS2D commands with Lua (ordinary cmds: www.CS2D.com/help.php?cat=all)
+You can also use the wrapper-functions in "sys/lua/wrapper.lua" instead of using "parse".
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+LIST OF AVAILABLE LUA HOOKS @ http://www.cs2d.com/help.php?hookcat=all
+LIST OF AVAILABLE LUA COMMANDS @ http://www.cs2d.com/help.php?luacat=all
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+www.Lua.org
+www.UnrealSoftware.de
+www.CS2D.com
+www.USGN.de

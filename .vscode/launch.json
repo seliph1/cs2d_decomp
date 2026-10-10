@@ -1,0 +1,31 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run CS2D Reconstructed Client",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/cs2d_client.exe",
+            "args": ["de_dust2"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "C:/msys64/mingw64/bin/gdb.exe"
+        },
+        {
+            "name": "Run CS2D Test Suite",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_cs2d.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "C:/msys64/mingw64/bin/gdb.exe"
+        }
+    ]
+}

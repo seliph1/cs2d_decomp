@@ -1,0 +1,3544 @@
+{
+  "console_commands": {
+    "url": "https://www.cs2d.com/help.php?cat=all",
+    "links": [
+      {
+        "href": "?cat=all",
+        "text": "console commands"
+      },
+      {
+        "href": "?hookcat=all",
+        "text": "Lua hooks"
+      },
+      {
+        "href": "?luacat=all",
+        "text": "Lua commands"
+      },
+      {
+        "href": "?cat=all",
+        "text": "Console Commands"
+      },
+      {
+        "href": "?luacat=all&luacmd=parse#cmd",
+        "text": "parse"
+      },
+      {
+        "href": "?hookcat=all",
+        "text": "Lua Hooks"
+      },
+      {
+        "href": "?luacat=all",
+        "text": "Lua Commands"
+      },
+      {
+        "href": "help.php?cat=all",
+        "text": "ALL"
+      },
+      {
+        "href": "help.php?cat=script",
+        "text": "Script"
+      },
+      {
+        "href": "help.php?cat=controls",
+        "text": "Controls"
+      },
+      {
+        "href": "help.php?cat=settings",
+        "text": "Settings"
+      },
+      {
+        "href": "help.php?cat=server",
+        "text": "Server"
+      },
+      {
+        "href": "help.php?cat=bots",
+        "text": "Bots"
+      },
+      {
+        "href": "help.php?cat=debug",
+        "text": "Debug"
+      },
+      {
+        "href": "help.php?cat=security",
+        "text": "Security"
+      },
+      {
+        "href": "help.php?cat=all&cmd=ah#cmd",
+        "text": "ah"
+      },
+      {
+        "href": "help.php?cat=all&cmd=ak47#cmd",
+        "text": "ak47"
+      },
+      {
+        "href": "help.php?cat=all&cmd=alias#cmd",
+        "text": "alias"
+      },
+      {
+        "href": "help.php?cat=all&cmd=aliases#cmd",
+        "text": "aliases"
+      },
+      {
+        "href": "help.php?cat=all&cmd=attack#cmd",
+        "text": "attack"
+      },
+      {
+        "href": "help.php?cat=all&cmd=attack2#cmd",
+        "text": "attack2"
+      },
+      {
+        "href": "help.php?cat=all&cmd=aug#cmd",
+        "text": "aug"
+      },
+      {
+        "href": "help.php?cat=all&cmd=autobuy#cmd",
+        "text": "autobuy"
+      },
+      {
+        "href": "help.php?cat=all&cmd=autoscreen#cmd",
+        "text": "autoscreen"
+      },
+      {
+        "href": "help.php?cat=all&cmd=autoswitch#cmd",
+        "text": "autoswitch"
+      },
+      {
+        "href": "help.php?cat=all&cmd=awp#cmd",
+        "text": "awp"
+      },
+      {
+        "href": "help.php?cat=all&cmd=back#cmd",
+        "text": "back"
+      },
+      {
+        "href": "help.php?cat=all&cmd=banip#cmd",
+        "text": "banip"
+      },
+      {
+        "href": "help.php?cat=all&cmd=banname#cmd",
+        "text": "banname"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bans#cmd",
+        "text": "bans"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bansteam#cmd",
+        "text": "bansteam"
+      },
+      {
+        "href": "help.php?cat=all&cmd=banusgn#cmd",
+        "text": "banusgn"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bind#cmd",
+        "text": "bind"
+      },
+      {
+        "href": "help.php?cat=all&cmd=borderless#cmd",
+        "text": "borderless"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot#cmd",
+        "text": "bot"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_add#cmd",
+        "text": "bot_add"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_add_ct#cmd",
+        "text": "bot_add_ct"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_add_t#cmd",
+        "text": "bot_add_t"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_autofill#cmd",
+        "text": "bot_autofill"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_count#cmd",
+        "text": "bot_count"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_freeze#cmd",
+        "text": "bot_freeze"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_jointeam#cmd",
+        "text": "bot_jointeam"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_keepfreeslots#cmd",
+        "text": "bot_keepfreeslots"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_kill#cmd",
+        "text": "bot_kill"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_prefix#cmd",
+        "text": "bot_prefix"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_remove#cmd",
+        "text": "bot_remove"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_remove_all#cmd",
+        "text": "bot_remove_all"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_remove_ct#cmd",
+        "text": "bot_remove_ct"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_remove_t#cmd",
+        "text": "bot_remove_t"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_skill#cmd",
+        "text": "bot_skill"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bot_weapons#cmd",
+        "text": "bot_weapons"
+      },
+      {
+        "href": "help.php?cat=all&cmd=bullets#cmd",
+        "text": "bullets"
+      },
+      {
+        "href": "help.php?cat=all&cmd=buy#cmd",
+        "text": "buy"
+      },
+      {
+        "href": "help.php?cat=all&cmd=buyammo1#cmd",
+        "text": "buyammo1"
+      },
+      {
+        "href": "help.php?cat=all&cmd=buyammo2#cmd",
+        "text": "buyammo2"
+      },
+      {
+        "href": "help.php?cat=all&cmd=buyequip#cmd",
+        "text": "buyequip"
+      },
+      {
+        "href": "help.php?cat=all&cmd=changelevel#cmd",
+        "text": "changelevel"
+      },
+      {
+        "href": "help.php?cat=all&cmd=changemap#cmd",
+        "text": "changemap"
+      },
+      {
+        "href": "help.php?cat=all&cmd=chooseteam#cmd",
+        "text": "chooseteam"
+      },
+      {
+        "href": "help.php?cat=all&cmd=clear#cmd",
+        "text": "clear"
+      },
+      {
+        "href": "help.php?cat=all&cmd=clientport#cmd",
+        "text": "clientport"
+      },
+      {
+        "href": "help.php?cat=all&cmd=close#cmd",
+        "text": "close"
+      },
+      {
+        "href": "help.php?cat=all&cmd=cmsg#cmd",
+        "text": "cmsg"
+      },
+      {
+        "href": "help.php?cat=all&cmd=connections#cmd",
+        "text": "connections"
+      },
+      {
+        "href": "help.php?cat=all&cmd=console#cmd",
+        "text": "console"
+      },
+      {
+        "href": "help.php?cat=all&cmd=controller#cmd",
+        "text": "controller"
+      },
+      {
+        "href": "help.php?cat=all&cmd=copyaddress#cmd",
+        "text": "copyaddress"
+      },
+      {
+        "href": "help.php?cat=all&cmd=customkill#cmd",
+        "text": "customkill"
+      },
+      {
+        "href": "help.php?cat=all&cmd=damageobject#cmd",
+        "text": "damageobject"
+      },
+      {
+        "href": "help.php?cat=all&cmd=damagetile#cmd",
+        "text": "damagetile"
+      },
+      {
+        "href": "help.php?cat=all&cmd=deagle#cmd",
+        "text": "deagle"
+      },
+      {
+        "href": "help.php?cat=all&cmd=deathnoticeimg#cmd",
+        "text": "deathnoticeimg"
+      },
+      {
+        "href": "help.php?cat=all&cmd=deathslap#cmd",
+        "text": "deathslap"
+      },
+      {
+        "href": "help.php?cat=all&cmd=debug#cmd",
+        "text": "debug"
+      },
+      {
+        "href": "help.php?cat=all&cmd=debugai#cmd",
+        "text": "debugai"
+      },
+      {
+        "href": "help.php?cat=all&cmd=debuglog#cmd",
+        "text": "debuglog"
+      },
+      {
+        "href": "help.php?cat=all&cmd=debuglua#cmd",
+        "text": "debuglua"
+      },
+      {
+        "href": "help.php?cat=all&cmd=debugstats#cmd",
+        "text": "debugstats"
+      },
+      {
+        "href": "help.php?cat=all&cmd=defuser#cmd",
+        "text": "defuser"
+      },
+      {
+        "href": "help.php?cat=all&cmd=disconnect#cmd",
+        "text": "disconnect"
+      },
+      {
+        "href": "help.php?cat=all&cmd=dmgindicator#cmd",
+        "text": "dmgindicator"
+      },
+      {
+        "href": "help.php?cat=all&cmd=download#cmd",
+        "text": "download"
+      },
+      {
+        "href": "help.php?cat=all&cmd=drawradar#cmd",
+        "text": "drawradar"
+      },
+      {
+        "href": "help.php?cat=all&cmd=drop#cmd",
+        "text": "drop"
+      },
+      {
+        "href": "help.php?cat=all&cmd=echo#cmd",
+        "text": "echo"
+      },
+      {
+        "href": "help.php?cat=all&cmd=effect#cmd",
+        "text": "effect"
+      },
+      {
+        "href": "help.php?cat=all&cmd=elite#cmd",
+        "text": "elite"
+      },
+      {
+        "href": "help.php?cat=all&cmd=elites#cmd",
+        "text": "elites"
+      },
+      {
+        "href": "help.php?cat=all&cmd=endround#cmd",
+        "text": "endround"
+      },
+      {
+        "href": "help.php?cat=all&cmd=equip#cmd",
+        "text": "equip"
+      },
+      {
+        "href": "help.php?cat=all&cmd=exec#cmd",
+        "text": "exec"
+      },
+      {
+        "href": "help.php?cat=all&cmd=exit#cmd",
+        "text": "exit"
+      },
+      {
+        "href": "help.php?cat=all&cmd=explosion#cmd",
+        "text": "explosion"
+      },
+      {
+        "href": "help.php?cat=all&cmd=famas#cmd",
+        "text": "famas"
+      },
+      {
+        "href": "help.php?cat=all&cmd=flare#cmd",
+        "text": "flare"
+      },
+      {
+        "href": "help.php?cat=all&cmd=flash#cmd",
+        "text": "flash"
+      },
+      {
+        "href": "help.php?cat=all&cmd=flashlight#cmd",
+        "text": "flashlight"
+      },
+      {
+        "href": "help.php?cat=all&cmd=flashplayer#cmd",
+        "text": "flashplayer"
+      },
+      {
+        "href": "help.php?cat=all&cmd=flashposition#cmd",
+        "text": "flashposition"
+      },
+      {
+        "href": "help.php?cat=all&cmd=fn57#cmd",
+        "text": "fn57"
+      },
+      {
+        "href": "help.php?cat=all&cmd=forward#cmd",
+        "text": "forward"
+      },
+      {
+        "href": "help.php?cat=all&cmd=fowalpha#cmd",
+        "text": "fowalpha"
+      },
+      {
+        "href": "help.php?cat=all&cmd=fowdetails#cmd",
+        "text": "fowdetails"
+      },
+      {
+        "href": "help.php?cat=all&cmd=fps#cmd",
+        "text": "fps"
+      },
+      {
+        "href": "help.php?cat=all&cmd=freeprojectile#cmd",
+        "text": "freeprojectile"
+      },
+      {
+        "href": "help.php?cat=all&cmd=g3sg1#cmd",
+        "text": "g3sg1"
+      },
+      {
+        "href": "help.php?cat=all&cmd=galil#cmd",
+        "text": "galil"
+      },
+      {
+        "href": "help.php?cat=all&cmd=glock#cmd",
+        "text": "glock"
+      },
+      {
+        "href": "help.php?cat=all&cmd=gore#cmd",
+        "text": "gore"
+      },
+      {
+        "href": "help.php?cat=all&cmd=gpad_deadzone#cmd",
+        "text": "gpad_deadzone"
+      },
+      {
+        "href": "help.php?cat=all&cmd=gpad_firezone#cmd",
+        "text": "gpad_firezone"
+      },
+      {
+        "href": "help.php?cat=all&cmd=grenademode#cmd",
+        "text": "grenademode"
+      },
+      {
+        "href": "help.php?cat=all&cmd=hegren#cmd",
+        "text": "hegren"
+      },
+      {
+        "href": "help.php?cat=all&cmd=hudtxt#cmd",
+        "text": "hudtxt"
+      },
+      {
+        "href": "help.php?cat=all&cmd=hudtxt2#cmd",
+        "text": "hudtxt2"
+      },
+      {
+        "href": "help.php?cat=all&cmd=hudtxtalphafade#cmd",
+        "text": "hudtxtalphafade"
+      },
+      {
+        "href": "help.php?cat=all&cmd=hudtxtclear#cmd",
+        "text": "hudtxtclear"
+      },
+      {
+        "href": "help.php?cat=all&cmd=hudtxtcolorfade#cmd",
+        "text": "hudtxtcolorfade"
+      },
+      {
+        "href": "help.php?cat=all&cmd=hudtxtmove#cmd",
+        "text": "hudtxtmove"
+      },
+      {
+        "href": "help.php?cat=all&cmd=hud_fastswitch#cmd",
+        "text": "hud_fastswitch"
+      },
+      {
+        "href": "help.php?cat=all&cmd=hud_takesshots#cmd",
+        "text": "hud_takesshots"
+      },
+      {
+        "href": "help.php?cat=all&cmd=include#cmd",
+        "text": "include"
+      },
+      {
+        "href": "help.php?cat=all&cmd=invnext#cmd",
+        "text": "invnext"
+      },
+      {
+        "href": "help.php?cat=all&cmd=invprev#cmd",
+        "text": "invprev"
+      },
+      {
+        "href": "help.php?cat=all&cmd=items#cmd",
+        "text": "items"
+      },
+      {
+        "href": "help.php?cat=all&cmd=itemshadows#cmd",
+        "text": "itemshadows"
+      },
+      {
+        "href": "help.php?cat=all&cmd=kick#cmd",
+        "text": "kick"
+      },
+      {
+        "href": "help.php?cat=all&cmd=kill#cmd",
+        "text": "kill"
+      },
+      {
+        "href": "help.php?cat=all&cmd=killobject#cmd",
+        "text": "killobject"
+      },
+      {
+        "href": "help.php?cat=all&cmd=killplayer#cmd",
+        "text": "killplayer"
+      },
+      {
+        "href": "help.php?cat=all&cmd=lastinv#cmd",
+        "text": "lastinv"
+      },
+      {
+        "href": "help.php?cat=all&cmd=left#cmd",
+        "text": "left"
+      },
+      {
+        "href": "help.php?cat=all&cmd=lefthand#cmd",
+        "text": "lefthand"
+      },
+      {
+        "href": "help.php?cat=all&cmd=listbans#cmd",
+        "text": "listbans"
+      },
+      {
+        "href": "help.php?cat=all&cmd=listplayers#cmd",
+        "text": "listplayers"
+      },
+      {
+        "href": "help.php?cat=all&cmd=localport#cmd",
+        "text": "localport"
+      },
+      {
+        "href": "help.php?cat=all&cmd=logaddress_add#cmd",
+        "text": "logaddress_add"
+      },
+      {
+        "href": "help.php?cat=all&cmd=logaddress_remove#cmd",
+        "text": "logaddress_remove"
+      },
+      {
+        "href": "help.php?cat=all&cmd=logaddress_removeall#cmd",
+        "text": "logaddress_removeall"
+      },
+      {
+        "href": "help.php?cat=all&cmd=logbatch#cmd",
+        "text": "logbatch"
+      },
+      {
+        "href": "help.php?cat=all&cmd=logmaxflushrate#cmd",
+        "text": "logmaxflushrate"
+      },
+      {
+        "href": "help.php?cat=all&cmd=logsplit#cmd",
+        "text": "logsplit"
+      },
+      {
+        "href": "help.php?cat=all&cmd=logstamp#cmd",
+        "text": "logstamp"
+      },
+      {
+        "href": "help.php?cat=all&cmd=lua#cmd",
+        "text": "lua"
+      },
+      {
+        "href": "help.php?cat=all&cmd=luareset#cmd",
+        "text": "luareset"
+      },
+      {
+        "href": "help.php?cat=all&cmd=m249#cmd",
+        "text": "m249"
+      },
+      {
+        "href": "help.php?cat=all&cmd=m3#cmd",
+        "text": "m3"
+      },
+      {
+        "href": "help.php?cat=all&cmd=m4a1#cmd",
+        "text": "m4a1"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mac10#cmd",
+        "text": "mac10"
+      },
+      {
+        "href": "help.php?cat=all&cmd=makect#cmd",
+        "text": "makect"
+      },
+      {
+        "href": "help.php?cat=all&cmd=makespec#cmd",
+        "text": "makespec"
+      },
+      {
+        "href": "help.php?cat=all&cmd=maket#cmd",
+        "text": "maket"
+      },
+      {
+        "href": "help.php?cat=all&cmd=map#cmd",
+        "text": "map"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mapinfo#cmd",
+        "text": "mapinfo"
+      },
+      {
+        "href": "help.php?cat=all&cmd=maps#cmd",
+        "text": "maps"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mapshadows#cmd",
+        "text": "mapshadows"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mapsounds#cmd",
+        "text": "mapsounds"
+      },
+      {
+        "href": "help.php?cat=all&cmd=markplayer#cmd",
+        "text": "markplayer"
+      },
+      {
+        "href": "help.php?cat=all&cmd=memory#cmd",
+        "text": "memory"
+      },
+      {
+        "href": "help.php?cat=all&cmd=menuselect#cmd",
+        "text": "menuselect"
+      },
+      {
+        "href": "help.php?cat=all&cmd=menu_lanscanport#cmd",
+        "text": "menu_lanscanport"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp5#cmd",
+        "text": "mp5"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_antispeeder#cmd",
+        "text": "mp_antispeeder"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_autogamemode#cmd",
+        "text": "mp_autogamemode"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_autoteambalance#cmd",
+        "text": "mp_autoteambalance"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_building_health#cmd",
+        "text": "mp_building_health"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_building_limit#cmd",
+        "text": "mp_building_limit"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_building_price#cmd",
+        "text": "mp_building_price"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_buymenu#cmd",
+        "text": "mp_buymenu"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_buytime#cmd",
+        "text": "mp_buytime"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_c4timer#cmd",
+        "text": "mp_c4timer"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_connectionlimit#cmd",
+        "text": "mp_connectionlimit"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_curtailedexplosions#cmd",
+        "text": "mp_curtailedexplosions"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_damagefactor#cmd",
+        "text": "mp_damagefactor"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_deathdrop#cmd",
+        "text": "mp_deathdrop"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_dispenser_health#cmd",
+        "text": "mp_dispenser_health"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_dispenser_money#cmd",
+        "text": "mp_dispenser_money"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_dmspawnmoney#cmd",
+        "text": "mp_dmspawnmoney"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_dropgrenades#cmd",
+        "text": "mp_dropgrenades"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_flashlight#cmd",
+        "text": "mp_flashlight"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_floodprot#cmd",
+        "text": "mp_floodprot"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_floodprotignoretime#cmd",
+        "text": "mp_floodprotignoretime"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_freezetime#cmd",
+        "text": "mp_freezetime"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_grenaderebuy#cmd",
+        "text": "mp_grenaderebuy"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_hostagepenalty#cmd",
+        "text": "mp_hostagepenalty"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_hovertext#cmd",
+        "text": "mp_hovertext"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_hud#cmd",
+        "text": "mp_hud"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_hudscale#cmd",
+        "text": "mp_hudscale"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_idleaction#cmd",
+        "text": "mp_idleaction"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_idlekick#cmd",
+        "text": "mp_idlekick"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_idletime#cmd",
+        "text": "mp_idletime"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_infammo#cmd",
+        "text": "mp_infammo"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_kevlar#cmd",
+        "text": "mp_kevlar"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_kickpercent#cmd",
+        "text": "mp_kickpercent"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_killbuildingmoney#cmd",
+        "text": "mp_killbuildingmoney"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_killbuildings#cmd",
+        "text": "mp_killbuildings"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_killinfo#cmd",
+        "text": "mp_killinfo"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_killteambuildings#cmd",
+        "text": "mp_killteambuildings"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_lagcompensation#cmd",
+        "text": "mp_lagcompensation"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_lagcompensationdivisor#cmd",
+        "text": "mp_lagcompensationdivisor"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_localrconoutput#cmd",
+        "text": "mp_localrconoutput"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_luamap#cmd",
+        "text": "mp_luamap"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_luaserver#cmd",
+        "text": "mp_luaserver"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_mapgoalscore#cmd",
+        "text": "mp_mapgoalscore"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_mapvoteratio#cmd",
+        "text": "mp_mapvoteratio"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_maxclientsip#cmd",
+        "text": "mp_maxclientsip"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_maxrconfails#cmd",
+        "text": "mp_maxrconfails"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_natholepunching#cmd",
+        "text": "mp_natholepunching"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_pinglimit#cmd",
+        "text": "mp_pinglimit"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_postspawn#cmd",
+        "text": "mp_postspawn"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_radar#cmd",
+        "text": "mp_radar"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_randomspawn#cmd",
+        "text": "mp_randomspawn"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_recoil#cmd",
+        "text": "mp_recoil"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_reservations#cmd",
+        "text": "mp_reservations"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_respawndelay#cmd",
+        "text": "mp_respawndelay"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_roundlimit#cmd",
+        "text": "mp_roundlimit"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_roundtime#cmd",
+        "text": "mp_roundtime"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_shotweakening#cmd",
+        "text": "mp_shotweakening"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_smokeblock#cmd",
+        "text": "mp_smokeblock"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_startmoney#cmd",
+        "text": "mp_startmoney"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_supply_items#cmd",
+        "text": "mp_supply_items"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_teamkillpenalty#cmd",
+        "text": "mp_teamkillpenalty"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_teleportreload#cmd",
+        "text": "mp_teleportreload"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_tempbantime#cmd",
+        "text": "mp_tempbantime"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_timelimit#cmd",
+        "text": "mp_timelimit"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_tkpunish#cmd",
+        "text": "mp_tkpunish"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_trace#cmd",
+        "text": "mp_trace"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_turretdamage#cmd",
+        "text": "mp_turretdamage"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_unbuildable#cmd",
+        "text": "mp_unbuildable"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_unbuyable#cmd",
+        "text": "mp_unbuyable"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_vulnerablehostages#cmd",
+        "text": "mp_vulnerablehostages"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_weaponfadeout#cmd",
+        "text": "mp_weaponfadeout"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_winlimit#cmd",
+        "text": "mp_winlimit"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_wpndmg#cmd",
+        "text": "mp_wpndmg"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_wpndmg_z1#cmd",
+        "text": "mp_wpndmg_z1"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_wpndmg_z2#cmd",
+        "text": "mp_wpndmg_z2"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_zombiedmg#cmd",
+        "text": "mp_zombiedmg"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_zombiekillequip#cmd",
+        "text": "mp_zombiekillequip"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_zombiekillscore#cmd",
+        "text": "mp_zombiekillscore"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_zombierecover#cmd",
+        "text": "mp_zombierecover"
+      },
+      {
+        "href": "help.php?cat=all&cmd=mp_zombiespeedmod#cmd",
+        "text": "mp_zombiespeedmod"
+      },
+      {
+        "href": "help.php?cat=all&cmd=msg#cmd",
+        "text": "msg"
+      },
+      {
+        "href": "help.php?cat=all&cmd=name#cmd",
+        "text": "name"
+      },
+      {
+        "href": "help.php?cat=all&cmd=netinfo#cmd",
+        "text": "netinfo"
+      },
+      {
+        "href": "help.php?cat=all&cmd=nick#cmd",
+        "text": "nick"
+      },
+      {
+        "href": "help.php?cat=all&cmd=nightvision#cmd",
+        "text": "nightvision"
+      },
+      {
+        "href": "help.php?cat=all&cmd=nvgs#cmd",
+        "text": "nvgs"
+      },
+      {
+        "href": "help.php?cat=all&cmd=p228#cmd",
+        "text": "p228"
+      },
+      {
+        "href": "help.php?cat=all&cmd=p90#cmd",
+        "text": "p90"
+      },
+      {
+        "href": "help.php?cat=all&cmd=particles#cmd",
+        "text": "particles"
+      },
+      {
+        "href": "help.php?cat=all&cmd=playershadows#cmd",
+        "text": "playershadows"
+      },
+      {
+        "href": "help.php?cat=all&cmd=quit#cmd",
+        "text": "quit"
+      },
+      {
+        "href": "help.php?cat=all&cmd=radio1#cmd",
+        "text": "radio1"
+      },
+      {
+        "href": "help.php?cat=all&cmd=radio2#cmd",
+        "text": "radio2"
+      },
+      {
+        "href": "help.php?cat=all&cmd=radio3#cmd",
+        "text": "radio3"
+      },
+      {
+        "href": "help.php?cat=all&cmd=rcon#cmd",
+        "text": "rcon"
+      },
+      {
+        "href": "help.php?cat=all&cmd=rcon_password#cmd",
+        "text": "rcon_password"
+      },
+      {
+        "href": "help.php?cat=all&cmd=rcon_pw#cmd",
+        "text": "rcon_pw"
+      },
+      {
+        "href": "help.php?cat=all&cmd=rebuy#cmd",
+        "text": "rebuy"
+      },
+      {
+        "href": "help.php?cat=all&cmd=recoil#cmd",
+        "text": "recoil"
+      },
+      {
+        "href": "help.php?cat=all&cmd=relativemovement#cmd",
+        "text": "relativemovement"
+      },
+      {
+        "href": "help.php?cat=all&cmd=reload#cmd",
+        "text": "reload"
+      },
+      {
+        "href": "help.php?cat=all&cmd=removeitem#cmd",
+        "text": "removeitem"
+      },
+      {
+        "href": "help.php?cat=all&cmd=render3d#cmd",
+        "text": "render3d"
+      },
+      {
+        "href": "help.php?cat=all&cmd=renderdecals#cmd",
+        "text": "renderdecals"
+      },
+      {
+        "href": "help.php?cat=all&cmd=renderdecoration#cmd",
+        "text": "renderdecoration"
+      },
+      {
+        "href": "help.php?cat=all&cmd=reroute#cmd",
+        "text": "reroute"
+      },
+      {
+        "href": "help.php?cat=all&cmd=resources#cmd",
+        "text": "resources"
+      },
+      {
+        "href": "help.php?cat=all&cmd=restart#cmd",
+        "text": "restart"
+      },
+      {
+        "href": "help.php?cat=all&cmd=restartround#cmd",
+        "text": "restartround"
+      },
+      {
+        "href": "help.php?cat=all&cmd=right#cmd",
+        "text": "right"
+      },
+      {
+        "href": "help.php?cat=all&cmd=say#cmd",
+        "text": "say"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sayteam#cmd",
+        "text": "sayteam"
+      },
+      {
+        "href": "help.php?cat=all&cmd=scout#cmd",
+        "text": "scout"
+      },
+      {
+        "href": "help.php?cat=all&cmd=screenshot#cmd",
+        "text": "screenshot"
+      },
+      {
+        "href": "help.php?cat=all&cmd=server#cmd",
+        "text": "server"
+      },
+      {
+        "href": "help.php?cat=all&cmd=serveraction1#cmd",
+        "text": "serveraction1"
+      },
+      {
+        "href": "help.php?cat=all&cmd=serveraction2#cmd",
+        "text": "serveraction2"
+      },
+      {
+        "href": "help.php?cat=all&cmd=serveraction3#cmd",
+        "text": "serveraction3"
+      },
+      {
+        "href": "help.php?cat=all&cmd=serverinfo#cmd",
+        "text": "serverinfo"
+      },
+      {
+        "href": "help.php?cat=all&cmd=setammo#cmd",
+        "text": "setammo"
+      },
+      {
+        "href": "help.php?cat=all&cmd=setarmor#cmd",
+        "text": "setarmor"
+      },
+      {
+        "href": "help.php?cat=all&cmd=setassists#cmd",
+        "text": "setassists"
+      },
+      {
+        "href": "help.php?cat=all&cmd=setdeaths#cmd",
+        "text": "setdeaths"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sethealth#cmd",
+        "text": "sethealth"
+      },
+      {
+        "href": "help.php?cat=all&cmd=setmaxhealth#cmd",
+        "text": "setmaxhealth"
+      },
+      {
+        "href": "help.php?cat=all&cmd=setmoney#cmd",
+        "text": "setmoney"
+      },
+      {
+        "href": "help.php?cat=all&cmd=setmvp#cmd",
+        "text": "setmvp"
+      },
+      {
+        "href": "help.php?cat=all&cmd=setname#cmd",
+        "text": "setname"
+      },
+      {
+        "href": "help.php?cat=all&cmd=setpos#cmd",
+        "text": "setpos"
+      },
+      {
+        "href": "help.php?cat=all&cmd=setscore#cmd",
+        "text": "setscore"
+      },
+      {
+        "href": "help.php?cat=all&cmd=setteamscores#cmd",
+        "text": "setteamscores"
+      },
+      {
+        "href": "help.php?cat=all&cmd=settile#cmd",
+        "text": "settile"
+      },
+      {
+        "href": "help.php?cat=all&cmd=setweapon#cmd",
+        "text": "setweapon"
+      },
+      {
+        "href": "help.php?cat=all&cmd=SG550#cmd",
+        "text": "SG550"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sg552#cmd",
+        "text": "sg552"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sgren#cmd",
+        "text": "sgren"
+      },
+      {
+        "href": "help.php?cat=all&cmd=shadows#cmd",
+        "text": "shadows"
+      },
+      {
+        "href": "help.php?cat=all&cmd=shadowshade_obstacle#cmd",
+        "text": "shadowshade_obstacle"
+      },
+      {
+        "href": "help.php?cat=all&cmd=shadowshade_wall#cmd",
+        "text": "shadowshade_wall"
+      },
+      {
+        "href": "help.php?cat=all&cmd=shadowz_obstacles#cmd",
+        "text": "shadowz_obstacles"
+      },
+      {
+        "href": "help.php?cat=all&cmd=shadowz_wall#cmd",
+        "text": "shadowz_wall"
+      },
+      {
+        "href": "help.php?cat=all&cmd=shadow_angle#cmd",
+        "text": "shadow_angle"
+      },
+      {
+        "href": "help.php?cat=all&cmd=shadow_frameskipping#cmd",
+        "text": "shadow_frameskipping"
+      },
+      {
+        "href": "help.php?cat=all&cmd=shake#cmd",
+        "text": "shake"
+      },
+      {
+        "href": "help.php?cat=all&cmd=shield#cmd",
+        "text": "shield"
+      },
+      {
+        "href": "help.php?cat=all&cmd=showscores#cmd",
+        "text": "showscores"
+      },
+      {
+        "href": "help.php?cat=all&cmd=slap#cmd",
+        "text": "slap"
+      },
+      {
+        "href": "help.php?cat=all&cmd=slot0#cmd",
+        "text": "slot0"
+      },
+      {
+        "href": "help.php?cat=all&cmd=slot1#cmd",
+        "text": "slot1"
+      },
+      {
+        "href": "help.php?cat=all&cmd=slot10#cmd",
+        "text": "slot10"
+      },
+      {
+        "href": "help.php?cat=all&cmd=slot2#cmd",
+        "text": "slot2"
+      },
+      {
+        "href": "help.php?cat=all&cmd=slot3#cmd",
+        "text": "slot3"
+      },
+      {
+        "href": "help.php?cat=all&cmd=slot4#cmd",
+        "text": "slot4"
+      },
+      {
+        "href": "help.php?cat=all&cmd=slot5#cmd",
+        "text": "slot5"
+      },
+      {
+        "href": "help.php?cat=all&cmd=slot6#cmd",
+        "text": "slot6"
+      },
+      {
+        "href": "help.php?cat=all&cmd=slot7#cmd",
+        "text": "slot7"
+      },
+      {
+        "href": "help.php?cat=all&cmd=slot8#cmd",
+        "text": "slot8"
+      },
+      {
+        "href": "help.php?cat=all&cmd=slot9#cmd",
+        "text": "slot9"
+      },
+      {
+        "href": "help.php?cat=all&cmd=snapshot#cmd",
+        "text": "snapshot"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sounddriver#cmd",
+        "text": "sounddriver"
+      },
+      {
+        "href": "help.php?cat=all&cmd=soundmode#cmd",
+        "text": "soundmode"
+      },
+      {
+        "href": "help.php?cat=all&cmd=spawnitem#cmd",
+        "text": "spawnitem"
+      },
+      {
+        "href": "help.php?cat=all&cmd=spawnnpc#cmd",
+        "text": "spawnnpc"
+      },
+      {
+        "href": "help.php?cat=all&cmd=spawnobject#cmd",
+        "text": "spawnobject"
+      },
+      {
+        "href": "help.php?cat=all&cmd=spawnplayer#cmd",
+        "text": "spawnplayer"
+      },
+      {
+        "href": "help.php?cat=all&cmd=spawnprojectile#cmd",
+        "text": "spawnprojectile"
+      },
+      {
+        "href": "help.php?cat=all&cmd=specmode#cmd",
+        "text": "specmode"
+      },
+      {
+        "href": "help.php?cat=all&cmd=specplayer#cmd",
+        "text": "specplayer"
+      },
+      {
+        "href": "help.php?cat=all&cmd=speed#cmd",
+        "text": "speed"
+      },
+      {
+        "href": "help.php?cat=all&cmd=speedmod#cmd",
+        "text": "speedmod"
+      },
+      {
+        "href": "help.php?cat=all&cmd=spray#cmd",
+        "text": "spray"
+      },
+      {
+        "href": "help.php?cat=all&cmd=spraycolor#cmd",
+        "text": "spraycolor"
+      },
+      {
+        "href": "help.php?cat=all&cmd=spraylogo#cmd",
+        "text": "spraylogo"
+      },
+      {
+        "href": "help.php?cat=all&cmd=strip#cmd",
+        "text": "strip"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_checkusgnlogin#cmd",
+        "text": "sv_checkusgnlogin"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_daylighttime#cmd",
+        "text": "sv_daylighttime"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_forcelight#cmd",
+        "text": "sv_forcelight"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_fow#cmd",
+        "text": "sv_fow"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_friendlyfire#cmd",
+        "text": "sv_friendlyfire"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_gamemode#cmd",
+        "text": "sv_gamemode"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_gm#cmd",
+        "text": "sv_gm"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_hostport#cmd",
+        "text": "sv_hostport"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_lan#cmd",
+        "text": "sv_lan"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_map#cmd",
+        "text": "sv_map"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_maptransfer#cmd",
+        "text": "sv_maptransfer"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_maxplayers#cmd",
+        "text": "sv_maxplayers"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_msg#cmd",
+        "text": "sv_msg"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_msg2#cmd",
+        "text": "sv_msg2"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_name#cmd",
+        "text": "sv_name"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_offscreendamage#cmd",
+        "text": "sv_offscreendamage"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_password#cmd",
+        "text": "sv_password"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_rcon#cmd",
+        "text": "sv_rcon"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_rconusers#cmd",
+        "text": "sv_rconusers"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_restart#cmd",
+        "text": "sv_restart"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_restartround#cmd",
+        "text": "sv_restartround"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_sound#cmd",
+        "text": "sv_sound"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_sound2#cmd",
+        "text": "sv_sound2"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_soundpos#cmd",
+        "text": "sv_soundpos"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_specmode#cmd",
+        "text": "sv_specmode"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_spraytransfer#cmd",
+        "text": "sv_spraytransfer"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_stopsound#cmd",
+        "text": "sv_stopsound"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_usgnonly#cmd",
+        "text": "sv_usgnonly"
+      },
+      {
+        "href": "help.php?cat=all&cmd=team#cmd",
+        "text": "team"
+      },
+      {
+        "href": "help.php?cat=all&cmd=tileanimations#cmd",
+        "text": "tileanimations"
+      },
+      {
+        "href": "help.php?cat=all&cmd=tmp#cmd",
+        "text": "tmp"
+      },
+      {
+        "href": "help.php?cat=all&cmd=transfer_speed#cmd",
+        "text": "transfer_speed"
+      },
+      {
+        "href": "help.php?cat=all&cmd=trigger#cmd",
+        "text": "trigger"
+      },
+      {
+        "href": "help.php?cat=all&cmd=triggerposition#cmd",
+        "text": "triggerposition"
+      },
+      {
+        "href": "help.php?cat=all&cmd=ump45#cmd",
+        "text": "ump45"
+      },
+      {
+        "href": "help.php?cat=all&cmd=unban#cmd",
+        "text": "unban"
+      },
+      {
+        "href": "help.php?cat=all&cmd=unbanall#cmd",
+        "text": "unbanall"
+      },
+      {
+        "href": "help.php?cat=all&cmd=unbindall#cmd",
+        "text": "unbindall"
+      },
+      {
+        "href": "help.php?cat=all&cmd=use#cmd",
+        "text": "use"
+      },
+      {
+        "href": "help.php?cat=all&cmd=usgn_addserver#cmd",
+        "text": "usgn_addserver"
+      },
+      {
+        "href": "help.php?cat=all&cmd=usgn_info#cmd",
+        "text": "usgn_info"
+      },
+      {
+        "href": "help.php?cat=all&cmd=usgn_pw#cmd",
+        "text": "usgn_pw"
+      },
+      {
+        "href": "help.php?cat=all&cmd=usgn_user#cmd",
+        "text": "usgn_user"
+      },
+      {
+        "href": "help.php?cat=all&cmd=usp#cmd",
+        "text": "usp"
+      },
+      {
+        "href": "help.php?cat=all&cmd=vest#cmd",
+        "text": "vest"
+      },
+      {
+        "href": "help.php?cat=all&cmd=vesthelm#cmd",
+        "text": "vesthelm"
+      },
+      {
+        "href": "help.php?cat=all&cmd=visibleshots#cmd",
+        "text": "visibleshots"
+      },
+      {
+        "href": "help.php?cat=all&cmd=volume#cmd",
+        "text": "volume"
+      },
+      {
+        "href": "help.php?cat=all&cmd=vote#cmd",
+        "text": "vote"
+      },
+      {
+        "href": "help.php?cat=all&cmd=votemap#cmd",
+        "text": "votemap"
+      },
+      {
+        "href": "help.php?cat=all&cmd=votemenu#cmd",
+        "text": "votemenu"
+      },
+      {
+        "href": "help.php?cat=all&cmd=weapon#cmd",
+        "text": "weapon"
+      },
+      {
+        "href": "help.php?cat=all&cmd=wiggle#cmd",
+        "text": "wiggle"
+      },
+      {
+        "href": "help.php?cat=all&cmd=win#cmd",
+        "text": "win"
+      },
+      {
+        "href": "help.php?cat=all&cmd=xm1014#cmd",
+        "text": "xm1014"
+      },
+      {
+        "href": "help.php?hookcat=all",
+        "text": "ALL"
+      },
+      {
+        "href": "help.php?hookcat=basic",
+        "text": "Basic"
+      },
+      {
+        "href": "help.php?hookcat=time",
+        "text": "Time"
+      },
+      {
+        "href": "help.php?hookcat=player",
+        "text": "Player"
+      },
+      {
+        "href": "help.php?hookcat=object",
+        "text": "Object"
+      },
+      {
+        "href": "help.php?luacat=all",
+        "text": "ALL"
+      },
+      {
+        "href": "help.php?luacat=basic",
+        "text": "Basic"
+      },
+      {
+        "href": "help.php?luacat=timer",
+        "text": "Timer"
+      },
+      {
+        "href": "help.php?luacat=image",
+        "text": "Image"
+      },
+      {
+        "href": "help.php?luacat=game",
+        "text": "Game"
+      },
+      {
+        "href": "help.php?luacat=map",
+        "text": "Map"
+      },
+      {
+        "href": "help.php?luacat=tile",
+        "text": "Tile"
+      },
+      {
+        "href": "help.php?luacat=player",
+        "text": "Player"
+      },
+      {
+        "href": "help.php?luacat=item",
+        "text": "Item"
+      },
+      {
+        "href": "help.php?luacat=entity",
+        "text": "Entity"
+      },
+      {
+        "href": "help.php?luacat=object",
+        "text": "Object"
+      },
+      {
+        "href": "help.php?luacat=projectile",
+        "text": "Projectile"
+      },
+      {
+        "href": "help.php?luacat=ai",
+        "text": "AI"
+      }
+    ],
+    "content": "Commands/LuaReference for console commands, Lua hooks and Lua commands in CS2D.\n\n\tConsole Commands are entered in console, executed with key-binds, cfg-files or with Lua parse\n\n\tLua Hooks execute Lua when events occur - some have a return value which can change the game behavior\n\n\tLua Commands are used to retrieve game data or to perform actions in Lua scripts\n\n  CS2D Console Commands\n\n\tALL\n\n\tScript\n\n\tControls\n\n\tSettings\n\n\tServer\n\n\tBots\n\n\tDebug\n\n\tSecurity\n\nCategory: all (375)ah\nak47\nalias\naliases\nattack\nattack2\naug\nautobuy\nautoscreen\nautoswitch\nawp\nback\nbanip\nbanname\nbans\nbansteam\nbanusgn\nbind\nborderless\nbot\nbot_add\nbot_add_ct\nbot_add_t\nbot_autofill\nbot_count\nbot_freeze\nbot_jointeam\nbot_keepfreeslots\nbot_kill\nbot_prefix\nbot_remove\nbot_remove_all\nbot_remove_ct\nbot_remove_t\nbot_skill\nbot_weapons\nbullets\nbuy\nbuyammo1\nbuyammo2\nbuyequip\nchangelevel\nchangemap\nchooseteam\nclear\nclientport\nclose\ncmsg\nconnections\nconsole\ncontroller\ncopyaddress\ncustomkill\ndamageobject\ndamagetile\ndeagle\ndeathnoticeimg\ndeathslap\ndebug\ndebugai\ndebuglog\ndebuglua\ndebugstats\ndefuser\ndisconnect\ndmgindicator\ndownload\ndrawradar\ndrop\necho\neffect\nelite\nelites\nendround\nequip\nexec\nexit\nexplosion\nfamas\nflare\nflash\nflashlight\nflashplayer\nflashposition\nfn57\nforward\nfowalpha\nfowdetails\nfps\nfreeprojectile\ng3sg1\ngalil\nglock\ngore\ngpad_deadzone\ngpad_firezone\ngrenademode\nhegren\nhudtxt\nhudtxt2\nhudtxtalphafade\nhudtxtclear\nhudtxtcolorfade\nhudtxtmove\nhud_fastswitch\nhud_takesshots\ninclude\ninvnext\ninvprev\nitems\nitemshadows\nkick\nkill\nkillobject\nkillplayer\nlastinv\nleft\nlefthand\nlistbans\nlistplayers\nlocalport\nlogaddress_add\nlogaddress_remove\nlogaddress_removeall\nlogbatch\nlogmaxflushrate\nlogsplit\nlogstamp\nlua\nluareset\nm249\nm3\nm4a1\nmac10\nmakect\nmakespec\nmaket\nmap\nmapinfo\nmaps\nmapshadows\nmapsounds\nmarkplayer\nmemory\nmenuselect\nmenu_lanscanport\nmp5\nmp_antispeeder\nmp_autogamemode\nmp_autoteambalance\nmp_building_health\nmp_building_limit\nmp_building_price\nmp_buymenu\nmp_buytime\nmp_c4timer\nmp_connectionlimit\nmp_curtailedexplosions\nmp_damagefactor\nmp_deathdrop\nmp_dispenser_health\nmp_dispenser_money\nmp_dmspawnmoney\nmp_dropgrenades\nmp_flashlight\nmp_floodprot\nmp_floodprotignoretime\nmp_freezetime\nmp_grenaderebuy\nmp_hostagepenalty\nmp_hovertext\nmp_hud\nmp_hudscale\nmp_idleaction\nmp_idlekick\nmp_idletime\nmp_infammo\nmp_kevlar\nmp_kickpercent\nmp_killbuildingmoney\nmp_killbuildings\nmp_killinfo\nmp_killteambuildings\nmp_lagcompensation\nmp_lagcompensationdivisor\nmp_localrconoutput\nmp_luamap\nmp_luaserver\nmp_mapgoalscore\nmp_mapvoteratio\nmp_maxclientsip\nmp_maxrconfails\nmp_natholepunching\nmp_pinglimit\nmp_postspawn\nmp_radar\nmp_randomspawn\nmp_recoil\nmp_reservations\nmp_respawndelay\nmp_roundlimit\nmp_roundtime\nmp_shotweakening\nmp_smokeblock\nmp_startmoney\nmp_supply_items\nmp_teamkillpenalty\nmp_teleportreload\nmp_tempbantime\nmp_timelimit\nmp_tkpunish\nmp_trace\nmp_turretdamage\nmp_unbuildable\nmp_unbuyable\nmp_vulnerablehostages\nmp_weaponfadeout\nmp_winlimit\nmp_wpndmg\nmp_wpndmg_z1\nmp_wpndmg_z2\nmp_zombiedmg\nmp_zombiekillequip\nmp_zombiekillscore\nmp_zombierecover\nmp_zombiespeedmod\nmsg\nname\nnetinfo\nnick\nnightvision\nnvgs\np228\np90\nparticles\nplayershadows\nquit\nradio1\nradio2\nradio3\nrcon\nrcon_password\nrcon_pw\nrebuy\nrecoil\nrelativemovement\nreload\nremoveitem\nrender3d\nrenderdecals\nrenderdecoration\nreroute\nresources\nrestart\nrestartround\nright\nsay\nsayteam\nscout\nscreenshot\nserver\nserveraction1\nserveraction2\nserveraction3\nserverinfo\nsetammo\nsetarmor\nsetassists\nsetdeaths\nsethealth\nsetmaxhealth\nsetmoney\nsetmvp\nsetname\nsetpos\nsetscore\nsetteamscores\nsettile\nsetweapon\nSG550\nsg552\nsgren\nshadows\nshadowshade_obstacle\nshadowshade_wall\nshadowz_obstacles\nshadowz_wall\nshadow_angle\nshadow_frameskipping\nshake\nshield\nshowscores\nslap\nslot0\nslot1\nslot10\nslot2\nslot3\nslot4\nslot5\nslot6\nslot7\nslot8\nslot9\nsnapshot\nsounddriver\nsoundmode\nspawnitem\nspawnnpc\nspawnobject\nspawnplayer\nspawnprojectile\nspecmode\nspecplayer\nspeed\nspeedmod\nspray\nspraycolor\nspraylogo\nstrip\nsv_checkusgnlogin\nsv_daylighttime\nsv_forcelight\nsv_fow\nsv_friendlyfire\nsv_gamemode\nsv_gm\nsv_hostport\nsv_lan\nsv_map\nsv_maptransfer\nsv_maxplayers\nsv_msg\nsv_msg2\nsv_name\nsv_offscreendamage\nsv_password\nsv_rcon\nsv_rconusers\nsv_restart\nsv_restartround\nsv_sound\nsv_sound2\nsv_soundpos\nsv_specmode\nsv_spraytransfer\nsv_stopsound\nsv_usgnonly\nteam\ntileanimations\ntmp\ntransfer_speed\ntrigger\ntriggerposition\nump45\nunban\nunbanall\nunbindall\nuse\nusgn_addserver\nusgn_info\nusgn_pw\nusgn_user\nusp\nvest\nvesthelm\nvisibleshots\nvolume\nvote\nvotemap\nvotemenu\nweapon\nwiggle\nwin\nxm1014\n  Lua Hooks\n\n\tALL\n\n\tBasic\n\n\tTime\n\n\tPlayer\n\n\tObject\n\n  Lua Commands\n\n\tALL\n\n\tBasic\n\n\tTimer\n\n\tImage\n\n\tGame\n\n\tMap\n\n\tTile\n\n\tPlayer\n\n\tItem\n\n\tEntity\n\n\tObject\n\n\tProjectile\n\n\tAI"
+  },
+  "lua_hooks": {
+    "url": "https://www.cs2d.com/help.php?hookcat=all",
+    "links": [
+      {
+        "href": "?cat=all",
+        "text": "console commands"
+      },
+      {
+        "href": "?hookcat=all",
+        "text": "Lua hooks"
+      },
+      {
+        "href": "?luacat=all",
+        "text": "Lua commands"
+      },
+      {
+        "href": "?cat=all",
+        "text": "Console Commands"
+      },
+      {
+        "href": "?luacat=all&luacmd=parse#cmd",
+        "text": "parse"
+      },
+      {
+        "href": "?hookcat=all",
+        "text": "Lua Hooks"
+      },
+      {
+        "href": "?luacat=all",
+        "text": "Lua Commands"
+      },
+      {
+        "href": "help.php?cat=all",
+        "text": "ALL"
+      },
+      {
+        "href": "help.php?cat=script",
+        "text": "Script"
+      },
+      {
+        "href": "help.php?cat=controls",
+        "text": "Controls"
+      },
+      {
+        "href": "help.php?cat=settings",
+        "text": "Settings"
+      },
+      {
+        "href": "help.php?cat=server",
+        "text": "Server"
+      },
+      {
+        "href": "help.php?cat=bots",
+        "text": "Bots"
+      },
+      {
+        "href": "help.php?cat=debug",
+        "text": "Debug"
+      },
+      {
+        "href": "help.php?cat=security",
+        "text": "Security"
+      },
+      {
+        "href": "help.php?hookcat=all",
+        "text": "ALL"
+      },
+      {
+        "href": "help.php?hookcat=basic",
+        "text": "Basic"
+      },
+      {
+        "href": "help.php?hookcat=time",
+        "text": "Time"
+      },
+      {
+        "href": "help.php?hookcat=player",
+        "text": "Player"
+      },
+      {
+        "href": "help.php?hookcat=object",
+        "text": "Object"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=always#hook",
+        "text": "always"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=assist#hook",
+        "text": "assist"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=attack#hook",
+        "text": "attack"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=attack2#hook",
+        "text": "attack2"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=bombdefuse#hook",
+        "text": "bombdefuse"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=bombexplode#hook",
+        "text": "bombexplode"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=bombplant#hook",
+        "text": "bombplant"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=break#hook",
+        "text": "break"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=build#hook",
+        "text": "build"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=buildattempt#hook",
+        "text": "buildattempt"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=buy#hook",
+        "text": "buy"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=clientdata#hook",
+        "text": "clientdata"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=clientsetting#hook",
+        "text": "clientsetting"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=collect#hook",
+        "text": "collect"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=connect#hook",
+        "text": "connect"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=connect_attempt#hook",
+        "text": "connect_attempt"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=connect_initplayer#hook",
+        "text": "connect_initplayer"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=die#hook",
+        "text": "die"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=disconnect#hook",
+        "text": "disconnect"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=dominate#hook",
+        "text": "dominate"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=drop#hook",
+        "text": "drop"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=endround#hook",
+        "text": "endround"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=flagcapture#hook",
+        "text": "flagcapture"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=flagtake#hook",
+        "text": "flagtake"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=flashlight#hook",
+        "text": "flashlight"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=hit#hook",
+        "text": "hit"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=hitzone#hook",
+        "text": "hitzone"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=hostagedamage#hook",
+        "text": "hostagedamage"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=hostagekill#hook",
+        "text": "hostagekill"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=hostagerescue#hook",
+        "text": "hostagerescue"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=hostageuse#hook",
+        "text": "hostageuse"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=httpdata#hook",
+        "text": "httpdata"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=itemfadeout#hook",
+        "text": "itemfadeout"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=join#hook",
+        "text": "join"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=key#hook",
+        "text": "key"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=kill#hook",
+        "text": "kill"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=leave#hook",
+        "text": "leave"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=log#hook",
+        "text": "log"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=mapchange#hook",
+        "text": "mapchange"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=menu#hook",
+        "text": "menu"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=minute#hook",
+        "text": "minute"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=move#hook",
+        "text": "move"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=movetile#hook",
+        "text": "movetile"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=ms100#hook",
+        "text": "ms100"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=name#hook",
+        "text": "name"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=objectdamage#hook",
+        "text": "objectdamage"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=objectkill#hook",
+        "text": "objectkill"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=objectupgrade#hook",
+        "text": "objectupgrade"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=parse#hook",
+        "text": "parse"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=projectile#hook",
+        "text": "projectile"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=projectile_impact#hook",
+        "text": "projectile_impact"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=radio#hook",
+        "text": "radio"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=rcon#hook",
+        "text": "rcon"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=reload#hook",
+        "text": "reload"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=say#hook",
+        "text": "say"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=sayteam#hook",
+        "text": "sayteam"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=sayteamutf8#hook",
+        "text": "sayteamutf8"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=sayutf8#hook",
+        "text": "sayutf8"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=second#hook",
+        "text": "second"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=select#hook",
+        "text": "select"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=serveraction#hook",
+        "text": "serveraction"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=shieldhit#hook",
+        "text": "shieldhit"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=shutdown#hook",
+        "text": "shutdown"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=spawn#hook",
+        "text": "spawn"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=specswitch#hook",
+        "text": "specswitch"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=spray#hook",
+        "text": "spray"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=startround#hook",
+        "text": "startround"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=startround_prespawn#hook",
+        "text": "startround_prespawn"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=suicide#hook",
+        "text": "suicide"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=team#hook",
+        "text": "team"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=trigger#hook",
+        "text": "trigger"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=triggerentity#hook",
+        "text": "triggerentity"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=turretscan#hook",
+        "text": "turretscan"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=use#hook",
+        "text": "use"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=usebutton#hook",
+        "text": "usebutton"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=vipescape#hook",
+        "text": "vipescape"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=voice#hook",
+        "text": "voice"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=vote#hook",
+        "text": "vote"
+      },
+      {
+        "href": "help.php?hookcat=all&hook=walkover#hook",
+        "text": "walkover"
+      },
+      {
+        "href": "help.php?luacat=all",
+        "text": "ALL"
+      },
+      {
+        "href": "help.php?luacat=basic",
+        "text": "Basic"
+      },
+      {
+        "href": "help.php?luacat=timer",
+        "text": "Timer"
+      },
+      {
+        "href": "help.php?luacat=image",
+        "text": "Image"
+      },
+      {
+        "href": "help.php?luacat=game",
+        "text": "Game"
+      },
+      {
+        "href": "help.php?luacat=map",
+        "text": "Map"
+      },
+      {
+        "href": "help.php?luacat=tile",
+        "text": "Tile"
+      },
+      {
+        "href": "help.php?luacat=player",
+        "text": "Player"
+      },
+      {
+        "href": "help.php?luacat=item",
+        "text": "Item"
+      },
+      {
+        "href": "help.php?luacat=entity",
+        "text": "Entity"
+      },
+      {
+        "href": "help.php?luacat=object",
+        "text": "Object"
+      },
+      {
+        "href": "help.php?luacat=projectile",
+        "text": "Projectile"
+      },
+      {
+        "href": "help.php?luacat=ai",
+        "text": "AI"
+      }
+    ],
+    "content": "Commands/LuaReference for console commands, Lua hooks and Lua commands in CS2D.\n\n\tConsole Commands are entered in console, executed with key-binds, cfg-files or with Lua parse\n\n\tLua Hooks execute Lua when events occur - some have a return value which can change the game behavior\n\n\tLua Commands are used to retrieve game data or to perform actions in Lua scripts\n\n  CS2D Console Commands\n\n\tALL\n\n\tScript\n\n\tControls\n\n\tSettings\n\n\tServer\n\n\tBots\n\n\tDebug\n\n\tSecurity\n\n  Lua Hooks\n\n\tALL\n\n\tBasic\n\n\tTime\n\n\tPlayer\n\n\tObject\n\nCategory: all (79)always\nassist\nattack\nattack2\nbombdefuse\nbombexplode\nbombplant\nbreak\nbuild\nbuildattempt\nbuy\nclientdata\nclientsetting\ncollect\nconnect\nconnect_attempt\nconnect_initplayer\ndie\ndisconnect\ndominate\ndrop\nendround\nflagcapture\nflagtake\nflashlight\nhit\nhitzone\nhostagedamage\nhostagekill\nhostagerescue\nhostageuse\nhttpdata\nitemfadeout\njoin\nkey\nkill\nleave\nlog\nmapchange\nmenu\nminute\nmove\nmovetile\nms100\nname\nobjectdamage\nobjectkill\nobjectupgrade\nparse\nprojectile\nprojectile_impact\nradio\nrcon\nreload\nsay\nsayteam\nsayteamutf8\nsayutf8\nsecond\nselect\nserveraction\nshieldhit\nshutdown\nspawn\nspecswitch\nspray\nstartround\nstartround_prespawn\nsuicide\nteam\ntrigger\ntriggerentity\nturretscan\nuse\nusebutton\nvipescape\nvoice\nvote\nwalkover\n  Lua Commands\n\n\tALL\n\n\tBasic\n\n\tTimer\n\n\tImage\n\n\tGame\n\n\tMap\n\n\tTile\n\n\tPlayer\n\n\tItem\n\n\tEntity\n\n\tObject\n\n\tProjectile\n\n\tAI"
+  },
+  "lua_commands": {
+    "url": "https://www.cs2d.com/help.php?luacat=all",
+    "links": [
+      {
+        "href": "?cat=all",
+        "text": "console commands"
+      },
+      {
+        "href": "?hookcat=all",
+        "text": "Lua hooks"
+      },
+      {
+        "href": "?luacat=all",
+        "text": "Lua commands"
+      },
+      {
+        "href": "?cat=all",
+        "text": "Console Commands"
+      },
+      {
+        "href": "?luacat=all&luacmd=parse#cmd",
+        "text": "parse"
+      },
+      {
+        "href": "?hookcat=all",
+        "text": "Lua Hooks"
+      },
+      {
+        "href": "?luacat=all",
+        "text": "Lua Commands"
+      },
+      {
+        "href": "help.php?cat=all",
+        "text": "ALL"
+      },
+      {
+        "href": "help.php?cat=script",
+        "text": "Script"
+      },
+      {
+        "href": "help.php?cat=controls",
+        "text": "Controls"
+      },
+      {
+        "href": "help.php?cat=settings",
+        "text": "Settings"
+      },
+      {
+        "href": "help.php?cat=server",
+        "text": "Server"
+      },
+      {
+        "href": "help.php?cat=bots",
+        "text": "Bots"
+      },
+      {
+        "href": "help.php?cat=debug",
+        "text": "Debug"
+      },
+      {
+        "href": "help.php?cat=security",
+        "text": "Security"
+      },
+      {
+        "href": "help.php?hookcat=all",
+        "text": "ALL"
+      },
+      {
+        "href": "help.php?hookcat=basic",
+        "text": "Basic"
+      },
+      {
+        "href": "help.php?hookcat=time",
+        "text": "Time"
+      },
+      {
+        "href": "help.php?hookcat=player",
+        "text": "Player"
+      },
+      {
+        "href": "help.php?hookcat=object",
+        "text": "Object"
+      },
+      {
+        "href": "help.php?luacat=all",
+        "text": "ALL"
+      },
+      {
+        "href": "help.php?luacat=basic",
+        "text": "Basic"
+      },
+      {
+        "href": "help.php?luacat=timer",
+        "text": "Timer"
+      },
+      {
+        "href": "help.php?luacat=image",
+        "text": "Image"
+      },
+      {
+        "href": "help.php?luacat=game",
+        "text": "Game"
+      },
+      {
+        "href": "help.php?luacat=map",
+        "text": "Map"
+      },
+      {
+        "href": "help.php?luacat=tile",
+        "text": "Tile"
+      },
+      {
+        "href": "help.php?luacat=player",
+        "text": "Player"
+      },
+      {
+        "href": "help.php?luacat=item",
+        "text": "Item"
+      },
+      {
+        "href": "help.php?luacat=entity",
+        "text": "Entity"
+      },
+      {
+        "href": "help.php?luacat=object",
+        "text": "Object"
+      },
+      {
+        "href": "help.php?luacat=projectile",
+        "text": "Projectile"
+      },
+      {
+        "href": "help.php?luacat=ai",
+        "text": "AI"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=addbind#cmd",
+        "text": "addbind"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=addhook#cmd",
+        "text": "addhook"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_aim#cmd",
+        "text": "ai_aim"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_attack#cmd",
+        "text": "ai_attack"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_build#cmd",
+        "text": "ai_build"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_buy#cmd",
+        "text": "ai_buy"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_debug#cmd",
+        "text": "ai_debug"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_drop#cmd",
+        "text": "ai_drop"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_findtarget#cmd",
+        "text": "ai_findtarget"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_freeline#cmd",
+        "text": "ai_freeline"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_goto#cmd",
+        "text": "ai_goto"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_iattack#cmd",
+        "text": "ai_iattack"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_move#cmd",
+        "text": "ai_move"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_radio#cmd",
+        "text": "ai_radio"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_reload#cmd",
+        "text": "ai_reload"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_respawn#cmd",
+        "text": "ai_respawn"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_rotate#cmd",
+        "text": "ai_rotate"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_say#cmd",
+        "text": "ai_say"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_sayteam#cmd",
+        "text": "ai_sayteam"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_selectweapon#cmd",
+        "text": "ai_selectweapon"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_spray#cmd",
+        "text": "ai_spray"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=ai_use#cmd",
+        "text": "ai_use"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=checksumfile#cmd",
+        "text": "checksumfile"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=checksumstring#cmd",
+        "text": "checksumstring"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=closehostage#cmd",
+        "text": "closehostage"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=closeitems#cmd",
+        "text": "closeitems"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=closeobjects#cmd",
+        "text": "closeobjects"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=closeplayers#cmd",
+        "text": "closeplayers"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=entity#cmd",
+        "text": "entity"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=entitylist#cmd",
+        "text": "entitylist"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=fow_in#cmd",
+        "text": "fow_in"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=freehook#cmd",
+        "text": "freehook"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=freeimage#cmd",
+        "text": "freeimage"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=freeline#cmd",
+        "text": "freeline"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=freerect#cmd",
+        "text": "freerect"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=freetimer#cmd",
+        "text": "freetimer"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=funcs#cmd",
+        "text": "funcs"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=game#cmd",
+        "text": "game"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=hascloseplayers#cmd",
+        "text": "hascloseplayers"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=hostage#cmd",
+        "text": "hostage"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=image#cmd",
+        "text": "image"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=imagealpha#cmd",
+        "text": "imagealpha"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=imageblend#cmd",
+        "text": "imageblend"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=imagecolor#cmd",
+        "text": "imagecolor"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=imageframe#cmd",
+        "text": "imageframe"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=imagehitzone#cmd",
+        "text": "imagehitzone"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=imageparam#cmd",
+        "text": "imageparam"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=imagepos#cmd",
+        "text": "imagepos"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=imagescale#cmd",
+        "text": "imagescale"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=inentityzone#cmd",
+        "text": "inentityzone"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=item#cmd",
+        "text": "item"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=itemtype#cmd",
+        "text": "itemtype"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=map#cmd",
+        "text": "map"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=menu#cmd",
+        "text": "menu"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=msg#cmd",
+        "text": "msg"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=msg2#cmd",
+        "text": "msg2"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=object#cmd",
+        "text": "object"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=objectat#cmd",
+        "text": "objectat"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=objecttype#cmd",
+        "text": "objecttype"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=parse#cmd",
+        "text": "parse"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=player#cmd",
+        "text": "player"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=playerammo#cmd",
+        "text": "playerammo"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=playerweapons#cmd",
+        "text": "playerweapons"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=print#cmd",
+        "text": "print"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=projectile#cmd",
+        "text": "projectile"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=projectilelist#cmd",
+        "text": "projectilelist"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=randomentity#cmd",
+        "text": "randomentity"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=randomhostage#cmd",
+        "text": "randomhostage"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=removeallbinds#cmd",
+        "text": "removeallbinds"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=removebind#cmd",
+        "text": "removebind"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=reqcld#cmd",
+        "text": "reqcld"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=reqhttp#cmd",
+        "text": "reqhttp"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=setentityaistate#cmd",
+        "text": "setentityaistate"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=sethookstate#cmd",
+        "text": "sethookstate"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=stats#cmd",
+        "text": "stats"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=steamstats#cmd",
+        "text": "steamstats"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=tile#cmd",
+        "text": "tile"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=tileproperty#cmd",
+        "text": "tileproperty"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=timer#cmd",
+        "text": "timer"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=tween_alpha#cmd",
+        "text": "tween_alpha"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=tween_animate#cmd",
+        "text": "tween_animate"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=tween_color#cmd",
+        "text": "tween_color"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=tween_frame#cmd",
+        "text": "tween_frame"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=tween_move#cmd",
+        "text": "tween_move"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=tween_rotate#cmd",
+        "text": "tween_rotate"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=tween_rotateconstantly#cmd",
+        "text": "tween_rotateconstantly"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=tween_scale#cmd",
+        "text": "tween_scale"
+      },
+      {
+        "href": "help.php?luacat=all&luacmd=vars#cmd",
+        "text": "vars"
+      }
+    ],
+    "content": "Commands/LuaReference for console commands, Lua hooks and Lua commands in CS2D.\n\n\tConsole Commands are entered in console, executed with key-binds, cfg-files or with Lua parse\n\n\tLua Hooks execute Lua when events occur - some have a return value which can change the game behavior\n\n\tLua Commands are used to retrieve game data or to perform actions in Lua scripts\n\n  CS2D Console Commands\n\n\tALL\n\n\tScript\n\n\tControls\n\n\tSettings\n\n\tServer\n\n\tBots\n\n\tDebug\n\n\tSecurity\n\n  Lua Hooks\n\n\tALL\n\n\tBasic\n\n\tTime\n\n\tPlayer\n\n\tObject\n\n  Lua Commands\n\n\tALL\n\n\tBasic\n\n\tTimer\n\n\tImage\n\n\tGame\n\n\tMap\n\n\tTile\n\n\tPlayer\n\n\tItem\n\n\tEntity\n\n\tObject\n\n\tProjectile\n\n\tAI\n\nCategory: all (88)addbind\naddhook\nai_aim\nai_attack\nai_build\nai_buy\nai_debug\nai_drop\nai_findtarget\nai_freeline\nai_goto\nai_iattack\nai_move\nai_radio\nai_reload\nai_respawn\nai_rotate\nai_say\nai_sayteam\nai_selectweapon\nai_spray\nai_use\nchecksumfile\nchecksumstring\nclosehostage\ncloseitems\ncloseobjects\ncloseplayers\nentity\nentitylist\nfow_in\nfreehook\nfreeimage\nfreeline\nfreerect\nfreetimer\nfuncs\ngame\nhascloseplayers\nhostage\nimage\nimagealpha\nimageblend\nimagecolor\nimageframe\nimagehitzone\nimageparam\nimagepos\nimagescale\ninentityzone\nitem\nitemtype\nmap\nmenu\nmsg\nmsg2\nobject\nobjectat\nobjecttype\nparse\nplayer\nplayerammo\nplayerweapons\nprint\nprojectile\nprojectilelist\nrandomentity\nrandomhostage\nremoveallbinds\nremovebind\nreqcld\nreqhttp\nsetentityaistate\nsethookstate\nstats\nsteamstats\ntile\ntileproperty\ntimer\ntween_alpha\ntween_animate\ntween_color\ntween_frame\ntween_move\ntween_rotate\ntween_rotateconstantly\ntween_scale\nvars"
+  },
+  "entity_lua": {
+    "url": "https://www.cs2d.com/help.php?luacat=entity&luacmd=entity",
+    "links": [
+      {
+        "href": "?cat=all",
+        "text": "console commands"
+      },
+      {
+        "href": "?hookcat=all",
+        "text": "Lua hooks"
+      },
+      {
+        "href": "?luacat=all",
+        "text": "Lua commands"
+      },
+      {
+        "href": "?cat=all",
+        "text": "Console Commands"
+      },
+      {
+        "href": "?luacat=all&luacmd=parse#cmd",
+        "text": "parse"
+      },
+      {
+        "href": "?hookcat=all",
+        "text": "Lua Hooks"
+      },
+      {
+        "href": "?luacat=all",
+        "text": "Lua Commands"
+      },
+      {
+        "href": "help.php?cat=all",
+        "text": "ALL"
+      },
+      {
+        "href": "help.php?cat=script",
+        "text": "Script"
+      },
+      {
+        "href": "help.php?cat=controls",
+        "text": "Controls"
+      },
+      {
+        "href": "help.php?cat=settings",
+        "text": "Settings"
+      },
+      {
+        "href": "help.php?cat=server",
+        "text": "Server"
+      },
+      {
+        "href": "help.php?cat=bots",
+        "text": "Bots"
+      },
+      {
+        "href": "help.php?cat=debug",
+        "text": "Debug"
+      },
+      {
+        "href": "help.php?cat=security",
+        "text": "Security"
+      },
+      {
+        "href": "help.php?hookcat=all",
+        "text": "ALL"
+      },
+      {
+        "href": "help.php?hookcat=basic",
+        "text": "Basic"
+      },
+      {
+        "href": "help.php?hookcat=time",
+        "text": "Time"
+      },
+      {
+        "href": "help.php?hookcat=player",
+        "text": "Player"
+      },
+      {
+        "href": "help.php?hookcat=object",
+        "text": "Object"
+      },
+      {
+        "href": "help.php?luacat=all",
+        "text": "ALL"
+      },
+      {
+        "href": "help.php?luacat=basic",
+        "text": "Basic"
+      },
+      {
+        "href": "help.php?luacat=timer",
+        "text": "Timer"
+      },
+      {
+        "href": "help.php?luacat=image",
+        "text": "Image"
+      },
+      {
+        "href": "help.php?luacat=game",
+        "text": "Game"
+      },
+      {
+        "href": "help.php?luacat=map",
+        "text": "Map"
+      },
+      {
+        "href": "help.php?luacat=tile",
+        "text": "Tile"
+      },
+      {
+        "href": "help.php?luacat=player",
+        "text": "Player"
+      },
+      {
+        "href": "help.php?luacat=item",
+        "text": "Item"
+      },
+      {
+        "href": "help.php?luacat=entity",
+        "text": "Entity"
+      },
+      {
+        "href": "help.php?luacat=object",
+        "text": "Object"
+      },
+      {
+        "href": "help.php?luacat=projectile",
+        "text": "Projectile"
+      },
+      {
+        "href": "help.php?luacat=ai",
+        "text": "AI"
+      },
+      {
+        "href": "help.php?luacat=entity&luacmd=entity#cmd",
+        "text": "entity"
+      },
+      {
+        "href": "help.php?luacat=entity&luacmd=entitylist#cmd",
+        "text": "entitylist"
+      },
+      {
+        "href": "help.php?luacat=entity&luacmd=inentityzone#cmd",
+        "text": "inentityzone"
+      },
+      {
+        "href": "help.php?luacat=entity&luacmd=randomentity#cmd",
+        "text": "randomentity"
+      },
+      {
+        "href": "help.php?luacat=entity&luacmd=setentityaistate#cmd",
+        "text": "setentityaistate"
+      },
+      {
+        "href": "help.php?luacat=entity",
+        "text": "Entity"
+      },
+      {
+        "href": "https://disqus.com/?ref_noscript",
+        "text": "comments powered by Disqus."
+      }
+    ],
+    "content": "Commands/LuaReference for console commands, Lua hooks and Lua commands in CS2D.\n\n\tConsole Commands are entered in console, executed with key-binds, cfg-files or with Lua parse\n\n\tLua Hooks execute Lua when events occur - some have a return value which can change the game behavior\n\n\tLua Commands are used to retrieve game data or to perform actions in Lua scripts\n\n  CS2D Console Commands\n\n\tALL\n\n\tScript\n\n\tControls\n\n\tSettings\n\n\tServer\n\n\tBots\n\n\tDebug\n\n\tSecurity\n\n  Lua Hooks\n\n\tALL\n\n\tBasic\n\n\tTime\n\n\tPlayer\n\n\tObject\n\n  Lua Commands\n\n\tALL\n\n\tBasic\n\n\tTimer\n\n\tImage\n\n\tGame\n\n\tMap\n\n\tTile\n\n\tPlayer\n\n\tItem\n\n\tEntity\n\n\tObject\n\n\tProjectile\n\n\tAI\n\nCategory: entity (5)entity\nentitylist\ninentityzone\nrandomentity\nsetentityaistate\n  entityCategories EntityParameters x \n y \n \"value\" \nInfoReturns a value of an entity at the tile position (X|Y):\n\nexists: boolean, true if there is an entity at this position, false otherwise\n\ntypename: name of that entity type\n\ntype: internal type ID for that entity\n\nname: name entered in the name field of that entity\n\ntrigger: value(s) entered in the trigger field of that entity\n\nstate: boolean, false if visible/on (default), true otherwise (true/false is not used as expected here! Attention!)\n\nint0 - int9: internal integer for settings/states\n\nstr0 - str9: internal string for settings/states\n\naistate: AI state for AI scripting, can be set with \"setentityaistate\"\n\nNote: int0-9 and str0-9 are used for entity settings/states and are different for each entity type! Most entity types do not use all of these variables!\n\nNote: There is no entity(0,\"table\") as it is common for comparable commands! Use the command \"entitylist\" instead!\n\nAttention: Env_Decal entities are NOT accessible with this command.\n\t\n\t\n\t\tvar disqus_config = function () {\n\t\tthis.page.url = 'http://www.cs2d.com/help.php?luacmd=entity';\n\t\tthis.page.identifier = 'help-luacmd-entity';\n\t\tthis.page.title='CS2D Lua Command: entity';\n\t};\n\t(function() {\n\t\tvar d = document, s = d.createElement('script');\n\t\ts.src = 'https://cs2d.disqus.com/embed.js';\n\t\ts.setAttribute('data-timestamp', +new Date());\n\t\t(d.head || d.body).appendChild(s);\n\t})();\n\t\n\tPlease enable JavaScript to view the comments powered by Disqus."
+  },
+  "weapons": {
+    "url": "https://www.cs2d.com/weapons.php",
+    "links": [
+      {
+        "href": "?slot=-1",
+        "text": "ALL"
+      },
+      {
+        "href": "?slot=1",
+        "text": "Primary"
+      },
+      {
+        "href": "?slot=2",
+        "text": "Secondary"
+      },
+      {
+        "href": "?slot=3",
+        "text": "Melee"
+      },
+      {
+        "href": "?slot=4",
+        "text": "Grenades"
+      },
+      {
+        "href": "?slot=5",
+        "text": "Explosives"
+      },
+      {
+        "href": "?slot=0",
+        "text": "Other"
+      },
+      {
+        "href": "?slot=-1#item1",
+        "text": "1 - USP"
+      },
+      {
+        "href": "?slot=-1#item2",
+        "text": "2 - Glock"
+      },
+      {
+        "href": "?slot=-1#item3",
+        "text": "3 - Deagle"
+      },
+      {
+        "href": "?slot=-1#item4",
+        "text": "4 - P228"
+      },
+      {
+        "href": "?slot=-1#item5",
+        "text": "5 - Elite"
+      },
+      {
+        "href": "?slot=-1#item6",
+        "text": "6 - Five-Seven"
+      },
+      {
+        "href": "?slot=-1#item10",
+        "text": "10 - M3"
+      },
+      {
+        "href": "?slot=-1#item11",
+        "text": "11 - XM1014"
+      },
+      {
+        "href": "?slot=-1#item20",
+        "text": "20 - MP5"
+      },
+      {
+        "href": "?slot=-1#item21",
+        "text": "21 - TMP"
+      },
+      {
+        "href": "?slot=-1#item22",
+        "text": "22 - P90"
+      },
+      {
+        "href": "?slot=-1#item23",
+        "text": "23 - Mac 10"
+      },
+      {
+        "href": "?slot=-1#item24",
+        "text": "24 - UMP45"
+      },
+      {
+        "href": "?slot=-1#item30",
+        "text": "30 - AK-47"
+      },
+      {
+        "href": "?slot=-1#item31",
+        "text": "31 - SG552"
+      },
+      {
+        "href": "?slot=-1#item32",
+        "text": "32 - M4A1"
+      },
+      {
+        "href": "?slot=-1#item33",
+        "text": "33 - Aug"
+      },
+      {
+        "href": "?slot=-1#item34",
+        "text": "34 - Scout"
+      },
+      {
+        "href": "?slot=-1#item35",
+        "text": "35 - AWP"
+      },
+      {
+        "href": "?slot=-1#item36",
+        "text": "36 - G3SG1"
+      },
+      {
+        "href": "?slot=-1#item37",
+        "text": "37 - SG550"
+      },
+      {
+        "href": "?slot=-1#item38",
+        "text": "38 - Galil"
+      },
+      {
+        "href": "?slot=-1#item39",
+        "text": "39 - Famas"
+      },
+      {
+        "href": "?slot=-1#item40",
+        "text": "40 - M249"
+      },
+      {
+        "href": "?slot=-1#item41",
+        "text": "41 - Tactical Shield"
+      },
+      {
+        "href": "?slot=-1#item45",
+        "text": "45 - Laser"
+      },
+      {
+        "href": "?slot=-1#item46",
+        "text": "46 - Flamethrower"
+      },
+      {
+        "href": "?slot=-1#item47",
+        "text": "47 - RPG Launcher"
+      },
+      {
+        "href": "?slot=-1#item48",
+        "text": "48 - Rocket Launcher"
+      },
+      {
+        "href": "?slot=-1#item49",
+        "text": "49 - Grenade Launcher"
+      },
+      {
+        "href": "?slot=-1#item50",
+        "text": "50 - Knife"
+      },
+      {
+        "href": "?slot=-1#item51",
+        "text": "51 - HE"
+      },
+      {
+        "href": "?slot=-1#item52",
+        "text": "52 - Flashbang"
+      },
+      {
+        "href": "?slot=-1#item53",
+        "text": "53 - Smoke Grenade"
+      },
+      {
+        "href": "?slot=-1#item54",
+        "text": "54 - Flare"
+      },
+      {
+        "href": "?slot=-1#item55",
+        "text": "55 - Bomb"
+      },
+      {
+        "href": "?slot=-1#item56",
+        "text": "56 - Defuse Kit"
+      },
+      {
+        "href": "?slot=-1#item57",
+        "text": "57 - Kevlar"
+      },
+      {
+        "href": "?slot=-1#item58",
+        "text": "58 - Kevlar+Helm"
+      },
+      {
+        "href": "?slot=-1#item59",
+        "text": "59 - Night Vision"
+      },
+      {
+        "href": "?slot=-1#item60",
+        "text": "60 - Gas Mask"
+      },
+      {
+        "href": "?slot=-1#item61",
+        "text": "61 - Primary Ammo"
+      },
+      {
+        "href": "?slot=-1#item62",
+        "text": "62 - Secondary Ammo"
+      },
+      {
+        "href": "?slot=-1#item63",
+        "text": "63 - Planted Bomb"
+      },
+      {
+        "href": "?slot=-1#item64",
+        "text": "64 - Medikit"
+      },
+      {
+        "href": "?slot=-1#item65",
+        "text": "65 - Bandage"
+      },
+      {
+        "href": "?slot=-1#item66",
+        "text": "66 - Coins"
+      },
+      {
+        "href": "?slot=-1#item67",
+        "text": "67 - Money"
+      },
+      {
+        "href": "?slot=-1#item68",
+        "text": "68 - Gold"
+      },
+      {
+        "href": "?slot=-1#item69",
+        "text": "69 - Machete"
+      },
+      {
+        "href": "?slot=-1#item70",
+        "text": "70 - Red Flag"
+      },
+      {
+        "href": "?slot=-1#item71",
+        "text": "71 - Blue Flag"
+      },
+      {
+        "href": "?slot=-1#item72",
+        "text": "72 - Gas Grenade"
+      },
+      {
+        "href": "?slot=-1#item73",
+        "text": "73 - Molotov Cocktail"
+      },
+      {
+        "href": "?slot=-1#item74",
+        "text": "74 - Wrench"
+      },
+      {
+        "href": "?slot=-1#item75",
+        "text": "75 - Snowball"
+      },
+      {
+        "href": "?slot=-1#item76",
+        "text": "76 - Air Strike"
+      },
+      {
+        "href": "?slot=-1#item77",
+        "text": "77 - Mine"
+      },
+      {
+        "href": "?slot=-1#item78",
+        "text": "78 - Claw"
+      },
+      {
+        "href": "?slot=-1#item79",
+        "text": "79 - Light Armor"
+      },
+      {
+        "href": "?slot=-1#item80",
+        "text": "80 - Armor"
+      },
+      {
+        "href": "?slot=-1#item81",
+        "text": "81 - Heavy Armor"
+      },
+      {
+        "href": "?slot=-1#item82",
+        "text": "82 - Medic Armor"
+      },
+      {
+        "href": "?slot=-1#item83",
+        "text": "83 - Super Armor"
+      },
+      {
+        "href": "?slot=-1#item84",
+        "text": "84 - Stealth Suit"
+      },
+      {
+        "href": "?slot=-1#item85",
+        "text": "85 - Chainsaw"
+      },
+      {
+        "href": "?slot=-1#item86",
+        "text": "86 - Gut Bomb"
+      },
+      {
+        "href": "?slot=-1#item87",
+        "text": "87 - Laser Mine"
+      },
+      {
+        "href": "?slot=-1#item88",
+        "text": "88 - Portal Gun"
+      },
+      {
+        "href": "?slot=-1#item89",
+        "text": "89 - Satchel Charge"
+      },
+      {
+        "href": "?slot=-1#item90",
+        "text": "90 - M134"
+      },
+      {
+        "href": "?slot=-1#item91",
+        "text": "91 - FN F2000"
+      },
+      {
+        "href": "#item1",
+        "text": "1 - USP"
+      },
+      {
+        "href": "#item2",
+        "text": "2 - Glock"
+      },
+      {
+        "href": "#item3",
+        "text": "3 - Deagle"
+      },
+      {
+        "href": "#item4",
+        "text": "4 - P228"
+      },
+      {
+        "href": "#item5",
+        "text": "5 - Elite"
+      },
+      {
+        "href": "#item6",
+        "text": "6 - Five-Seven"
+      },
+      {
+        "href": "#item10",
+        "text": "10 - M3"
+      },
+      {
+        "href": "#item11",
+        "text": "11 - XM1014"
+      },
+      {
+        "href": "#item20",
+        "text": "20 - MP5"
+      },
+      {
+        "href": "#item21",
+        "text": "21 - TMP"
+      },
+      {
+        "href": "#item22",
+        "text": "22 - P90"
+      },
+      {
+        "href": "#item23",
+        "text": "23 - Mac 10"
+      },
+      {
+        "href": "#item24",
+        "text": "24 - UMP45"
+      },
+      {
+        "href": "#item30",
+        "text": "30 - AK-47"
+      },
+      {
+        "href": "#item31",
+        "text": "31 - SG552"
+      },
+      {
+        "href": "#item32",
+        "text": "32 - M4A1"
+      },
+      {
+        "href": "#item33",
+        "text": "33 - Aug"
+      },
+      {
+        "href": "#item34",
+        "text": "34 - Scout"
+      },
+      {
+        "href": "#item35",
+        "text": "35 - AWP"
+      },
+      {
+        "href": "#item36",
+        "text": "36 - G3SG1"
+      },
+      {
+        "href": "#item37",
+        "text": "37 - SG550"
+      },
+      {
+        "href": "#item38",
+        "text": "38 - Galil"
+      },
+      {
+        "href": "#item39",
+        "text": "39 - Famas"
+      },
+      {
+        "href": "#item40",
+        "text": "40 - M249"
+      },
+      {
+        "href": "#item41",
+        "text": "41 - Tactical Shield"
+      },
+      {
+        "href": "#item45",
+        "text": "45 - Laser"
+      },
+      {
+        "href": "#item46",
+        "text": "46 - Flamethrower"
+      },
+      {
+        "href": "#item47",
+        "text": "47 - RPG Launcher"
+      },
+      {
+        "href": "#item48",
+        "text": "48 - Rocket Launcher"
+      },
+      {
+        "href": "#item49",
+        "text": "49 - Grenade Launcher"
+      },
+      {
+        "href": "#item50",
+        "text": "50 - Knife"
+      },
+      {
+        "href": "#item51",
+        "text": "51 - HE"
+      },
+      {
+        "href": "#item52",
+        "text": "52 - Flashbang"
+      },
+      {
+        "href": "#item53",
+        "text": "53 - Smoke Grenade"
+      },
+      {
+        "href": "#item54",
+        "text": "54 - Flare"
+      },
+      {
+        "href": "#item55",
+        "text": "55 - Bomb"
+      },
+      {
+        "href": "#item56",
+        "text": "56 - Defuse Kit"
+      },
+      {
+        "href": "#item57",
+        "text": "57 - Kevlar"
+      },
+      {
+        "href": "#item58",
+        "text": "58 - Kevlar+Helm"
+      },
+      {
+        "href": "#item59",
+        "text": "59 - Night Vision"
+      },
+      {
+        "href": "#item60",
+        "text": "60 - Gas Mask"
+      },
+      {
+        "href": "#item61",
+        "text": "61 - Primary Ammo"
+      },
+      {
+        "href": "#item62",
+        "text": "62 - Secondary Ammo"
+      },
+      {
+        "href": "#item63",
+        "text": "63 - Planted Bomb"
+      },
+      {
+        "href": "#item64",
+        "text": "64 - Medikit"
+      },
+      {
+        "href": "#item65",
+        "text": "65 - Bandage"
+      },
+      {
+        "href": "#item66",
+        "text": "66 - Coins"
+      },
+      {
+        "href": "#item67",
+        "text": "67 - Money"
+      },
+      {
+        "href": "#item68",
+        "text": "68 - Gold"
+      },
+      {
+        "href": "#item69",
+        "text": "69 - Machete"
+      },
+      {
+        "href": "#item70",
+        "text": "70 - Red Flag"
+      },
+      {
+        "href": "#item71",
+        "text": "71 - Blue Flag"
+      },
+      {
+        "href": "#item72",
+        "text": "72 - Gas Grenade"
+      },
+      {
+        "href": "#item73",
+        "text": "73 - Molotov Cocktail"
+      },
+      {
+        "href": "#item74",
+        "text": "74 - Wrench"
+      },
+      {
+        "href": "#item75",
+        "text": "75 - Snowball"
+      },
+      {
+        "href": "#item76",
+        "text": "76 - Air Strike"
+      },
+      {
+        "href": "#item77",
+        "text": "77 - Mine"
+      },
+      {
+        "href": "#item78",
+        "text": "78 - Claw"
+      },
+      {
+        "href": "#item79",
+        "text": "79 - Light Armor"
+      },
+      {
+        "href": "#item80",
+        "text": "80 - Armor"
+      },
+      {
+        "href": "#item81",
+        "text": "81 - Heavy Armor"
+      },
+      {
+        "href": "#item82",
+        "text": "82 - Medic Armor"
+      },
+      {
+        "href": "#item83",
+        "text": "83 - Super Armor"
+      },
+      {
+        "href": "#item84",
+        "text": "84 - Stealth Suit"
+      },
+      {
+        "href": "#item85",
+        "text": "85 - Chainsaw"
+      },
+      {
+        "href": "#item86",
+        "text": "86 - Gut Bomb"
+      },
+      {
+        "href": "#item87",
+        "text": "87 - Laser Mine"
+      },
+      {
+        "href": "#item88",
+        "text": "88 - Portal Gun"
+      },
+      {
+        "href": "#item89",
+        "text": "89 - Satchel Charge"
+      },
+      {
+        "href": "#item90",
+        "text": "90 - M134"
+      },
+      {
+        "href": "#item91",
+        "text": "91 - FN F2000"
+      }
+    ],
+    "content": "Weapons & Items           \n    \n        This is a list of all weapons and items in CS2D!\n    \n\n            \n    \n        ALL\n\n        Primary\n\n        Secondary\n\n        Melee\n\n        Grenades\n\n        Explosives\n\n        Other\n\n    \n\nCategory: ALL (72)1 - USP\n2 - Glock\n3 - Deagle\n4 - P228\n5 - Elite\n6 - Five-Seven\n10 - M3\n11 - XM1014\n20 - MP5\n21 - TMP\n22 - P90\n23 - Mac 10\n24 - UMP45\n30 - AK-47\n31 - SG552\n32 - M4A1\n33 - Aug\n34 - Scout\n35 - AWP\n36 - G3SG1\n37 - SG550\n38 - Galil\n39 - Famas\n40 - M249\n41 - Tactical Shield\n45 - Laser\n46 - Flamethrower\n47 - RPG Launcher\n48 - Rocket Launcher\n49 - Grenade Launcher\n50 - Knife\n51 - HE\n52 - Flashbang\n53 - Smoke Grenade\n54 - Flare\n55 - Bomb\n56 - Defuse Kit\n57 - Kevlar\n58 - Kevlar+Helm\n59 - Night Vision\n60 - Gas Mask\n61 - Primary Ammo\n62 - Secondary Ammo\n63 - Planted Bomb\n64 - Medikit\n65 - Bandage\n66 - Coins\n67 - Money\n68 - Gold\n69 - Machete\n70 - Red Flag\n71 - Blue Flag\n72 - Gas Grenade\n73 - Molotov Cocktail\n74 - Wrench\n75 - Snowball\n76 - Air Strike\n77 - Mine\n78 - Claw\n79 - Light Armor\n80 - Armor\n81 - Heavy Armor\n82 - Medic Armor\n83 - Super Armor\n84 - Stealth Suit\n85 - Chainsaw\n86 - Gut Bomb\n87 - Laser Mine\n88 - Portal Gun\n89 - Satchel Charge\n90 - M134\n91 - FN F2000\n 1 - USPCategorySecondary (Slot: 2, Sub: 0)\nPrice500$\nDamage24\nAmmo12 | 100\nRate of Fire166 RPM (FD: 9)\nRangeMedium (300)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s120 (5 x 24)\nDPS Ø133.333 (5.556 x 24)\n 2 - GlockCategorySecondary (Slot: 2, Sub: 0)\nPrice400$\nDamage21\nAmmo20 | 120\nRate of Fire166 RPM (FD: 9)\nRangeMedium (250)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s105 (5 x 21)\nDPS Ø116.667 (5.556 x 21)\n 3 - DeagleCategorySecondary (Slot: 2, Sub: 0)\nPrice650$\nDamage34\nAmmo7 | 35\nRate of Fire100 RPM (FD: 15)\nRangeMedium (300)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s102 (3 x 34)\nDPS Ø113.333 (3.333 x 34)\n 4 - P228CategorySecondary (Slot: 2, Sub: 0)\nPrice600$\nDamage22\nAmmo13 | 53\nRate of Fire166 RPM (FD: 9)\nRangeMedium (300)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s110 (5 x 22)\nDPS Ø122.222 (5.556 x 22)\n 5 - EliteCategorySecondary (Slot: 2, Sub: 0)\nPrice1000$\nDamage22\nAmmo15 | 120\nRate of Fire187 RPM (FD: 8)\nRangeMedium (300)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s132 (6 x 22)\nDPS Ø137.5 (6.25 x 22)\n 6 - Five-SevenCategorySecondary (Slot: 2, Sub: 0)\nPrice750$\nDamage21\nAmmo20 | 100\nRate of Fire214 RPM (FD: 7)\nRangeMedium (300)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s147 (7 x 21)\nDPS Ø150 (7.143 x 21)\n 10 - M3CategoryPrimary (Slot: 1, Sub: 0)\nPrice1700$\nDamage26 * 5 = 130 max\nAmmo8 | 32\nRate of Fire75 RPM (FD: 20)\nRangeShort (50)\nWeightNormal (SpdM: 0)\nAccuracyHorrible (V: 10)\nDPS 1s260 (2 x 130)\nDPS Ø325 (2.5 x 130)\n 11 - XM1014CategoryPrimary (Slot: 1, Sub: 0)\nPrice3000$\nDamage22 * 5 = 110 max\nAmmo7 | 32\nRate of Fire125 RPM (FD: 12)\nRangeShort (50)\nWeightNormal (SpdM: 0)\nAccuracyHorrible (V: 10)\nDPS 1s440 (4 x 110)\nDPS Ø458.333 (4.167 x 110)\n 20 - MP5CategoryPrimary (Slot: 1, Sub: 0)\nPrice1500$\nDamage13\nAmmo30 | 120\nRate of Fire500 RPM (FD: 3)\nRangeMedium (300)\nWeightNormal (SpdM: 0)\nAccuracyAverage (V: 2)\nDPS 1s208 (16 x 13)\nDPS Ø216.667 (16.667 x 13)\n 21 - TMPCategoryPrimary (Slot: 1, Sub: 0)\nPrice1250$\nDamage9\nAmmo30 | 120\nRate of Fire750 RPM (FD: 2)\nRangeShort (100)\nWeightLight (SpdM: 0.35)\nAccuracyBad (V: 4)\nDPS 1s225 (25 x 9)\nDPS Ø225 (25 x 9)\n 22 - P90CategoryPrimary (Slot: 1, Sub: 0)\nPrice2350$\nDamage11\nAmmo50 | 100\nRate of Fire750 RPM (FD: 2)\nRangeMedium (300)\nWeightNormal (SpdM: 0)\nAccuracyAverage (V: 3)\nDPS 1s275 (25 x 11)\nDPS Ø275 (25 x 11)\n 23 - Mac 10CategoryPrimary (Slot: 1, Sub: 0)\nPrice1400$\nDamage9\nAmmo30 | 90\nRate of Fire750 RPM (FD: 2)\nRangeShort (100)\nWeightLight (SpdM: 0.35)\nAccuracyBad (V: 4)\nDPS 1s225 (25 x 9)\nDPS Ø225 (25 x 9)\n 24 - UMP45CategoryPrimary (Slot: 1, Sub: 0)\nPrice1700$\nDamage15\nAmmo25 | 90\nRate of Fire375 RPM (FD: 4)\nRangeMedium (300)\nWeightNormal (SpdM: 0)\nAccuracyAverage (V: 3)\nDPS 1s180 (12 x 15)\nDPS Ø187.5 (12.5 x 15)\n 30 - AK-47CategoryPrimary (Slot: 1, Sub: 0)\nPrice2500$\nDamage22\nAmmo30 | 90\nRate of Fire500 RPM (FD: 3)\nRangeMedium (300)\nWeightNormal (SpdM: 0)\nAccuracyAverage (V: 3)\nDPS 1s352 (16 x 22)\nDPS Ø366.667 (16.667 x 22)\n 31 - SG552CategoryPrimary (Slot: 1, Sub: 0)\nPrice3500$\nDamage24 (Zoom 1: 35)\nAmmo30 | 90\nRate of Fire375 RPM (FD: 4)\nRangeFar (325)\nWeightNormal (SpdM: 0)\nAccuracyPerfect (V: 0)\nDPS 1s288 (12 x 24)\nDPS Ø300 (12.5 x 24)\n 32 - M4A1CategoryPrimary (Slot: 1, Sub: 0)\nPrice3100$\nDamage22\nAmmo30 | 90\nRate of Fire500 RPM (FD: 3)\nRangeMedium (300)\nWeightNormal (SpdM: 0)\nAccuracyAverage (V: 2)\nDPS 1s352 (16 x 22)\nDPS Ø366.667 (16.667 x 22)\n 33 - AugCategoryPrimary (Slot: 1, Sub: 0)\nPrice3500$\nDamage24 (Zoom 1: 35)\nAmmo30 | 90\nRate of Fire375 RPM (FD: 4)\nRangeFar (325)\nWeightNormal (SpdM: 0)\nAccuracyPerfect (V: 0)\nDPS 1s288 (12 x 24)\nDPS Ø300 (12.5 x 24)\n 34 - ScoutCategoryPrimary (Slot: 1, Sub: 0)\nPrice2750$\nDamage45 (Zoom 1: 50, Zoom 2: 100)\nAmmo10 | 60\nRate of Fire75 RPM (FD: 20)\nRangeFar (350)\nWeightLight (SpdM: 0.1)\nAccuracyPerfect (V: 0)\nDPS 1s90 (2 x 45)\nDPS Ø112.5 (2.5 x 45)\n 35 - AWPCategoryPrimary (Slot: 1, Sub: 0)\nPrice4750$\nDamage50 (Zoom 1: 65, Zoom 2: 150)\nAmmo10 | 30\nRate of Fire23 RPM (FD: 65)\nRangeFar (400)\nWeightHeavy (SpdM: -0.5)\nAccuracyPerfect (V: 0)\nDPS 1s50 (1 x 50)\nDPS Ø38.462 (0.769 x 50)\n 36 - G3SG1CategoryPrimary (Slot: 1, Sub: 0)\nPrice5000$\nDamage32 (Zoom 1: 37, Zoom 2: 45)\nAmmo20 | 60\nRate of Fire250 RPM (FD: 6)\nRangeFar (350)\nWeightHeavy (SpdM: -0.3)\nAccuracyGood (V: 1)\nDPS 1s256 (8 x 32)\nDPS Ø266.667 (8.333 x 32)\n 37 - SG550CategoryPrimary (Slot: 1, Sub: 0)\nPrice4200$\nDamage30 (Zoom 1: 35, Zoom 2: 40)\nAmmo30 | 90\nRate of Fire250 RPM (FD: 6)\nRangeFar (350)\nWeightHeavy (SpdM: -0.3)\nAccuracyGood (V: 1)\nDPS 1s240 (8 x 30)\nDPS Ø250 (8.333 x 30)\n 38 - GalilCategoryPrimary (Slot: 1, Sub: 0)\nPrice2000$\nDamage13\nAmmo35 | 90\nRate of Fire500 RPM (FD: 3)\nRangeMedium (300)\nWeightNormal (SpdM: 0)\nAccuracyGood (V: 1)\nDPS 1s208 (16 x 13)\nDPS Ø216.667 (16.667 x 13)\n 39 - FamasCategoryPrimary (Slot: 1, Sub: 0)\nPrice2250$\nDamage14\nAmmo25 | 90\nRate of Fire500 RPM (FD: 3)\nRangeMedium (300)\nWeightNormal (SpdM: 0)\nAccuracyGood (V: 1)\nDPS 1s224 (16 x 14)\nDPS Ø233.333 (16.667 x 14)\n 40 - M249CategoryPrimary (Slot: 1, Sub: 0)\nPrice5750$\nDamage15\nAmmo100 | 200\nRate of Fire750 RPM (FD: 2)\nRangeMedium (300)\nWeightHeavy (SpdM: -0.5)\nAccuracyHorrible (V: 8)\nDPS 1s375 (25 x 15)\nDPS Ø375 (25 x 15)\n 41 - Tactical ShieldCategoryPrimary (Slot: 1, Sub: 0)\nPrice1000$\nDamage0\nAmmo0 | 0\nRate of Fire0 (0 frame(s) delay)\nRange Very Short (0)\nWeightHeavy (SpdM: -0.2)\nAccuracyPerfect (V: 0)\n 45 - LaserCategoryPrimary (Slot: 1, Sub: 0)\nPrice6500$\nDamage1000\nAmmo15 | 45\nRate of Fire50 RPM (FD: 30)\nRangeFar (1000)\nWeightHeavy (SpdM: -0.3)\nAccuracyPerfect (V: 0)\nDPS 1s1000 (1 x 1000)\nDPS Ø1666.667 (1.667 x 1000)\n 46 - FlamethrowerCategoryPrimary (Slot: 1, Sub: 0)\nPrice3200$\nDamage30\nAmmo100 | 200\nRate of Fire500 RPM (FD: 3)\nRangeShort (55)\nWeightHeavy (SpdM: -0.1)\nAccuracyPerfect (V: 0)\nDPS 1s480 (16 x 30)\nDPS Ø500 (16.667 x 30)\n 47 - RPG LauncherCategoryPrimary (Slot: 1, Sub: 0)\nPrice4000$\nDamage325\nAmmo1 | 2\nRate of Fire30 RPM (FD: 50)\nRangeFar (700)\nWeightHeavy (SpdM: -0.1)\nAccuracyPerfect (V: 0)\nDPS 1s325 (1 x 325)\nDPS Ø325 (1 x 325)\n 48 - Rocket LauncherCategoryPrimary (Slot: 1, Sub: 0)\nPrice5500$\nDamage70\nAmmo20 | 60\nRate of Fire75 RPM (FD: 20)\nRangeFar (700)\nWeightHeavy (SpdM: -0.1)\nAccuracyPerfect (V: 0)\nDPS 1s140 (2 x 70)\nDPS Ø175 (2.5 x 70)\n 49 - Grenade LauncherCategoryPrimary (Slot: 1, Sub: 0)\nPrice5500$\nDamage75\nAmmo20 | 60\nRate of Fire75 RPM (FD: 20)\nRangeFar (320)\nWeightHeavy (SpdM: -0.1)\nAccuracyPerfect (V: 0)\nDPS 1s150 (2 x 75)\nDPS Ø187.5 (2.5 x 75)\n 50 - KnifeCategoryMelee (Slot: 3, Sub: 0)\nPrice0$ (not buyable)\nDamage45 (Secondary: 90)\nAmmo0 | 0\nRate of Fire187 RPM (FD: 8)\nRange Very Short (7)\nWeightLight (SpdM: 0.75)\nAccuracyPerfect (V: 0)\nDPS 1s270 (6 x 45)\nDPS Ø281.25 (6.25 x 45)\n 51 - HECategoryGrenades (Slot: 4, Sub: 0)\nPrice300$\nDamage105\nAmmo1 | 0\nRate of Fire150 RPM (FD: 10)\nRangeFar (320)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s525 (5 x 105)\nDPS Ø525 (5 x 105)\n 52 - FlashbangCategoryGrenades (Slot: 4, Sub: 1)\nPrice200$\nDamage0\nAmmo2 | 0\nRate of Fire150 RPM (FD: 10)\nRangeFar (320)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\n 53 - Smoke GrenadeCategoryGrenades (Slot: 4, Sub: 2)\nPrice300$\nDamage0\nAmmo1 | 0\nRate of Fire150 RPM (FD: 10)\nRangeFar (320)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\n 54 - FlareCategoryGrenades (Slot: 4, Sub: 3)\nPrice150$\nDamage0\nAmmo1 | 0\nRate of Fire150 RPM (FD: 10)\nRangeFar (320)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\n 55 - BombCategoryExplosives (Slot: 5, Sub: 0)\nPrice0$ (not buyable)\nDamage0\nAmmo0 | 0\nRate of Fire0 (0 frame(s) delay)\nRange Very Short (0)\nWeightLight (SpdM: 0.3)\nAccuracyPerfect (V: 0)\n 56 - Defuse KitCategoryOther (No Slot)\nPrice200$\nWeightNormal (SpdM: 0)\n 57 - KevlarCategoryOther (No Slot)\nPrice650$\nWeightNormal (SpdM: 0)\n 58 - Kevlar+HelmCategoryOther (No Slot)\nPrice1000$\nWeightNormal (SpdM: 0)\n 59 - Night VisionCategoryOther (No Slot)\nPrice1250$\nWeightNormal (SpdM: 0)\n 60 - Gas MaskCategoryOther (No Slot)\nPrice250$\nWeightNormal (SpdM: 0)\n 61 - Primary AmmoCategoryOther (No Slot)\nPrice50$\nWeightNormal (SpdM: 0)\n 62 - Secondary AmmoCategoryOther (No Slot)\nPrice50$\nWeightNormal (SpdM: 0)\n 63 - Planted BombCategoryOther (No Slot)\nPrice0$ (not buyable)\nWeightNormal (SpdM: 0)\n 64 - MedikitCategoryOther (No Slot)\nPrice0$ (not buyable)\nWeightNormal (SpdM: 0)\n 65 - BandageCategoryOther (No Slot)\nPrice0$ (not buyable)\nWeightNormal (SpdM: 0)\n 66 - CoinsCategoryOther (No Slot)\nPrice0$ (not buyable)\nWeightNormal (SpdM: 0)\n 67 - MoneyCategoryOther (No Slot)\nPrice0$ (not buyable)\nWeightNormal (SpdM: 0)\n 68 - GoldCategoryOther (No Slot)\nPrice0$ (not buyable)\nWeightNormal (SpdM: 0)\n 69 - MacheteCategoryMelee (Slot: 3, Sub: 0)\nPrice0$ (not buyable)\nDamage175\nAmmo0 | 0\nRate of Fire107 RPM (FD: 14)\nRange Very Short (12)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s525 (3 x 175)\nDPS Ø625 (3.571 x 175)\n 70 - Red FlagCategoryOther (No Slot)\nPrice0$ (not buyable)\nWeightNormal (SpdM: 0)\n 71 - Blue FlagCategoryOther (No Slot)\nPrice0$ (not buyable)\nWeightNormal (SpdM: 0)\n 72 - Gas GrenadeCategoryGrenades (Slot: 4, Sub: 4)\nPrice300$\nDamage9\nAmmo1 | 0\nRate of Fire150 RPM (FD: 10)\nRangeFar (320)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s45 (5 x 9)\nDPS Ø45 (5 x 9)\n 73 - Molotov CocktailCategoryGrenades (Slot: 4, Sub: 5)\nPrice300$\nDamage4\nAmmo1 | 0\nRate of Fire150 RPM (FD: 10)\nRangeFar (320)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s20 (5 x 4)\nDPS Ø20 (5 x 4)\n 74 - WrenchCategoryMelee (Slot: 3, Sub: 0)\nPrice0$ (not buyable)\nDamage30\nAmmo0 | 0\nRate of Fire150 RPM (FD: 10)\nRange Very Short (7)\nWeightLight (SpdM: 0.75)\nAccuracyPerfect (V: 0)\nDPS 1s150 (5 x 30)\nDPS Ø150 (5 x 30)\n 75 - SnowballCategoryGrenades (Slot: 4, Sub: 6)\nPrice50$\nDamage35\nAmmo10 | 0\nRate of Fire150 RPM (FD: 10)\nRangeFar (320)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s175 (5 x 35)\nDPS Ø175 (5 x 35)\n 76 - Air StrikeCategoryGrenades (Slot: 4, Sub: 7)\nPrice500$\nDamage1500\nAmmo1 | 0\nRate of Fire150 RPM (FD: 10)\nRangeFar (320)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s7500 (5 x 1500)\nDPS Ø7500 (5 x 1500)\n 77 - MineCategoryExplosives (Slot: 5, Sub: 8)\nPrice400$\nDamage150\nAmmo3 | 0\nRate of Fire150 RPM (FD: 10)\nRangeMedium (120)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s750 (5 x 150)\nDPS Ø750 (5 x 150)\n 78 - ClawCategoryMelee (Slot: 3, Sub: 0)\nPrice0$ (not buyable)\nDamage50 (Secondary: 90)\nAmmo0 | 0\nRate of Fire125 RPM (FD: 12)\nRange Very Short (9)\nWeightLight (SpdM: 0.55)\nAccuracyPerfect (V: 0)\nDPS 1s200 (4 x 50)\nDPS Ø208.333 (4.167 x 50)\n 79 - Light ArmorCategoryOther (No Slot)\nPrice0$ (not buyable)\nWeightNormal (SpdM: 0)\n 80 - ArmorCategoryOther (No Slot)\nPrice0$ (not buyable)\nWeightNormal (SpdM: 0)\n 81 - Heavy ArmorCategoryOther (No Slot)\nPrice0$ (not buyable)\nWeightNormal (SpdM: 0)\n 82 - Medic ArmorCategoryOther (No Slot)\nPrice0$ (not buyable)\nWeightNormal (SpdM: 0)\n 83 - Super ArmorCategoryOther (No Slot)\nPrice0$ (not buyable)\nWeightNormal (SpdM: 0)\n 84 - Stealth SuitCategoryOther (No Slot)\nPrice0$ (not buyable)\nWeightNormal (SpdM: 0)\n 85 - ChainsawCategoryMelee (Slot: 3, Sub: 0)\nPrice0$ (not buyable)\nDamage60\nAmmo0 | 0\nRate of Fire500 RPM (FD: 3)\nRange Very Short (12)\nWeightHeavy (SpdM: -0.2)\nAccuracyPerfect (V: 0)\nDPS 1s960 (16 x 60)\nDPS Ø1000 (16.667 x 60)\n 86 - Gut BombCategoryGrenades (Slot: 4, Sub: 0)\nPrice150$\nDamage50\nAmmo1 | 0\nRate of Fire150 RPM (FD: 10)\nRangeFar (320)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s250 (5 x 50)\nDPS Ø250 (5 x 50)\n 87 - Laser MineCategoryExplosives (Slot: 5, Sub: 9)\nPrice400$\nDamage150\nAmmo3 | 0\nRate of Fire150 RPM (FD: 10)\nRangeMedium (200)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s750 (5 x 150)\nDPS Ø750 (5 x 150)\n 88 - Portal GunCategoryPrimary (Slot: 1, Sub: 0)\nPrice10000$\nDamage0\nAmmo0 | -1\nRate of Fire300 RPM (FD: 5)\nRangeMedium (300)\nWeightNormal (SpdM: 0)\nAccuracyPerfect (V: 0)\n 89 - Satchel ChargeCategoryExplosives (Slot: 5, Sub: 0)\nPrice300$\nDamage100\nAmmo5 | 0\nRate of Fire150 RPM (FD: 10)\nRangeFar (320)\nWeightLight (SpdM: 0.5)\nAccuracyPerfect (V: 0)\nDPS 1s500 (5 x 100)\nDPS Ø500 (5 x 100)\n 90 - M134CategoryPrimary (Slot: 1, Sub: 0)\nPrice8100$\nDamage13\nAmmo400 | 800\nRate of Fire750 RPM (FD: 2)\nRangeMedium (300)\nWeightHeavy (SpdM: -1)\nAccuracyBad (V: 5)\nDPS 1s325 (25 x 13)\nDPS Ø325 (25 x 13)\n 91 - FN F2000CategoryPrimary (Slot: 1, Sub: 0)\nPrice3500$\nDamage26\nAmmo30 | 90\nRate of Fire500 RPM (FD: 3)\nRangeMedium (300)\nWeightNormal (SpdM: 0)\nAccuracyAverage (V: 2)\nDPS 1s416 (16 x 26)\nDPS Ø433.333 (16.667 x 26)"
+  },
+  "modes": {
+    "url": "https://www.cs2d.com/modes.php",
+    "links": [
+      {
+        "href": "#standard",
+        "text": "Standard"
+      },
+      {
+        "href": "#deathmatch",
+        "text": "Deathmatch"
+      },
+      {
+        "href": "#teamdeathmatch",
+        "text": "Team Deathmatch"
+      },
+      {
+        "href": "#construction",
+        "text": "Construction"
+      },
+      {
+        "href": "#zombies",
+        "text": "Zombies!"
+      },
+      {
+        "href": "https://www.cs2d.com/help.php?cat=server&cmd=mp_randomspawn#cmd",
+        "text": "option to let players spawn at random places on the map"
+      },
+      {
+        "href": "entities.php",
+        "text": "Entities:"
+      },
+      {
+        "href": "https://www.cs2d.com/entities.php?entity=Info_VIP#entity",
+        "text": "Info_VIP"
+      },
+      {
+        "href": "https://www.cs2d.com/entities.php?entity=Info_EscapePoint#entity",
+        "text": "Info_EscapePoint"
+      },
+      {
+        "href": "entities.php",
+        "text": "Entities:"
+      },
+      {
+        "href": "https://www.cs2d.com/entities.php?entity=Info_Hostage#entity",
+        "text": "Info_Hostage"
+      },
+      {
+        "href": "https://www.cs2d.com/entities.php?entity=Info_RescuePoint#entity",
+        "text": "Info_RescuePoint"
+      },
+      {
+        "href": "entities.php",
+        "text": "Entities:"
+      },
+      {
+        "href": "https://www.cs2d.com/entities.php?entity=Info_BombSpot#entity",
+        "text": "Info_BombSpot"
+      },
+      {
+        "href": "entities.php",
+        "text": "Entities:"
+      },
+      {
+        "href": "https://www.cs2d.com/entities.php?entity=Info_CTF_Flag#entity",
+        "text": "Info_CTF_Flag"
+      },
+      {
+        "href": "entities.php",
+        "text": "Entities:"
+      },
+      {
+        "href": "https://www.cs2d.com/entities.php?entity=Info_Dom_Point#entity",
+        "text": "Info_Dom_Point"
+      },
+      {
+        "href": "entities.php",
+        "text": "Entities:"
+      },
+      {
+        "href": "https://www.cs2d.com/entities.php?entity=Env_Item#entity",
+        "text": "Env_Item"
+      },
+      {
+        "href": "https://www.cs2d.com/entities.php?entity=Info_TeamGate#entity",
+        "text": "Info_TeamGate"
+      },
+      {
+        "href": "entities.php",
+        "text": "Entities:"
+      },
+      {
+        "href": "https://www.cs2d.com/entities.php?entity=Env_Item#entity",
+        "text": "Env_Item"
+      },
+      {
+        "href": "entities.php",
+        "text": "Entities:"
+      },
+      {
+        "href": "https://www.cs2d.com/entities.php?entity=Env_Item#entity",
+        "text": "Env_Item"
+      }
+    ],
+    "content": "Game Modes       \n    \n        CS2D has more to offer than just the regular Counter-Strike gameplay! This page gives you an overview of available game modes.\n    \n\n    \n        \n            Game Mode | \n            Teams | \n            Respawn | \n            Round Time Limit | \n        \n\n        \n            Standard | \n            Ts vs CTs | \n            No Respawn | \n            Yes | \n        \n\n        \n            Deathmatch | \n            No Teams | \n            Respawn | \n            No | \n        \n\n        \n            Team Deathmatch | \n            Ts vs CTs | \n            Respawn | \n            No | \n        \n\n        \n            Construction | \n            Ts vs CTs | \n            Respawn | \n            No | \n        \n\n        \n            Zombies! | \n            Zombies vs Survivors | \n            Respawn as Zombie | \n            Yes | \n        \n\n    \n    -->\n\n            \n        \n            \n                Standard\n                \n                    Offers gameplay as you know it from the original Counter-Strike.\n                    Terrorists vs Counter-Terrorists. They fight in rounds with a time limit (about 3-5 minutes per round).\n                    When you die you have to wait for the next round to begin.\n                    A round ends when the time is over, all players of a team died or when all mission goals have been completed.\n                    The standard mission types (DE, CS, AS) only work in this game mode!\n                \n\n            \n            \n            \n                \n            \n        \n\n        \n            Best map/mission types:\n            \n                DE - bomb defuse (Ts try to plant a bomb, CTs try to prevent or defuse)\n\n                CS - hostage rescue (Ts try to keep hostages, CTs try to rescue them)\n\n                AS - VIP assassination (Ts try to kill the VIP, CTs try to escort the VIP)\n\n            \n        \n    \n\n    \n        \n            \n                \n            \n\n            \n                Deathmatch\n                \n                    Simple fast paced action.\n                    You are on your own. No teams, no time limit, instant respawn after death.\n                    You can also activate an option to let players spawn at random places on the map and not only on designated spawn points.\n                    This option makes it possible to use nearly every map with the deathmatch mode.\n                \n\n            \n        \n\n        \n            Best map/mission types:\n            \n                DM - deathmatch\n\n            \n        \n    \n\n    \n        \n            \n                Team Deathmatch\n                \n                    Works like the Standard game mode but without round time limit and players can respawn instantly.\n                    There are great map types for this like capture the flag or domination.\n                \n\n            \n\n            \n                \n            \n        \n\n        \n            Best map/mission types:\n            \n                DM - deathmatch\n\n                CTF - capture the flag (steal the enemy's flag and bring it to your flag)\n\n                DOM - domination (try to capture and hold all flag points on the map)\n\n            \n        \n    \n\n    \n        \n            \n                \n            \n\n            \n                Construction\n                \n                    Two teams, no rounds, respawn and wrenches!\n                    Wrenches can be used to construct buildings like walls, teleporters, barbed wire, dispensers and even automatic turrets.\n                    This game mode works best on capture the flag (CTF) or domination (DOM) maps where turrets can be used to protect the flags or domination points.\n                    And there are also designated maps for construction (CON).\n                    It actually is fun on nearly every map though.\n                \n\n            \n        \n\n        \n            Best map/mission types:\n            \n                CON - construction\n\n                DM - deathmatch\n\n                CTF - capture the flag\n\n                DOM - domination\n\n            \n        \n    \n\n    \n        \n            \n                Zombies!\n                \n                    Brrraaaaaaaains! Everyone loves zombies - that's why CS2D has a game mode with them!\n                    There are two teams: Survivors (CTs) and zombies (Ts).\n                    Survivors have to do what their name implies: Survive. Simple, huh?\n                    No, because all zombies have to try to kill the survivors within a certain time limit. Every survivor who gets killed by a zombie respawns as a zombie.\n                    The survivor team wins when at least one person survives until the time is over. Zombies win when everyone turned into a zombie.\n                    This mode should be played on special ZM maps because survivors need weapon/ammo/health items which are lying on the map to stand a chance!\n                \n\n            \n            \n            \n                \n            \n        \n\n        \n            Best map/mission types:\n            \n                ZM - zombies\n\n            \n        \n    \n\n    \n    Missions & Map Types\n\n    \n        There are different missions and map types which can be chosen independently of the game mode.\n        Some game modes need special map types to work well though. The mission/type of a map can be recognized by taking a look at the prefix of the map name (the part before the underscore).\n        When you create your own new map with the map editor you should always choose the correct prefix for the map name so others know the type of your map without even loading it.\n    \n\n    Standard Missions\n    \n        The following are standard missions and map types of CS2D. Many require special entities to make them work properly.\n    \n\n    \n        AS - Assassination\n        \n            Counter-Terrorists spawn with one V.I.P. player each round who has to be escorted to a safe escape zone.\n            Terrorists have to assassinate the V.I.P. or to prevent him from reaching the escape zone in order to win.\n            The V.I.P. is unable to buy or collect weapons/equipment and starts with a pistol and a 200 armor point kevlar west.\n        \n\n        \n        \n            Entities:\n            \n                Info_VIP Spawn point for the V.I.P.\n\n                Info_EscapePoint Escape point for the V.I.P.\n\n            \n        \n    \n\n    \n        CS - Hostage Rescue\n        \n            The terrorists took hostages and now they have to prevent counter-terrorists from rescuing the hostages.\n            Counter-Terrorists can rescue hostages by telling them to follow them and leading them to either the counter-terrorist spawn or designated hostage rescue zones.\n            Hostages are non player characters (NPCs). Only counter-terrorists can use them to make them move. There are commonly 4 hostages on a CS map.\n        \n\n        \n        \n            Entities:\n            \n                Info_Hostage Spawn point for hostages (commonly four in total per map, in two groups of two)\n\n                Info_RescuePoint Point where CTs have to bring hostages (optional, CT spawns work like rescue points as well)\n\n            \n        \n    \n\n    \n        DE - Bomb Defuse\n        \n            Time to blow something up - at least that's what the terrorists are thinking.\n            One terrorist starts with a bomb which has to be planted at a bomb spot (there are commonly 2 differnt spots to plant the bomb).\n            Counter-Terrorists have to prevent that.\n            They can either protect the spots and make sure that no bomb is planted at all or they can try to defuse planted bombs before they blow up.\n        \n\n        \n        \n            Entities:\n            \n                Info_BombSpot Spot where Ts can plant the bomb (there are commonly exactly two different bomb spots per map)\n\n            \n        \n    \n\n    \n        CTF - Capture the Flag\n        \n            Each team has a flagpole with a flag close to the own spawn. The goal is to bring both, the own flag and the flag of the opposing team, to the own flagpole.\n            You can only carry and move the flag of the other team. When you drop that flag, players of the other team can instantly return it to their base by simply touching it.\n        \n\n        \n        \n            Entities:\n            \n                Info_CTF_Flag Flag to capture (exactly two per map - one T flag and one cT flag)\n\n            \n        \n    \n\n    \n        DOM - Domination\n        \n            There are multiple domination points (flag poles) on the map. A team has to dominate all of them in order to win.\n            A point can be dominated by simply touching it while no player of the other team is close to it.\n            There are also points which require 1 or 2 players of the own team to be close in order to dominate it.\n        \n\n        \n        \n            Entities:\n            \n                Info_Dom_Point Domination point (there is no standard for the number but three is recommended as minimum)\n\n            \n        \n    \n\n    \n        ZM - Zombies\n        \n            Commonly used with \"Zombies!\" game mode only.\n            T spawns will be for the zombies, CT spawns for the survivors.\n            Good zombie maps provide some items for survivors and prevent that survivors can spawn kill zombies.\n        \n\n        \n        \n            Entities:\n            \n                Env_Item Items like weapons, ammo and health packs for survivors (optional but highly recommended)\n\n                Info_TeamGate Invisible barriers to prevent that survivors can spawn kill zombies (optional)\n\n            \n        \n    \n\n    \n        DM - Deathmatch\n        \n            Maps designed to be played in \"Deathmatch\" game mode. Commonly with some items lying around.\n        \n\n        \n        \n            Entities:\n            \n                Env_Item Items like weapons, ammo and health packs (optional)\n\n            \n        \n    \n\n    \n        CON - Construction\n        \n            Maps designed to be played in \"Construction\" game mode. Commonly with some items (especially money) lying around.\n        \n\n        \n        \n            Entities:\n            \n                Env_Item Items like money which can be spent for buildings (optional)\n\n            \n        \n    \n\n    Fun Missions\n    \n        \n            There are also some additional fun mission/map types (this is an incomplete list which only contains some very popular map types):\n        \n\n        \n            FY - Fight Yard Arena to simply fight and have fun\n\n            HE - High Explosives Many HE grenades and/or other explosives\n\n            KA - Knife Arena Knifes or other melee weapons only\n\n            AWP - AWP Arena AWPs only\n\n            AIM - Aiming Training Practice aiming\n\n            and many more ..."
+  },
+  "cheatsheets": {
+    "url": "https://www.cs2d.com/cheatsheets.php",
+    "links": [
+      {
+        "href": "img/ref_items.png",
+        "text": "Weapons &amp; Item IDs"
+      },
+      {
+        "href": "help.php?cat=all&cmd=equip#cmd",
+        "text": "equip"
+      },
+      {
+        "href": "img/ref_dynamicobjects.png",
+        "text": "Dynamic Objects IDs"
+      },
+      {
+        "href": "help.php?cat=all&cmd=spawnobject#cmd",
+        "text": "spawnobject"
+      },
+      {
+        "href": "img/ref_npcs.png",
+        "text": "NPC Player Values"
+      },
+      {
+        "href": "help.php?cat=all&cmd=spawnobject#cmd",
+        "text": "spawnobject"
+      },
+      {
+        "href": "img/ref_gamemodes.png",
+        "text": "Game Mode IDs"
+      },
+      {
+        "href": "help.php?cat=all&cmd=sv_gamemode#cmd",
+        "text": "sv_gamemode"
+      },
+      {
+        "href": "img/ref_team.png",
+        "text": "Team IDs"
+      },
+      {
+        "href": "img/ref_killids.png",
+        "text": "Kill IDs"
+      },
+      {
+        "href": "help.php?hookcat=player&hook=die#hook",
+        "text": "die"
+      },
+      {
+        "href": "help.php?hookcat=player&hook=kill#hook",
+        "text": "kill"
+      },
+      {
+        "href": "http://www.unrealsoftware.de/files_pub/cs2d_spec_map_format.txt",
+        "text": "CS2D Map Format Specification (TXT)"
+      },
+      {
+        "href": "help.php?cat=all",
+        "text": "Console Command Reference"
+      },
+      {
+        "href": "help.php?hookcat=all",
+        "text": "Lua Hook Reference"
+      },
+      {
+        "href": "help.php?luacat=all",
+        "text": "Lua Command Reference"
+      },
+      {
+        "href": "weapons.php",
+        "text": "All Weapons &amp; Items with attributes"
+      },
+      {
+        "href": "entities.php",
+        "text": "Entities with attributes"
+      }
+    ],
+    "content": "Cheat Sheets    \n    \n        Nope, this page is not about cheating in CS2D. It just contains a few images/texts (cheat sheets) which might be quite useful for everyone who wants to modify/extend the game.\n        Open the images in a new tab if you want to save/print them.    \n        \n            Weapons & Item IDs can be used for commands like equip\n\n            Dynamic Objects IDs can be used for commands like spawnobject\n\n            NPC Player Values for NPC dynamic objects (see spawnobject)\n\n            Game Mode IDs - e.g. for sv_gamemode\n\n            Team IDs - note that the VIP has its own ID even though it's basically a CT\n\n            Kill IDs can be used to check how a player died (Lua hooks: die & kill)\n\n            CS2D Map Format Specification (TXT)\n\n        \n    \n\n    \n    More useful things you should know about\n    \n        CS2D.com offers detailed references for important stuff. Maybe you did not know about the following pages yet?!\n        \n            Console Command Reference\n\n            Lua Hook Reference\n\n            Lua Command Reference\n\n            All Weapons & Items with attributes\n\n            Entities with attributes"
+  }
+}

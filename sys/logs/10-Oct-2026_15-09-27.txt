@@ -1,0 +1,19 @@
+CS2D 1.0.1.8 Logfile - 10 Oct 2026, 15:09:27
+
+[15:09:27] Steam: Not logged in
+[15:09:27] UDP socket initialized using port 55837
+[15:09:28] U.S.G.N.: Transmission cancelled by user. Unable to check version/news
+[15:09:28] U.S.G.N.: Ping/State 'playing'
+[15:09:29] Cached servers added to list: 107
+[15:09:29] U.S.G.N.: Received serverlist (servers: 51)
+[15:09:30] Connecting to 25.38.11.44:36963...
+[15:09:30] load map 'de_dust2'
+[15:09:30] receiving physics data (7 b)
+[15:09:31] ----- Server joined -----
+[15:09:34] Player 2 joins the Terrorist Forces
+[15:09:40] Player 2 changes name to real
+[15:11:05] real killed Player with Knife
+[15:11:13] Player has left the game
+[15:11:15] real has left the game
+[15:11:15] Disconnect Reason: Client request (Code 0)
+[15:11:15] ----- Disconnected -----

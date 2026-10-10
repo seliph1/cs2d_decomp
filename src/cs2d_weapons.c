@@ -1,0 +1,421 @@
+#include "cs2d_weapons.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <math.h>
+
+/*
+ * Authentic CS2D Weapon Table (IDs 0..99)
+ * Reconstructed directly from FUN_1400e0fb0 (0x1400e0fb0) in cs2d_dedicated.exe
+ * and sys/weapons.cfg / sys/weapons_recoil.cfg (FUN_140112bc0).
+ *
+ * Global array mappings in cs2d_dedicated.exe:
+ *   PTR_DAT_14059d4c8 : name
+ *   PTR_DAT_14059d4a8 : dmg
+ *   PTR_DAT_14059d4a0 : dmg_z1 (zoom 1 / alt damage)
+ *   PTR_DAT_14059d498 : dmg_z2 (zoom 2 damage)
+ *   PTR_DAT_14059d490 : dmg_zomb (default 1.0f)
+ *   PTR_DAT_14059d488 : rate / firedelay (ticks)
+ *   PTR_DAT_14059d480 : reload (ticks)
+ *   PTR_DAT_14059d470 : ammo (max reserve)
+ *   PTR_DAT_14059d468 : ammoin (clip size)
+ *   PTR_DAT_14059d460 : price
+ *   PTR_DAT_14059d458 : range (default 300)
+ *   PTR_DAT_14059d450 : dispersion
+ *   PTR_DAT_14059d448 : speed_offset
+ *   PTR_DAT_14059d428 : slot (1=Primary, 2=Secondary, 3=Melee, 4=Grenade, 5=Special/Bomb, 6=Flag)
+ *   PTR_DAT_14059d408 : recoil_accuracy
+ *   PTR_DAT_14059d400 : recoil_recover
+ *   PTR_DAT_14059d3f8 : recoil_attack
+ */
+static cs2d_weapon_def_t g_weapon_table[CS2D_MAX_WEAPONS];
+static bool g_weapons_initialized = false;
+
+static void set_wep(
+    uint8_t id, const char *name, cs2d_weapon_slot_t slot, uint8_t cs2d_slot,
+    int price, int dmg, int dmg_z1, int dmg_z2, int clip, int reserve,
+    int rate_ticks, int reload_ticks, int range, int dispersion,
+    float speed_offset, int rec_acc, int rec_rec, int rec_atk, bool is_auto
+) {
+    if (id >= CS2D_MAX_WEAPONS) return;
+    cs2d_weapon_def_t *w = &g_weapon_table[id];
+    memset(w, 0, sizeof(*w));
+    w->id                = id;
+    w->name              = name;
+    w->slot              = slot;
+    w->cs2d_slot         = cs2d_slot;
+    w->price             = price;
+    w->damage            = dmg;
+    w->damage_z1         = dmg_z1;
+    w->damage_z2         = dmg_z2;
+    w->damage_zomb       = 1.0f;
+    w->armor_penetration = 0.65f; /* mp_kevlar absorbs 0.35f by default in FUN_1401658c0 */
+    w->clip_size         = clip;
+    w->max_reserve       = reserve;
+    w->fire_delay_ticks  = rate_ticks;
+    w->reload_ticks      = reload_ticks;
+    w->fire_delay        = (rate_ticks > 0) ? ((float)rate_ticks * 0.02f) : 0.20f;
+    w->reload_time       = (reload_ticks > 0) ? ((float)reload_ticks * 0.01f) : 0.0f;
+    w->speed_offset      = speed_offset;
+    w->speed_modifier    = 1.0f + (speed_offset * 0.02f);
+    w->dispersion        = dispersion;
+    w->spread            = (float)dispersion * 0.005f;
+    w->recoil_accuracy   = rec_acc;
+    w->recoil_recover    = rec_rec;
+    w->recoil_attack     = rec_atk;
+    w->range             = range;
+    w->is_automatic      = is_auto;
+}
+
+void cs2d_weapons_init(void)
+{
+    memset(g_weapon_table, 0, sizeof(g_weapon_table));
+
+    /* Default loop in FUN_1400e0fb0: dmg_zomb = 1.0f, range = 300 */
+    for (int i = 0; i < CS2D_MAX_WEAPONS; i++) {
+        g_weapon_table[i].id = (uint8_t)i;
+        g_weapon_table[i].damage_zomb = 1.0f;
+        g_weapon_table[i].range = 300;
+        g_weapon_table[i].speed_modifier = 1.0f;
+    }
+
+    /* Pistols (CS2D slot 2 -> CS2D_SLOT_SECONDARY) */
+    set_wep(1,  "USP",              CS2D_SLOT_SECONDARY, 2, 500,  24, 0,   0,   12,  100, 9,  220, 300, 15,  0.0f, 2, 70,   2,  false);
+    set_wep(2,  "Glock",            CS2D_SLOT_SECONDARY, 2, 400,  21, 0,   0,   20,  120, 9,  220, 300, 15,  0.0f, 2, 70,   2,  false);
+    set_wep(3,  "Deagle",           CS2D_SLOT_SECONDARY, 2, 650,  34, 0,   0,   7,   35,  13, 210, 300, 20,  0.0f, 2, 50,   4,  false);
+    set_wep(4,  "P228",             CS2D_SLOT_SECONDARY, 2, 600,  22, 0,   0,   13,  52,  9,  270, 300, 15,  0.0f, 2, 70,   2,  false);
+    set_wep(5,  "Elite",            CS2D_SLOT_SECONDARY, 2, 1000, 22, 0,   0,   15,  120, 7,  250, 300, 25,  0.0f, 2, 70,   2,  false);
+    set_wep(6,  "Five-Seven",       CS2D_SLOT_SECONDARY, 2, 750,  18, 0,   0,   20,  100, 5,  480, 300, 20,  0.0f, 2, 70,   3,  false);
+
+    /* Shotguns (CS2D slot 1 -> CS2D_SLOT_PRIMARY) */
+    set_wep(10, "M3",               CS2D_SLOT_PRIMARY,   1, 1700, 26, 0,   0,   8,   32,  25, 90,  160, 45, -1.5f, 8, 80,   15, false);
+    set_wep(11, "XM1014",           CS2D_SLOT_PRIMARY,   1, 3000, 14, 0,   0,   7,   32,  7,  70,  160, 40, -1.0f, 8, 80,   10, true);
+
+    /* SMGs (CS2D slot 1 -> CS2D_SLOT_PRIMARY) */
+    set_wep(20, "MP5",              CS2D_SLOT_PRIMARY,   1, 1500, 13, 0,   0,   30,  120, 3,  230, 300, 20,  0.0f, 2, 54,   1,  true);
+    set_wep(21, "TMP",              CS2D_SLOT_PRIMARY,   1, 1250, 9,  0,   0,   30,  120, 2,  200, 300, 35,  0.0f, 4, 49,   1,  true);
+    set_wep(22, "P90",              CS2D_SLOT_PRIMARY,   1, 2350, 11, 0,   0,   50,  100, 2,  350, 300, 25, -0.5f, 1, 54,   1,  true);
+    set_wep(23, "Mac 10",           CS2D_SLOT_PRIMARY,   1, 1400, 9,  0,   0,   30,  100, 2,  340, 300, 35,  0.0f, 2, 59,   1,  true);
+    set_wep(24, "UMP45",            CS2D_SLOT_PRIMARY,   1, 1700, 15, 0,   0,   25,  100, 4,  350, 300, 25,  0.0f, 1, 70,   1,  true);
+
+    /* Rifles & Snipers (CS2D slot 1 -> CS2D_SLOT_PRIMARY) */
+    set_wep(30, "AK-47",            CS2D_SLOT_PRIMARY,   1, 2500, 22, 0,   0,   30,  90,  3,  275, 300, 20, -2.0f, 1, 40,   1,  true);
+    set_wep(31, "SG552",            CS2D_SLOT_PRIMARY,   1, 3500, 24, 35,  0,   30,  90,  4,  250, 300, 20, -1.5f, 0, 50,   1,  true);
+    set_wep(32, "M4A1",             CS2D_SLOT_PRIMARY,   1, 3100, 22, 20,  0,   30,  90,  3,  220, 300, 15, -1.0f, 0, 40,   1,  true);
+    set_wep(33, "Aug",              CS2D_SLOT_PRIMARY,   1, 3500, 24, 35,  0,   30,  90,  4,  420, 300, 20, -1.0f, 0, 50,   1,  true);
+    set_wep(34, "Scout",            CS2D_SLOT_PRIMARY,   1, 2750, 45, 50,  100, 10,  90,  25, 180, 450, 25,  0.0f, 1, 70,   1,  false);
+    set_wep(35, "AWP",              CS2D_SLOT_PRIMARY,   1, 4750, 50, 65,  150, 10,  30,  65, 400, 550, 25, -3.5f, 1, 70,   1,  false);
+    set_wep(36, "G3SG1",            CS2D_SLOT_PRIMARY,   1, 5000, 32, 37,  45,  20,  90,  6,  460, 450, 25, -3.0f, 1, 80,   1,  true);
+    set_wep(37, "SG550",            CS2D_SLOT_PRIMARY,   1, 4200, 30, 35,  40,  30,  90,  6,  450, 450, 25, -3.0f, 1, 60,   1,  true);
+    set_wep(38, "Galil",            CS2D_SLOT_PRIMARY,   1, 2000, 13, 0,   0,   35,  90,  3,  250, 300, 35, -1.0f, 0, 50,   1,  true);
+    set_wep(39, "Famas",            CS2D_SLOT_PRIMARY,   1, 2250, 14, 10,  0,   25,  90,  3,  250, 300, 20, -1.0f, 1, 40,   1,  true);
+
+    /* Heavy & Special Primary Weapons (CS2D slot 1 -> CS2D_SLOT_PRIMARY) */
+    set_wep(40, "M249",             CS2D_SLOT_PRIMARY,   1, 5750, 15, 0,   0,   100, 200, 2,  460, 300, 40, -3.5f, 5, 60,   1,  true);
+    set_wep(41, "Tactical Shield",  CS2D_SLOT_PRIMARY,   1, 1000, 0,  0,   0,   0,   0,   2,  0,   300, 0,   0.0f, 0, -899, 0,  false);
+    set_wep(45, "Laser",            CS2D_SLOT_PRIMARY,   1, 6500, 1000, 0, 0,   1,   4,   30, 200, 300, 0,  -2.5f, 0, 70,   1,  false);
+    set_wep(46, "Flamethrower",     CS2D_SLOT_PRIMARY,   1, 3200, 30, 0,   0,   100, 100, 3,  200, 300, 0,  -1.0f, 0, 70,   1,  true);
+    set_wep(47, "RPG Launcher",     CS2D_SLOT_PRIMARY,   1, 4000, 325, 0,  0,   1,   1,   50, 500, 160, 0,  -4.0f, 0, 70,   1,  false);
+    set_wep(48, "Rocket Launcher",  CS2D_SLOT_PRIMARY,   1, 5500, 70, 0,   0,   1,   3,   20, 300, 96,  0,  -3.5f, 0, 70,   1,  false);
+    set_wep(49, "Grenade Launcher", CS2D_SLOT_PRIMARY,   1, 5500, 75, 0,   0,   1,   5,   20, 300, 96,  0,  -3.5f, 0, 70,   1,  false);
+
+    /* Melee (CS2D slot 3 -> CS2D_SLOT_MELEE) */
+    set_wep(50, "Knife",            CS2D_SLOT_MELEE,     3, 0,    45, 90,  0,   0,   0,   9,  0,   15,  0,   0.0f, 0, 0,    0,  false);
+    set_wep(69, "Machete",          CS2D_SLOT_MELEE,     3, 0,    175, 0,  0,   0,   0,   18, 0,   25,  0,  -3.0f, 0, 0,    0,  false);
+    set_wep(74, "Wrench",           CS2D_SLOT_BOMB,      5, 0,    30, 0,   0,   0,   0,   11, 0,   15,  0,   0.0f, 0, 0,    0,  false);
+    set_wep(78, "Claw",             CS2D_SLOT_MELEE,     3, 0,    50, 90,  0,   0,   0,   9,  0,   18,  0,   0.0f, 0, 0,    0,  false);
+    set_wep(85, "Chainsaw",         CS2D_SLOT_MELEE,     3, 0,    60, 0,   0,   0,   0,   2,  0,   25,  0,  -1.0f, 0, 0,    0,  true);
+
+    /* Grenades (CS2D slot 4 -> CS2D_SLOT_GRENADE) */
+    set_wep(51, "HE",               CS2D_SLOT_GRENADE,   4, 300,  105, 0,  0,   1,   0,   15, 0,   160, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(52, "Flashbang",        CS2D_SLOT_GRENADE,   4, 200,  0,  0,   0,   1,   1,   15, 0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(53, "Smoke Grenade",    CS2D_SLOT_GRENADE,   4, 300,  0,  0,   0,   1,   0,   15, 0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(54, "Flare",            CS2D_SLOT_GRENADE,   4, 150,  0,  0,   0,   1,   0,   15, 0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(72, "Gas Grenade",      CS2D_SLOT_GRENADE,   4, 300,  9,  0,   0,   1,   0,   15, 0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(73, "Molotov Cocktail", CS2D_SLOT_GRENADE,   4, 300,  4,  0,   0,   1,   0,   15, 0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(75, "Snowball",         CS2D_SLOT_GRENADE,   4, 50,   35, 0,   0,   1,   2,   15, 0,   16,  0,   0.0f, 0, 0,    0,  false);
+    set_wep(76, "Air Strike",       CS2D_SLOT_GRENADE,   4, 500,  1500, 0, 0,   1,   0,   15, 0,   250, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(86, "Gut Bomb",         CS2D_SLOT_GRENADE,   4, 150,  50, 0,   0,   1,   0,   15, 0,   96,  0,   0.0f, 0, 0,    0,  false);
+
+    /* Bomb / Special Items (CS2D slot 5 & 0) */
+    set_wep(55, "Bomb",             CS2D_SLOT_BOMB,      5, 0,    0,  0,   0,   0,   0,   15, 0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(56, "Defuse Kit",       CS2D_SLOT_ITEM,      0, 200,  0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(57, "Kevlar",           CS2D_SLOT_ITEM,      0, 650,  0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(58, "Kevlar+Helm",      CS2D_SLOT_ITEM,      0, 1000, 0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(59, "Night Vision",     CS2D_SLOT_ITEM,      0, 1250, 0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(60, "Gas Mask",         CS2D_SLOT_ITEM,      0, 250,  0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(61, "Primary Ammo",     CS2D_SLOT_ITEM,      0, 50,   0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(62, "Secondary Ammo",   CS2D_SLOT_ITEM,      0, 50,   0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(63, "Gold",             CS2D_SLOT_ITEM,      6, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(70, "Red Flag",         CS2D_SLOT_ITEM,      6, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(71, "Blue Flag",        CS2D_SLOT_ITEM,      6, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(77, "Mine",             CS2D_SLOT_BOMB,      5, 400,  150, 0,  0,   1,   2,   15, 0,   96,  0,   0.0f, 0, 0,    0,  false);
+    set_wep(87, "Laser Mine",       CS2D_SLOT_BOMB,      5, 400,  150, 0,  0,   1,   2,   15, 0,   96,  0,   0.0f, 0, 0,    0,  false);
+    set_wep(88, "Portal Gun",       CS2D_SLOT_BOMB,      5, 10000, 0,  0,  0,   100, 0,   5,  0,   300, 0,   0.0f, 0, -899, 0,  false);
+    set_wep(89, "Medikit",          CS2D_SLOT_BOMB,      5, 300,  100, 0,  0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+
+    /* Minigun & FN F2000 (CS2D slot 1 -> CS2D_SLOT_PRIMARY) */
+    set_wep(90, "M134",             CS2D_SLOT_PRIMARY,   1, 8100, 13, 0,   0,   200, 200, 2,  600, 300, 40, -6.0f, 8, 0,    1,  true);
+    set_wep(91, "FN F2000",         CS2D_SLOT_PRIMARY,   1, 3500, 26, 0,   0,   30,  90,  3,  220, 300, 20, -1.0f, 8, 0,    1,  true);
+
+    g_weapons_initialized = true;
+
+    /* Load sys/weapons_recoil.cfg or sys/weapons.cfg if present (FUN_140112bc0) */
+    if (!cs2d_weapons_load_cfg("sys/weapons_recoil.cfg")) {
+        cs2d_weapons_load_cfg("sys/weapons.cfg");
+    }
+}
+
+/*
+ * Reconstructed from FUN_140112bc0 (0x140112bc0 - loadweaponcfg) in cs2d_dedicated.exe
+ */
+bool cs2d_weapons_load_cfg(const char *filepath)
+{
+    if (!g_weapons_initialized) {
+        cs2d_weapons_init();
+    }
+    if (!filepath) return false;
+
+    FILE *f = fopen(filepath, "r");
+    if (!f) return false;
+
+    int current_wep = -1;
+    char line[256];
+
+    while (fgets(line, sizeof(line), f)) {
+        /* Trim leading whitespace */
+        char *p = line;
+        while (*p && isspace((unsigned char)*p)) p++;
+
+        /* Skip empty lines or '//' / '#' comments (FUN_140112bc0) */
+        if (*p == '\0' || *p == '#' || (p[0] == '/' && p[1] == '/')) continue;
+
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+
+        *eq = '\0';
+        char *key = p;
+        char *val_str = eq + 1;
+
+        /* Trim key trailing whitespace */
+        char *kend = eq - 1;
+        while (kend >= key && isspace((unsigned char)*kend)) *kend-- = '\0';
+
+        /* Trim val leading/trailing whitespace */
+        while (*val_str && isspace((unsigned char)*val_str)) val_str++;
+        char *vend = val_str + strlen(val_str) - 1;
+        while (vend >= val_str && isspace((unsigned char)*vend)) *vend-- = '\0';
+
+        int val = atoi(val_str);
+
+        if (_stricmp(key, "weapon") == 0) {
+            if (val > 0 && val < CS2D_MAX_WEAPONS && g_weapon_table[val].name != NULL) {
+                current_wep = val;
+            } else {
+                current_wep = -1;
+            }
+        } else if (current_wep != -1) {
+            cs2d_weapon_def_t *w = &g_weapon_table[current_wep];
+            if (_stricmp(key, "recoil_accuracy") == 0) {
+                if (val > 99) val = 99;
+                if (val < 0)  val = 0;
+                w->recoil_accuracy = val;
+            } else if (_stricmp(key, "recoil_recover") == 0) {
+                if (val > 99)   val = 99;
+                if (val < -899) val = -899;
+                w->recoil_recover = val;
+            } else if (_stricmp(key, "recoil_attack") == 0) {
+                if (val > 99) val = 99;
+                if (val < 0)  val = 0;
+                w->recoil_attack = val;
+            } else if (_stricmp(key, "firedelay") == 0) {
+                if (val > 255) val = 255;
+                if (val < 2)   val = 2;
+                w->fire_delay_ticks = val;
+                w->fire_delay = (float)val * 0.02f;
+            }
+        }
+    }
+
+    fclose(f);
+    return true;
+}
+
+const cs2d_weapon_def_t *cs2d_weapon_get(uint8_t weapon_id)
+{
+    if (!g_weapons_initialized) {
+        cs2d_weapons_init();
+    }
+    if (weapon_id >= CS2D_MAX_WEAPONS) return NULL;
+    if (g_weapon_table[weapon_id].name == NULL) return NULL;
+    return &g_weapon_table[weapon_id];
+}
+
+/*
+ * Reconstructed from FUN_14009b4c0 (0x14009b4c0 - Lua itemtype(id, prop))
+ */
+int cs2d_itemtype_int(uint8_t weapon_id, const char *prop)
+{
+    const cs2d_weapon_def_t *w = cs2d_weapon_get(weapon_id);
+    if (!w || !prop) return 0;
+
+    if (_stricmp(prop, "dmg") == 0)             return w->damage;
+    if (_stricmp(prop, "dmg_z1") == 0)          return w->damage_z1;
+    if (_stricmp(prop, "dmg_z2") == 0)          return w->damage_z2;
+    if (_stricmp(prop, "rate") == 0)            return w->fire_delay_ticks;
+    if (_stricmp(prop, "reload") == 0)          return w->reload_ticks;
+    if (_stricmp(prop, "ammo") == 0)            return w->max_reserve;
+    if (_stricmp(prop, "ammoin") == 0)          return w->clip_size;
+    if (_stricmp(prop, "price") == 0)           return w->price;
+    if (_stricmp(prop, "range") == 0)           return w->range;
+    if (_stricmp(prop, "dispersion") == 0)      return w->dispersion;
+    if (_stricmp(prop, "slot") == 0)            return (int)w->cs2d_slot;
+    if (_stricmp(prop, "recoil") == 0)          return w->recoil_accuracy;
+    if (_stricmp(prop, "recoil_accuracy") == 0) return w->recoil_accuracy;
+    if (_stricmp(prop, "recoil_recover") == 0)  return w->recoil_recover;
+    if (_stricmp(prop, "recoil_attack") == 0)   return w->recoil_attack;
+    return 0;
+}
+
+bool cs2d_weapon_can_fire(const cs2d_player_t *player)
+{
+    if (!player || !player->alive) return false;
+    if (player->reload_timer > 0.0f) return false;
+    if (player->fire_cooldown > 0.0f) return false;
+    if (player->current_weapon == CS2D_WEP_NONE) return false;
+
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(player->current_weapon);
+    if (!wep) return false;
+
+    if (wep->slot == CS2D_SLOT_MELEE) return true;
+
+    return player->clip_ammo[player->current_weapon] > 0;
+}
+
+bool cs2d_weapon_fire(cs2d_player_t *player)
+{
+    if (!cs2d_weapon_can_fire(player)) return false;
+
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(player->current_weapon);
+    if (!wep) return false;
+
+    player->fire_cooldown = wep->fire_delay;
+
+    if (wep->slot != CS2D_SLOT_MELEE && wep->clip_size > 0) {
+        player->clip_ammo[player->current_weapon]--;
+    }
+    return true;
+}
+
+bool cs2d_weapon_reload(cs2d_player_t *player)
+{
+    if (!player || !player->alive) return false;
+    if (player->reload_timer > 0.0f) return false;
+
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(player->current_weapon);
+    if (!wep || wep->slot == CS2D_SLOT_MELEE || wep->clip_size <= 0) return false;
+
+    int current_clip = player->clip_ammo[player->current_weapon];
+    int reserve = player->reserve_ammo[player->current_weapon];
+
+    if (current_clip >= wep->clip_size || reserve <= 0) {
+        return false;
+    }
+
+    player->reload_timer = wep->reload_time;
+    return true;
+}
+
+void cs2d_weapon_finish_reload(cs2d_player_t *player)
+{
+    if (!player || player->reload_timer > 0.0f) return;
+
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(player->current_weapon);
+    if (!wep) return;
+
+    int needed = wep->clip_size - player->clip_ammo[player->current_weapon];
+    int available = player->reserve_ammo[player->current_weapon];
+
+    int transfer = (available < needed) ? available : needed;
+    player->clip_ammo[player->current_weapon] += transfer;
+    player->reserve_ammo[player->current_weapon] -= transfer;
+}
+
+/*
+ * Reconstructed from FUN_1401658c0 (0x1401658c0) in cs2d_dedicated.exe:
+ *
+ *   iVar6 = target->armor;
+ *   if (iVar6 < 201) {
+ *       if (iVar6 > 0) {
+ *           iVar8 = (int)((float)raw_dmg * mp_kevlar); // mp_kevlar = DAT_1405a6508 (default 0.35f)
+ *           new_armor = iVar6 - raw_dmg;
+ *           if (new_armor < 0) {
+ *               iVar8 = (int)((float)iVar6 * mp_kevlar);
+ *               new_armor = 0;
+ *           }
+ *           hp_dmg = raw_dmg - iVar8;
+ *       }
+ *   } else {
+ *       switch (iVar6 - 201) {
+ *           case 0: hp_dmg = (int)(raw_dmg * 0.75f); break; // 201 Light Armor
+ *           case 1: hp_dmg = (int)(raw_dmg * 0.50f); break; // 202 Armor
+ *           case 2: hp_dmg = (int)(raw_dmg * 0.25f); break; // 203 Heavy Armor
+ *           case 3: hp_dmg = (int)(raw_dmg * 0.50f); break; // 204 Medic Armor
+ *           case 4: hp_dmg = (int)(raw_dmg * 0.05f); break; // 205 Super Armor
+ *       }
+ *   }
+ */
+void cs2d_calculate_damage(
+    const cs2d_weapon_def_t *weapon,
+    float                    distance,
+    bool                     is_headshot,
+    int                      target_armor,
+    bool                     target_has_helm,
+    int                     *out_hp_damage,
+    int                     *out_armor_damage
+)
+{
+    (void)distance;
+    (void)target_has_helm;
+    if (!weapon || !out_hp_damage || !out_armor_damage) return;
+
+    /* Base damage (or zoom2/zoom1 damage for scoped sniper headshots) */
+    int raw_dmg = weapon->damage;
+    if (is_headshot) {
+        if (weapon->damage_z2 > 0) {
+            raw_dmg = weapon->damage_z2;
+        } else if (weapon->damage_z1 > raw_dmg) {
+            raw_dmg = weapon->damage_z1;
+        } else {
+            raw_dmg = raw_dmg * 2;
+        }
+    }
+
+    const float mp_kevlar = 0.35f; /* DAT_1405a6508 default in cs2d_dedicated.exe */
+
+    if (target_armor <= 0) {
+        *out_hp_damage = raw_dmg;
+        *out_armor_damage = 0;
+    } else if (target_armor < 201) {
+        int absorbed = (int)((float)raw_dmg * mp_kevlar);
+        int new_armor = target_armor - raw_dmg;
+        if (new_armor < 0) {
+            absorbed = (int)((float)target_armor * mp_kevlar);
+            new_armor = 0;
+        }
+        *out_hp_damage = raw_dmg - absorbed;
+        *out_armor_damage = target_armor - new_armor;
+    } else {
+        /* Special CS2D armors (201..205) do not lose armor points */
+        *out_armor_damage = 0;
+        switch (target_armor - 201) {
+            case 0:  *out_hp_damage = (int)((float)raw_dmg * 0.75f); break; /* 201: Light Armor */
+            case 1:  *out_hp_damage = (int)((float)raw_dmg * 0.50f); break; /* 202: Armor */
+            case 2:  *out_hp_damage = (int)((float)raw_dmg * 0.25f); break; /* 203: Heavy Armor */
+            case 3:  *out_hp_damage = (int)((float)raw_dmg * 0.50f); break; /* 204: Medic Armor */
+            case 4:  *out_hp_damage = (int)((float)raw_dmg * 0.05f); break; /* 205: Super Armor */
+            default: *out_hp_damage = raw_dmg; break;
+        }
+    }
+}

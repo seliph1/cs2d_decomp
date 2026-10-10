@@ -1,0 +1,2945 @@
+#include "cs2d_render.h"
+#include "cs2d_weapons.h"
+#include "cs2d_map.h"
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_opengl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <math.h>
+
+static SDL_GLContext   g_gl_ctx = NULL;
+static int             g_viewport_w = 850;
+static int             g_viewport_h = 480;
+static cs2d_gfx_bank_t g_gfx_bank;
+
+/* Minimal GDI+ Flat API bindings for loading PNG/BMP tilesets & sprites without external dependencies */
+typedef int GpStatus;
+typedef void GpBitmap;
+typedef void GpImage;
+typedef uint32_t ARGB;
+
+typedef struct {
+    uint32_t GdiplusVersion;
+    void    *DebugEventCallback;
+    BOOL     SuppressBackgroundThread;
+    BOOL     SuppressExternalCodecs;
+} GdiplusStartupInput;
+
+typedef GpStatus (WINAPI *PFN_GdiplusStartup)(ULONG_PTR *token, const GdiplusStartupInput *input, void *output);
+typedef GpStatus (WINAPI *PFN_GdipCreateBitmapFromFile)(const WCHAR *filename, GpBitmap **bitmap);
+typedef GpStatus (WINAPI *PFN_GdipGetImageWidth)(GpImage *image, UINT *width);
+typedef GpStatus (WINAPI *PFN_GdipGetImageHeight)(GpImage *image, UINT *height);
+typedef GpStatus (WINAPI *PFN_GdipBitmapGetPixel)(GpBitmap *bitmap, INT x, INT y, ARGB *color);
+typedef GpStatus (WINAPI *PFN_GdipDisposeImage)(GpImage *image);
+
+static HMODULE                      g_gdiplus_mod = NULL;
+static ULONG_PTR                    g_gdiplus_token = 0;
+static PFN_GdiplusStartup           pGdiplusStartup = NULL;
+static PFN_GdipCreateBitmapFromFile pGdipCreateBitmapFromFile = NULL;
+static PFN_GdipGetImageWidth        pGdipGetImageWidth = NULL;
+static PFN_GdipGetImageHeight       pGdipGetImageHeight = NULL;
+static PFN_GdipBitmapGetPixel       pGdipBitmapGetPixel = NULL;
+static PFN_GdipDisposeImage         pGdipDisposeImage = NULL;
+
+static bool init_gdiplus_once(void)
+{
+    if (g_gdiplus_mod && pGdipCreateBitmapFromFile) return true;
+    g_gdiplus_mod = LoadLibraryA("gdiplus.dll");
+    if (!g_gdiplus_mod) return false;
+
+    pGdiplusStartup           = (PFN_GdiplusStartup)(void *)GetProcAddress(g_gdiplus_mod, "GdiplusStartup");
+    pGdipCreateBitmapFromFile = (PFN_GdipCreateBitmapFromFile)(void *)GetProcAddress(g_gdiplus_mod, "GdipCreateBitmapFromFile");
+    pGdipGetImageWidth        = (PFN_GdipGetImageWidth)(void *)GetProcAddress(g_gdiplus_mod, "GdipGetImageWidth");
+    pGdipGetImageHeight       = (PFN_GdipGetImageHeight)(void *)GetProcAddress(g_gdiplus_mod, "GdipGetImageHeight");
+    pGdipBitmapGetPixel       = (PFN_GdipBitmapGetPixel)(void *)GetProcAddress(g_gdiplus_mod, "GdipBitmapGetPixel");
+    pGdipDisposeImage         = (PFN_GdipDisposeImage)(void *)GetProcAddress(g_gdiplus_mod, "GdipDisposeImage");
+
+    if (!pGdiplusStartup || !pGdipCreateBitmapFromFile || !pGdipGetImageWidth ||
+        !pGdipGetImageHeight || !pGdipBitmapGetPixel || !pGdipDisposeImage) {
+        return false;
+    }
+
+    GdiplusStartupInput input = { 1, NULL, FALSE, FALSE };
+    if (pGdiplusStartup(&g_gdiplus_token, &input, NULL) != 0) {
+        return false;
+    }
+    return true;
+}
+
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F
+#endif
+#ifndef GL_MULTISAMPLE
+#define GL_MULTISAMPLE 0x809D
+#endif
+#ifndef GL_TEXTURE_MAX_LEVEL
+#define GL_TEXTURE_MAX_LEVEL 0x813D
+#endif
+
+/*
+ * Reconstructed from CS2D.exe maskMode jump table (0x1401ad6a9 & 0x140062db0):
+ *   mask_mode == 0: Opaque / embedded alpha only
+ *   mask_mode == 1: Black (0,0,0) color key (hud_nums.bmp, hud_symbols.bmp, hud_radar.bmp)
+ *   mask_mode == 2: Magenta (255,0,255) color key or embedded 32-bit alpha (players, weapons, pointer.bmp)
+ *   mask_mode == 3: Grayscale luminance-to-alpha mask (0.21*R + 0.72*G + 0.07*B -> A, RGB = 255,255,255)
+ *                   (shadowmap.bmp, decals.bmp, flare1.bmp, flare3.bmp, fragments.bmp, blood.bmp)
+ */
+static void apply_cs2d_mask_mode(uint32_t *rgba, int total_px, bool has_embedded_alpha, int mask_mode)
+{
+    for (int i = 0; i < total_px; i++) {
+        uint32_t px = rgba[i];
+        uint8_t r = (uint8_t)(px & 0xFF);
+        uint8_t g = (uint8_t)((px >> 8) & 0xFF);
+        uint8_t b = (uint8_t)((px >> 16) & 0xFF);
+        uint8_t a = (uint8_t)((px >> 24) & 0xFF);
+
+        if (mask_mode == 3) {
+            /* Exact luminance-to-alpha formula from 0x140062f40..0x140062fc4 in CS2D.exe */
+            if (!has_embedded_alpha) {
+                int lum = (int)(0.21f * (float)r + 0.72f * (float)g + 0.07f * (float)b);
+                if (lum < 0)   lum = 0;
+                if (lum > 255) lum = 255;
+                a = (uint8_t)lum;
+            }
+            r = 255;
+            g = 255;
+            b = 255;
+        } else if (mask_mode == 1) {
+            if (r >= 250 && g <= 5 && b >= 250) {
+                a = 0;
+            } else if (!has_embedded_alpha) {
+                if (r <= 4 && g <= 4 && b <= 4) {
+                    a = 0;
+                } else {
+                    a = 255;
+                }
+            }
+        } else if (mask_mode == 2 || mask_mode == 4) {
+            if (r >= 250 && g <= 5 && b >= 250) {
+                a = 0;
+            } else if (!has_embedded_alpha) {
+                a = 255;
+            }
+        } else {
+            if (!has_embedded_alpha) {
+                a = 255;
+            }
+        }
+
+        rgba[i] = ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)r;
+    }
+}
+
+/*
+ * 2-pass RGB neighbor dilation into transparent pixels (alpha == 0).
+ * Prevents magenta (255,0,255) or black (0,0,0) color fringes when rotated
+ * or scaled sprites are sampled with GL_LINEAR bilinear filtering.
+ */
+static void dilate_transparent_rgb(uint32_t *rgba, int w, int h, int cell_w, int cell_h)
+{
+    if (!rgba || w <= 0 || h <= 0) return;
+
+    int cw = (cell_w > 0) ? cell_w : w;
+    int ch = (cell_h > 0) ? cell_h : h;
+
+    uint32_t *tmp = (uint32_t *)malloc((size_t)w * (size_t)h * 4);
+    if (!tmp) return;
+
+    uint8_t *valid = (uint8_t *)malloc((size_t)w * (size_t)h);
+    if (!valid) {
+        free(tmp);
+        return;
+    }
+
+    for (int i = 0; i < w * h; i++) {
+        valid[i] = ((rgba[i] >> 24) & 0xFF) > 0 ? 1 : 0;
+    }
+
+    for (int pass = 0; pass < 2; pass++) {
+        memcpy(tmp, rgba, (size_t)w * (size_t)h * 4);
+        for (int y = 0; y < h; y++) {
+            int cy = y / ch;
+            for (int x = 0; x < w; x++) {
+                int idx = y * w + x;
+                if (valid[idx]) continue;
+
+                int cx = x / cw;
+                int sum_r = 0, sum_g = 0, sum_b = 0, cnt = 0;
+                for (int dy = -1; dy <= 1; dy++) {
+                    int ny = y + dy;
+                    if (ny < 0 || ny >= h || (ny / ch) != cy) continue;
+                    for (int dx = -1; dx <= 1; dx++) {
+                        if (dx == 0 && dy == 0) continue;
+                        int nx = x + dx;
+                        if (nx < 0 || nx >= w || (nx / cw) != cx) continue;
+                        int nidx = ny * w + nx;
+                        if (valid[nidx] == 1) {
+                            uint32_t npx = rgba[nidx];
+                            sum_r += (int)(npx & 0xFF);
+                            sum_g += (int)((npx >> 8) & 0xFF);
+                            sum_b += (int)((npx >> 16) & 0xFF);
+                            cnt++;
+                        }
+                    }
+                }
+                if (cnt > 0) {
+                    uint8_t nr = (uint8_t)(sum_r / cnt);
+                    uint8_t ng = (uint8_t)(sum_g / cnt);
+                    uint8_t nb = (uint8_t)(sum_b / cnt);
+                    tmp[idx] = ((uint32_t)nb << 16) | ((uint32_t)ng << 8) | (uint32_t)nr; /* alpha remains 0 */
+                    valid[idx] = 2;
+                }
+            }
+        }
+        memcpy(rgba, tmp, (size_t)w * (size_t)h * 4);
+        for (int i = 0; i < w * h; i++) {
+            if (valid[i] == 2) valid[i] = 1;
+        }
+    }
+
+    free(valid);
+    free(tmp);
+}
+
+/*
+ * Alpha-weighted 2x2 box downsampler for generating clean mipmap levels
+ * without dark/transparent border bleeding.
+ */
+static uint32_t *downsample_rgba_2x(const uint32_t *src, int src_w, int src_h, int *out_w, int *out_h)
+{
+    int dst_w = (src_w > 1) ? (src_w / 2) : 1;
+    int dst_h = (src_h > 1) ? (src_h / 2) : 1;
+    uint32_t *dst = (uint32_t *)malloc((size_t)dst_w * (size_t)dst_h * 4);
+    if (!dst) return NULL;
+
+    for (int y = 0; y < dst_h; y++) {
+        int sy0 = y * 2;
+        int sy1 = (sy0 + 1 < src_h) ? (sy0 + 1) : sy0;
+        for (int x = 0; x < dst_w; x++) {
+            int sx0 = x * 2;
+            int sx1 = (sx0 + 1 < src_w) ? (sx0 + 1) : sx0;
+
+            uint32_t p[4] = {
+                src[sy0 * src_w + sx0],
+                src[sy0 * src_w + sx1],
+                src[sy1 * src_w + sx0],
+                src[sy1 * src_w + sx1]
+            };
+
+            uint32_t sum_a = 0, sum_r = 0, sum_g = 0, sum_b = 0;
+            uint32_t ur = 0, ug = 0, ub = 0;
+            for (int k = 0; k < 4; k++) {
+                uint32_t r = p[k] & 0xFF;
+                uint32_t g = (p[k] >> 8) & 0xFF;
+                uint32_t b = (p[k] >> 16) & 0xFF;
+                uint32_t a = (p[k] >> 24) & 0xFF;
+                sum_a += a;
+                sum_r += r * a;
+                sum_g += g * a;
+                sum_b += b * a;
+                ur += r;
+                ug += g;
+                ub += b;
+            }
+
+            uint8_t da = (uint8_t)((sum_a + 2) / 4);
+            uint8_t dr, dg, db;
+            if (sum_a > 0) {
+                dr = (uint8_t)((sum_r + sum_a / 2) / sum_a);
+                dg = (uint8_t)((sum_g + sum_a / 2) / sum_a);
+                db = (uint8_t)((sum_b + sum_a / 2) / sum_a);
+            } else {
+                dr = (uint8_t)((ur + 2) / 4);
+                dg = (uint8_t)((ug + 2) / 4);
+                db = (uint8_t)((ub + 2) / 4);
+            }
+            dst[y * dst_w + x] = ((uint32_t)da << 24) | ((uint32_t)db << 16) | ((uint32_t)dg << 8) | (uint32_t)dr;
+        }
+    }
+
+    *out_w = dst_w;
+    *out_h = dst_h;
+    return dst;
+}
+
+/*
+ * Uploads processed RGBA image to OpenGL.
+ * When cell_w > 0 && cell_h > 0 on a multi-cell sheet (tilesets, shadowmap, player skins,
+ * legs, HUD digits/symbols, pointer, etc.), automatically builds a Padded Cell Atlas
+ * with PAD = 4 extruded border pixels around every cell to completely eliminate
+ * tileset & spritesheet bleeding under GL_LINEAR filtering.
+ */
+static void upload_rgba_to_texture(
+    cs2d_texture_t *tex,
+    uint32_t *rgba,
+    int w, int h,
+    bool has_embedded_alpha,
+    int mask_mode,
+    int cell_w, int cell_h
+)
+{
+    apply_cs2d_mask_mode(rgba, w * h, has_embedded_alpha, mask_mode);
+    dilate_transparent_rgb(rgba, w, h, cell_w, cell_h);
+
+    int pad = 0;
+    int gpu_w = w;
+    int gpu_h = h;
+    uint32_t *upload_buf = rgba;
+
+    if (cell_w > 0 && cell_h > 0 && w >= cell_w && h >= cell_h) {
+        int cols = w / cell_w;
+        int rows = h / cell_h;
+        if (cols >= 1 && rows >= 1 && (cols > 1 || rows > 1)) {
+            pad = 4;
+            int stride_x = cell_w + pad * 2;
+            int stride_y = cell_h + pad * 2;
+            gpu_w = cols * stride_x;
+            gpu_h = rows * stride_y;
+            uint32_t *atlas = (uint32_t *)calloc((size_t)gpu_w * (size_t)gpu_h, sizeof(uint32_t));
+            if (atlas) {
+                for (int r = 0; r < rows; r++) {
+                    for (int c = 0; c < cols; c++) {
+                        int src_ox = c * cell_w;
+                        int src_oy = r * cell_h;
+                        int dst_ox = c * stride_x + pad;
+                        int dst_oy = r * stride_y + pad;
+
+                        for (int dy = -pad; dy < cell_h + pad; dy++) {
+                            int sy = (dy < 0) ? 0 : ((dy >= cell_h) ? (cell_h - 1) : dy);
+                            uint32_t *dst_row = &atlas[(dst_oy + dy) * gpu_w + dst_ox];
+                            const uint32_t *src_row = &rgba[(src_oy + sy) * w + src_ox];
+                            for (int dx = -pad; dx < cell_w + pad; dx++) {
+                                int sx = (dx < 0) ? 0 : ((dx >= cell_w) ? (cell_w - 1) : dx);
+                                dst_row[dx] = src_row[sx];
+                            }
+                        }
+                    }
+                }
+                upload_buf = atlas;
+            } else {
+                pad = 0;
+                gpu_w = w;
+                gpu_h = h;
+            }
+        }
+    }
+
+    GLuint tid = 0;
+    if (g_gl_ctx != NULL) {
+        glGenTextures(1, &tid);
+        glBindTexture(GL_TEXTURE_2D, tid);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        /* Use 2-level alpha-weighted mipmaps for smooth downscaling & rotated anti-aliasing */
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)gpu_w, (GLsizei)gpu_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, upload_buf);
+
+        int m1_w = 0, m1_h = 0;
+        uint32_t *mip1 = (gpu_w >= 4 && gpu_h >= 4) ? downsample_rgba_2x(upload_buf, gpu_w, gpu_h, &m1_w, &m1_h) : NULL;
+        if (mip1) {
+            glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA, (GLsizei)m1_w, (GLsizei)m1_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, mip1);
+            int m2_w = 0, m2_h = 0;
+            uint32_t *mip2 = (m1_w >= 4 && m1_h >= 4) ? downsample_rgba_2x(mip1, m1_w, m1_h, &m2_w, &m2_h) : NULL;
+            if (mip2) {
+                glTexImage2D(GL_TEXTURE_2D, 2, GL_RGBA, (GLsizei)m2_w, (GLsizei)m2_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, mip2);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 2);
+                free(mip2);
+            } else {
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 1);
+            }
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            free(mip1);
+        } else {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        }
+
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    if (upload_buf != rgba) {
+        free(upload_buf);
+    }
+
+    tex->id     = tid;
+    tex->width  = w;
+    tex->height = h;
+    tex->gpu_w  = gpu_w;
+    tex->gpu_h  = gpu_h;
+    tex->cell_w = (pad > 0) ? cell_w : 0;
+    tex->cell_h = (pad > 0) ? cell_h : 0;
+    tex->pad    = pad;
+}
+
+static bool load_image_via_gdiplus(cs2d_texture_t *tex, const char *filepath, int mask_mode, int cell_w, int cell_h)
+{
+    if (!init_gdiplus_once()) return false;
+
+    WCHAR wpath[MAX_PATH];
+    if (MultiByteToWideChar(CP_ACP, 0, filepath, -1, wpath, MAX_PATH) == 0) {
+        return false;
+    }
+
+    GpBitmap *bmp = NULL;
+    if (pGdipCreateBitmapFromFile(wpath, &bmp) != 0 || !bmp) {
+        return false;
+    }
+
+    UINT w = 0, h = 0;
+    pGdipGetImageWidth((GpImage *)bmp, &w);
+    pGdipGetImageHeight((GpImage *)bmp, &h);
+    if (w == 0 || h == 0) {
+        pGdipDisposeImage((GpImage *)bmp);
+        return false;
+    }
+
+    uint32_t *rgba = (uint32_t *)malloc((size_t)w * (size_t)h * 4);
+    if (!rgba) {
+        pGdipDisposeImage((GpImage *)bmp);
+        return false;
+    }
+
+    uint8_t min_a = 255, max_a = 0;
+    for (UINT y = 0; y < h; y++) {
+        for (UINT x = 0; x < w; x++) {
+            ARGB argb = 0;
+            pGdipBitmapGetPixel(bmp, (INT)x, (INT)y, &argb);
+            uint8_t a = (uint8_t)((argb >> 24) & 0xFF);
+            uint8_t r = (uint8_t)((argb >> 16) & 0xFF);
+            uint8_t g = (uint8_t)((argb >> 8) & 0xFF);
+            uint8_t b = (uint8_t)(argb & 0xFF);
+            if (a < min_a) min_a = a;
+            if (a > max_a) max_a = a;
+            rgba[y * w + x] = ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)r;
+        }
+    }
+
+    pGdipDisposeImage((GpImage *)bmp);
+
+    bool has_embedded_alpha = (min_a < 255 && max_a > 0);
+    upload_rgba_to_texture(tex, rgba, (int)w, (int)h, has_embedded_alpha, mask_mode, cell_w, cell_h);
+    free(rgba);
+    return true;
+}
+
+bool cs2d_render_init(SDL_Window *window, int width, int height)
+{
+    g_viewport_w = width;
+    g_viewport_h = height;
+
+    if (!window) return false;
+
+    g_gl_ctx = SDL_GL_CreateContext(window);
+    if (!g_gl_ctx) {
+        return false;
+    }
+
+    SDL_GL_MakeCurrent(window, g_gl_ctx);
+    SDL_GL_SetSwapInterval(1);
+
+    cs2d_render_resize(width, height);
+
+    glEnable(GL_MULTISAMPLE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glClearColor(0.08f, 0.08f, 0.10f, 1.0f);
+
+    /* Automatically initialize the global CS2D graphics bank now that GL context is active */
+    g_gfx_bank.initialized = false;
+    cs2d_gfx_bank_init(&g_gfx_bank);
+
+    return true;
+}
+
+void cs2d_render_shutdown(SDL_Window *window)
+{
+    (void)window;
+    cs2d_gfx_bank_free(&g_gfx_bank);
+    if (g_gl_ctx) {
+        SDL_GL_DestroyContext(g_gl_ctx);
+        g_gl_ctx = NULL;
+    }
+}
+
+cs2d_gfx_bank_t *cs2d_render_get_gfx_bank(void)
+{
+    if ((!g_gfx_bank.initialized || (g_gl_ctx != NULL && g_gfx_bank.tex_ct[0].id == 0)) && g_gl_ctx != NULL) {
+        g_gfx_bank.initialized = false;
+        cs2d_gfx_bank_init(&g_gfx_bank);
+    }
+    return &g_gfx_bank;
+}
+
+void cs2d_render_resize(int width, int height)
+{
+    g_viewport_w = width;
+    g_viewport_h = height;
+
+    glViewport(0, 0, width, height);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0.0, (double)width, (double)height, 0.0, -1.0, 1.0);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+}
+
+void cs2d_render_begin_frame(void)
+{
+    glClear(GL_COLOR_BUFFER_BIT);
+    glLoadIdentity();
+}
+
+void cs2d_render_end_frame(SDL_Window *window)
+{
+    if (window) {
+        SDL_GL_SwapWindow(window);
+    }
+}
+
+bool cs2d_texture_load_grid(cs2d_texture_t *tex, const char *filepath, int mask_mode, int cell_w, int cell_h)
+{
+    if (!tex || !filepath) return false;
+    memset(tex, 0, sizeof(*tex));
+
+    FILE *f = fopen(filepath, "rb");
+    if (!f) return false;
+
+    uint8_t header[54];
+    size_t nread = fread(header, 1, 54, f);
+    if (nread != 54 || header[0] != 'B' || header[1] != 'M') {
+        fclose(f);
+        /* Not a raw BMP (e.g. PNG tileset or gfx/hud_symbols.bmp): load via GDI+ */
+        return load_image_via_gdiplus(tex, filepath, mask_mode, cell_w, cell_h);
+    }
+
+    int width = *(int32_t *)&header[18];
+    int height = *(int32_t *)&header[22];
+    int bpp = *(int16_t *)&header[28];
+    uint32_t data_offset = *(uint32_t *)&header[10];
+
+    if (width <= 0 || height == 0 || (bpp != 24 && bpp != 32)) {
+        fclose(f);
+        return load_image_via_gdiplus(tex, filepath, mask_mode, cell_w, cell_h);
+    }
+
+    bool flip_y = (height > 0);
+    if (height < 0) height = -height;
+
+    fseek(f, data_offset, SEEK_SET);
+
+    int row_stride = ((width * (bpp / 8) + 3) / 4) * 4;
+    uint8_t *raw_row = (uint8_t *)malloc(row_stride);
+    uint32_t *rgba_pixels = (uint32_t *)malloc((size_t)width * (size_t)height * 4);
+
+    if (!raw_row || !rgba_pixels) {
+        free(raw_row);
+        free(rgba_pixels);
+        fclose(f);
+        return false;
+    }
+
+    uint8_t min_a = 255, max_a = 0;
+
+    for (int y = 0; y < height; y++) {
+        if (fread(raw_row, 1, row_stride, f) != (size_t)row_stride) break;
+        int dst_y = flip_y ? (height - 1 - y) : y;
+
+        for (int x = 0; x < width; x++) {
+            uint8_t b = 0, g = 0, r = 0, a = 255;
+            if (bpp == 24) {
+                b = raw_row[x * 3 + 0];
+                g = raw_row[x * 3 + 1];
+                r = raw_row[x * 3 + 2];
+            } else {
+                b = raw_row[x * 4 + 0];
+                g = raw_row[x * 4 + 1];
+                r = raw_row[x * 4 + 2];
+                a = raw_row[x * 4 + 3];
+                if (a < min_a) min_a = a;
+                if (a > max_a) max_a = a;
+            }
+            rgba_pixels[dst_y * width + x] = ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)r;
+        }
+    }
+
+    free(raw_row);
+    fclose(f);
+
+    /*
+     * In CS2D, 32-bit BMPs (ct1..4.bmp, t1..4.bmp, legs.bmp, weapons/<name>.bmp, equipment.bmp)
+     * store an embedded per-pixel 8-bit alpha channel (min_a == 0, max_a == 255), where
+     * black boots/gun barrels have RGB=(0,0,0) and A=255. Preserve embedded alpha when present!
+     */
+    bool has_embedded_alpha = (bpp == 32 && min_a < 255 && max_a > 0);
+    upload_rgba_to_texture(tex, rgba_pixels, width, height, has_embedded_alpha, mask_mode, cell_w, cell_h);
+    free(rgba_pixels);
+    return true;
+}
+
+bool cs2d_texture_load_ex(cs2d_texture_t *tex, const char *filepath, int mask_mode)
+{
+    return cs2d_texture_load_grid(tex, filepath, mask_mode, 0, 0);
+}
+
+bool cs2d_texture_load_bmp(cs2d_texture_t *tex, const char *filepath, bool color_key_black)
+{
+    return cs2d_texture_load_ex(tex, filepath, color_key_black ? 3 : 2);
+}
+
+/*
+ * Reconstructed from FUN_140113d50 (lines 236-263 in cs2d_dedicated.exe):
+ * Resolves gfx/tiles/<tileset_name> (trying exact name, .bmp, and .png)
+ * and builds a 32x32 padded cell atlas to prevent tileset edge bleeding.
+ */
+bool cs2d_texture_load_tileset(cs2d_texture_t *tex, const char *tileset_name)
+{
+    if (!tex || !tileset_name || tileset_name[0] == '\0') return false;
+
+    char path[256];
+    snprintf(path, sizeof(path), "gfx/tiles/%s", tileset_name);
+    if (cs2d_texture_load_grid(tex, path, 0, 32, 32)) return true;
+
+    snprintf(path, sizeof(path), "gfx/tiles/%s.bmp", tileset_name);
+    if (cs2d_texture_load_grid(tex, path, 0, 32, 32)) return true;
+
+    snprintf(path, sizeof(path), "gfx/tiles/%s.png", tileset_name);
+    if (cs2d_texture_load_grid(tex, path, 0, 32, 32)) return true;
+
+    return false;
+}
+
+void cs2d_texture_free(cs2d_texture_t *tex)
+{
+    if (tex && tex->id) {
+        GLuint tid = tex->id;
+        glDeleteTextures(1, &tid);
+        tex->id = 0;
+    }
+}
+
+/* Helper to derive gfx/weapons/<slug>.bmp from weapon ID & name (reconstructed from 0x1401d9210) */
+static void weapon_id_to_slug(uint8_t id, const char *name, char *out_slug, size_t max_len)
+{
+    if (id == 57 || id == 58 || id == 80) {
+        snprintf(out_slug, max_len, "armor");
+        return;
+    }
+    if (id == 64) {
+        snprintf(out_slug, max_len, "medikit");
+        return;
+    }
+    if (!name || !name[0]) {
+        out_slug[0] = '\0';
+        return;
+    }
+    size_t j = 0;
+    for (size_t i = 0; name[i] != '\0' && j + 1 < max_len; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (isalnum(c)) {
+            out_slug[j++] = (char)tolower(c);
+        }
+    }
+    out_slug[j] = '\0';
+}
+
+bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank)
+{
+    if (!bank) return false;
+    if (bank->initialized && (g_gl_ctx == NULL || bank->tex_ct[0].id != 0)) return true;
+    memset(bank, 0, sizeof(*bank));
+
+    cs2d_weapons_init();
+
+    /* 1. Player Skins (64x96 -> 6 frames of 32x32, maskMode = 2, padded 32x32 cell atlas) */
+    for (int i = 0; i < 4; i++) {
+        char path[64];
+        snprintf(path, sizeof(path), "gfx/player/t%d.bmp", i + 1);
+        cs2d_texture_load_grid(&bank->tex_t[i], path, 2, 32, 32);
+        snprintf(path, sizeof(path), "gfx/player/ct%d.bmp", i + 1);
+        cs2d_texture_load_grid(&bank->tex_ct[i], path, 2, 32, 32);
+    }
+    cs2d_texture_load_grid(&bank->tex_vip,       "gfx/player/vip.bmp",      2, 32, 32);
+    cs2d_texture_load_grid(&bank->tex_zombie,    "gfx/player/zombie.bmp",   2, 32, 32);
+    cs2d_texture_load_grid(&bank->tex_legs,      "gfx/player/legs.bmp",     2, 32, 32);
+    cs2d_texture_load_grid(&bank->tex_hostages,  "gfx/player/hostages.bmp", 2, 32, 32);
+    cs2d_texture_load_grid(&bank->tex_equipment, "gfx/equipment.bmp",       2, 32, 32);
+
+    /* 2. Weapons (held .bmp maskMode=2, dropped _d.bmp maskMode=2, killfeed _k.bmp maskMode=3) */
+    for (int id = 1; id < CS2D_MAX_WEAPONS; id++) {
+        const cs2d_weapon_def_t *def = cs2d_weapon_get((uint8_t)id);
+        if (!def || !def->name) continue;
+
+        char slug[64];
+        weapon_id_to_slug((uint8_t)id, def->name, slug, sizeof(slug));
+        if (!slug[0]) continue;
+
+        char path[128];
+        snprintf(path, sizeof(path), "gfx/weapons/%s.bmp", slug);
+        cs2d_texture_load_ex(&bank->tex_weapons[id], path, 2);
+
+        snprintf(path, sizeof(path), "gfx/weapons/%s_d.bmp", slug);
+        if (!cs2d_texture_load_ex(&bank->tex_weapons_d[id], path, 2)) {
+            /* Fallback to held sprite if _d.bmp does not exist (e.g. flags, medikit, ammo) */
+            snprintf(path, sizeof(path), "gfx/weapons/%s.bmp", slug);
+            cs2d_texture_load_ex(&bank->tex_weapons_d[id], path, 2);
+        }
+
+        snprintf(path, sizeof(path), "gfx/weapons/%s_k.bmp", slug);
+        cs2d_texture_load_ex(&bank->tex_weapons_k[id], path, 3);
+    }
+
+    cs2d_texture_load_ex(&bank->tex_reload,   "gfx/weapons/reload.bmp",   2);
+    cs2d_texture_load_ex(&bank->tex_silencer, "gfx/weapons/silencer.bmp", 2);
+    cs2d_texture_load_ex(&bank->tex_m4a1s,    "gfx/weapons/m4a1s.bmp",    2);
+    cs2d_texture_load_ex(&bank->tex_redflag,  "gfx/weapons/redflag.bmp",  2);
+    cs2d_texture_load_ex(&bank->tex_blueflag, "gfx/weapons/blueflag.bmp", 2);
+    cs2d_texture_load_ex(&bank->tex_noflag,   "gfx/weapons/noflag.bmp",   2);
+
+    /* 3. Map & Entity Sprites (including embedded IncBin assets extracted from CS2D.exe) */
+    cs2d_texture_load_grid(&bank->tex_shadowmap, "gfx/shadowmap.bmp",       3, 32, 32);
+    cs2d_texture_load_grid(&bank->tex_decals,    "gfx/decals.bmp",          3, 32, 32);
+    cs2d_texture_load_grid(&bank->tex_buildings, "gfx/buildings.png",       2, 32, 32);
+    if (!cs2d_texture_load_ex(&bank->tex_palms, "incbindata/palmleave.png", 2)) {
+        if (!cs2d_texture_load_ex(&bank->tex_palms, "gfx/incbindata/palmleave.png", 2)) {
+            cs2d_texture_load_ex(&bank->tex_palms, "gfx/sprites/palm.png", 2);
+        }
+    }
+    if (!cs2d_texture_load_ex(&bank->tex_tree, "incbindata/treeleaves.png", 2)) {
+        if (!cs2d_texture_load_ex(&bank->tex_tree, "gfx/incbindata/treeleaves.png", 2)) {
+            cs2d_texture_load_ex(&bank->tex_tree, "gfx/sprites/tree01.bmp", 3);
+        }
+    }
+    if (!cs2d_texture_load_ex(&bank->tex_leaf, "incbindata/shadow.bmp", 3)) {
+        cs2d_texture_load_ex(&bank->tex_leaf, "gfx/shadow.bmp", 3);
+    }
+    if (!cs2d_texture_load_grid(&bank->tex_lamp1, "incbindata/objects.bmp", 2, 32, 32)) {
+        if (!cs2d_texture_load_grid(&bank->tex_lamp1, "gfx/incbindata/objects.bmp", 2, 32, 32)) {
+            cs2d_texture_load_ex(&bank->tex_lamp1, "gfx/sprites/lamp1.bmp", 2);
+        }
+    }
+    cs2d_texture_load_ex(&bank->tex_lamp2,     "gfx/sprites/lamp2.bmp",    2);
+    cs2d_texture_load_ex(&bank->tex_flare1,    "gfx/sprites/flare1.bmp",   3);
+    cs2d_texture_load_ex(&bank->tex_flare3,    "gfx/sprites/flare3.bmp",   3);
+    cs2d_texture_load_ex(&bank->tex_bspot_a,   "gfx/sprites/bspot_a.png",  2);
+    cs2d_texture_load_ex(&bank->tex_bspot_b,   "gfx/sprites/bspot_b.png",  2);
+
+    cs2d_texture_load_grid(&bank->tex_npc[0], "gfx/npc/zombie.bmp",     2, 32, 32);
+    cs2d_texture_load_ex(&bank->tex_npc[1],   "gfx/npc/headcrab.bmp",   2);
+    cs2d_texture_load_ex(&bank->tex_npc[2],   "gfx/npc/snark.bmp",      2);
+    cs2d_texture_load_ex(&bank->tex_npc[3],   "gfx/npc/vortigaunt.bmp", 2);
+    cs2d_texture_load_grid(&bank->tex_npc[4], "gfx/npc/soldier.bmp",    2, 32, 32);
+
+    /* 4. HUD & Crosshair Assets (exact maskMode and padded cell grids) */
+    cs2d_texture_load_grid(&bank->tex_hud_nums,        "gfx/hud_nums.bmp",           1, 48, 66);
+    cs2d_texture_load_grid(&bank->tex_hud_symbols,     "gfx/hud_symbols.bmp",        1, 64, 64);
+    cs2d_texture_load_ex(&bank->tex_hud_radar,         "gfx/hud_radar.bmp",          1);
+    cs2d_texture_load_ex(&bank->tex_hud_radar_adv,     "gfx/hud_radar_advanced.png", 2);
+    cs2d_texture_load_ex(&bank->tex_hud_radar_ring,    "gfx/hud_radar_ring.png",     2);
+    cs2d_texture_load_grid(&bank->tex_hud_radar_icons, "gfx/hud_radar_icons.png",    2, 32, 32);
+    cs2d_texture_load_ex(&bank->tex_hud_slot,          "gfx/hud_slot.bmp",           0);
+    cs2d_texture_load_grid(&bank->tex_pointer,         "gfx/pointer.bmp",            2, 46, 46);
+
+    bank->initialized = (g_gl_ctx != NULL);
+    return true;
+}
+
+void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank)
+{
+    if (!bank) return;
+
+    for (int i = 0; i < 4; i++) {
+        cs2d_texture_free(&bank->tex_t[i]);
+        cs2d_texture_free(&bank->tex_ct[i]);
+    }
+    cs2d_texture_free(&bank->tex_vip);
+    cs2d_texture_free(&bank->tex_zombie);
+    cs2d_texture_free(&bank->tex_legs);
+    cs2d_texture_free(&bank->tex_hostages);
+    cs2d_texture_free(&bank->tex_equipment);
+
+    for (int i = 0; i < CS2D_MAX_WEAPONS; i++) {
+        cs2d_texture_free(&bank->tex_weapons[i]);
+        cs2d_texture_free(&bank->tex_weapons_d[i]);
+        cs2d_texture_free(&bank->tex_weapons_k[i]);
+    }
+    cs2d_texture_free(&bank->tex_reload);
+    cs2d_texture_free(&bank->tex_silencer);
+    cs2d_texture_free(&bank->tex_m4a1s);
+    cs2d_texture_free(&bank->tex_redflag);
+    cs2d_texture_free(&bank->tex_blueflag);
+    cs2d_texture_free(&bank->tex_noflag);
+
+    cs2d_texture_free(&bank->tex_shadowmap);
+    cs2d_texture_free(&bank->tex_decals);
+    cs2d_texture_free(&bank->tex_buildings);
+    cs2d_texture_free(&bank->tex_palms);
+    cs2d_texture_free(&bank->tex_tree);
+    cs2d_texture_free(&bank->tex_leaf);
+    cs2d_texture_free(&bank->tex_lamp1);
+    cs2d_texture_free(&bank->tex_lamp2);
+    cs2d_texture_free(&bank->tex_flare1);
+    cs2d_texture_free(&bank->tex_flare3);
+    cs2d_texture_free(&bank->tex_bspot_a);
+    cs2d_texture_free(&bank->tex_bspot_b);
+    for (int i = 0; i < 5; i++) {
+        cs2d_texture_free(&bank->tex_npc[i]);
+    }
+
+    cs2d_texture_free(&bank->tex_hud_nums);
+    cs2d_texture_free(&bank->tex_hud_symbols);
+    cs2d_texture_free(&bank->tex_hud_radar);
+    cs2d_texture_free(&bank->tex_hud_radar_adv);
+    cs2d_texture_free(&bank->tex_hud_radar_ring);
+    cs2d_texture_free(&bank->tex_hud_radar_icons);
+    cs2d_texture_free(&bank->tex_hud_slot);
+    cs2d_texture_free(&bank->tex_pointer);
+    cs2d_texture_free(&bank->tex_minimap);
+
+    for (int i = 0; i < bank->sprite_cache_count; i++) {
+        cs2d_texture_free(&bank->sprite_cache[i].tex);
+    }
+    memset(bank, 0, sizeof(*bank));
+}
+
+const cs2d_texture_t *cs2d_gfx_get_sprite(cs2d_gfx_bank_t *bank, const char *rel_path, bool black_mask)
+{
+    if (!bank || !rel_path || !rel_path[0]) return NULL;
+
+    int mask_mode = black_mask ? 3 : 1;
+    for (int i = 0; i < bank->sprite_cache_count; i++) {
+        if (_stricmp(bank->sprite_cache[i].path, rel_path) == 0 &&
+            bank->sprite_cache[i].mask_mode == mask_mode) {
+            return bank->sprite_cache[i].tex.id ? &bank->sprite_cache[i].tex : NULL;
+        }
+    }
+
+    if (bank->sprite_cache_count >= CS2D_MAX_SPRITE_CACHE) return NULL;
+
+    cs2d_sprite_cache_entry_t *entry = &bank->sprite_cache[bank->sprite_cache_count++];
+    snprintf(entry->path, sizeof(entry->path), "%s", rel_path);
+    entry->mask_mode = mask_mode;
+
+    if (!cs2d_texture_load_ex(&entry->tex, rel_path, mask_mode)) {
+        char alt[160];
+        snprintf(alt, sizeof(alt), "gfx/sprites/%s", rel_path);
+        cs2d_texture_load_ex(&entry->tex, alt, mask_mode);
+    }
+
+    return entry->tex.id ? &entry->tex : NULL;
+}
+
+void cs2d_render_rect(float x, float y, float w, float h, float r, float g, float b, float a, bool fill)
+{
+    glDisable(GL_TEXTURE_2D);
+    glColor4f(r, g, b, a);
+    glBegin(fill ? GL_QUADS : GL_LINE_LOOP);
+        glVertex2f(x, y);
+        glVertex2f(x + w, y);
+        glVertex2f(x + w, y + h);
+        glVertex2f(x, y + h);
+    glEnd();
+}
+
+void cs2d_render_line(float x1, float y1, float x2, float y2, float r, float g, float b, float a)
+{
+    glDisable(GL_TEXTURE_2D);
+    glColor4f(r, g, b, a);
+    glBegin(GL_LINES);
+        glVertex2f(x1, y1);
+        glVertex2f(x2, y2);
+    glEnd();
+}
+
+void cs2d_render_circle(float cx, float cy, float radius, float r, float g, float b, float a, bool fill)
+{
+    glDisable(GL_TEXTURE_2D);
+    glColor4f(r, g, b, a);
+    glBegin(fill ? GL_TRIANGLE_FAN : GL_LINE_LOOP);
+    if (fill) glVertex2f(cx, cy);
+    int segments = 24;
+    for (int i = 0; i <= segments; i++) {
+        float theta = 2.0f * 3.1415926f * (float)i / (float)segments;
+        glVertex2f(cx + cosf(theta) * radius, cy + sinf(theta) * radius);
+    }
+    glEnd();
+}
+
+void cs2d_render_sprite_frame(
+    const cs2d_texture_t *tex,
+    int cell_w, int cell_h, int frame,
+    float x, float y,
+    float draw_w, float draw_h,
+    float angle_deg,
+    float r, float g, float b, float a,
+    int blend_mode
+)
+{
+    if (!tex || !tex->id || tex->width <= 0 || tex->height <= 0) {
+        return;
+    }
+
+    if (cell_w <= 0) cell_w = tex->width;
+    if (cell_h <= 0) cell_h = tex->height;
+
+    int cols = tex->width / cell_w;
+    if (cols < 1) cols = 1;
+    if (frame < 0) frame = 0;
+
+    int col = frame % cols;
+    int row = frame / cols;
+
+    float u0, v0, u1, v1;
+    if (tex->pad > 0 && tex->cell_w == cell_w && tex->cell_h == cell_h && tex->gpu_w > 0 && tex->gpu_h > 0) {
+        int stride_x = cell_w + tex->pad * 2;
+        int stride_y = cell_h + tex->pad * 2;
+        u0 = (float)(col * stride_x + tex->pad) / (float)tex->gpu_w;
+        v0 = (float)(row * stride_y + tex->pad) / (float)tex->gpu_h;
+        u1 = (float)(col * stride_x + tex->pad + cell_w) / (float)tex->gpu_w;
+        v1 = (float)(row * stride_y + tex->pad + cell_h) / (float)tex->gpu_h;
+    } else {
+        u0 = (float)(col * cell_w) / (float)tex->width;
+        v0 = (float)(row * cell_h) / (float)tex->height;
+        u1 = (float)((col + 1) * cell_w) / (float)tex->width;
+        v1 = (float)((row + 1) * cell_h) / (float)tex->height;
+    }
+
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, tex->id);
+
+    /* CS2D Blend Modes: 3/4 = Light/Additive, 5/6 = Shade, 0 = Alpha */
+    if (blend_mode == 3 || blend_mode == 4) {
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    } else {
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    }
+
+    glColor4f(r, g, b, a);
+
+    glPushMatrix();
+    glTranslatef(x, y, 0.0f);
+    if (angle_deg != 0.0f) {
+        glRotatef(angle_deg, 0.0f, 0.0f, 1.0f);
+    }
+
+    float half_w = draw_w * 0.5f;
+    float half_h = draw_h * 0.5f;
+
+    glBegin(GL_QUADS);
+        glTexCoord2f(u0, v0); glVertex2f(-half_w, -half_h);
+        glTexCoord2f(u1, v0); glVertex2f( half_w, -half_h);
+        glTexCoord2f(u1, v1); glVertex2f( half_w,  half_h);
+        glTexCoord2f(u0, v1); glVertex2f(-half_w,  half_h);
+    glEnd();
+
+    glPopMatrix();
+
+    if (blend_mode == 3 || blend_mode == 4) {
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    }
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDisable(GL_TEXTURE_2D);
+}
+
+void cs2d_render_sprite(
+    const cs2d_texture_t *tex,
+    float x, float y,
+    float w, float h,
+    float angle_deg,
+    float r, float g, float b, float a
+)
+{
+    if (!tex || !tex->id) {
+        cs2d_render_rect(x - w * 0.5f, y - h * 0.5f, w, h, r, g, b, a, true);
+        return;
+    }
+    cs2d_render_sprite_frame(tex, tex->width, tex->height, 0, x, y, w, h, angle_deg, r, g, b, a, 0);
+}
+
+/*
+ * Reconstructed from Tpl.getFrame (FUN_140002e20..0x140002fc5 in CS2D.exe):
+ * Selects which of the 6 cells (32x32, 2 cols x 3 rows) in gfx/player/ct1..4.bmp or t1..4.bmp to draw:
+ *   Frame 0/1: Knife / Grenade / Bomb / Unarmed / Reloading stance (0=right-handed, 1=left-handed)
+ *   Frame 2:   Claw / Zombie dual-hand stance (weapon 78)
+ *   Frame 3:   Pistol / Two-handed centered stance (weapons 1..9 or melee slash)
+ *   Frame 4/5: Rifle / Shotgun / SMG / Heavy two-handed weapon stance (4=right-handed, 5=left-handed)
+ */
+int cs2d_player_get_frame(const cs2d_player_t *player, bool lefthanded)
+{
+    int lh = lefthanded ? 1 : 0;
+    if (!player) return lh;
+
+    uint8_t w = player->current_weapon;
+    if (w == 0) return lh;
+
+    int frame = lh;
+    if (w <= 9) {
+        frame = 3; /* Pistols: USP, Glock, Deagle, P228, Elite, Five-Seven */
+    } else if (w == 78) {
+        frame = 2; /* Claw */
+    } else if (w > 49 && w <= 89) {
+        frame = lh; /* Knife (50), Grenades (51..54), Bomb (55), Defuse (56), Machete (69), Wrench (74), Mine (77), Chainsaw (85) */
+    } else {
+        frame = 4 + lh; /* Shotguns (10..11), SMGs (20..24), Rifles (30..39), M249 (40), Shield (41), Laser (45), RPG (47..49), Portal (90..91) */
+    }
+
+    if (player->is_reloading || player->reload_timer > 0.0f) {
+        frame = lh;
+    }
+
+    /* Bomb planting animation (0x140002ee4..0x140002fc4): alternates frames 3 and 4 */
+    if (w == CS2D_WEP_BOMB && player->is_planting) {
+        int step = (int)(player->plant_progress * 6.0f);
+        frame = (step & 1) ? 4 : 3;
+    }
+
+    return frame;
+}
+
+/*
+ * Reconstructed from Tpl.draw (FUN_140121160..0x140122b20 in CS2D.exe):
+ *   1. Visual recoil knockback offset: sx -= sin(rad)*recoil, sy += cos(rad)*recoil (0x14012138e)
+ *   2. Walking legs (gfx/player/legs.bmp, 8 frames of 32x32) offset 5.0px behind torso (0x140121cb0)
+ *   3. Player torso skin (ct1..4.bmp, t1..4.bmp, vip.bmp, 6 frames of 32x32) frame from Tpl.getFrame (0x140121463)
+ *   4. Special armor overlay (Tpl.getArmorImage 0x1400320a0) if armor in 201..205 (0x140121596)
+ *   5.Held weapon sprite (gfx/weapons/<wep>.bmp) offset 16.5px in front of torso + silencer overlay (0x1401215ee..0x1401218a0)
+ *   6. Equipment overlay (gfx/equipment.bmp, 3 frames of 32x32: 0=bomb/defuse at angle-10, 1=NVG, 2=gasmask) (0x1401218b0..0x140121f19)
+ */
+void cs2d_render_player(
+    const cs2d_player_t  *player,
+    const cs2d_texture_t *skin_tex,
+    const cs2d_texture_t *wep_tex,
+    float cam_x, float cam_y
+)
+{
+    if (!player || !player->alive) return;
+
+    cam_x = roundf(cam_x);
+    cam_y = roundf(cam_y);
+
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+
+    float rad = player->angle * (3.14159265f / 180.0f);
+    float sin_a = sinf(rad);
+    float cos_a = cosf(rad);
+
+    /* Recoil visual knockback (0x14012138e..0x1401213cc) */
+    float recoil_px = (player->recoil > 6.0f) ? 6.0f : player->recoil;
+    float sx = (player->pos.x - cam_x) - sin_a * recoil_px;
+    float sy = (player->pos.y - cam_y) + cos_a * recoil_px;
+
+    /* 0. Player Ground Drop Shadow (gfx/shadow.bmp, maskMode=3) */
+    if (bank && bank->tex_leaf.id) {
+        cs2d_render_sprite_frame(&bank->tex_leaf, bank->tex_leaf.width, bank->tex_leaf.height, 0,
+                                 sx + 2.0f, sy + 2.0f, 32.0f, 32.0f, 0.0f,
+                                 0.0f, 0.0f, 0.0f, 0.35f, 0);
+    }
+
+    /* 1. Walking Legs (gfx/player/legs.bmp: 128x64 -> 8 frames of 32x32, offset 5px behind player) */
+    bool moving = (player->feet_timer > 0.0f) ||
+                  (fabsf(player->vel.x) > 1.0f || fabsf(player->vel.y) > 1.0f);
+    if (moving && bank && bank->tex_legs.id) {
+        int leg_frame = ((int)player->feet_frame) & 7;
+        float leg_ang = (player->feet_timer > 0.0f) ? player->feet_angle : player->angle;
+        float lx = sx - sin_a * 5.0f;
+        float ly = sy + cos_a * 5.0f;
+        cs2d_render_sprite_frame(&bank->tex_legs, 32, 32, leg_frame,
+                                 lx, ly, 32.0f, 32.0f, leg_ang,
+                                 1.0f, 1.0f, 1.0f, 1.0f, 0);
+    }
+
+    /* 2. Resolve Player Skin Texture (ct1..4, t1..4, vip) */
+    const cs2d_texture_t *active_skin = skin_tex;
+    uint8_t look_idx = player->look & 3;
+    if (bank && bank->initialized) {
+        if (player->is_vip || player->team == CS2D_TEAM_VIP) {
+            if (bank->tex_vip.id) active_skin = &bank->tex_vip;
+        } else if (player->team == CS2D_TEAM_CT) {
+            if (bank->tex_ct[look_idx].id) active_skin = &bank->tex_ct[look_idx];
+        } else if (player->team == CS2D_TEAM_T) {
+            if (bank->tex_t[look_idx].id) active_skin = &bank->tex_t[look_idx];
+        }
+    }
+
+    int body_frame = cs2d_player_get_frame(player, false);
+
+    if (active_skin && active_skin->id) {
+        /* Slice exact 32x32 frame from 64x96 player sheet (2 cols x 3 rows) */
+        int cell_w = (active_skin->width >= 64) ? (active_skin->width / 2) : active_skin->width;
+        int cell_h = (active_skin->height >= 96) ? (active_skin->height / 3) : active_skin->height;
+        cs2d_render_sprite_frame(active_skin, cell_w, cell_h, body_frame,
+                                 sx, sy, 32.0f, 32.0f, player->angle,
+                                 1.0f, 1.0f, 1.0f, 1.0f, 0);
+    }
+
+    /* 3. Special Armor Overlay (Tpl.getArmorImage 0x1400320a0: armor 201..205 -> weapon IDs 79..83) */
+    if (bank && player->armor >= 201 && player->armor <= 205) {
+        int arm_wep_id = 79 + (player->armor - 201);
+        const cs2d_texture_t *arm_tex = &bank->tex_weapons[arm_wep_id];
+        if (arm_tex->id) {
+            cs2d_render_sprite(arm_tex, sx, sy, 32.0f, 32.0f, player->angle, 1.0f, 1.0f, 1.0f, 1.0f);
+        }
+    }
+
+    /* 4. Held Weapon in Hands (0x1401215ee..0x1401218a0) */
+    const cs2d_texture_t *active_wep = wep_tex;
+    if (bank && player->current_weapon > 0 && player->current_weapon < CS2D_MAX_WEAPONS) {
+        if (bank->tex_weapons[player->current_weapon].id) {
+            active_wep = &bank->tex_weapons[player->current_weapon];
+        }
+    }
+
+    if (player->is_reloading && bank && bank->tex_reload.id) {
+        /* Reloading sprite at 13.5px in front of player (0x140122983) */
+        float wx = sx + sin_a * 13.5f;
+        float wy = sy - cos_a * 13.5f;
+        cs2d_render_sprite(&bank->tex_reload, wx, wy, 32.0f, 32.0f, player->angle, 1.0f, 1.0f, 1.0f, 1.0f);
+    } else if (active_wep && active_wep->id) {
+        /* Held weapon sprite at 16.5px in front of player (0x14012168e: 0x140bd7058 = 16.5) */
+        float wx = sx + sin_a * 16.5f;
+        float wy = sy - cos_a * 16.5f;
+        cs2d_render_sprite(active_wep, wx, wy, 32.0f, 32.0f, player->angle, 1.0f, 1.0f, 1.0f, 1.0f);
+
+        /* Silencer attachment overlay for USP (1) and M4A1 (32) when zoom_mode == 3 (0x1401217e4) */
+        if (bank && player->zoom_mode == 3) {
+            if (player->current_weapon == CS2D_WEP_USP && bank->tex_silencer.id) {
+                cs2d_render_sprite(&bank->tex_silencer, wx, wy, 32.0f, 32.0f, player->angle, 1.0f, 1.0f, 1.0f, 1.0f);
+            } else if (player->current_weapon == CS2D_WEP_M4A1 && bank->tex_m4a1s.id) {
+                cs2d_render_sprite(&bank->tex_m4a1s, wx, wy, 32.0f, 32.0f, player->angle, 1.0f, 1.0f, 1.0f, 1.0f);
+            }
+        }
+    }
+
+    /* 5. Equipment Overlays (gfx/equipment.bmp: 96x32 -> 3 frames of 32x32) */
+    if (bank && bank->tex_equipment.id) {
+        /* Frame 0: Bomb pack or Defuse kit on back at angle - 10 deg (0x140121b48) */
+        if (player->inventory[CS2D_SLOT_BOMB] == CS2D_WEP_BOMB || player->has_defuse_kit) {
+            cs2d_render_sprite_frame(&bank->tex_equipment, 32, 32, 0,
+                                     sx, sy, 32.0f, 32.0f, player->angle - 10.0f,
+                                     1.0f, 1.0f, 1.0f, 1.0f, 0);
+        }
+        /* Frame 1: Nightvision goggles */
+        if (player->has_nightvision) {
+            cs2d_render_sprite_frame(&bank->tex_equipment, 32, 32, 1,
+                                     sx, sy, 32.0f, 32.0f, player->angle,
+                                     1.0f, 1.0f, 1.0f, 1.0f, 0);
+        }
+        /* Frame 2: Gasmask (0x140121e88) */
+        if (player->has_gasmask) {
+            cs2d_render_sprite_frame(&bank->tex_equipment, 32, 32, 2,
+                                     sx, sy, 32.0f, 32.0f, player->angle,
+                                     1.0f, 1.0f, 1.0f, 1.0f, 0);
+        }
+    }
+}
+
+/*
+ * Draws a single 32x32 tile frame from the padded tileset atlas using
+ * exact axis-aligned vertex positions and rotated corner UVs (0x140010450 & 0x14013fd30).
+ */
+static void draw_tile_frame(
+    const cs2d_texture_t *tileset_tex,
+    int tile_src, int cols,
+    uint8_t frame_idx, uint8_t mod,
+    float rx, float ry,
+    float alpha
+)
+{
+    int col = (int)frame_idx % cols;
+    int row = (int)frame_idx / cols;
+
+    float u0, v0, u1, v1;
+    if (tileset_tex->pad > 0 && tileset_tex->cell_w == tile_src && tileset_tex->cell_h == tile_src &&
+        tileset_tex->gpu_w > 0 && tileset_tex->gpu_h > 0) {
+        int stride_x = tile_src + tileset_tex->pad * 2;
+        int stride_y = tile_src + tileset_tex->pad * 2;
+        u0 = (float)(col * stride_x + tileset_tex->pad) / (float)tileset_tex->gpu_w;
+        v0 = (float)(row * stride_y + tileset_tex->pad) / (float)tileset_tex->gpu_h;
+        u1 = (float)(col * stride_x + tileset_tex->pad + tile_src) / (float)tileset_tex->gpu_w;
+        v1 = (float)(row * stride_y + tileset_tex->pad + tile_src) / (float)tileset_tex->gpu_h;
+    } else {
+        u0 = (float)(col * tile_src) / (float)tileset_tex->width;
+        v0 = (float)(row * tile_src) / (float)tileset_tex->height;
+        u1 = (float)((col + 1) * tile_src) / (float)tileset_tex->width;
+        v1 = (float)((row + 1) * tile_src) / (float)tileset_tex->height;
+    }
+
+    uint8_t rot_mode = 0;
+    float shade = 1.0f;
+    if ((mod & 192) == 0) {
+        rot_mode = mod & 3;
+        uint8_t bmod = (mod >> 2) & 0x0F;
+        if (bmod > 0 && bmod <= 10) {
+            /* Brightness modifier (0x140010467): 1..5 darken, 6..10 brighten */
+            if (bmod <= 5) shade = 1.0f - (float)bmod * 0.15f;
+        }
+    }
+
+    /* Corner UVs for [TL, TR, BR, BL] rotated clockwise by 0, 90, 180, or 270 degrees */
+    float tu[4], tv[4];
+    if (rot_mode == 1) {
+        /* 90 deg clockwise */
+        tu[0] = u0; tv[0] = v1;
+        tu[1] = u0; tv[1] = v0;
+        tu[2] = u1; tv[2] = v0;
+        tu[3] = u1; tv[3] = v1;
+    } else if (rot_mode == 2) {
+        /* 180 deg */
+        tu[0] = u1; tv[0] = v1;
+        tu[1] = u0; tv[1] = v1;
+        tu[2] = u0; tv[2] = v0;
+        tu[3] = u1; tv[3] = v0;
+    } else if (rot_mode == 3) {
+        /* 270 deg clockwise */
+        tu[0] = u1; tv[0] = v0;
+        tu[1] = u1; tv[1] = v1;
+        tu[2] = u0; tv[2] = v1;
+        tu[3] = u0; tv[3] = v0;
+    } else {
+        /* 0 deg */
+        tu[0] = u0; tv[0] = v0;
+        tu[1] = u1; tv[1] = v0;
+        tu[2] = u1; tv[2] = v1;
+        tu[3] = u0; tv[3] = v1;
+    }
+
+    float x1 = rx + (float)CS2D_TILE_SIZE;
+    float y1 = ry + (float)CS2D_TILE_SIZE;
+
+    glColor4f(shade, shade, shade, alpha);
+    glBegin(GL_QUADS);
+        glTexCoord2f(tu[0], tv[0]); glVertex2f(rx, ry);
+        glTexCoord2f(tu[1], tv[1]); glVertex2f(x1, ry);
+        glTexCoord2f(tu[2], tv[2]); glVertex2f(x1, y1);
+        glTexCoord2f(tu[3], tv[3]); glVertex2f(rx, y1);
+    glEnd();
+}
+
+/* Cached unified sun-angle & multi-layer room lighting/shadow texture (reconstructed from 0x140260330 & 0x14025e420) */
+static cs2d_texture_t s_room_shadow_tex = {0};
+static uint32_t       s_room_shadow_map_w = 0;
+static uint32_t       s_room_shadow_map_h = 0;
+static bool           s_shadows_enabled = true;
+
+/*
+ * Reconstructed from 0x14025e420 (cast_shadow_volume) + lighting/gfx_penumbra.png & lighting/gfx_blur.png:
+ * Rasterizes the 6-vertex extruded shadow volume of rectangle [x0..x1, y0..y1] swept by (dx, dy)
+ * at scale = 16 texels per 32x32 tile (2.0 world pixels per texel), with a soft penumbra ramp.
+ */
+static void cast_shadow_rect(
+    uint8_t *alpha_buf,
+    int tex_w, int tex_h,
+    float x0, float y0, float x1, float y1,
+    float dx, float dy,
+    uint8_t target_alpha
+)
+{
+    const float inv_scale = 2.0f; /* 32.0f / 16.0f = 2 world pixels per texel */
+    const float penumbra  = 2.2f; /* Soft penumbra width in world pixels (gfx_penumbra.png / gfx_blur.png) */
+
+    float min_x = (dx >= 0.0f ? x0 : x0 + dx) - penumbra;
+    float max_x = (dx >= 0.0f ? x1 + dx : x1) + penumbra;
+    float min_y = (dy >= 0.0f ? y0 : y0 + dy) - penumbra;
+    float max_y = (dy >= 0.0f ? y1 + dy : y1) + penumbra;
+
+    int sx0 = (int)(min_x / inv_scale);
+    int sy0 = (int)(min_y / inv_scale);
+    int sx1 = (int)(max_x / inv_scale) + 1;
+    int sy1 = (int)(max_y / inv_scale) + 1;
+
+    if (sx0 < 0) sx0 = 0;
+    if (sy0 < 0) sy0 = 0;
+    if (sx1 > tex_w) sx1 = tex_w;
+    if (sy1 > tex_h) sy1 = tex_h;
+
+    for (int sy = sy0; sy < sy1; sy++) {
+        float py = ((float)sy + 0.5f) * inv_scale;
+        float ty_min, ty_max;
+        if (dy > 0.0001f) {
+            ty_min = (py - y1) / dy;
+            ty_max = (py - y0) / dy;
+        } else if (dy < -0.0001f) {
+            ty_min = (py - y0) / dy;
+            ty_max = (py - y1) / dy;
+        } else {
+            ty_min = (py >= y0 && py <= y1) ? 0.0f : 2.0f;
+            ty_max = (py >= y0 && py <= y1) ? 1.0f : -1.0f;
+        }
+
+        for (int sx = sx0; sx < sx1; sx++) {
+            float px = ((float)sx + 0.5f) * inv_scale;
+            float tx_min, tx_max;
+            if (dx > 0.0001f) {
+                tx_min = (px - x1) / dx;
+                tx_max = (px - x0) / dx;
+            } else if (dx < -0.0001f) {
+                tx_min = (px - x0) / dx;
+                tx_max = (px - x1) / dx;
+            } else {
+                tx_min = (px >= x0 && px <= x1) ? 0.0f : 2.0f;
+                tx_max = (px >= x0 && px <= x1) ? 1.0f : -1.0f;
+            }
+
+            float t_lo = 0.0f;
+            if (tx_min > t_lo) t_lo = tx_min;
+            if (ty_min > t_lo) t_lo = ty_min;
+
+            float t_hi = 1.0f;
+            if (tx_max < t_hi) t_hi = tx_max;
+            if (ty_max < t_hi) t_hi = ty_max;
+
+            if (t_lo <= t_hi) {
+                /* Strictly inside swept shadow volume */
+                if (target_alpha > alpha_buf[sy * tex_w + sx]) {
+                    alpha_buf[sy * tex_w + sx] = target_alpha;
+                }
+            } else {
+                /* Evaluate distance to closest swept cross-section R(t) for t in [0, 1] */
+                float t_cand = 0.5f * (t_lo + t_hi);
+                if (t_cand < 0.0f) t_cand = 0.0f;
+                if (t_cand > 1.0f) t_cand = 1.0f;
+
+                float rx0 = x0 + t_cand * dx;
+                float rx1 = x1 + t_cand * dx;
+                float ry0 = y0 + t_cand * dy;
+                float ry1 = y1 + t_cand * dy;
+
+                float ex = 0.0f;
+                if (px < rx0) ex = rx0 - px;
+                else if (px > rx1) ex = px - rx1;
+
+                float ey = 0.0f;
+                if (py < ry0) ey = ry0 - py;
+                else if (py > ry1) ey = py - ry1;
+
+                float dist = sqrtf(ex * ex + ey * ey);
+                if (dist < penumbra) {
+                    uint8_t a = (uint8_t)((float)target_alpha * (1.0f - dist / penumbra));
+                    if (a > alpha_buf[sy * tex_w + sx]) {
+                        alpha_buf[sy * tex_w + sx] = a;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* Clears shadow alpha to 0 inside world rectangle [x0..x1, y0..y1] */
+static void clear_shadow_rect(
+    uint8_t *alpha_buf,
+    int tex_w, int tex_h,
+    float x0, float y0, float x1, float y1
+)
+{
+    const float inv_scale = 2.0f;
+    int sx0 = (int)(x0 / inv_scale);
+    int sy0 = (int)(y0 / inv_scale);
+    int sx1 = (int)(x1 / inv_scale);
+    int sy1 = (int)(y1 / inv_scale);
+
+    if (sx0 < 0) sx0 = 0;
+    if (sy0 < 0) sy0 = 0;
+    if (sx1 > tex_w) sx1 = tex_w;
+    if (sy1 > tex_h) sy1 = tex_h;
+
+    for (int sy = sy0; sy < sy1; sy++) {
+        memset(&alpha_buf[sy * tex_w + sx0], 0, (size_t)(sx1 - sx0));
+    }
+}
+
+/*
+ * Adds omnidirectional contact ambient occlusion halo around [x0..x1, y0..y1]
+ * matching lighting/gfx_oclussionmap.png (96x96 -> ~7px soft gradient around walls/crates).
+ */
+static void add_occlusion_halo(
+    uint8_t *alpha_buf,
+    int tex_w, int tex_h,
+    float x0, float y0, float x1, float y1,
+    float halo_px,
+    uint8_t max_add_alpha,
+    uint8_t cap_alpha
+)
+{
+    const float inv_scale = 2.0f;
+    int sx0 = (int)((x0 - halo_px) / inv_scale);
+    int sy0 = (int)((y0 - halo_px) / inv_scale);
+    int sx1 = (int)((x1 + halo_px) / inv_scale) + 1;
+    int sy1 = (int)((y1 + halo_px) / inv_scale) + 1;
+
+    if (sx0 < 0) sx0 = 0;
+    if (sy0 < 0) sy0 = 0;
+    if (sx1 > tex_w) sx1 = tex_w;
+    if (sy1 > tex_h) sy1 = tex_h;
+
+    for (int sy = sy0; sy < sy1; sy++) {
+        float py = ((float)sy + 0.5f) * inv_scale;
+        float ey = 0.0f;
+        if (py < y0) ey = y0 - py;
+        else if (py > y1) ey = py - y1;
+
+        for (int sx = sx0; sx < sx1; sx++) {
+            float px = ((float)sx + 0.5f) * inv_scale;
+            float ex = 0.0f;
+            if (px < x0) ex = x0 - px;
+            else if (px > x1) ex = px - x1;
+
+            float dist = sqrtf(ex * ex + ey * ey);
+            if (dist > 0.0f && dist < halo_px) {
+                float t = 1.0f - (dist / halo_px);
+                int add = (int)((float)max_add_alpha * t * t);
+                int cur = (int)alpha_buf[sy * tex_w + sx];
+                int nxt = cur + add;
+                if (nxt > (int)cap_alpha) nxt = (int)cap_alpha;
+                if (nxt > cur) alpha_buf[sy * tex_w + sx] = (uint8_t)nxt;
+            }
+        }
+    }
+}
+
+/*
+ * Reconstructed from 0x140260330..0x1402626d0 in CS2D.exe:
+ * Builds the complete map shadow & lighting texture using:
+ *   - Map sun angle: map->daylight_time (225 deg on de_dust2.map)
+ *   - Extrusion math (0x1402603a9..0x14026071c):
+ *       s_factor = fabsf(sinf((sun_angle - 180.0f) * PI/180)) * 0.5f
+ *       dz = -(h / 2) - h * s_factor
+ *       dx = dz * cosf(sun_angle * PI/180), dy = dz * sinf(sun_angle * PI/180)
+ *   - Step 1: Obstacle tiles (mode == CS2D_TILE_OBSTACLE) cast shadows, then self-clear
+ *   - Step 2: Wall tiles (mode == CS2D_TILE_WALL) & breakables/dynwalls cast shadows
+ *   - Step 3: Env_Room Layer 0 (int_settings[9] == 0) casts shadows, then Wall tiles self-clear
+ *   - Step 4: Env_Room Layers 1..5 (int_settings[9] == 1..5) cast rooftop shadows, self-clear,
+ *             and apply lighting/gfx_roommap.png recessed parapet shadows when int_settings[8] == 1
+ *   - Step 5: Env_Light (type 33) radial light subtraction (lighting/gfx_light.png)
+ */
+static void ensure_room_shadow_texture(const cs2d_map_t *map)
+{
+    if (!map || !map->tiles || map->width == 0 || map->height == 0 || !g_gl_ctx) return;
+    if (s_room_shadow_tex.id != 0 &&
+        s_room_shadow_map_w == map->width &&
+        s_room_shadow_map_h == map->height) {
+        return;
+    }
+
+    if (s_room_shadow_tex.id != 0) {
+        cs2d_texture_free(&s_room_shadow_tex);
+    }
+
+    /* 16 texels per 32x32 tile (2 world pixels per texel) */
+    const int scale = 16;
+    int tex_w = (int)map->width * scale;
+    int tex_h = (int)map->height * scale;
+    uint8_t *alpha_buf = (uint8_t *)calloc((size_t)tex_w * (size_t)tex_h, 1);
+    if (!alpha_buf) return;
+
+    const uint8_t shadow_alpha = 108; /* Base shadow darkness (~0.424) */
+
+    float sun_angle = (map->daylight_time >= 0 && map->daylight_time <= 360)
+                      ? (float)map->daylight_time : 225.0f;
+    float rad_sun  = sun_angle * (3.14159265f / 180.0f);
+    float rad_180  = (sun_angle - 180.0f) * (3.14159265f / 180.0f);
+    float s_factor = fabsf(sinf(rad_180)) * 0.5f;
+    float cos_sun  = cosf(rad_sun);
+    float sin_sun  = sinf(rad_sun);
+
+    /* Step 1: Obstacle Tiles (CS2D_TILE_OBSTACLE = 2) cast shadows, then clear own 32x32 tops */
+    for (uint32_t ty = 0; ty < map->height; ty++) {
+        for (uint32_t tx = 0; tx < map->width; tx++) {
+            uint8_t t = map->tiles[ty * map->width + tx];
+            if (map->tile_modes[t] == CS2D_TILE_OBSTACLE) {
+                int h = (map->save_tile_heights != 0 && map->tile_heights[t] > 0)
+                        ? (int)map->tile_heights[t] : 16;
+                float dz = (float)(-(h / 2)) - (float)h * s_factor;
+                float dx = dz * cos_sun;
+                float dy = dz * sin_sun;
+                float x0 = (float)(tx * CS2D_TILE_SIZE);
+                float y0 = (float)(ty * CS2D_TILE_SIZE);
+                cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, dx, dy, shadow_alpha);
+                add_occlusion_halo(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, 6.0f, 36, shadow_alpha + 24);
+            }
+        }
+    }
+    for (uint32_t ty = 0; ty < map->height; ty++) {
+        for (uint32_t tx = 0; tx < map->width; tx++) {
+            uint8_t t = map->tiles[ty * map->width + tx];
+            if (map->tile_modes[t] == CS2D_TILE_OBSTACLE || map->tile_modes[t] == CS2D_TILE_OBSTACLE_NOSHADOW) {
+                float x0 = (float)(tx * CS2D_TILE_SIZE);
+                float y0 = (float)(ty * CS2D_TILE_SIZE);
+                clear_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f);
+            }
+        }
+    }
+
+    /* Step 2: Wall Tiles (CS2D_TILE_WALL = 1) and Env_Breakable / Func_DynWall cast shadows */
+    for (uint32_t ty = 0; ty < map->height; ty++) {
+        for (uint32_t tx = 0; tx < map->width; tx++) {
+            uint8_t t = map->tiles[ty * map->width + tx];
+            if (map->tile_modes[t] == CS2D_TILE_WALL) {
+                int h = (map->save_tile_heights != 0 && map->tile_heights[t] > 0)
+                        ? (int)map->tile_heights[t] : 32;
+                float dz = (float)(-(h / 2)) - (float)h * s_factor;
+                float dx = dz * cos_sun;
+                float dy = dz * sin_sun;
+                float x0 = (float)(tx * CS2D_TILE_SIZE);
+                float y0 = (float)(ty * CS2D_TILE_SIZE);
+                cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, dx, dy, shadow_alpha);
+                add_occlusion_halo(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, 7.0f, 40, shadow_alpha + 28);
+            }
+        }
+    }
+    for (uint32_t i = 0; i < map->entity_count; i++) {
+        const cs2d_entity_t *e = &map->entities[i];
+        if (e->type == CS2D_ENT_ENV_BREAKABLE || e->type == CS2D_ENT_FUNC_DYNWALL) {
+            int h = 32;
+            float dz = (float)(-(h / 2)) - (float)h * s_factor;
+            float dx = dz * cos_sun;
+            float dy = dz * sin_sun;
+            float x0 = (float)(e->x * CS2D_TILE_SIZE);
+            float y0 = (float)(e->y * CS2D_TILE_SIZE);
+            cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, dx, dy, shadow_alpha);
+        }
+    }
+
+    /* Step 3: Env_Room Layer 0 (0x140261153..0x140261438), then clear Wall tiles (0x140261451..0x140261b11) */
+    for (uint32_t i = 0; i < map->entity_count; i++) {
+        const cs2d_entity_t *ent = &map->entities[i];
+        if (ent->type != CS2D_ENT_ENV_ROOM && ent->type != CS2D_ENT_ENV_CUBE3D && ent->type != CS2D_ENT_ENV_BUILDING) {
+            continue;
+        }
+        int w_tiles = ent->int_settings[0];
+        int h_tiles = ent->int_settings[1];
+        int z_px    = ent->int_settings[2];
+        if (w_tiles <= 0 || h_tiles <= 0 || z_px <= 0) continue;
+        if (ent->type == CS2D_ENT_ENV_ROOM && ent->int_settings[7] == 0) continue;
+        if (ent->int_settings[9] != 0) continue;
+
+        int x_off = ent->str_settings[0][0] ? atoi(ent->str_settings[0]) : 0;
+        int y_off = ent->str_settings[1][0] ? atoi(ent->str_settings[1]) : 0;
+        float x0 = (float)(ent->x * CS2D_TILE_SIZE + x_off);
+        float y0 = (float)(ent->y * CS2D_TILE_SIZE + y_off);
+        float x1 = x0 + (float)(w_tiles * CS2D_TILE_SIZE);
+        float y1 = y0 + (float)(h_tiles * CS2D_TILE_SIZE);
+
+        float dz = (float)(-(z_px / 2)) - (float)z_px * s_factor;
+        float dx = dz * cos_sun;
+        float dy = dz * sin_sun;
+        cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x1, y1, dx, dy, shadow_alpha);
+    }
+
+    /* Clear Wall tiles (mode 1 and mode 3) so ground walls & crates are not darkened by Layer 0 */
+    for (uint32_t ty = 0; ty < map->height; ty++) {
+        for (uint32_t tx = 0; tx < map->width; tx++) {
+            uint8_t t = map->tiles[ty * map->width + tx];
+            uint8_t m = map->tile_modes[t];
+            if (m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW) {
+                float x0 = (float)(tx * CS2D_TILE_SIZE);
+                float y0 = (float)(ty * CS2D_TILE_SIZE);
+                clear_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f);
+            }
+        }
+    }
+
+    /* Step 4: Env_Room Layers 1..5 (0x1402620be..0x140262631) for multi-level roofs */
+    for (int layer = 1; layer <= 5; layer++) {
+        /* Pass A: Cast shadow for all Env_Room on this layer */
+        for (uint32_t i = 0; i < map->entity_count; i++) {
+            const cs2d_entity_t *ent = &map->entities[i];
+            if (ent->type != CS2D_ENT_ENV_ROOM && ent->type != CS2D_ENT_ENV_CUBE3D) continue;
+            if (ent->int_settings[7] == 0 || ent->int_settings[9] != layer) continue;
+
+            int w_tiles = ent->int_settings[0];
+            int h_tiles = ent->int_settings[1];
+            int z_px    = ent->int_settings[2];
+            if (w_tiles <= 0 || h_tiles <= 0 || z_px <= 0) continue;
+
+            int x_off = ent->str_settings[0][0] ? atoi(ent->str_settings[0]) : 0;
+            int y_off = ent->str_settings[1][0] ? atoi(ent->str_settings[1]) : 0;
+            float x0 = (float)(ent->x * CS2D_TILE_SIZE + x_off);
+            float y0 = (float)(ent->y * CS2D_TILE_SIZE + y_off);
+            float x1 = x0 + (float)(w_tiles * CS2D_TILE_SIZE);
+            float y1 = y0 + (float)(h_tiles * CS2D_TILE_SIZE);
+
+            float dz = (float)(-(z_px / 2)) - (float)z_px * s_factor;
+            float dx = dz * cos_sun;
+            float dy = dz * sin_sun;
+            cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x1, y1, dx, dy, shadow_alpha);
+        }
+
+        /* Pass B: Clear interior of Env_Room on this layer */
+        for (uint32_t i = 0; i < map->entity_count; i++) {
+            const cs2d_entity_t *ent = &map->entities[i];
+            if (ent->type != CS2D_ENT_ENV_ROOM && ent->type != CS2D_ENT_ENV_CUBE3D) continue;
+            if (ent->int_settings[7] == 0 || ent->int_settings[9] != layer) continue;
+
+            int w_tiles = ent->int_settings[0];
+            int h_tiles = ent->int_settings[1];
+            if (w_tiles <= 0 || h_tiles <= 0) continue;
+
+            int x_off = ent->str_settings[0][0] ? atoi(ent->str_settings[0]) : 0;
+            int y_off = ent->str_settings[1][0] ? atoi(ent->str_settings[1]) : 0;
+            float x0 = (float)(ent->x * CS2D_TILE_SIZE + x_off);
+            float y0 = (float)(ent->y * CS2D_TILE_SIZE + y_off);
+            float x1 = x0 + (float)(w_tiles * CS2D_TILE_SIZE);
+            float y1 = y0 + (float)(h_tiles * CS2D_TILE_SIZE);
+
+            clear_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x1, y1);
+        }
+
+        /* Pass C (0x140262631): Clear Wall tiles so roof shadows do not darken exposed wall rims */
+        for (uint32_t ty = 0; ty < map->height; ty++) {
+            for (uint32_t tx = 0; tx < map->width; tx++) {
+                uint8_t t = map->tiles[ty * map->width + tx];
+                uint8_t m = map->tile_modes[t];
+                if (m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW) {
+                    float x0 = (float)(tx * CS2D_TILE_SIZE);
+                    float y0 = (float)(ty * CS2D_TILE_SIZE);
+                    clear_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f);
+                }
+            }
+        }
+    }
+
+    /* Step 4b (0x1402626d0): Apply lighting/gfx_roommap.png recessed parapet shadows on roofs (ints[8] != 0) */
+    for (int layer = 1; layer <= 5; layer++) {
+        for (uint32_t i = 0; i < map->entity_count; i++) {
+            const cs2d_entity_t *ent = &map->entities[i];
+            if (ent->type != CS2D_ENT_ENV_ROOM && ent->type != CS2D_ENT_ENV_CUBE3D) continue;
+            if (ent->int_settings[7] == 0 || ent->int_settings[9] != layer) continue;
+
+            int w_tiles = ent->int_settings[0];
+            int h_tiles = ent->int_settings[1];
+            if (w_tiles <= 0 || h_tiles <= 0) continue;
+
+            int x_off = ent->str_settings[0][0] ? atoi(ent->str_settings[0]) : 0;
+            int y_off = ent->str_settings[1][0] ? atoi(ent->str_settings[1]) : 0;
+            float x0 = (float)(ent->x * CS2D_TILE_SIZE + x_off);
+            float y0 = (float)(ent->y * CS2D_TILE_SIZE + y_off);
+            float x1 = x0 + (float)(w_tiles * CS2D_TILE_SIZE);
+            float y1 = y0 + (float)(h_tiles * CS2D_TILE_SIZE);
+
+            clear_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x1, y1);
+
+            if (ent->int_settings[8] != 0 && (x1 - x0) > 24.0f && (y1 - y0) > 24.0f) {
+                float ix0 = x0 + 8.0f;
+                float iy0 = y0 + 8.0f;
+                float ix1 = x1 - 8.0f;
+                float iy1 = y1 - 8.0f;
+                const float inv_scale = 2.0f;
+                int sx0 = (int)(ix0 / inv_scale);
+                int sy0 = (int)(iy0 / inv_scale);
+                int sx1 = (int)(ix1 / inv_scale);
+                int sy1 = (int)(iy1 / inv_scale);
+                if (sx0 < 0) sx0 = 0;
+                if (sy0 < 0) sy0 = 0;
+                if (sx1 > tex_w) sx1 = tex_w;
+                if (sy1 > tex_h) sy1 = tex_h;
+
+                float pdx = -12.0f * cos_sun;
+                float pdy = -12.0f * sin_sun;
+
+                for (int sy = sy0; sy < sy1; sy++) {
+                    float py = ((float)sy + 0.5f) * inv_scale;
+                    for (int sx = sx0; sx < sx1; sx++) {
+                        float px = ((float)sx + 0.5f) * inv_scale;
+                        float d_left  = px - ix0;
+                        float d_right = ix1 - px;
+                        float d_top   = py - iy0;
+                        float d_bot   = iy1 - py;
+                        float d_min = d_left;
+                        if (d_right < d_min) d_min = d_right;
+                        if (d_top   < d_min) d_min = d_top;
+                        if (d_bot   < d_min) d_min = d_bot;
+
+                        uint8_t a = 0;
+                        if (d_min < 6.0f) {
+                            a = (uint8_t)(55.0f * (1.0f - d_min / 6.0f));
+                        }
+                        if ((pdx > 0.0f && d_left < pdx) || (pdy > 0.0f && d_top < pdy)) {
+                            float s_edge = pdx;
+                            if (d_left < pdx && d_top < pdy) {
+                                s_edge = (d_left < d_top) ? (pdx - d_left) : (pdy - d_top);
+                            } else if (d_left < pdx) {
+                                s_edge = pdx - d_left;
+                            } else {
+                                s_edge = pdy - d_top;
+                            }
+                            uint8_t sa = (s_edge >= 2.0f) ? shadow_alpha : (uint8_t)((float)shadow_alpha * (s_edge / 2.0f));
+                            if (sa > a) a = sa;
+                        }
+                        if (a > alpha_buf[sy * tex_w + sx]) {
+                            alpha_buf[sy * tex_w + sx] = a;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* Step 5: Env_Light (type 33, 0x1401d71e0 & 0x140047f50) radial light subtraction (lighting/gfx_light.png) */
+    for (uint32_t i = 0; i < map->entity_count; i++) {
+        const cs2d_entity_t *ent = &map->entities[i];
+        if (ent->type != CS2D_ENT_ENV_LIGHT) continue;
+
+        int x_off = ent->str_settings[1][0] ? atoi(ent->str_settings[1]) : 0;
+        int y_off = ent->str_settings[2][0] ? atoi(ent->str_settings[2]) : 0;
+        float lx = (float)(ent->x * CS2D_TILE_SIZE + 16 + x_off);
+        float ly = (float)(ent->y * CS2D_TILE_SIZE + 16 + y_off);
+        float radius = (float)(ent->int_settings[0] > 0 ? ent->int_settings[0] : 128) * 0.65f;
+        float strength = (float)(ent->int_settings[1] + ent->int_settings[2] + ent->int_settings[3]) / (3.0f * 255.0f);
+        if (strength <= 0.0f) strength = 0.5f;
+
+        const float inv_scale = 2.0f;
+        int sx0 = (int)((lx - radius) / inv_scale);
+        int sy0 = (int)((ly - radius) / inv_scale);
+        int sx1 = (int)((lx + radius) / inv_scale) + 1;
+        int sy1 = (int)((ly + radius) / inv_scale) + 1;
+        if (sx0 < 0) sx0 = 0;
+        if (sy0 < 0) sy0 = 0;
+        if (sx1 > tex_w) sx1 = tex_w;
+        if (sy1 > tex_h) sy1 = tex_h;
+
+        for (int sy = sy0; sy < sy1; sy++) {
+            float py = ((float)sy + 0.5f) * inv_scale;
+            for (int sx = sx0; sx < sx1; sx++) {
+                float px = ((float)sx + 0.5f) * inv_scale;
+                float dist = sqrtf((px - lx) * (px - lx) + (py - ly) * (py - ly));
+                if (dist < radius) {
+                    float falloff = 1.0f - (dist / radius);
+                    int sub = (int)((float)shadow_alpha * strength * falloff * falloff * 1.35f);
+                    int cur = (int)alpha_buf[sy * tex_w + sx];
+                    alpha_buf[sy * tex_w + sx] = (uint8_t)((cur > sub) ? (cur - sub) : 0);
+                }
+            }
+        }
+    }
+
+    uint8_t *rgba = (uint8_t *)calloc((size_t)tex_w * (size_t)tex_h * 4, 1);
+    if (!rgba) {
+        free(alpha_buf);
+        return;
+    }
+    for (size_t idx = 0; idx < (size_t)tex_w * (size_t)tex_h; idx++) {
+        rgba[idx * 4 + 3] = alpha_buf[idx];
+    }
+    free(alpha_buf);
+
+    GLuint gl_id = 0;
+    glGenTextures(1, &gl_id);
+    glBindTexture(GL_TEXTURE_2D, gl_id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tex_w, tex_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    free(rgba);
+    s_room_shadow_tex.id     = gl_id;
+    s_room_shadow_tex.width  = tex_w;
+    s_room_shadow_tex.height = tex_h;
+    s_room_shadow_map_w      = map->width;
+    s_room_shadow_map_h      = map->height;
+}
+
+/* Helper to render an Env_Sprite (type 22) entity (reconstructed from Te.draw 0x1402721f0..0x1402724ef) */
+static void render_env_sprite_entity(
+    cs2d_gfx_bank_t *bank,
+    const cs2d_entity_t *ent,
+    float cam_x, float cam_y,
+    uint32_t tick_ms
+)
+{
+    if (!bank || !ent->str_settings[0][0]) return;
+
+    int blend_mode = ent->int_settings[9];
+    bool black_mask = (blend_mode == 3 || blend_mode == 4 ||
+                       strstr(ent->str_settings[0], "flare") != NULL ||
+                       strstr(ent->str_settings[0], "light") != NULL);
+
+    const cs2d_texture_t *tex = cs2d_gfx_get_sprite(bank, ent->str_settings[0], black_mask);
+    if (!tex || !tex->id) return;
+
+    float w = (ent->int_settings[0] > 0) ? (float)ent->int_settings[0] : (float)tex->width;
+    float h = (ent->int_settings[1] > 0) ? (float)ent->int_settings[1] : (float)tex->height;
+
+    /* Te.draw 0x140272254..0x1402722c5: (x*32) - cam_x + x_off + (w/2) */
+    float sx = (float)(ent->x * CS2D_TILE_SIZE + ent->int_settings[2]) + w * 0.5f - cam_x;
+    float sy = (float)(ent->y * CS2D_TILE_SIZE + ent->int_settings[3]) + h * 0.5f - cam_y;
+
+    /* 0x1402724e8: xorps xmm0, [0x140bd69d0]; call SetRotation (-rot) */
+    float rot = -(float)ent->int_settings[4];
+    if (ent->str_settings[3][0]) {
+        float rot_speed = (float)atof(ent->str_settings[3]);
+        rot -= rot_speed * ((float)tick_ms * 0.05f);
+    }
+
+    float alpha = ent->str_settings[1][0] ? (float)atof(ent->str_settings[1]) : 1.0f;
+    if (alpha <= 0.0f) alpha = 1.0f;
+    if (alpha > 1.0f)  alpha = 1.0f;
+
+    /* 0x14027252e: SetColor(ints[5], ints[6], ints[7]) directly */
+    float r = (float)ent->int_settings[5] / 255.0f;
+    float g = (float)ent->int_settings[6] / 255.0f;
+    float b = (float)ent->int_settings[7] / 255.0f;
+
+    cs2d_render_sprite_frame(tex, tex->width, tex->height, 0, sx, sy, w, h, rot, r, g, b, alpha, blend_mode);
+}
+
+void cs2d_render_map_ex(
+    const cs2d_map_t     *map,
+    const cs2d_texture_t *tileset_tex,
+    float cam_x, float cam_y,
+    int screen_w, int screen_h
+)
+{
+    if (!map || !map->tiles) return;
+
+    /* Snap camera to integer pixels matching CS2D.exe 0x140ddf06c / 0x140ddf068 */
+    cam_x = roundf(cam_x);
+    cam_y = roundf(cam_y);
+
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    uint32_t tick_ms = GetTickCount();
+
+    int start_tx = (int)(cam_x / CS2D_TILE_SIZE) - 1;
+    int end_tx   = (int)((cam_x + screen_w) / CS2D_TILE_SIZE) + 1;
+    int start_ty = (int)(cam_y / CS2D_TILE_SIZE) - 1;
+    int end_ty   = (int)((cam_y + screen_h) / CS2D_TILE_SIZE) + 1;
+
+    if (start_tx < 0) start_tx = 0;
+    if (start_ty < 0) start_ty = 0;
+    if ((uint32_t)end_tx > map->width) end_tx = (int)map->width;
+    if ((uint32_t)end_ty > map->height) end_ty = (int)map->height;
+
+    bool has_tileset = (tileset_tex && tileset_tex->id != 0 && tileset_tex->width >= 32);
+    int tile_src = (map->use_64x64_tiles == 1) ? 64 : 32;
+    int cols = has_tileset ? (tileset_tex->width / tile_src) : 1;
+    if (cols < 1) cols = 1;
+
+    /* Build tile animation remap table */
+    uint8_t anim_remap[256];
+    for (int i = 0; i < 256; i++) anim_remap[i] = (uint8_t)i;
+    for (uint32_t i = 0; i < map->entity_count; i++) {
+        const cs2d_entity_t *e = &map->entities[i];
+        if (e->type == CS2D_ENT_INFO_ANIMATION) {
+            int start_f = e->int_settings[0];
+            int end_f   = e->int_settings[1];
+            int speed   = e->int_settings[2] > 0 ? e->int_settings[2] : 200;
+            if (start_f >= 0 && end_f > start_f && end_f < 256) {
+                int span = (end_f - start_f) + 1;
+                anim_remap[start_f] = (uint8_t)(start_f + ((tick_ms / (uint32_t)speed) % (uint32_t)span));
+            }
+        }
+    }
+
+    if (has_tileset) {
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, tileset_tex->id);
+    }
+
+    /* Pass 1: Render base tiles and tile overlays (per cs2d_spec_map_format.txt section 4) */
+    for (int ty = start_ty; ty < end_ty; ty++) {
+        for (int tx = start_tx; tx < end_tx; tx++) {
+            uint32_t idx = (uint32_t)(ty * map->width + tx);
+            uint8_t tile_idx = anim_remap[map->tiles[idx]];
+            uint8_t mod      = map->modifiers ? map->modifiers[idx] : 0;
+
+            float rx = (float)(tx * CS2D_TILE_SIZE) - cam_x;
+            float ry = (float)(ty * CS2D_TILE_SIZE) - cam_y;
+
+            if (has_tileset) {
+                uint8_t base_mod = ((mod & 128) == 0) ? mod : 0;
+                draw_tile_frame(tileset_tex, tile_src, cols, tile_idx, base_mod, rx, ry, 1.0f);
+
+                /* Bit 7 (128) set: overlay frame (mod - 128) drawn on top */
+                if ((mod & 128) != 0) {
+                    uint8_t ov_frame = anim_remap[(uint8_t)(mod - 128)];
+                    draw_tile_frame(tileset_tex, tile_src, cols, ov_frame, 0, rx, ry, 1.0f);
+                }
+            }
+        }
+    }
+
+    /* Pass 1b: Render Env_Breakable (type 25) and Func_DynWall (type 71) using map tileset (Te.draw 0x140272808 & 0x140273858) */
+    if (has_tileset) {
+        for (uint32_t i = 0; i < map->entity_count; i++) {
+            const cs2d_entity_t *ent = &map->entities[i];
+            if (ent->type == CS2D_ENT_ENV_BREAKABLE || ent->type == CS2D_ENT_FUNC_DYNWALL) {
+                int tile_f = ent->int_settings[0];
+                if (tile_f >= 0 && tile_f <= (int)map->tile_count) {
+                    float rx = (float)(ent->x * CS2D_TILE_SIZE) - cam_x;
+                    float ry = (float)(ent->y * CS2D_TILE_SIZE) - cam_y;
+                    float trans = ent->str_settings[0][0] ? (float)atof(ent->str_settings[0]) : 0.0f;
+                    float alpha = 1.0f - trans;
+                    if (alpha < 0.1f) alpha = 1.0f;
+                    if (alpha > 1.0f) alpha = 1.0f;
+                    draw_tile_frame(tileset_tex, tile_src, cols, (uint8_t)tile_f, 0, rx, ry, alpha);
+                }
+            }
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glDisable(GL_TEXTURE_2D);
+    }
+
+    /* Pass 3: Ground Entities & Actors (below players) */
+    int bombspot_idx = 0;
+    for (uint32_t i = 0; i < map->entity_count; i++) {
+        const cs2d_entity_t *ent = &map->entities[i];
+        float ex = (float)(ent->x * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_x;
+        float ey = (float)(ent->y * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_y;
+
+        switch (ent->type) {
+            case CS2D_ENT_INFO_BOMBSPOT: {
+                /* Draw authentic bombspot A / B decal on floor */
+                const cs2d_texture_t *btex = (bombspot_idx == 0) ?
+                    (bank ? &bank->tex_bspot_a : NULL) : (bank ? &bank->tex_bspot_b : NULL);
+                bombspot_idx++;
+                if (btex && btex->id) {
+                    cs2d_render_sprite(btex, ex, ey, (float)btex->width, (float)btex->height, 0.0f, 1.0f, 1.0f, 1.0f, 0.85f);
+                }
+                break;
+            }
+            case CS2D_ENT_ENV_DECAL: {
+                /* Env_Decal (24): ints[0]=frame (0..71) in gfx/decals.bmp, ints[1..3]=r,g,b, ints[4]=rot, strs[0]=alpha */
+                if (bank && bank->tex_decals.id) {
+                    int frame = ent->int_settings[0];
+                    float r = (float)ent->int_settings[1] / 255.0f;
+                    float g = (float)ent->int_settings[2] / 255.0f;
+                    float b = (float)ent->int_settings[3] / 255.0f;
+                    float a = ent->str_settings[0][0] ? (float)atof(ent->str_settings[0]) : 0.9f;
+                    float rot = (float)ent->int_settings[4];
+                    cs2d_render_sprite_frame(&bank->tex_decals, 32, 32, frame, ex, ey, 32.0f, 32.0f, rot, r, g, b, a, 0);
+                }
+                break;
+            }
+            case CS2D_ENT_ENV_ITEM: {
+                /* Env_Item (21): ints[0]=weapon/item ID -> drawn with gfx/weapons/<wep>_d.bmp (Titem.draw 0x140147b80) */
+                int wep_id = ent->int_settings[0];
+                if (bank && wep_id > 0 && wep_id < CS2D_MAX_WEAPONS && bank->tex_weapons_d[wep_id].id) {
+                    const cs2d_texture_t *dtex = &bank->tex_weapons_d[wep_id];
+                    float dw = (dtex->width > 64) ? (float)(dtex->width / 2) : (float)dtex->width;
+                    float dh = (dtex->height > 32) ? (float)(dtex->height / 2) : (float)dtex->height;
+                    cs2d_render_sprite(dtex, ex, ey, dw, dh, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+                }
+                break;
+            }
+            case CS2D_ENT_INFO_CTF_FLAG: {
+                /* Info_CTF_Flag (15): ints[0]=0 (T redflag) or 1 (CT blueflag) (Te.draw 0x140274e28) */
+                if (bank) {
+                    if (bank->tex_noflag.id) {
+                        cs2d_render_sprite(&bank->tex_noflag, ex, ey, 32.0f, 32.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+                    }
+                    const cs2d_texture_t *ftex = (ent->int_settings[0] == 0) ? &bank->tex_redflag : &bank->tex_blueflag;
+                    if (ftex->id) {
+                        cs2d_render_sprite(ftex, ex, ey, 32.0f, 32.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+                    }
+                }
+                break;
+            }
+            case CS2D_ENT_INFO_DOM_POINT: {
+                /* Info_Dom_Point (17): ints[0]=0 (neutral), 1 (T), 2 (CT) (Te.draw 0x140274bb0) */
+                if (bank) {
+                    const cs2d_texture_t *dtex = &bank->tex_noflag;
+                    if (ent->int_settings[0] == 1) dtex = &bank->tex_redflag;
+                    else if (ent->int_settings[0] == 2) dtex = &bank->tex_blueflag;
+                    if (dtex->id) {
+                        cs2d_render_sprite(dtex, ex, ey, 32.0f, 32.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+                    }
+                }
+                break;
+            }
+            case CS2D_ENT_INFO_HOSTAGE: {
+                /* Info_Hostage (3): ints[0]=rot, ints[1]=look -> legs.bmp + hostages.bmp (Thostage.draw 0x140147090) */
+                if (bank && bank->tex_hostages.id) {
+                    float rot = (float)ent->int_settings[0];
+                    int look = ent->int_settings[1] & 7;
+                    if (bank->tex_legs.id) {
+                        cs2d_render_sprite_frame(&bank->tex_legs, 32, 32, 0, ex, ey, 32.0f, 32.0f, rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
+                    }
+                    cs2d_render_sprite_frame(&bank->tex_hostages, 32, 32, look, ex, ey, 32.0f, 32.0f, rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
+                }
+                break;
+            }
+            case CS2D_ENT_ENV_BUILDING: {
+                /* Only draw gfx/buildings.png if this is an actual buildable object (ints[1] == 0 && ints[2] == 0), NOT an Env_Room/Cube3D shadow block */
+                if (ent->int_settings[1] == 0 && ent->int_settings[2] == 0 && bank && bank->tex_buildings.id) {
+                    int btype = ent->int_settings[0];
+                    if (btype >= 0 && btype < 16) {
+                        cs2d_render_sprite_frame(&bank->tex_buildings, 32, 32, btype, ex, ey, 32.0f, 32.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0);
+                    }
+                }
+                break;
+            }
+            case CS2D_ENT_ENV_NPC: {
+                /* Env_NPC (31): ints[0]=rot, ints[1]=NPC type (1=Zombie, 2=Headcrab, 3=Snark, 4=Vortigaunt, 5=Soldier) */
+                int ntype = ent->int_settings[1] - 1;
+                if (ntype < 0 || ntype >= 5) ntype = 0;
+                if (bank && bank->tex_npc[ntype].id) {
+                    const cs2d_texture_t *ntex = &bank->tex_npc[ntype];
+                    int cw = (ntex->width >= 64) ? 32 : ntex->width;
+                    int ch = (ntex->height >= 64) ? 32 : ntex->height;
+                    cs2d_render_sprite_frame(ntex, cw, ch, 0, ex, ey, 32.0f, 32.0f, (float)ent->int_settings[0], 1.0f, 1.0f, 1.0f, 1.0f, 0);
+                }
+                break;
+            }
+            case CS2D_ENT_ENV_SPRITE: {
+                /* Ground pass Env_Sprite (when strs[4] == "1", i.e. covered by player) */
+                if (atoi(ent->str_settings[4]) == 1) {
+                    render_env_sprite_entity(bank, ent, cam_x, cam_y, tick_ms);
+                }
+                break;
+            }
+            case CS2D_ENT_ENV_IMAGE: {
+                /* Ground pass Env_Image (28) when ints[2] == 0 (floor image) */
+                if (ent->int_settings[2] == 0 && bank && ent->str_settings[0][0]) {
+                    const cs2d_texture_t *itex = cs2d_gfx_get_sprite(bank, ent->str_settings[0], false);
+                    if (itex && itex->id) {
+                        float ix = (float)(ent->x * CS2D_TILE_SIZE + ent->int_settings[0]) + itex->width * 0.5f - cam_x;
+                        float iy = (float)(ent->y * CS2D_TILE_SIZE + ent->int_settings[1]) + itex->height * 0.5f - cam_y;
+                        cs2d_render_sprite(itex, ix, iy, (float)itex->width, (float)itex->height, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+                    }
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+}
+
+/*
+ * Reconstructed from Te.draw Pass 2 (0x140272938..0x140276300) & shadow overlay (0x140262fe0):
+ *   1. Non-additive overhead sprites (dustroof.png, roof_edge1.png, dome.png, Env_Image, Env_Object)
+ *   2. Unified Sun-Angle & Multi-Layer Room Shadow/Lighting Map (s_room_shadow_tex)
+ *   3. Additive light/flare sprites (blend_mode 3/4, flare.png) and Env_Light coronas (33)
+ */
+void cs2d_render_map_overhead(
+    const cs2d_map_t *map,
+    float cam_x, float cam_y,
+    int screen_w, int screen_h
+)
+{
+    if (!map) return;
+    (void)screen_w;
+    (void)screen_h;
+
+    cam_x = roundf(cam_x);
+    cam_y = roundf(cam_y);
+
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    if (!bank) return;
+
+    uint32_t tick_ms = GetTickCount();
+
+    /* Pass 1: Overhead entities (Te.draw Pass 2: roof sprites, flares, overhead images, trees/palms/objects) */
+    for (uint32_t i = 0; i < map->entity_count; i++) {
+        const cs2d_entity_t *ent = &map->entities[i];
+        float ex = (float)(ent->x * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_x;
+        float ey = (float)(ent->y * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_y;
+
+        switch (ent->type) {
+            case CS2D_ENT_ENV_SPRITE: {
+                if (atoi(ent->str_settings[4]) == 0) {
+                    render_env_sprite_entity(bank, ent, cam_x, cam_y, tick_ms);
+                }
+                break;
+            }
+            case CS2D_ENT_ENV_IMAGE: {
+                if (ent->int_settings[2] != 0 && ent->str_settings[0][0]) {
+                    const cs2d_texture_t *itex = cs2d_gfx_get_sprite(bank, ent->str_settings[0], false);
+                    if (itex && itex->id) {
+                        float ix = (float)(ent->x * CS2D_TILE_SIZE + ent->int_settings[0]) + itex->width * 0.5f - cam_x;
+                        float iy = (float)(ent->y * CS2D_TILE_SIZE + ent->int_settings[1]) + itex->height * 0.5f - cam_y;
+                        cs2d_render_sprite(itex, ix, iy, (float)itex->width, (float)itex->height, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+                    }
+                }
+                break;
+            }
+            case CS2D_ENT_ENV_OBJECT: {
+                int obj_type = ent->int_settings[0];
+                float r = (float)ent->int_settings[1] / 255.0f;
+                float g = (float)ent->int_settings[2] / 255.0f;
+                float b = (float)ent->int_settings[3] / 255.0f;
+                if (ent->int_settings[1] == 0 && ent->int_settings[2] == 0 && ent->int_settings[3] == 0) {
+                    r = 1.0f; g = 1.0f; b = 1.0f;
+                }
+                float scale = ent->str_settings[0][0] ? (float)atof(ent->str_settings[0]) : 1.0f;
+                float alpha = ent->str_settings[1][0] ? (float)atof(ent->str_settings[1]) : 1.0f;
+                if (scale <= 0.0f) scale = 1.0f;
+                if (alpha <= 0.0f) alpha = 1.0f;
+                float rot = (float)ent->int_settings[4];
+
+                if (obj_type == 0) {
+                    /* Palm tree (0x14027779c..0x140277e8b): 8 fronds of incbindata/palmleave.png (32x80) */
+                    if (bank->tex_palms.id) {
+                        float pscale = scale * 1.15f; /* 0x140bd6a74 = 1.15f */
+                        float fw = (float)bank->tex_palms.width * pscale;
+                        float fh = (float)bank->tex_palms.height * pscale;
+                        float phase = (float)tick_ms * 0.002f + (float)(ent->x * 13 + ent->y * 7);
+
+                        /* Pass 1: 8 frond drop shadows (0x140277cf8..0x140277e8b) */
+                        for (int k = 1; k <= 8; k++) {
+                            float sway = ((k % 3) == 0 ? sinf(phase + (float)(k * 20) * 0.017453f)
+                                                       : cosf(phase + (float)(k * 20) * 0.017453f)) * 2.5f;
+                            float ang = (float)(k * 45) + rot + sway;
+                            float rad = ang * (3.14159265f / 180.0f);
+                            float sx = (ex + 4.0f) + sinf(rad) * (fh * 0.5f);
+                            float sy = (ey + 4.0f) - cosf(rad) * (fh * 0.5f);
+                            cs2d_render_sprite_frame(&bank->tex_palms, bank->tex_palms.width, bank->tex_palms.height, 0,
+                                                     sx, sy, fw, fh, ang,
+                                                     0.0f, 0.0f, 0.0f, 0.25f * alpha, 0);
+                        }
+
+                        /* Pass 2: 8 palm fronds radiating from stem at (ex, ey) (0x14027780e..0x140277984) */
+                        for (int k = 1; k <= 8; k++) {
+                            float sway = ((k % 3) == 0 ? sinf(phase + (float)(k * 20) * 0.017453f)
+                                                       : cosf(phase + (float)(k * 20) * 0.017453f)) * 2.5f;
+                            float ang = (float)(k * 45) + rot + sway;
+                            float rad = ang * (3.14159265f / 180.0f);
+                            float fx = ex + sinf(rad) * (fh * 0.5f);
+                            float fy = ey - cosf(rad) * (fh * 0.5f);
+                            cs2d_render_sprite_frame(&bank->tex_palms, bank->tex_palms.width, bank->tex_palms.height, 0,
+                                                     fx, fy, fw, fh, ang,
+                                                     r, g, b, alpha, 0);
+                        }
+                    }
+                } else if (obj_type == 1) {
+                    /* Multi-layer Tree (0x140275f35..0x140276228): 7 layers of incbindata/treeleaves.png (64x64) */
+                    if (bank->tex_tree.id) {
+                        float tscale = scale * 1.15f;
+                        float tw = (float)bank->tex_tree.width * tscale;
+                        float th = (float)bank->tex_tree.height * tscale;
+                        cs2d_render_sprite_frame(&bank->tex_tree, bank->tex_tree.width, bank->tex_tree.height, 0,
+                                                 ex + 4.0f, ey + 4.0f, tw, th, rot,
+                                                 0.0f, 0.0f, 0.0f, 0.28f * alpha, 0);
+                        for (int layer = 1; layer <= 7; layer++) {
+                            float sway = sinf((float)tick_ms * 0.002f + (float)layer) * 1.8f;
+                            float lscale = tscale * (1.0f - (float)(layer - 1) * 0.05f);
+                            float lw = (float)bank->tex_tree.width * lscale;
+                            float lh = (float)bank->tex_tree.height * lscale;
+                            cs2d_render_sprite_frame(&bank->tex_tree, bank->tex_tree.width, bank->tex_tree.height, 0,
+                                                     ex + sway, ey + sway, lw, lh,
+                                                     rot + (float)(layer * 51), r, g, b, alpha, 0);
+                        }
+                    }
+                } else if (obj_type >= 2) {
+                    /* Objects (0x140275f26 & 0x14027622d): incbindata/objects.bmp (32x32 cells, frame = obj_type - 2) */
+                    if (bank->tex_lamp1.id) {
+                        int frame = obj_type - 2;
+                        int cell_w = (bank->tex_lamp1.width >= 64) ? 32 : bank->tex_lamp1.width;
+                        int cell_h = (bank->tex_lamp1.height >= 32) ? 32 : bank->tex_lamp1.height;
+                        cs2d_render_sprite_frame(&bank->tex_lamp1, cell_w, cell_h, frame,
+                                                 ex, ey, 32.0f * scale, 32.0f * scale,
+                                                 rot, 1.0f, 1.0f, 1.0f, alpha, 0);
+                    }
+                    if (obj_type == 4 && bank->tex_flare1.id) {
+                        cs2d_render_sprite_frame(&bank->tex_flare1, bank->tex_flare1.width, bank->tex_flare1.height, 0,
+                                                 ex, ey, 96.0f * scale, 96.0f * scale,
+                                                 0.0f, r, g, b, alpha * 0.45f, 3);
+                    }
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    /* Pass 2: Unified Sun-Angle & Multi-Layer Room Shadow/Lighting Overlay (0x140262fe0) */
+    if (s_shadows_enabled) {
+        ensure_room_shadow_texture(map);
+        if (s_room_shadow_tex.id != 0) {
+            float map_pw = (float)(map->width * CS2D_TILE_SIZE);
+            float map_ph = (float)(map->height * CS2D_TILE_SIZE);
+            cs2d_render_sprite(&s_room_shadow_tex,
+                               map_pw * 0.5f - cam_x,
+                               map_ph * 0.5f - cam_y,
+                               map_pw, map_ph,
+                               0.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+        }
+    }
+}
+
+void cs2d_render_map(
+    const cs2d_map_t *map,
+    float cam_x, float cam_y,
+    int screen_w, int screen_h
+)
+{
+    cs2d_render_map_ex(map, NULL, cam_x, cam_y, screen_w, screen_h);
+}
+
+/*
+ * Generates a 128x128 circular minimap texture centered around the local player
+ * to render inside gfx/hud_radar_advanced.png + gfx/hud_radar_ring.png.
+ */
+static int s_minimap_last_ptx = -9999;
+static int s_minimap_last_pty = -9999;
+
+void cs2d_render_invalidate_shadows(void)
+{
+    if (s_room_shadow_tex.id != 0) {
+        cs2d_texture_free(&s_room_shadow_tex);
+    }
+    s_room_shadow_map_w = 0;
+    s_room_shadow_map_h = 0;
+    s_minimap_last_ptx  = -9999;
+    s_minimap_last_pty  = -9999;
+}
+
+void cs2d_render_set_shadows_enabled(bool enabled)
+{
+    s_shadows_enabled = enabled;
+}
+
+bool cs2d_render_get_shadows_enabled(void)
+{
+    return s_shadows_enabled;
+}
+
+static void ensure_minimap_texture(cs2d_gfx_bank_t *bank, const cs2d_map_t *map, const cs2d_player_t *player)
+{
+    if (!bank || !map || !map->tiles || map->width == 0 || map->height == 0 || !g_gl_ctx) return;
+
+    int ptx = player ? (int)(player->pos.x / CS2D_TILE_SIZE) : (int)(map->width / 2);
+    int pty = player ? (int)(player->pos.y / CS2D_TILE_SIZE) : (int)(map->height / 2);
+
+    if (bank->tex_minimap.id != 0 &&
+        abs(ptx - s_minimap_last_ptx) <= 1 &&
+        abs(pty - s_minimap_last_pty) <= 1) {
+        return;
+    }
+    s_minimap_last_ptx = ptx;
+    s_minimap_last_pty = pty;
+
+    uint8_t rgba[128 * 128 * 4];
+    memset(rgba, 0, sizeof(rgba));
+
+    float center_tx = player ? (player->pos.x / (float)CS2D_TILE_SIZE) : ((float)map->width * 0.5f);
+    float center_ty = player ? (player->pos.y / (float)CS2D_TILE_SIZE) : ((float)map->height * 0.5f);
+    /* Local radar view spans 36x36 tiles across 128x128 radar pixels (~3.55 radar px per tile) */
+    float tiles_per_px = 36.0f / 128.0f;
+
+    for (int py = 0; py < 128; py++) {
+        for (int px = 0; px < 128; px++) {
+            float dx = (float)px - 63.5f;
+            float dy = (float)py - 63.5f;
+            if (dx * dx + dy * dy > 56.5f * 56.5f) {
+                continue;
+            }
+
+            int tx = (int)floorf(center_tx + dx * tiles_per_px);
+            int ty = (int)floorf(center_ty + dy * tiles_per_px);
+            if (tx < 0 || ty < 0 || (uint32_t)tx >= map->width || (uint32_t)ty >= map->height) {
+                rgba[(py * 128 + px) * 4 + 0] = 32;
+                rgba[(py * 128 + px) * 4 + 1] = 28;
+                rgba[(py * 128 + px) * 4 + 2] = 22;
+                rgba[(py * 128 + px) * 4 + 3] = 160;
+                continue;
+            }
+
+            uint32_t idx = (uint32_t)ty * map->width + (uint32_t)tx;
+            uint8_t t = map->tiles[idx];
+            uint8_t m = map->tile_modes[t];
+
+            uint8_t r = 198, g = 172, b = 122, a = 195;
+            if (t == 0) {
+                r = 45;  g = 36;  b = 26;  a = 175;
+            } else if (m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW) {
+                r = 148; g = 114; b = 76;  a = 215;
+            } else if (m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW) {
+                r = 168; g = 134; b = 92;  a = 205;
+            } else {
+                int v = (t * 7) & 15;
+                r = (uint8_t)(194 + v);
+                g = (uint8_t)(168 + v);
+                b = (uint8_t)(118 + v);
+                a = 190;
+            }
+
+            rgba[(py * 128 + px) * 4 + 0] = r;
+            rgba[(py * 128 + px) * 4 + 1] = g;
+            rgba[(py * 128 + px) * 4 + 2] = b;
+            rgba[(py * 128 + px) * 4 + 3] = a;
+        }
+    }
+
+    if (bank->tex_minimap.id == 0) {
+        GLuint gl_id = 0;
+        glGenTextures(1, &gl_id);
+        bank->tex_minimap.id     = gl_id;
+        bank->tex_minimap.width  = 128;
+        bank->tex_minimap.height = 128;
+    }
+
+    glBindTexture(GL_TEXTURE_2D, bank->tex_minimap.id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 128, 128, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+/*
+ * Reconstructed from FUN_140113000..0x140113289 in CS2D.exe:
+ * Draws integer digits using gfx/hud_nums.bmp (592x66 -> 12 cells of 48x66: '0'..'9', ':', '|').
+ * Each digit advances X by 25px (drawn at 24x33, additive blended).
+ */
+void cs2d_render_hud_number(
+    const cs2d_texture_t *hud_nums_tex,
+    int value,
+    float x, float y,
+    float r, float g, float b, float a
+)
+{
+    if (!hud_nums_tex || !hud_nums_tex->id) return;
+
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", value);
+
+    int cell_w = (hud_nums_tex->height >= 60) ? 48 : 24;
+    int cell_h = (hud_nums_tex->height >= 60) ? 66 : 33;
+
+    float cur_x = x;
+    for (int i = 0; buf[i] != '\0'; i++) {
+        int frame = 0;
+        if (buf[i] >= '0' && buf[i] <= '9') {
+            frame = buf[i] - '0';
+        } else if (buf[i] == ':') {
+            frame = 10;
+        } else if (buf[i] == '-' || buf[i] == '|') {
+            frame = 11;
+        } else {
+            continue;
+        }
+        cs2d_render_sprite_frame(hud_nums_tex, cell_w, cell_h, frame,
+                                 cur_x + 12.0f, y + 16.0f, 24.0f, 33.0f,
+                                 0.0f, r, g, b, a, 3);
+        cur_x += 25.0f;
+    }
+}
+
+static void render_hud_time(
+    const cs2d_texture_t *hud_nums_tex,
+    int total_seconds,
+    float x, float y,
+    float r, float g, float b, float a
+)
+{
+    if (!hud_nums_tex || !hud_nums_tex->id) return;
+    if (total_seconds < 0) total_seconds = 0;
+
+    int mins = total_seconds / 60;
+    int secs = total_seconds % 60;
+
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d:%02d", mins, secs);
+
+    int cell_w = (hud_nums_tex->height >= 60) ? 48 : 24;
+    int cell_h = (hud_nums_tex->height >= 60) ? 66 : 33;
+
+    float cur_x = x;
+    for (int i = 0; buf[i] != '\0'; i++) {
+        int frame = (buf[i] == ':') ? 10 : (buf[i] - '0');
+        cs2d_render_sprite_frame(hud_nums_tex, cell_w, cell_h, frame,
+                                 cur_x + 12.0f, y + 16.0f, 24.0f, 33.0f,
+                                 0.0f, r, g, b, a, 3);
+        cur_x += (buf[i] == ':') ? 16.0f : 24.0f;
+    }
+}
+
+/*
+ * Reconstructed from CS2D HUD renderer (0x1402931cc..0x14029ccde in CS2D.exe):
+ *   - Top-Left: Circular Minimap Radar (gfx/hud_radar_advanced.png + minimap + gfx/hud_radar_ring.png + gfx/hud_radar_icons.png)
+ *   - Left Side: Equipment icons (C4 Bomb frame 6, Defuse Kit frame 3, Buyzone frame 4)
+ *   - Bottom-Left: Health symbol (frame 0) + Health number, Armor symbol (frame 1) + Armor number
+ *   - Bottom-Center: Timer symbol (frame 2) + M:SS round clock
+ *   - Bottom-Right: Money symbol (frame 7 '$') + Money number, Clip | Reserve ammo
+ */
+void cs2d_render_hud(
+    const cs2d_player_t *player,
+    const cs2d_game_t   *game,
+    int screen_w, int screen_h
+)
+{
+    if (!player) return;
+
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    bool has_hud_gfx = (bank && bank->tex_hud_nums.id && bank->tex_hud_symbols.id);
+    if (!has_hud_gfx) return;
+
+    int sym_cell = (bank->tex_hud_symbols.height >= 64) ? 64 : 32;
+    int num_cw   = (bank->tex_hud_nums.height >= 60) ? 48 : 24;
+    int num_ch   = (bank->tex_hud_nums.height >= 60) ? 66 : 33;
+
+    /* 1. Top-Left Circular Minimap Radar at (66, 66), size 128x128 (0x1402931cc) */
+    float rcx = 66.0f;
+    float rcy = 66.0f;
+    if (game && game->map.tiles) {
+        ensure_minimap_texture(bank, &game->map, player);
+    }
+    if (bank->tex_hud_radar_adv.id) {
+        cs2d_render_sprite_frame(&bank->tex_hud_radar_adv,
+                                 bank->tex_hud_radar_adv.width, bank->tex_hud_radar_adv.height, 0,
+                                 rcx, rcy, 128.0f, 128.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.65f, 0);
+    }
+    if (bank->tex_minimap.id) {
+        cs2d_render_sprite_frame(&bank->tex_minimap, 128, 128, 0,
+                                 rcx, rcy, 128.0f, 128.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.80f, 0);
+    }
+    if (bank->tex_hud_radar_ring.id) {
+        cs2d_render_sprite_frame(&bank->tex_hud_radar_ring,
+                                 bank->tex_hud_radar_ring.width, bank->tex_hud_radar_ring.height, 0,
+                                 rcx, rcy, 128.0f, 128.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.85f, 0);
+    } else if (bank->tex_hud_radar.id) {
+        cs2d_render_sprite_frame(&bank->tex_hud_radar,
+                                 bank->tex_hud_radar.width, bank->tex_hud_radar.height, 0,
+                                 rcx, rcy, 128.0f, 128.0f, 0.0f, 0.4f, 0.9f, 0.4f, 0.65f, 0);
+    }
+
+    /* Radar Icons (Info_RadarIcon type 81 -> int_settings[0] is direct frame index: 8='A', 9='B') */
+    if (game && game->map.width > 0 && game->map.height > 0 && bank->tex_hud_radar_icons.id) {
+        float px_per_tile = 128.0f / 36.0f;
+        float p_tx = player->pos.x / (float)CS2D_TILE_SIZE;
+        float p_ty = player->pos.y / (float)CS2D_TILE_SIZE;
+
+        for (uint32_t i = 0; i < game->map.entity_count; i++) {
+            const cs2d_entity_t *ent = &game->map.entities[i];
+            if (ent->type == CS2D_ENT_INFO_RADARICON) {
+                int icon_f = ent->int_settings[0];
+                float dx = ((float)ent->x - p_tx) * px_per_tile;
+                float dy = ((float)ent->y - p_ty) * px_per_tile;
+                float dist = sqrtf(dx * dx + dy * dy);
+                if (dist > 52.0f) {
+                    dx *= 52.0f / dist;
+                    dy *= 52.0f / dist;
+                }
+                float ir = (ent->int_settings[1] || ent->int_settings[2] || ent->int_settings[3])
+                           ? ((float)ent->int_settings[1] / 255.0f) : 1.0f;
+                float ig = (ent->int_settings[1] || ent->int_settings[2] || ent->int_settings[3])
+                           ? ((float)ent->int_settings[2] / 255.0f) : 0.75f;
+                float ib = (ent->int_settings[1] || ent->int_settings[2] || ent->int_settings[3])
+                           ? ((float)ent->int_settings[3] / 255.0f) : 0.1f;
+                cs2d_render_sprite_frame(&bank->tex_hud_radar_icons, 32, 32, icon_f,
+                                         rcx + dx, rcy + dy, 22.0f, 22.0f, 0.0f,
+                                         ir, ig, ib, 0.90f, 0);
+            }
+        }
+        /* Local player radar blip at center of radar */
+        cs2d_render_sprite_frame(&bank->tex_hud_radar_icons, 32, 32, 0,
+                                 rcx, rcy, 12.0f, 12.0f, 0.0f,
+                                 1.0f, 1.0f, 1.0f, 0.90f, 0);
+    }
+
+    float hud_y = (float)(screen_h - 36);
+    /* Classic CS2D warm amber/gold HUD tint (or red when HP <= 25) */
+    float hr = 1.0f;
+    float hg = (player->health <= 25) ? 0.2f : 0.78f;
+    float hb = (player->health <= 25) ? 0.1f : 0.0f;
+    float ha = 0.52f;
+
+    /* 2. Bottom-Left: Health (symbol 0) & Armor (symbol 1) */
+    cs2d_render_sprite_frame(&bank->tex_hud_symbols, sym_cell, sym_cell, 0,
+                             20.0f, hud_y + 16.0f, 32.0f, 32.0f, 0.0f, hr, hg, hb, ha, 3);
+    cs2d_render_hud_number(&bank->tex_hud_nums, player->health, 40.0f, hud_y, hr, hg, hb, ha);
+
+    cs2d_render_sprite_frame(&bank->tex_hud_symbols, sym_cell, sym_cell, 1,
+                             152.0f, hud_y + 16.0f, 32.0f, 32.0f, 0.0f, 1.0f, 0.78f, 0.0f, ha, 3);
+    int disp_armor = (player->armor > 200) ? 100 : player->armor;
+    cs2d_render_hud_number(&bank->tex_hud_nums, disp_armor, 172.0f, hud_y, 1.0f, 0.78f, 0.0f, ha);
+
+    /* 3. Bottom-Center: Round Timer (symbol 2) + M:SS */
+    if (game) {
+        float timer_x = (float)(screen_w / 2) - 46.0f;
+        float tr = 1.0f;
+        float tg = game->bomb_planted ? 0.2f : 0.78f;
+        float tb = game->bomb_planted ? 0.1f : 0.0f;
+        int sec_left = (int)(game->bomb_planted ? game->c4_time : game->round_time);
+
+        cs2d_render_sprite_frame(&bank->tex_hud_symbols, sym_cell, sym_cell, 2,
+                                 timer_x, hud_y + 16.0f, 32.0f, 32.0f, 0.0f, tr, tg, tb, ha, 3);
+        render_hud_time(&bank->tex_hud_nums, sec_left, timer_x + 20.0f, hud_y, tr, tg, tb, ha);
+    }
+
+    /* 4. Bottom-Right: Money (symbol 7 '$') above Ammo (Clip | Reserve) */
+    float money_y = (float)(screen_h - 72);
+    float money_x = (float)(screen_w - 150);
+    cs2d_render_sprite_frame(&bank->tex_hud_symbols, sym_cell, sym_cell, 7,
+                             money_x, money_y + 16.0f, 32.0f, 32.0f, 0.0f, 1.0f, 0.78f, 0.0f, ha, 3);
+    cs2d_render_hud_number(&bank->tex_hud_nums, player->money, money_x + 20.0f, money_y, 1.0f, 0.78f, 0.0f, ha);
+
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(player->current_weapon);
+    if (wep && wep->clip_size > 0) {
+        int clip = player->clip_ammo[player->current_weapon];
+        int res  = player->reserve_ammo[player->current_weapon];
+        cs2d_render_hud_number(&bank->tex_hud_nums, clip, (float)(screen_w - 165), hud_y, 1.0f, 0.78f, 0.0f, ha);
+        /* Frame 11 ('|') ammo separator from gfx/hud_nums.bmp */
+        cs2d_render_sprite_frame(&bank->tex_hud_nums, num_cw, num_ch, 11,
+                                 (float)(screen_w - 94), hud_y + 16.0f, 24.0f, 33.0f,
+                                 0.0f, 1.0f, 0.78f, 0.0f, ha, 3);
+        cs2d_render_hud_number(&bank->tex_hud_nums, res,  (float)(screen_w - 82),  hud_y, 1.0f, 0.78f, 0.0f, ha);
+    }
+
+    /* 5. Left Status Icons: Buyzone (frame 4), Defuse Kit (frame 3), C4 Bomb (frame 6) */
+    float icon_y = 156.0f;
+    if (game) {
+        int ptx = (int)(player->pos.x / CS2D_TILE_SIZE);
+        int pty = (int)(player->pos.y / CS2D_TILE_SIZE);
+        cs2d_entity_type_t spawn_type = (player->team == CS2D_TEAM_T) ? CS2D_ENT_INFO_T : CS2D_ENT_INFO_CT;
+        if (cs2d_map_in_zone(&game->map, spawn_type, ptx, pty)) {
+            cs2d_render_sprite_frame(&bank->tex_hud_symbols, sym_cell, sym_cell, 4,
+                                     24.0f, icon_y, 32.0f, 32.0f, 0.0f, 0.2f, 0.95f, 0.2f, 0.65f, 3);
+            icon_y += 36.0f;
+        }
+        if (cs2d_map_in_zone(&game->map, CS2D_ENT_INFO_BOMBSPOT, ptx, pty) &&
+            player->inventory[CS2D_SLOT_BOMB] == CS2D_WEP_BOMB) {
+            cs2d_render_sprite_frame(&bank->tex_hud_symbols, sym_cell, sym_cell, 5,
+                                     24.0f, icon_y, 32.0f, 32.0f, 0.0f, 1.0f, 0.2f, 0.1f, 0.75f, 3);
+            icon_y += 36.0f;
+        }
+    }
+    if (player->has_defuse_kit) {
+        cs2d_render_sprite_frame(&bank->tex_hud_symbols, sym_cell, sym_cell, 3,
+                                 24.0f, icon_y, 32.0f, 32.0f, 0.0f, 0.2f, 0.95f, 0.2f, 0.65f, 3);
+        icon_y += 36.0f;
+    }
+    if (player->inventory[CS2D_SLOT_BOMB] == CS2D_WEP_BOMB) {
+        cs2d_render_sprite_frame(&bank->tex_hud_symbols, sym_cell, sym_cell, 6,
+                                 24.0f, icon_y, 32.0f, 32.0f, 0.0f, 0.2f, 0.95f, 0.2f, 0.65f, 3);
+    }
+}
+
+void cs2d_render_crosshair(float mx, float my)
+{
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    if (bank && bank->tex_pointer.id) {
+        /* gfx/pointer.bmp: 92x92 -> 2x2 grid of 46x46 cells (frame 0 = green crosshair scaled to 20x20) */
+        cs2d_render_sprite_frame(&bank->tex_pointer, 46, 46, 0,
+                                 mx, my, 20.0f, 20.0f, 0.0f,
+                                 1.0f, 1.0f, 1.0f, 0.95f, 0);
+    }
+}
+
+/*
+ * High-Quality CS2D TrueType Font Engine (gfx/fonts/liberationsans.ttf & sourcesans.ttf)
+ * Uses GDI+ PrivateFontCollection + TextRenderingHintAntiAlias (unhinted 256-level grayscale
+ * to avoid broken TrueType GridFit bytecode instructions in liberationsans.ttf) with a
+ * FreeType-style stem-darkening gamma curve (pow(a, 0.62)) and a 512-entry GPU String Texture Cache.
+ */
+typedef void GpGraphics;
+typedef void GpFontCollection;
+typedef void GpFontFamily;
+typedef void GpFont;
+typedef void GpStringFormat;
+typedef void GpBrush;
+typedef void GpSolidFill;
+
+typedef struct {
+    float X;
+    float Y;
+    float Width;
+    float Height;
+} GpRectF;
+
+typedef GpStatus (WINAPI *PFN_GdipCreateBitmapFromScan0)(INT width, INT height, INT stride, INT format, BYTE *scan0, GpBitmap **bitmap);
+typedef GpStatus (WINAPI *PFN_GdipGetImageGraphicsContext)(GpImage *image, GpGraphics **graphics);
+typedef GpStatus (WINAPI *PFN_GdipDeleteGraphics)(GpGraphics *graphics);
+typedef GpStatus (WINAPI *PFN_GdipGraphicsClear)(GpGraphics *graphics, ARGB color);
+typedef GpStatus (WINAPI *PFN_GdipSetTextRenderingHint)(GpGraphics *graphics, INT mode);
+typedef GpStatus (WINAPI *PFN_GdipNewPrivateFontCollection)(GpFontCollection **fontCollection);
+typedef GpStatus (WINAPI *PFN_GdipPrivateAddFontFile)(GpFontCollection *fontCollection, const WCHAR *filename);
+typedef GpStatus (WINAPI *PFN_GdipCreateFontFamilyFromName)(const WCHAR *name, GpFontCollection *fontCollection, GpFontFamily **fontFamily);
+typedef GpStatus (WINAPI *PFN_GdipCreateFont)(const GpFontFamily *fontFamily, float emSize, INT style, INT unit, GpFont **font);
+typedef GpStatus (WINAPI *PFN_GdipDeleteFont)(GpFont *font);
+typedef GpStatus (WINAPI *PFN_GdipCreateSolidFill)(ARGB color, GpSolidFill **brush);
+typedef GpStatus (WINAPI *PFN_GdipDeleteBrush)(GpBrush *brush);
+typedef GpStatus (WINAPI *PFN_GdipStringFormatGetGenericTypographic)(GpStringFormat **format);
+typedef GpStatus (WINAPI *PFN_GdipCloneStringFormat)(const GpStringFormat *format, GpStringFormat **newFormat);
+typedef GpStatus (WINAPI *PFN_GdipSetStringFormatFlags)(GpStringFormat *format, INT flags);
+typedef GpStatus (WINAPI *PFN_GdipDeleteStringFormat)(GpStringFormat *format);
+typedef GpStatus (WINAPI *PFN_GdipDrawString)(GpGraphics *graphics, const WCHAR *string, INT length, const GpFont *font, const GpRectF *layoutRect, const GpStringFormat *stringFormat, const GpBrush *brush);
+typedef GpStatus (WINAPI *PFN_GdipMeasureString)(GpGraphics *graphics, const WCHAR *string, INT length, const GpFont *font, const GpRectF *layoutRect, const GpStringFormat *stringFormat, GpRectF *boundingBox, INT *codepointsFitted, INT *linesFilled);
+
+static PFN_GdipCreateBitmapFromScan0             pGdipCreateBitmapFromScan0 = NULL;
+static PFN_GdipGetImageGraphicsContext           pGdipGetImageGraphicsContext = NULL;
+static PFN_GdipDeleteGraphics                    pGdipDeleteGraphics = NULL;
+static PFN_GdipGraphicsClear                     pGdipGraphicsClear = NULL;
+static PFN_GdipSetTextRenderingHint              pGdipSetTextRenderingHint = NULL;
+static PFN_GdipNewPrivateFontCollection          pGdipNewPrivateFontCollection = NULL;
+static PFN_GdipPrivateAddFontFile                pGdipPrivateAddFontFile = NULL;
+static PFN_GdipCreateFontFamilyFromName          pGdipCreateFontFamilyFromName = NULL;
+static PFN_GdipCreateFont                        pGdipCreateFont = NULL;
+static PFN_GdipDeleteFont                        pGdipDeleteFont = NULL;
+static PFN_GdipCreateSolidFill                   pGdipCreateSolidFill = NULL;
+static PFN_GdipDeleteBrush                       pGdipDeleteBrush = NULL;
+static PFN_GdipStringFormatGetGenericTypographic pGdipStringFormatGetGenericTypographic = NULL;
+static PFN_GdipCloneStringFormat                 pGdipCloneStringFormat = NULL;
+static PFN_GdipSetStringFormatFlags              pGdipSetStringFormatFlags = NULL;
+static PFN_GdipDeleteStringFormat                pGdipDeleteStringFormat = NULL;
+static PFN_GdipDrawString                        pGdipDrawString = NULL;
+static PFN_GdipMeasureString                     pGdipMeasureString = NULL;
+
+#define CS2D_TEXT_SCRATCH_W  1024
+#define CS2D_TEXT_SCRATCH_H  48
+#define CS2D_TEXT_CACHE_SIZE 512
+
+typedef struct {
+    bool           used;
+    uint32_t       hash;
+    cs2d_font_id_t font_id;
+    char           text[192];
+    GLuint         tex_id;
+    int            tex_w;
+    int            tex_h;
+    float          width;
+    float          height;
+    uint32_t       last_used;
+} cs2d_text_cache_entry_t;
+
+static bool                    s_fonts_loaded = false;
+static GpFontCollection       *s_font_collection = NULL;
+static GpFont                 *s_gp_fonts[CS2D_FONT_COUNT] = {0};
+static float                   s_font_line_h[CS2D_FONT_COUNT] = { 15.0f, 10.0f, 15.0f, 22.0f };
+static GpStringFormat         *s_str_format = NULL;
+static GpSolidFill            *s_white_brush = NULL;
+static uint32_t               *s_scratch_pixels = NULL;
+static GpBitmap               *s_scratch_bitmap = NULL;
+static GpGraphics             *s_scratch_gfx = NULL;
+static uint8_t                 s_gamma_lut[256];
+static cs2d_text_cache_entry_t s_text_cache[CS2D_TEXT_CACHE_SIZE];
+static uint32_t                s_text_cache_tick = 0;
+
+static void ensure_ui_fonts(void)
+{
+    if (s_fonts_loaded || !g_gl_ctx) return;
+    if (!init_gdiplus_once() || !g_gdiplus_mod) return;
+
+    pGdipCreateBitmapFromScan0             = (PFN_GdipCreateBitmapFromScan0)(void *)GetProcAddress(g_gdiplus_mod, "GdipCreateBitmapFromScan0");
+    pGdipGetImageGraphicsContext           = (PFN_GdipGetImageGraphicsContext)(void *)GetProcAddress(g_gdiplus_mod, "GdipGetImageGraphicsContext");
+    pGdipDeleteGraphics                    = (PFN_GdipDeleteGraphics)(void *)GetProcAddress(g_gdiplus_mod, "GdipDeleteGraphics");
+    pGdipGraphicsClear                     = (PFN_GdipGraphicsClear)(void *)GetProcAddress(g_gdiplus_mod, "GdipGraphicsClear");
+    pGdipSetTextRenderingHint              = (PFN_GdipSetTextRenderingHint)(void *)GetProcAddress(g_gdiplus_mod, "GdipSetTextRenderingHint");
+    pGdipNewPrivateFontCollection          = (PFN_GdipNewPrivateFontCollection)(void *)GetProcAddress(g_gdiplus_mod, "GdipNewPrivateFontCollection");
+    pGdipPrivateAddFontFile                = (PFN_GdipPrivateAddFontFile)(void *)GetProcAddress(g_gdiplus_mod, "GdipPrivateAddFontFile");
+    pGdipCreateFontFamilyFromName          = (PFN_GdipCreateFontFamilyFromName)(void *)GetProcAddress(g_gdiplus_mod, "GdipCreateFontFamilyFromName");
+    pGdipCreateFont                        = (PFN_GdipCreateFont)(void *)GetProcAddress(g_gdiplus_mod, "GdipCreateFont");
+    pGdipDeleteFont                        = (PFN_GdipDeleteFont)(void *)GetProcAddress(g_gdiplus_mod, "GdipDeleteFont");
+    pGdipCreateSolidFill                   = (PFN_GdipCreateSolidFill)(void *)GetProcAddress(g_gdiplus_mod, "GdipCreateSolidFill");
+    pGdipDeleteBrush                       = (PFN_GdipDeleteBrush)(void *)GetProcAddress(g_gdiplus_mod, "GdipDeleteBrush");
+    pGdipStringFormatGetGenericTypographic = (PFN_GdipStringFormatGetGenericTypographic)(void *)GetProcAddress(g_gdiplus_mod, "GdipStringFormatGetGenericTypographic");
+    pGdipCloneStringFormat                 = (PFN_GdipCloneStringFormat)(void *)GetProcAddress(g_gdiplus_mod, "GdipCloneStringFormat");
+    pGdipSetStringFormatFlags              = (PFN_GdipSetStringFormatFlags)(void *)GetProcAddress(g_gdiplus_mod, "GdipSetStringFormatFlags");
+    pGdipDeleteStringFormat                = (PFN_GdipDeleteStringFormat)(void *)GetProcAddress(g_gdiplus_mod, "GdipDeleteStringFormat");
+    pGdipDrawString                        = (PFN_GdipDrawString)(void *)GetProcAddress(g_gdiplus_mod, "GdipDrawString");
+    pGdipMeasureString                     = (PFN_GdipMeasureString)(void *)GetProcAddress(g_gdiplus_mod, "GdipMeasureString");
+
+    if (!pGdipCreateBitmapFromScan0 || !pGdipGetImageGraphicsContext || !pGdipSetTextRenderingHint ||
+        !pGdipNewPrivateFontCollection || !pGdipPrivateAddFontFile || !pGdipCreateFontFamilyFromName ||
+        !pGdipCreateFont || !pGdipCreateSolidFill || !pGdipDrawString || !pGdipMeasureString) {
+        return;
+    }
+
+    /* Precompute FreeType-style stem-darkening gamma curve (pow(a, 0.78)) */
+    s_gamma_lut[0] = 0;
+    for (int i = 1; i < 256; i++) {
+        float norm = (float)i / 255.0f;
+        int   val  = (int)(powf(norm, 0.78f) * 255.0f + 0.5f);
+        if (val > 255) val = 255;
+        s_gamma_lut[i] = (uint8_t)val;
+    }
+
+    s_scratch_pixels = (uint32_t *)calloc((size_t)CS2D_TEXT_SCRATCH_W * (size_t)CS2D_TEXT_SCRATCH_H, 4);
+    /* PixelFormat32bppARGB = 0x26200A */
+    pGdipCreateBitmapFromScan0(CS2D_TEXT_SCRATCH_W, CS2D_TEXT_SCRATCH_H,
+                               CS2D_TEXT_SCRATCH_W * 4, 0x26200A,
+                               (BYTE *)s_scratch_pixels, &s_scratch_bitmap);
+    if (s_scratch_bitmap) {
+        pGdipGetImageGraphicsContext((GpImage *)s_scratch_bitmap, &s_scratch_gfx);
+        if (s_scratch_gfx) {
+            /* TextRenderingHintAntiAlias = 4 (smooth 256-level grayscale without broken GridFit bytecode) */
+            pGdipSetTextRenderingHint(s_scratch_gfx, 4);
+        }
+    }
+
+    pGdipCreateSolidFill(0xFFFFFFFFu, &s_white_brush);
+
+    const GpStringFormat *generic_typo = NULL;
+    if (pGdipStringFormatGetGenericTypographic &&
+        pGdipStringFormatGetGenericTypographic((GpStringFormat **)&generic_typo) == 0 &&
+        generic_typo && pGdipCloneStringFormat) {
+        pGdipCloneStringFormat(generic_typo, &s_str_format);
+        if (s_str_format && pGdipSetStringFormatFlags) {
+            /* StringFormatFlagsMeasureTrailingSpaces (0x0800) | StringFormatFlagsNoWrap (0x1000) | StringFormatFlagsNoClip (0x4000) */
+            pGdipSetStringFormatFlags(s_str_format, 0x0800 | 0x1000 | 0x4000);
+        }
+    }
+
+    pGdipNewPrivateFontCollection(&s_font_collection);
+    if (s_font_collection) {
+        WCHAR wpath1[MAX_PATH] = {0};
+        WCHAR wpath2[MAX_PATH] = {0};
+        GetFullPathNameW(L"gfx\\fonts\\liberationsans.ttf", MAX_PATH, wpath1, NULL);
+        GetFullPathNameW(L"gfx\\fonts\\sourcesans.ttf",     MAX_PATH, wpath2, NULL);
+        pGdipPrivateAddFontFile(s_font_collection, wpath1);
+        pGdipPrivateAddFontFile(s_font_collection, wpath2);
+    }
+
+    GpFontFamily *fam_lib = NULL;
+    GpFontFamily *fam_src = NULL;
+    if (s_font_collection) {
+        pGdipCreateFontFamilyFromName(L"Liberation Sans",       s_font_collection, &fam_lib);
+        pGdipCreateFontFamilyFromName(L"Source Sans Pro Black", s_font_collection, &fam_src);
+    }
+    if (!fam_lib) {
+        pGdipCreateFontFamilyFromName(L"Segoe UI", NULL, &fam_lib);
+    }
+    if (!fam_lib) {
+        pGdipCreateFontFamilyFromName(L"Arial", NULL, &fam_lib);
+    }
+    if (!fam_src) {
+        fam_src = fam_lib;
+    }
+
+    /* UnitPixel = 2; FontStyleRegular = 0, FontStyleBold = 1 */
+    if (fam_lib) {
+        pGdipCreateFont(fam_lib, 13.0f, 0, 2, &s_gp_fonts[CS2D_FONT_REGULAR]);
+        pGdipCreateFont(fam_lib, 10.0f, 0, 2, &s_gp_fonts[CS2D_FONT_SMALL]);
+        pGdipCreateFont(fam_lib, 13.0f, 1, 2, &s_gp_fonts[CS2D_FONT_BOLD]);
+    }
+    if (fam_src) {
+        pGdipCreateFont(fam_src, 18.0f, 0, 2, &s_gp_fonts[CS2D_FONT_TITLE]);
+    }
+
+    memset(s_text_cache, 0, sizeof(s_text_cache));
+    s_fonts_loaded = true;
+}
+
+static uint32_t hash_font_string(cs2d_font_id_t font_id, const char *text)
+{
+    uint32_t h = 2166136261u ^ (uint32_t)font_id;
+    for (const unsigned char *p = (const unsigned char *)text; *p != '\0'; p++) {
+        h ^= (uint32_t)*p;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static cs2d_text_cache_entry_t *get_or_create_text_entry(cs2d_font_id_t font_id, const char *text)
+{
+    if (!text || !text[0]) return NULL;
+    ensure_ui_fonts();
+    if (!s_fonts_loaded || !s_scratch_gfx) return NULL;
+    if (font_id < 0 || font_id >= CS2D_FONT_COUNT) font_id = CS2D_FONT_REGULAR;
+
+    GpFont *gp_font = s_gp_fonts[font_id];
+    if (!gp_font) gp_font = s_gp_fonts[CS2D_FONT_REGULAR];
+    if (!gp_font) return NULL;
+
+    uint32_t h = hash_font_string(font_id, text);
+    s_text_cache_tick++;
+
+    /* 1. Fast path: check cache hit */
+    int empty_slot  = -1;
+    int oldest_slot = 0;
+    uint32_t oldest_tick = 0xFFFFFFFFu;
+
+    for (int i = 0; i < CS2D_TEXT_CACHE_SIZE; i++) {
+        cs2d_text_cache_entry_t *e = &s_text_cache[i];
+        if (!e->used) {
+            if (empty_slot < 0) empty_slot = i;
+            continue;
+        }
+        if (e->hash == h && e->font_id == font_id && strncmp(e->text, text, sizeof(e->text) - 1) == 0) {
+            e->last_used = s_text_cache_tick;
+            return e;
+        }
+        if (e->last_used < oldest_tick) {
+            oldest_tick = e->last_used;
+            oldest_slot = i;
+        }
+    }
+
+    int slot = (empty_slot >= 0) ? empty_slot : oldest_slot;
+    cs2d_text_cache_entry_t *entry = &s_text_cache[slot];
+    if (entry->used && entry->tex_id != 0) {
+        glDeleteTextures(1, &entry->tex_id);
+        entry->tex_id = 0;
+    }
+
+    memset(entry, 0, sizeof(*entry));
+    entry->used      = true;
+    entry->hash      = h;
+    entry->font_id   = font_id;
+    entry->last_used = s_text_cache_tick;
+    strncpy(entry->text, text, sizeof(entry->text) - 1);
+    entry->text[sizeof(entry->text) - 1] = '\0';
+
+    /* Convert UTF-8 (or ANSI fallback) to WCHAR */
+    WCHAR wtext[192] = {0};
+    int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, entry->text, -1, wtext, 191);
+    if (wlen <= 0) {
+        wlen = MultiByteToWideChar(CP_ACP, 0, entry->text, -1, wtext, 191);
+    }
+    if (wlen > 0) wlen--; /* exclude NUL terminator */
+    if (wlen <= 0) return entry;
+
+    GpRectF layout_rect = { 0.0f, 0.0f, (float)(CS2D_TEXT_SCRATCH_W - 4), (float)CS2D_TEXT_SCRATCH_H };
+    GpRectF bbox        = { 0.0f, 0.0f, 0.0f, 0.0f };
+    pGdipMeasureString(s_scratch_gfx, wtext, wlen, gp_font, &layout_rect, s_str_format, &bbox, NULL, NULL);
+
+    int tw = (int)ceilf(bbox.Width) + 2;
+    int th = (int)ceilf(bbox.Height) + 2;
+    if (tw < 2) tw = 2;
+    if (th < 2) th = 2;
+    if (tw > CS2D_TEXT_SCRATCH_W) tw = CS2D_TEXT_SCRATCH_W;
+    if (th > CS2D_TEXT_SCRATCH_H) th = CS2D_TEXT_SCRATCH_H;
+
+    entry->width  = ceilf(bbox.Width);
+    entry->height = ceilf(bbox.Height);
+    entry->tex_w  = tw;
+    entry->tex_h  = th;
+
+    /* Clear active region to opaque black (0xFF000000) so GDI+ blends white coverage directly into R/G/B */
+    for (int y = 0; y < th; y++) {
+        uint32_t *row = &s_scratch_pixels[y * CS2D_TEXT_SCRATCH_W];
+        for (int x = 0; x < tw; x++) {
+            row[x] = 0xFF000000u;
+        }
+    }
+
+    GpRectF draw_rect = { 0.0f, 0.0f, (float)tw, (float)th };
+    pGdipDrawString(s_scratch_gfx, wtext, wlen, gp_font, &draw_rect, s_str_format, (GpBrush *)s_white_brush);
+
+    uint8_t *rgba = (uint8_t *)malloc((size_t)tw * (size_t)th * 4);
+    if (rgba) {
+        for (int y = 0; y < th; y++) {
+            const uint32_t *src_row = &s_scratch_pixels[y * CS2D_TEXT_SCRATCH_W];
+            uint8_t        *dst_row = &rgba[y * tw * 4];
+            for (int x = 0; x < tw; x++) {
+                uint32_t px = src_row[x];
+                uint8_t cov = (uint8_t)((px >> 16) & 0xFF);
+                dst_row[x * 4 + 0] = 255;
+                dst_row[x * 4 + 1] = 255;
+                dst_row[x * 4 + 2] = 255;
+                dst_row[x * 4 + 3] = s_gamma_lut[cov];
+            }
+        }
+
+        GLuint gl_id = 0;
+        glGenTextures(1, &gl_id);
+        glBindTexture(GL_TEXTURE_2D, gl_id);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        free(rgba);
+
+        entry->tex_id = gl_id;
+    }
+
+    return entry;
+}
+
+void cs2d_render_text_ex(cs2d_font_id_t font_id, float x, float y, const char *text, float r, float g, float b, float a)
+{
+    cs2d_text_cache_entry_t *e = get_or_create_text_entry(font_id, text);
+    if (!e || e->tex_id == 0) return;
+
+    float rx = floorf(x);
+    float ry = floorf(y);
+    float rw = (float)e->tex_w;
+    float rh = (float)e->tex_h;
+
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, e->tex_id);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(r, g, b, a);
+
+    glBegin(GL_QUADS);
+    glTexCoord2f(0.0f, 0.0f); glVertex2f(rx,      ry);
+    glTexCoord2f(1.0f, 0.0f); glVertex2f(rx + rw, ry);
+    glTexCoord2f(1.0f, 1.0f); glVertex2f(rx + rw, ry + rh);
+    glTexCoord2f(0.0f, 1.0f); glVertex2f(rx,      ry + rh);
+    glEnd();
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDisable(GL_TEXTURE_2D);
+}
+
+void cs2d_render_text_measure(cs2d_font_id_t font_id, const char *text, float *out_w, float *out_h)
+{
+    if (out_w) *out_w = 0.0f;
+    if (out_h) *out_h = cs2d_render_font_line_height(font_id);
+    if (!text || !text[0]) return;
+
+    cs2d_text_cache_entry_t *e = get_or_create_text_entry(font_id, text);
+    if (e) {
+        if (out_w) *out_w = e->width;
+        if (out_h) *out_h = e->height;
+    }
+}
+
+float cs2d_render_text_width_ex(cs2d_font_id_t font_id, const char *text)
+{
+    float w = 0.0f;
+    cs2d_render_text_measure(font_id, text, &w, NULL);
+    return w;
+}
+
+float cs2d_render_font_line_height(cs2d_font_id_t font_id)
+{
+    if (font_id < 0 || font_id >= CS2D_FONT_COUNT) return 15.0f;
+    return s_font_line_h[font_id];
+}
+
+void cs2d_render_text(float x, float y, const char *text, float r, float g, float b, float a)
+{
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, x, y, text, r, g, b, a);
+}
+
+void cs2d_render_text_small(float x, float y, const char *text, float r, float g, float b, float a)
+{
+    cs2d_render_text_ex(CS2D_FONT_SMALL, x, y, text, r, g, b, a);
+}
+
+float cs2d_render_text_width(const char *text)
+{
+    return cs2d_render_text_width_ex(CS2D_FONT_REGULAR, text);
+}
+
+void cs2d_render_gradient_rect(
+    float x, float y, float w, float h,
+    float r_top, float g_top, float b_top, float a_top,
+    float r_bot, float g_bot, float b_bot, float a_bot
+)
+{
+    glDisable(GL_TEXTURE_2D);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBegin(GL_QUADS);
+    glColor4f(r_top, g_top, b_top, a_top);
+    glVertex2f(x,     y);
+    glVertex2f(x + w, y);
+    glColor4f(r_bot, g_bot, b_bot, a_bot);
+    glVertex2f(x + w, y + h);
+    glVertex2f(x,     y + h);
+    glEnd();
+}
+
+void cs2d_render_scissor_begin(int x, int y, int w, int h)
+{
+    if (w < 0) w = 0;
+    if (h < 0) h = 0;
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(x, g_viewport_h - (y + h), w, h);
+}
+
+void cs2d_render_scissor_end(void)
+{
+    glDisable(GL_SCISSOR_TEST);
+}
+
+
