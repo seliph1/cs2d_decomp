@@ -8,6 +8,18 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-11 — Antigravity — Server Info ("<Server> - Info") and "Select Team" / skin subcategory UI
+- **Protocol & parsing:** parsed `server_name` from `[252,6]`, `opcode 240` (`CS2D_NET_MSG2`) `mode 50`
+  (`"1"` clear, `"2"` open) and `mode 51` (UTF-16LE `serverinfo.txt` lines with `U+00A9` `RRRGGGBBB`
+  color tags and `U+00BB` gold link highlighting), and `opcode 20` (`CS2D_NET_TEAM`) send/receive.
+- **Clay UI windows (`cs2d_ui`):** implemented the `600×440` `"<Server Name> - Info"` window (`553×374`
+  scrollable box + `15 px` scrollbar + `568×20` `Close` button) and the `600×440` `"Select Team"` menu
+  (`M` key) with `240×25` numbered buttons, T/CT skin subcategories (`1..4` skins, `5 Auto-Select`,
+  `Back`, `0 Close`), and immediate selection (no subcategory) for `5 Auto-Select` and `6 Spectator`.
+- **Verification:** added `test_server_info_and_team_menu` in `tests/test_cs2d.c` (`15 / 15` passing) and
+  captured live screenshots against `cs2d_dedicated.exe -offline` verifying the full join → Server Info →
+  Select Team → CT skin selection → live spawn flow.
+
 ## 2026-10-11 — Claude Code — agent memory structure
 - Added `AGENTS.md` and its pointers (`CLAUDE.md`, `GEMINI.md`, `.agent/rules/`), plus `docs/agents/*`,
   `tools/agent/*` (capture scripts and Lua probes) and `.mcp.json` (REA).

@@ -42,7 +42,7 @@ When you confirm or refute something, update this file. All multi-byte integers 
   - `[252,0]` → `[252,1, name…]`
   - `[252,2,status,pid,map,secret]` → `[252,3,map sha256 hex]`
   - `[252,4,status]` → `[252,5,map,sha]`
-  - `[252,6,…]`, then `[252,7,section,…]` snapshot chunks, ending with `[252,7,200,…]`.
+  - `[252,6, map_name(RStr), server_name(RStr), …]`, then `[252,7,section,…]` snapshot chunks, ending with `[252,7,200,…]`.
 - **Snapshot section 4:** the non-zero entity states, `{x u16, y u16, state u8}`.
 - **Client data (proxy, Lua):** after the snapshot the original sends
   `[252,10, 0x1c,0x02, size u16 (=4+zlib len), raw size u32 (=1024), zlib(32x32 spray)]`, then `[67,1]`.
@@ -65,7 +65,7 @@ When you confirm or refute something, update this file. All multi-byte integers 
 | Drop | `[24][type][clip u16][reserve u16][0]` | |
 | Buy | `[23][type][0]` | |
 | Use | `[26][mode u8][target i32][x u16][y u16]` | Mode 100 = Trigger_Use with its tile; target ray at 0, 16 and 32 px along the aim |
-| Team | `[20][team][look]` | |
+| Team | `[20][team][look]` | `team`: 0 Spectator (`look = 5`), 1 T, 2 CT; `look`: `0..3` class skin or `4` Auto-Select skin |
 
 ## Network: server → client (proxy, Lua)
 
@@ -76,6 +76,7 @@ When you confirm or refute something, update this file. All multi-byte integers 
 | 15 | `[15,pid,x u16,y u16]` | setpos / teleport. The local player must apply it, or it keeps sending stale positions (rubberbanding) |
 | 16 | `[16,pid,1 / 2]` | Reload started / finished (finished = clip refilled) |
 | 17 | `[17,victim,attacker,hp,armor]` | Damage |
+| 20 | `[20,pid,team,look]` | Team and skin broadcast (`team == 0` moves player to Spectator) |
 | 21 | `[21,pid,x u16,y u16,weapon,armor,money u16,n,n×item]` | Spawn, with the whole inventory. prison_funst3r gives only the knife (50) |
 | 22 | `[22,round,n] + n×{pid,x u16,y u16,angle f32,weapon,armor,flag}` (12 bytes each) `+ {money u16, k, k×item}` | Round start. The trailer is the receiving player's inventory |
 | 23 | `[23,pid,type,money u16,u8]` | Buy result; type 250 = refused (prison has no buy zone) |
@@ -86,7 +87,7 @@ When you confirm or refute something, update this file. All multi-byte integers 
 | 42 | `[42,pid,field,value u16]` | Playerdata. Fields: 0 health, 2 money, 3 armor, 5 weapon given, 6 weapon taken, 8 max health |
 | 61 | `[61,pid,type,clip u16,reserve u16]` | Set ammo |
 | 226 | `[226,1,u16,len u16,text,u8]` | Message |
-| 240 | | Chat (UTF-16) |
+| 240 | `[240,pid,mode,len u8,UTF-16LE (2×len bytes)]` | Chat & Server Info (`mode == 50`: `"1"` clear serverinfo, `"2"` open `"<server_name> - Info"` window; `mode == 51`: append UTF-16LE serverinfo line with optional `U+00A9` + 9 digits `RRRGGGBBB` color tag or `U+00BB` gold link) |
 | 229 / 247 / 249 | | Pings; reply to 249 with the same 5 bytes |
 
 ## Movement and collision
@@ -147,6 +148,16 @@ Source: REA `FUN_140148f40`, plus frame captures.
 - **Shells** (`gfx/shells.bmp`, 4 frames of 8×8): ejected to the right of the aim; they stay on the floor.
 - **Not recovered:** the per-weapon muzzle offset table `PTR_DAT_1409f5d20`. We use 30 px for primary
   weapons and 22 px for pistols (calibrated).
+
+## Server Info and Team Selection UI
+
+Source: reference screenshots from `CS2D.exe` + dedicated `opcode 240` (`FUN_1400d5190`) and `opcode 20`.
+
+- **Window frame:** both `"<server_name> - Info"` and `"Select Team"` are `600×440` centered at `(125, 20)` on `850×480` with a 1 px horizontal divider below the title bar.
+- **`"<server_name> - Info"`:** `553×374` scrollable text box (`ServerInfoBox`) + `15×374` scrollbar on the right (`ServerInfoScrollbar`) + `568×20` `Close` button at the bottom (`BtnServerInfoClose`). When joining a server, `"<server_name> - Info"` renders first and closing it reveals `"Select Team"`.
+- **`"Select Team"` (`M` key):** `240×25` option buttons starting at `(205, 120)` with `5 px` vertical gap:
+  - Main page: `1 Terrorists (N)` and `2 Counter-Terrorists (N)` open skin subcategories; after a `25 px` empty slot, `5 Auto-Select` and `6 Spectator` select immediately (no subcategory); `0 Close` at `(205, 420)`.
+  - Subcategories (`"Select Team - Terrorists"` / `"Select Team - Counter-Terrorists"`): `1..4` skins (`Phoenix Connexion`, `L337 Krew`, `Arctic Avengers`, `Guerilla Warfare` / `Seal Team 6 (DEVGRU)`, `German GSG-9`, `UK SAS`, `French GIGN`) with per-skin player counts `(N)`, `25 px` empty slot, `5 Auto-Select`, `Back` (`y = 390`), `0 Close` (`y = 420`).
 
 ## Rendering notes
 

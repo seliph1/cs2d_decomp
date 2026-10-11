@@ -14,9 +14,10 @@
 #include "cs2d_entities.h"
 #include "cs2d_fx.h"
 
-#define CS2D_CONSOLE_MAX_LINES 1024 /* Ring buffer: the oldest line is dropped when full */
-#define CS2D_CONSOLE_LINE_LEN  192
-#define CS2D_CONSOLE_HIST_MAX  32
+#define CS2D_CONSOLE_MAX_LINES     1024 /* Ring buffer: the oldest line is dropped when full */
+#define CS2D_CONSOLE_LINE_LEN      192
+#define CS2D_CONSOLE_HIST_MAX      32
+#define CS2D_SERVER_INFO_MAX_LINES 128
 
 /* Weapon / item lying on the ground (server: spawnitem 33, drop 24, collect 25) */
 #define CS2D_MAX_GROUND_ITEMS 256
@@ -105,15 +106,24 @@ struct cs2d_client {
     float           net_sync_timer;
     uint16_t        net_send_seq;
     int             join_stage;
-    char            net_raw_secret[128];
-    char            net_map_name[128];
-    char            net_map_checksum[65];
+    char                net_raw_secret[128];
+    char                net_map_name[128];
+    char                net_map_checksum[65];
+    char                net_server_name[64];
 
     /* Declarative UI Context & Window States */
     cs2d_ui_context_t   ui;
     bool                console_open;
     bool                create_server_open;
     bool                options_open;
+    bool                server_info_open;
+    cs2d_console_line_t server_info_lines[CS2D_SERVER_INFO_MAX_LINES];
+    int                 server_info_line_count;
+    int                 server_info_scroll;        /* Top visible line index (0 = top of serverinfo) */
+    int                 server_info_visible_lines;
+    float               server_info_sb_grab_y;
+    bool                team_menu_open;
+    int                 team_menu_page;            /* 0 = Select Team, 1 = Terrorists, 2 = Counter-Terrorists */
     int                 create_server_tab;
     int                 options_tab;
     char                srv_name[64];
@@ -177,8 +187,15 @@ void cs2d_client_set_scene(cs2d_client_t *client, cs2d_scene_id_t scene);
 /* Load map_name: changes map in place while in game, otherwise switches to the Game scene */
 void cs2d_client_start_game(cs2d_client_t *client, const char *map_name);
 
-/* True while a shared UI window (console, Create Server, Options) captures input */
+/* True while a shared UI window (console, Create Server, Options, Server Info, Select Team) captures input */
 bool cs2d_client_any_ui_open(const cs2d_client_t *client);
+
+/* Load welcome lines from sys/serverinfo.txt and parse UTF-16LE opcode 240 mode 51 lines */
+bool cs2d_client_load_serverinfo(cs2d_client_t *client, const char *filepath);
+void cs2d_client_serverinfo_add_utf16(cs2d_client_t *client, const uint8_t *utf16_le, int char_len);
+
+/* Select team (0=Spec, 1=T, 2=CT) and skin look (0..3, 4=Auto, 5=Spec); sends opcode 20 online */
+void cs2d_client_select_team(cs2d_client_t *client, uint8_t team, uint8_t look);
 
 /* ESC pressed while no shared UI window is open */
 void cs2d_client_handle_escape(cs2d_client_t *client);
@@ -202,7 +219,7 @@ void cs2d_client_handle_mouse_wheel(cs2d_client_t *client, int delta_y);
 /* Update client game tick (runs at 60 FPS) */
 void cs2d_client_update(cs2d_client_t *client, float delta_time);
 
-/* Lay out the shared UI windows (console, Create Server, Options) without drawing them */
+/* Lay out the shared UI windows (console, Create Server, Options, Server Info, Select Team) without drawing them */
 void cs2d_client_build_ui(cs2d_client_t *client, int screen_w, int screen_h);
 
 /* Render entire frame (map, players, particles, HUD, Console, FPS, crosshair) */

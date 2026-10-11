@@ -23,11 +23,14 @@ static int sdl_key_to_cs2d_key(SDL_Keycode key)
         case SDLK_E:      return 'E';
         case SDLK_B:      return 'B';
         case SDLK_G:      return 'G';
+        case SDLK_M:      return 'M';
+        case SDLK_0:      return '0';
         case SDLK_1:      return '1';
         case SDLK_2:      return '2';
         case SDLK_3:      return '3';
         case SDLK_4:      return '4';
         case SDLK_5:      return '5';
+        case SDLK_6:      return '6';
         case SDLK_UP:     return VK_UP;
         case SDLK_DOWN:   return VK_DOWN;
         case SDLK_LEFT:   return VK_LEFT;
@@ -237,13 +240,13 @@ static int run_client_app(const char *cmdline)
                     break;
 
                 case SDL_EVENT_TEXT_INPUT:
-                    if (g_client.console_open || g_client.create_server_open || g_client.options_open) {
+                    if (cs2d_client_any_ui_open(&g_client)) {
                         cs2d_client_handle_text_input(&g_client, event.text.text);
                     }
                     break;
 
                 case SDL_EVENT_MOUSE_WHEEL:
-                    if (g_client.console_open || g_client.create_server_open || g_client.options_open) {
+                    if (cs2d_client_any_ui_open(&g_client)) {
                         cs2d_client_handle_mouse_wheel(&g_client, (int)event.wheel.y);
                     }
                     break;
@@ -254,7 +257,7 @@ static int run_client_app(const char *cmdline)
                         cs2d_client_handle_console_key(&g_client, (int)event.key.key);
                         break;
                     }
-                    if (g_client.console_open || g_client.create_server_open || g_client.options_open) {
+                    if (cs2d_client_any_ui_open(&g_client)) {
                         cs2d_client_handle_console_key(&g_client, (int)event.key.key);
                         break;
                     }

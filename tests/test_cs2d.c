@@ -1300,6 +1300,110 @@ static bool test_breakables(void)
     return true;
 }
 
+/* =========================================================================
+ * Test 15: Server Info ("<Server> - Info") & "Select Team" / Skin Subcategory UI
+ * ========================================================================= */
+static cs2d_client_t s_tm;
+
+static void tm_click(cs2d_ui_id_t id)
+{
+    cs2d_client_build_ui(&s_tm, 850, 480);
+    cs2d_ui_rect_t r = cs2d_ui_get_box(&s_tm.ui, id);
+    s_tm.mouse_screen_x = r.x + r.w * 0.5f;
+    s_tm.mouse_screen_y = r.y + r.h * 0.5f;
+    s_tm.mouse_fire = false;
+    cs2d_client_build_ui(&s_tm, 850, 480);
+    s_tm.mouse_fire = true;
+    cs2d_client_build_ui(&s_tm, 850, 480);
+    s_tm.mouse_fire = false;
+    cs2d_client_build_ui(&s_tm, 850, 480);
+}
+
+static bool test_server_info_and_team_menu(void)
+{
+    printf("\n=== Testing Server Info & Select Team / Character Subcategory UI ===\n");
+    memset(&s_tm, 0, sizeof(s_tm));
+    cs2d_ui_init(&s_tm.ui);
+    s_tm.local_player_id = 1;
+    s_tm.game.players[1].id   = 1;
+    s_tm.game.players[1].team = CS2D_TEAM_SPEC;
+    snprintf(s_tm.net_server_name, sizeof(s_tm.net_server_name), "CS2D Server");
+
+    if (!cs2d_client_load_serverinfo(&s_tm, "sys/serverinfo.txt") || s_tm.server_info_line_count < 12) {
+        TEST_FAIL("serverinfo.txt", "Expected sys/serverinfo.txt loaded into server_info_lines");
+    }
+    if (strcmp(s_tm.server_info_lines[0].text, "Welcome on my CS2D Server!") != 0 ||
+        s_tm.server_info_lines[0].r != 255 || s_tm.server_info_lines[0].g != 255 || s_tm.server_info_lines[0].b != 255 ||
+        strcmp(s_tm.server_info_lines[4].text, "- Don't cheat/hack") != 0 ||
+        s_tm.server_info_lines[4].r != 255 || s_tm.server_info_lines[4].g != 0 || s_tm.server_info_lines[4].b != 0 ||
+        s_tm.server_info_lines[11].r != 255 || s_tm.server_info_lines[11].g != 220 || s_tm.server_info_lines[11].b != 0) {
+        TEST_FAIL("Color tag", "Expected U+00A9 RRRGGGBBB stripped and U+00BB link highlighted in RGB(255,220,0)");
+    }
+    TEST_PASS("sys/serverinfo.txt parsed with U+00A9 RRRGGGBBB colors and U+00BB link highlighting");
+
+    /* Both windows queued on server join: Server Info renders first (600x440 at 125,20); Close reveals Select Team */
+    s_tm.server_info_open = true;
+    s_tm.team_menu_open   = true;
+    s_tm.team_menu_page   = 0;
+    cs2d_client_build_ui(&s_tm, 850, 480);
+
+    cs2d_ui_rect_t info_win = cs2d_ui_get_box(&s_tm.ui, CS2D_UI_ID("ServerInfoWin"));
+    cs2d_ui_rect_t info_box = cs2d_ui_get_box(&s_tm.ui, CS2D_UI_ID("ServerInfoBox"));
+    cs2d_ui_rect_t info_sb  = cs2d_ui_get_box(&s_tm.ui, CS2D_UI_ID("ServerInfoScrollbar"));
+    cs2d_ui_rect_t info_btn = cs2d_ui_get_box(&s_tm.ui, CS2D_UI_ID("BtnServerInfoClose"));
+    if ((int)info_win.x != 125 || (int)info_win.y != 20 || (int)info_win.w != 600 || (int)info_win.h != 440 ||
+        (int)info_box.w != 553 || (int)info_box.h != 374 || (int)info_sb.w != 15 ||
+        (int)info_btn.w != 568 || (int)info_btn.h != 20) {
+        TEST_FAIL("ServerInfo geometry", "Expected 600x440 window, 553x374 text box, 15px scrollbar, 568x20 Close button");
+    }
+    tm_click(CS2D_UI_ID("BtnServerInfoClose"));
+    if (s_tm.server_info_open || !s_tm.team_menu_open) {
+        TEST_FAIL("ServerInfo close", "Closing Server Info must reveal Select Team");
+    }
+    TEST_PASS("CS2D Server - Info matches 600x440 geometry and reveals Select Team on Close");
+
+    /* Select Team main menu -> Terrorists / Counter-Terrorists subcategories, Back, and skin selection */
+    cs2d_client_build_ui(&s_tm, 850, 480);
+    cs2d_ui_rect_t btn_t = cs2d_ui_get_box(&s_tm.ui, CS2D_UI_ID("BtnTeamT"));
+    if ((int)btn_t.x != 205 || (int)btn_t.y != 120 || (int)btn_t.w != 240 || (int)btn_t.h != 25) {
+        TEST_FAIL("SelectTeam geometry", "Expected 240x25 option buttons starting at (205, 120)");
+    }
+    tm_click(CS2D_UI_ID("BtnTeamT"));
+    if (!s_tm.team_menu_open || s_tm.team_menu_page != 1) {
+        TEST_FAIL("Terrorists subcategory", "Clicking 1 Terrorists must open page 1 (Select Team - Terrorists)");
+    }
+    tm_click(CS2D_UI_ID("BtnSkinBack"));
+    if (!s_tm.team_menu_open || s_tm.team_menu_page != 0) {
+        TEST_FAIL("Back button", "Clicking Back must return to page 0 (Select Team)");
+    }
+    tm_click(CS2D_UI_ID("BtnTeamCT"));
+    if (!s_tm.team_menu_open || s_tm.team_menu_page != 2) {
+        TEST_FAIL("CT subcategory", "Clicking 2 Counter-Terrorists must open page 2 (Select Team - Counter-Terrorists)");
+    }
+    tm_click(CS2D_UI_IDI("BtnTeamSkin", 1)); /* 2 German GSG-9 (look = 1) */
+    if (s_tm.team_menu_open || s_tm.game.players[1].team != CS2D_TEAM_CT || s_tm.game.players[1].look != 1) {
+        TEST_FAIL("Skin selection", "Clicking 2 German GSG-9 must select CT look 1 and close the menu");
+    }
+    TEST_PASS("Terrorists and Counter-Terrorists open character subcategories; Back and skin buttons work");
+
+    /* Auto-Select and Spectator on main Select Team menu have NO subcategory: they select and close immediately */
+    s_tm.team_menu_open = true;
+    s_tm.team_menu_page = 0;
+    tm_click(CS2D_UI_ID("BtnTeamAuto"));
+    if (s_tm.team_menu_open || s_tm.team_menu_page != 0) {
+        TEST_FAIL("Auto-Select", "5 Auto-Select must not open a subcategory; it must select immediately and close");
+    }
+    s_tm.team_menu_open = true;
+    s_tm.team_menu_page = 0;
+    tm_click(CS2D_UI_ID("BtnTeamSpec"));
+    if (s_tm.team_menu_open || s_tm.team_menu_page != 0 || s_tm.game.players[1].team != CS2D_TEAM_SPEC) {
+        TEST_FAIL("Spectator", "6 Spectator must not open a subcategory; it must switch to Spectator and close");
+    }
+    TEST_PASS("5 Auto-Select and 6 Spectator have no subcategory and select immediately");
+
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -1307,7 +1411,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 14;
+    int total = 15;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -1323,6 +1427,7 @@ int main(void)
     if (test_entities_prison()) passed++;
     if (test_player_physics()) passed++;
     if (test_breakables()) passed++;
+    if (test_server_info_and_team_menu()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

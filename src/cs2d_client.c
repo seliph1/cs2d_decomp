@@ -69,6 +69,210 @@ const cs2d_console_line_t *cs2d_client_console_line(const cs2d_client_t *client,
     return &client->console_lines[(client->console_line_head + i) % CS2D_CONSOLE_MAX_LINES];
 }
 
+static void server_info_clamp_scroll(cs2d_client_t *client)
+{
+    int visible    = (client->server_info_visible_lines > 0) ? client->server_info_visible_lines : 1;
+    int max_scroll = client->server_info_line_count - visible;
+    if (max_scroll < 0) max_scroll = 0;
+    if (client->server_info_scroll > max_scroll) client->server_info_scroll = max_scroll;
+    if (client->server_info_scroll < 0) client->server_info_scroll = 0;
+}
+
+/*
+ * Decodes a UTF-16LE string from opcode 240 (CS2D_NET_MSG2) or sys/serverinfo.txt:
+ *   - Leading U+00A9 ('©') + 9 ASCII digits RRRGGGBBB sets line RGB and strips the 10-char prefix.
+ *   - Leading U+00BB ('»') highlights link lines in CS2D gold (255, 220, 0).
+ *   - Remaining code units are encoded as UTF-8 for GDI+ Liberation Sans rendering.
+ */
+static void utf16_to_colored_utf8(
+    const uint8_t *utf16_le,
+    int char_len,
+    uint8_t *out_r,
+    uint8_t *out_g,
+    uint8_t *out_b,
+    char *out_utf8,
+    size_t max_utf8
+)
+{
+    if (out_r) *out_r = 185;
+    if (out_g) *out_g = 185;
+    if (out_b) *out_b = 185;
+    if (!out_utf8 || max_utf8 == 0) return;
+    out_utf8[0] = '\0';
+    if (!utf16_le || char_len <= 0) return;
+
+    int start = 0;
+    uint16_t c0 = (uint16_t)utf16_le[0] | ((uint16_t)utf16_le[1] << 8);
+    if (c0 == 0x00A9 && char_len >= 10) {
+        bool digits_ok = true;
+        int d[9];
+        for (int i = 0; i < 9; i++) {
+            uint16_t ch = (uint16_t)utf16_le[(i + 1) * 2] | ((uint16_t)utf16_le[(i + 1) * 2 + 1] << 8);
+            if (ch < '0' || ch > '9') {
+                digits_ok = false;
+                break;
+            }
+            d[i] = (int)(ch - '0');
+        }
+        if (digits_ok) {
+            int r = d[0] * 100 + d[1] * 10 + d[2];
+            int g = d[3] * 100 + d[4] * 10 + d[5];
+            int b = d[6] * 100 + d[7] * 10 + d[8];
+            if (r > 255) r = 255;
+            if (g > 255) g = 255;
+            if (b > 255) b = 255;
+            if (out_r) *out_r = (uint8_t)r;
+            if (out_g) *out_g = (uint8_t)g;
+            if (out_b) *out_b = (uint8_t)b;
+            start = 10;
+        }
+    } else if (c0 == 0x00BB) {
+        if (out_r) *out_r = 255;
+        if (out_g) *out_g = 220;
+        if (out_b) *out_b = 0;
+    }
+
+    size_t out_pos = 0;
+    for (int i = start; i < char_len; i++) {
+        uint16_t wc = (uint16_t)utf16_le[i * 2] | ((uint16_t)utf16_le[i * 2 + 1] << 8);
+        if (wc == '\r' || wc == '\n' || wc == 0) continue;
+        if (wc < 0x80) {
+            if (out_pos + 1 >= max_utf8) break;
+            out_utf8[out_pos++] = (char)wc;
+        } else if (wc < 0x800) {
+            if (out_pos + 2 >= max_utf8) break;
+            out_utf8[out_pos++] = (char)(0xC0 | (wc >> 6));
+            out_utf8[out_pos++] = (char)(0x80 | (wc & 0x3F));
+        } else {
+            if (out_pos + 3 >= max_utf8) break;
+            out_utf8[out_pos++] = (char)(0xE0 | (wc >> 12));
+            out_utf8[out_pos++] = (char)(0x80 | ((wc >> 6) & 0x3F));
+            out_utf8[out_pos++] = (char)(0x80 | (wc & 0x3F));
+        }
+    }
+    out_utf8[out_pos] = '\0';
+}
+
+void cs2d_client_serverinfo_add_utf16(cs2d_client_t *client, const uint8_t *utf16_le, int char_len)
+{
+    if (!client || client->server_info_line_count >= CS2D_SERVER_INFO_MAX_LINES) return;
+    cs2d_console_line_t *ln = &client->server_info_lines[client->server_info_line_count++];
+    utf16_to_colored_utf8(utf16_le, char_len, &ln->r, &ln->g, &ln->b, ln->text, sizeof(ln->text));
+}
+
+bool cs2d_client_load_serverinfo(cs2d_client_t *client, const char *filepath)
+{
+    if (!client || !filepath) return false;
+    FILE *f = fopen(filepath, "rb");
+    if (!f) return false;
+
+    client->server_info_line_count = 0;
+    client->server_info_scroll     = 0;
+
+    char raw_line[256];
+    while (fgets(raw_line, sizeof(raw_line), f) && client->server_info_line_count < CS2D_SERVER_INFO_MAX_LINES) {
+        uint8_t wbuf[512];
+        int wlen = 0;
+        for (size_t i = 0; raw_line[i] != '\0' && wlen < 250; i++) {
+            uint8_t b0 = (uint8_t)raw_line[i];
+            if (b0 == '\r' || b0 == '\n') continue;
+            uint16_t wc = b0;
+            /* Support both UTF-8 (0xC2/0xC3 prefix) and raw Latin-1 / CP1252 in sys/serverinfo.txt */
+            if ((b0 == 0xC2 || b0 == 0xC3) && ((uint8_t)raw_line[i + 1] & 0xC0) == 0x80) {
+                wc = (uint16_t)(((b0 & 0x1F) << 6) | ((uint8_t)raw_line[i + 1] & 0x3F));
+                i++;
+            }
+            wbuf[wlen * 2]     = (uint8_t)(wc & 0xFF);
+            wbuf[wlen * 2 + 1] = (uint8_t)(wc >> 8);
+            wlen++;
+        }
+        cs2d_client_serverinfo_add_utf16(client, wbuf, wlen);
+    }
+
+    fclose(f);
+    return true;
+}
+
+static void count_team_players(const cs2d_client_t *client, int *out_t, int *out_ct, int t_looks[4], int ct_looks[4])
+{
+    int nt = 0, nct = 0;
+    if (t_looks)  memset(t_looks,  0, sizeof(int) * 4);
+    if (ct_looks) memset(ct_looks, 0, sizeof(int) * 4);
+    if (!client) {
+        if (out_t)  *out_t  = 0;
+        if (out_ct) *out_ct = 0;
+        return;
+    }
+    for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
+        const cs2d_player_t *p = &client->game.players[i];
+        if (p->id == 0 && p->name[0] == '\0') continue;
+        if (p->team == CS2D_TEAM_T) {
+            nt++;
+            if (t_looks) t_looks[p->look & 3]++;
+        } else if (p->team == CS2D_TEAM_CT || p->team == CS2D_TEAM_VIP) {
+            nct++;
+            if (ct_looks) ct_looks[p->look & 3]++;
+        }
+    }
+    if (out_t)  *out_t  = nt;
+    if (out_ct) *out_ct = nct;
+}
+
+void cs2d_client_select_team(cs2d_client_t *client, uint8_t team, uint8_t look)
+{
+    if (!client) return;
+
+    /* team >= 4 means Main Menu "5 Auto-Select": pick the team with fewer players and auto look (4) */
+    if (team >= 4) {
+        int nt = 0, nct = 0;
+        count_team_players(client, &nt, &nct, NULL, NULL);
+        if (nt < nct)      team = (uint8_t)CS2D_TEAM_T;
+        else if (nct < nt) team = (uint8_t)CS2D_TEAM_CT;
+        else               team = (uint8_t)((rand() & 1) ? CS2D_TEAM_CT : CS2D_TEAM_T);
+        look = 4;
+    }
+
+    client->team_menu_open   = false;
+    client->team_menu_page   = 0;
+    client->server_info_open = false;
+    client->mouse_fire       = false;
+
+    cs2d_player_t *pl = &client->game.players[client->local_player_id];
+
+    if (client->connected && client->join_stage == 5) {
+        /* Online (FUN_1401e92d0 & ded FUN_1401cd140): send [20, team, look] (Spec sends [20, 0, 5], Auto skin sends look=4) */
+        uint8_t wire_look = (team == CS2D_TEAM_SPEC) ? 5 : ((look <= 4) ? look : 4);
+        uint8_t team_pkt[4];
+        size_t team_len = cs2d_net_build_team_packet(0, team, wire_look, team_pkt, sizeof(team_pkt));
+        if (team_len > 0) {
+            cs2d_client_send_udp(client, team_pkt, team_len, true);
+        }
+        if (team == CS2D_TEAM_SPEC) {
+            pl->team   = CS2D_TEAM_SPEC;
+            pl->alive  = false;
+            pl->health = 0;
+        } else {
+            pl->team = (cs2d_team_t)team;
+            if (wire_look <= 3) pl->look = wire_look;
+        }
+    } else {
+        /* Offline: apply team and look immediately and spawn if dead */
+        if (team == CS2D_TEAM_SPEC) {
+            pl->team   = CS2D_TEAM_SPEC;
+            pl->alive  = false;
+            pl->health = 0;
+        } else {
+            pl->team = (cs2d_team_t)team;
+            pl->look = (look <= 3) ? look : (uint8_t)(rand() & 3);
+            if (!pl->alive) {
+                cs2d_vec2_t sp = pl->pos;
+                cs2d_map_get_spawn(&client->game.map, pl->team, 0, &sp);
+                cs2d_player_spawn(pl, pl->team, sp);
+            }
+        }
+    }
+}
+
 bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
 {
     if (!client) return false;
@@ -78,6 +282,10 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
     srand((unsigned)time(NULL)); /* Random spawn points, like the dedicated server */
     client->show_fps    = true;
     client->fps_current = 63;
+
+    /* Default Server Info state (overwritten by [252, 6] and [240] when joining a server) */
+    strncpy(client->net_server_name, "CS2D Server", sizeof(client->net_server_name) - 1);
+    cs2d_client_load_serverinfo(client, "sys/serverinfo.txt");
 
     /* Default Create Server & Options UI state matching CS2D screenshots */
     strncpy(client->srv_name, "Unreal Software's CS2D", sizeof(client->srv_name) - 1);
@@ -371,12 +579,13 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         cs2d_pkt_r_str(buffer, recvd, &pos, client->net_map_name, sizeof(client->net_map_name));
                         cs2d_pkt_r_str(buffer, recvd, &pos, client->net_raw_secret, sizeof(client->net_raw_secret));
 
-                        /* Clear offline bots and bind local player to server-assigned ID */
+                        /* Clear offline bots and bind local player to server-assigned ID as Spectator until team is chosen */
                         for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
                             memset(&client->game.players[i], 0, sizeof(cs2d_player_t));
                         }
                         client->local_player_id = (pid > 0 && pid <= CS2D_MAX_PLAYERS) ? pid : 1;
-                        cs2d_game_add_player(&client->game, client->local_player_id, client->config.name, CS2D_TEAM_CT);
+                        cs2d_game_add_player(&client->game, client->local_player_id, client->config.name, CS2D_TEAM_SPEC);
+                        client->game.players[client->local_player_id].alive = false;
 
                         char map_path[256];
                         snprintf(map_path, sizeof(map_path), "maps/%s.map", client->net_map_name);
@@ -385,6 +594,9 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         /* Play on the server's map, not the one loaded locally before connecting */
                         if (_stricmp(client->net_map_name, client->game_map_name) != 0) {
                             cs2d_scene_game_change_map(client, client->net_map_name);
+                            /* Keep local player in Spectator after map load so Select Team starts at (0) */
+                            client->game.players[client->local_player_id].team  = CS2D_TEAM_SPEC;
+                            client->game.players[client->local_player_id].alive = false;
                         }
 
                         cs2d_pkt_t p3;
@@ -405,10 +617,16 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     }
                     break;
                 } else if (sub == 6) {
-                    /* Stage 3 reply: [252, 6, status, ...] */
+                    /* Stage 3 reply: [252, 6, status, RStr(map_name), RStr(server_name), ...] */
                     if (pos >= recvd) break;
                     uint8_t status = buffer[pos++];
                     if (status == 0) {
+                        char srv_map[128] = {0};
+                        cs2d_pkt_r_str(buffer, recvd, &pos, srv_map, sizeof(srv_map));
+                        cs2d_pkt_r_str(buffer, recvd, &pos, client->net_server_name, sizeof(client->net_server_name));
+                        if (client->net_server_name[0] == '\0') {
+                            snprintf(client->net_server_name, sizeof(client->net_server_name), "CS2D Server");
+                        }
                         client->join_stage = 4;
                     }
                     break;
@@ -435,9 +653,12 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         /* Joining shows the map as it is: no break effects for what broke earlier */
                         client->ents.event_count = 0;
                     } else if (snap_type == 200) {
-                        client->join_stage = 5;
-                        client->connected  = true;
-                        printf("[CS2D Net] Connected to server '%s' (player_id=%u)! Joining CT...\n",
+                        client->join_stage     = 5;
+                        client->connected      = true;
+                        client->team_menu_open = true;
+                        client->team_menu_page = 0;
+                        printf("[CS2D Net] Connected to server '%s' (map='%s', player_id=%u)!\n",
+                               client->net_server_name[0] ? client->net_server_name : "CS2D Server",
                                client->net_map_name, client->local_player_id);
                         cs2d_client_console_print(client, 100, 255, 100,
                                                   "Connected to server (map: %s, player ID: %u)",
@@ -456,28 +677,30 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         cs2d_client_send_udp(client, client_data, sizeof(client_data), true);
                         uint8_t spec_pkt[2] = { (uint8_t)CS2D_NET_CLIENTSPEC, 1 };
                         cs2d_client_send_udp(client, spec_pkt, sizeof(spec_pkt), true);
-
-                        /* Send Team Selection [20, 2 (CT), 0 (look 0)] */
-                        uint8_t team_pkt[4];
-                        size_t team_len = cs2d_net_build_team_packet(0, CS2D_TEAM_CT, 0, team_pkt, sizeof(team_pkt));
-                        if (team_len > 0) {
-                            cs2d_client_send_udp(client, team_pkt, team_len, true);
-                        }
                     }
                     break;
                 } else {
                     break;
                 }
             } else if (opcode == CS2D_NET_TEAM) {
-                /* Server -> Client: [20, pid, team, look] (4 bytes) */
+                /* Server -> Client: [20, pid, team, look] (4 bytes; ded FUN_1401cd140) */
                 if (pos + 4 > recvd) break;
                 uint8_t pid  = buffer[pos + 1];
                 uint8_t team = buffer[pos + 2];
                 uint8_t look = buffer[pos + 3];
                 if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
-                    client->game.players[pid].id   = pid;
-                    client->game.players[pid].team = (cs2d_team_t)team;
-                    client->game.players[pid].look = look;
+                    cs2d_player_t *p = &client->game.players[pid];
+                    p->id = pid;
+                    if (team <= CS2D_TEAM_VIP) {
+                        p->team = (cs2d_team_t)team;
+                        if (team == CS2D_TEAM_SPEC) {
+                            p->alive  = false;
+                            p->health = 0;
+                        }
+                    }
+                    if (look <= 3) {
+                        p->look = look;
+                    }
                 }
                 pos += 4;
             } else if (opcode == CS2D_NET_SPAWN) {
@@ -750,6 +973,37 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 if (pos + 6 + tlen + 1 > recvd) break;
                 cs2d_client_console_print(client, 255, 220, 0, "%.*s", tlen, (const char *)&buffer[pos + 6]);
                 pos += 6 + tlen + 1;
+            } else if (opcode == CS2D_NET_MSG2) {
+                /* Server -> Client: [240, sender u8, mode u8, char_len u16, char_len * 2 bytes UTF-16LE]
+                 * mode 50: "1" starts serverinfo, "2" finishes serverinfo and opens the Welcome window;
+                 * mode 51: appends one line to serverinfo; mode < 50: chat message (proxy_join_info.log) */
+                if (pos + 5 > recvd) break;
+                uint8_t mode = buffer[pos + 2];
+                int char_len = buffer[pos + 3] | (buffer[pos + 4] << 8);
+                int byte_len = char_len * 2;
+                if (pos + 5 + byte_len > recvd) break;
+                const uint8_t *wbytes = &buffer[pos + 5];
+                if (mode == 50) {
+                    if (char_len == 1 && wbytes[0] == '1' && wbytes[1] == 0) {
+                        client->server_info_line_count = 0;
+                        client->server_info_scroll     = 0;
+                    } else if (char_len == 1 && wbytes[0] == '2' && wbytes[1] == 0) {
+                        if (client->server_info_line_count > 0) {
+                            client->server_info_open   = true;
+                            client->server_info_scroll = 0;
+                        }
+                    }
+                } else if (mode == 51) {
+                    cs2d_client_serverinfo_add_utf16(client, wbytes, char_len);
+                } else {
+                    uint8_t r = 255, g = 220, b = 0;
+                    char utf8[CS2D_CONSOLE_LINE_LEN];
+                    utf16_to_colored_utf8(wbytes, char_len, &r, &g, &b, utf8, sizeof(utf8));
+                    if (utf8[0] != '\0') {
+                        cs2d_client_console_print(client, r, g, b, "%s", utf8);
+                    }
+                }
+                pos += 5 + byte_len;
             } else if (opcode == CS2D_NET_ENTITYEVENT) {
                 /* Server -> Client: [31, x u16, y u16, state u8] (6 bytes): entity at tile (x, y) changed state */
                 if (pos + 6 > recvd) break;
@@ -1160,13 +1414,30 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         pl->money = (uint16_t)m;
         cs2d_client_console_print(client, 100, 255, 100, "Set local player money to $%d", m);
     } else if (_stricmp(cmd, "team") == 0) {
-        if (n >= 2 && (_stricmp(arg1, "t") == 0 || _stricmp(arg1, "1") == 0)) {
-            pl->team = CS2D_TEAM_T;
-            cs2d_client_console_print(client, 255, 220, 0, "Switched local player to Terrorists (T)");
+        if (n < 2) {
+            client->team_menu_open = true;
+            client->team_menu_page = 0;
+            client->console_open   = false;
         } else {
-            pl->team = CS2D_TEAM_CT;
-            cs2d_client_console_print(client, 100, 255, 100, "Switched local player to Counter-Terrorists (CT)");
+            uint8_t look = 4; /* Auto-Select skin */
+            if (n >= 3 && arg2[0] >= '1' && arg2[0] <= '4') {
+                look = (uint8_t)(arg2[0] - '1');
+            }
+            if (_stricmp(arg1, "t") == 0 || _stricmp(arg1, "1") == 0) {
+                cs2d_client_select_team(client, CS2D_TEAM_T, look);
+            } else if (_stricmp(arg1, "ct") == 0 || _stricmp(arg1, "2") == 0) {
+                cs2d_client_select_team(client, CS2D_TEAM_CT, look);
+            } else if (_stricmp(arg1, "auto") == 0 || _stricmp(arg1, "5") == 0) {
+                cs2d_client_select_team(client, 4, 4);
+            } else if (_stricmp(arg1, "spec") == 0 || _stricmp(arg1, "spectator") == 0 || _stricmp(arg1, "6") == 0) {
+                cs2d_client_select_team(client, CS2D_TEAM_SPEC, 5);
+            } else {
+                cs2d_client_select_team(client, CS2D_TEAM_CT, look);
+            }
         }
+    } else if (_stricmp(cmd, "serverinfo") == 0 || _stricmp(cmd, "motd") == 0) {
+        client->server_info_open = true;
+        client->console_open     = false;
     } else if (_stricmp(cmd, "bot_add") == 0 || _stricmp(cmd, "addbot") == 0) {
         cs2d_team_t bteam = CS2D_TEAM_T;
         if (n >= 2 && (_stricmp(arg1, "ct") == 0 || _stricmp(arg1, "2") == 0)) {
@@ -1310,7 +1581,9 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
 
 bool cs2d_client_any_ui_open(const cs2d_client_t *client)
 {
-    return client && (client->console_open || client->create_server_open || client->options_open);
+    return client && (client->console_open || client->create_server_open ||
+                      client->options_open || client->server_info_open ||
+                      client->team_menu_open);
 }
 
 void cs2d_client_handle_text_input(cs2d_client_t *client, const char *text)
@@ -1398,7 +1671,69 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
         return;
     }
 
-    if (!client->console_open) return;
+    if (!client->console_open) {
+        if (client->server_info_open) {
+            int page = (client->server_info_visible_lines > 1) ? client->server_info_visible_lines - 1 : 1;
+            switch (sdl_key) {
+                case SDLK_ESCAPE:
+                case SDLK_RETURN:
+                case SDLK_KP_ENTER:
+                case SDLK_SPACE:
+                case SDLK_0:
+                    client->server_info_open = false;
+                    break;
+                case SDLK_UP:
+                    client->server_info_scroll--;
+                    server_info_clamp_scroll(client);
+                    break;
+                case SDLK_DOWN:
+                    client->server_info_scroll++;
+                    server_info_clamp_scroll(client);
+                    break;
+                case SDLK_PAGEUP:
+                    client->server_info_scroll -= page;
+                    server_info_clamp_scroll(client);
+                    break;
+                case SDLK_PAGEDOWN:
+                    client->server_info_scroll += page;
+                    server_info_clamp_scroll(client);
+                    break;
+                default:
+                    break;
+            }
+            return;
+        }
+
+        if (client->team_menu_open) {
+            if (sdl_key == SDLK_ESCAPE || sdl_key == SDLK_0 || sdl_key == SDLK_M) {
+                client->team_menu_open = false;
+                client->team_menu_page = 0;
+                return;
+            }
+            if (client->team_menu_page == 0) {
+                if (sdl_key == SDLK_1) {
+                    client->team_menu_page = 1;
+                } else if (sdl_key == SDLK_2) {
+                    client->team_menu_page = 2;
+                } else if (sdl_key == SDLK_5) {
+                    cs2d_client_select_team(client, 4, 4);
+                } else if (sdl_key == SDLK_6) {
+                    cs2d_client_select_team(client, CS2D_TEAM_SPEC, 5);
+                }
+            } else {
+                uint8_t team = (client->team_menu_page == 1) ? CS2D_TEAM_T : CS2D_TEAM_CT;
+                if (sdl_key >= (int)SDLK_1 && sdl_key <= (int)SDLK_4) {
+                    cs2d_client_select_team(client, team, (uint8_t)(sdl_key - (int)SDLK_1));
+                } else if (sdl_key == (int)SDLK_5) {
+                    cs2d_client_select_team(client, team, 4);
+                } else if (sdl_key == SDLK_BACKSPACE) {
+                    client->team_menu_page = 0;
+                }
+            }
+            return;
+        }
+        return;
+    }
 
     /* Console-only keys; everything else (editing, selection, clipboard, Enter) goes to the textbox */
     switch (sdl_key) {
@@ -1442,15 +1777,35 @@ void cs2d_client_handle_mouse_wheel(cs2d_client_t *client, int delta_y)
 {
     if (!client) return;
     client->ui_wheel_delta += delta_y;
-    if (!client->console_open) return;
-    client->console_scroll += delta_y * 3;
-    console_clamp_scroll(client);
+    if (client->console_open) {
+        client->console_scroll += delta_y * 3;
+        console_clamp_scroll(client);
+    } else if (client->server_info_open) {
+        client->server_info_scroll -= delta_y * 3;
+        server_info_clamp_scroll(client);
+    }
 }
 
 void cs2d_client_handle_key(cs2d_client_t *client, int key, bool pressed)
 {
     if (!client) return;
-    if (cs2d_client_any_ui_open(client)) return;
+    if (cs2d_client_any_ui_open(client)) {
+        if (pressed && !client->console_open && !client->create_server_open && !client->options_open) {
+            cs2d_client_handle_console_key(client, tolower((unsigned char)key));
+        }
+        return;
+    }
+    if (client->scene == CS2D_SCENE_GAME && pressed && (key == 'M' || key == 'm')) {
+        client->team_menu_open = true;
+        client->team_menu_page = 0;
+        client->key_forward    = false;
+        client->key_back       = false;
+        client->key_left       = false;
+        client->key_right      = false;
+        client->mouse_fire     = false;
+        client->mouse_attack2  = false;
+        return;
+    }
     cs2d_scene_get(client->scene)->handle_key(client, key, pressed);
 }
 
@@ -1997,6 +2352,343 @@ static void cs2d_client_build_options_ui(cs2d_client_t *client, int screen_w, in
     }
 }
 
+/*
+ * 240x25 numbered menu option button used by "Select Team" and its Terrorists /
+ * Counter-Terrorists skin subcategories (verified from reference screenshots):
+ *   - Left 18px slot: grey key number ('1'..'6', '0') or blank ("Back")
+ *   - Label in white/light-grey
+ *   - Optional right-aligned player count "(N)" in grey when count >= 0
+ */
+static bool ui_menu_option_button(
+    cs2d_ui_context_t *ui,
+    cs2d_ui_id_t id,
+    const char *key_num,
+    const char *label,
+    int count
+)
+{
+    bool hov  = cs2d_ui_hovered(ui, id);
+    bool down = (hov && ui->mouse_down && ui->active_id == id);
+
+    cs2d_ui_color_t top_col = down ? CS2D_UI_RGBA(25, 25, 25, 250)
+                                   : (hov ? CS2D_UI_RGBA(58, 58, 58, 250) : CS2D_UI_RGBA(38, 38, 38, 250));
+    cs2d_ui_color_t bot_col = down ? CS2D_UI_RGBA(35, 35, 35, 250)
+                                   : (hov ? CS2D_UI_RGBA(38, 38, 38, 250) : CS2D_UI_RGBA(22, 22, 22, 250));
+    cs2d_ui_color_t brd_col = hov  ? CS2D_UI_RGBA(185, 185, 185, 255) : CS2D_UI_RGBA(115, 115, 115, 245);
+
+    CS2D_UI_ELEMENT(ui, id, {
+        .layout = {
+            .sizing  = { CS2D_UI_FIXED(240.0f), CS2D_UI_FIXED(25.0f) },
+            .padding = CS2D_UI_PAD(7, 8, 0, 0),
+            .dir     = CS2D_UI_LEFT_TO_RIGHT,
+            .align_y = CS2D_UI_ALIGN_Y_CENTER
+        },
+        .bg_color           = top_col,
+        .bg_gradient_bottom = bot_col,
+        .border             = { .width = 1.0f, .color = brd_col }
+    }) {
+        CS2D_UI_ELEMENT(ui, 0, {
+            .layout = {
+                .sizing  = { CS2D_UI_FIXED(18.0f), CS2D_UI_FIXED(16.0f) },
+                .align_y = CS2D_UI_ALIGN_Y_CENTER
+            }
+        }) {
+            if (key_num && key_num[0] != '\0') {
+                cs2d_ui_text(ui, key_num, CS2D_FONT_REGULAR, CS2D_UI_RGB(160, 160, 160));
+            }
+        }
+
+        cs2d_ui_text(ui, label ? label : "", CS2D_FONT_REGULAR,
+                     hov ? CS2D_UI_RGB(255, 255, 255) : CS2D_UI_RGB(230, 230, 230));
+
+        if (count >= 0) {
+            char cnt_buf[16];
+            snprintf(cnt_buf, sizeof(cnt_buf), "(%d)", count);
+
+            CS2D_UI_ELEMENT(ui, 0, {
+                .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(1.0f) } }
+            }) {}
+
+            cs2d_ui_text(ui, cnt_buf, CS2D_FONT_REGULAR, CS2D_UI_RGB(160, 160, 160));
+        }
+    }
+
+    return cs2d_ui_clicked(ui, id);
+}
+
+/*
+ * Builds the 600x440 "Select Team" window and its Terrorists / Counter-Terrorists
+ * character selection subcategories (Screenshots 2 & 3).
+ * Hidden while "<Server Name> - Info" is open on top so the semi-transparent
+ * server info window renders cleanly over the map and reveals "Select Team" on close.
+ */
+static void cs2d_client_build_team_menu_ui(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    if (!client->team_menu_open || client->server_info_open) return;
+
+    cs2d_ui_context_t *ui = &client->ui;
+    float win_w = 600.0f;
+    float win_h = 440.0f;
+    float win_x = floorf(((float)screen_w - win_w) * 0.5f);
+    float win_y = floorf(((float)screen_h - win_h) * 0.5f);
+
+    const char *win_title = "Select Team";
+    if (client->team_menu_page == 1) {
+        win_title = "Select Team - Terrorists";
+    } else if (client->team_menu_page == 2) {
+        win_title = "Select Team - Counter-Terrorists";
+    }
+
+    static const char *t_classes[4] = {
+        "Phoenix Connexion",
+        "L337 Krew",
+        "Arctic Avengers",
+        "Guerilla Warfare"
+    };
+    static const char *ct_classes[4] = {
+        "Seal Team 6 (DEVGRU)",
+        "German GSG-9",
+        "UK SAS",
+        "French GIGN"
+    };
+    static const char *slot_keys[4] = { "1", "2", "3", "4" };
+
+    if (cs2d_ui_window_begin(ui, CS2D_UI_ID("SelectTeamWin"), win_title,
+                             win_x, win_y, win_w, win_h, &client->team_menu_open)) {
+        /* 1px horizontal divider separating the title bar from the window body */
+        CS2D_UI_ELEMENT(ui, 0, {
+            .layout   = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(1.0f) } },
+            .bg_color = CS2D_UI_RGBA(96, 96, 96, 245)
+        }) {}
+
+        CS2D_UI_ELEMENT(ui, CS2D_UI_ID("TeamMenuBody"), {
+            .layout = {
+                .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_GROW(0, 0) },
+                .padding   = CS2D_UI_PAD(74, 10, 72, 9),
+                .child_gap = 5.0f,
+                .dir       = CS2D_UI_TOP_TO_BOTTOM
+            }
+        }) {
+            int count_t  = 0;
+            int count_ct = 0;
+            int t_looks[4]  = { 0, 0, 0, 0 };
+            int ct_looks[4] = { 0, 0, 0, 0 };
+            count_team_players(client, &count_t, &count_ct, t_looks, ct_looks);
+
+            if (client->team_menu_page == 0) {
+                if (ui_menu_option_button(ui, CS2D_UI_ID("BtnTeamT"), "1", "Terrorists", count_t)) {
+                    client->team_menu_page = 1;
+                }
+                if (ui_menu_option_button(ui, CS2D_UI_ID("BtnTeamCT"), "2", "Counter-Terrorists", count_ct)) {
+                    client->team_menu_page = 2;
+                }
+
+                /* Empty 25px slot between team options and Auto-Select / Spectator */
+                CS2D_UI_ELEMENT(ui, 0, {
+                    .layout = { .sizing = { CS2D_UI_FIXED(240.0f), CS2D_UI_FIXED(25.0f) } }
+                }) {}
+
+                /* Auto-Select and Spectator have no subcategory: they select immediately */
+                if (ui_menu_option_button(ui, CS2D_UI_ID("BtnTeamAuto"), "5", "Auto-Select", -1)) {
+                    cs2d_client_select_team(client, 4, 4);
+                }
+                if (ui_menu_option_button(ui, CS2D_UI_ID("BtnTeamSpec"), "6", "Spectator", -1)) {
+                    cs2d_client_select_team(client, CS2D_TEAM_SPEC, 5);
+                }
+
+                CS2D_UI_ELEMENT(ui, 0, {
+                    .layout = { .sizing = { CS2D_UI_FIXED(240.0f), CS2D_UI_GROW(0, 0) } }
+                }) {}
+
+                if (ui_menu_option_button(ui, CS2D_UI_ID("BtnTeamClose"), "0", "Close", -1)) {
+                    client->team_menu_open = false;
+                    client->team_menu_page = 0;
+                }
+            } else {
+                uint8_t team = (client->team_menu_page == 1) ? CS2D_TEAM_T : CS2D_TEAM_CT;
+                const char **classes = (team == CS2D_TEAM_T) ? t_classes : ct_classes;
+                const int   *looks   = (team == CS2D_TEAM_T) ? t_looks   : ct_looks;
+
+                for (int i = 0; i < 4; i++) {
+                    if (ui_menu_option_button(ui, CS2D_UI_IDI("BtnTeamSkin", i),
+                                              slot_keys[i], classes[i], looks[i])) {
+                        cs2d_client_select_team(client, team, (uint8_t)i);
+                    }
+                }
+
+                /* Empty 25px slot before 5 Auto-Select */
+                CS2D_UI_ELEMENT(ui, 0, {
+                    .layout = { .sizing = { CS2D_UI_FIXED(240.0f), CS2D_UI_FIXED(25.0f) } }
+                }) {}
+
+                if (ui_menu_option_button(ui, CS2D_UI_ID("BtnSkinAuto"), "5", "Auto-Select", -1)) {
+                    cs2d_client_select_team(client, team, 4);
+                }
+
+                CS2D_UI_ELEMENT(ui, 0, {
+                    .layout = { .sizing = { CS2D_UI_FIXED(240.0f), CS2D_UI_GROW(0, 0) } }
+                }) {}
+
+                if (ui_menu_option_button(ui, CS2D_UI_ID("BtnSkinBack"), "", "Back", -1)) {
+                    client->team_menu_page = 0;
+                }
+                if (ui_menu_option_button(ui, CS2D_UI_ID("BtnSkinClose"), "0", "Close", -1)) {
+                    client->team_menu_open = false;
+                    client->team_menu_page = 0;
+                }
+            }
+        }
+
+        cs2d_ui_window_end(ui);
+    }
+
+    if (!client->team_menu_open) {
+        client->team_menu_page = 0;
+    }
+}
+
+/*
+ * Builds the 600x440 "<Server Name> - Info" welcome / MOTD window (Screenshot 1):
+ *   - 553x374 scrollable text box + 15x374 scrollbar on the right
+ *   - Full-width 568x20 "Close" button at the bottom
+ */
+static void cs2d_client_build_server_info_ui(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    if (!client->server_info_open) return;
+
+    cs2d_ui_context_t *ui = &client->ui;
+    float win_w = 600.0f;
+    float win_h = 440.0f;
+    float win_x = floorf(((float)screen_w - win_w) * 0.5f);
+    float win_y = floorf(((float)screen_h - win_h) * 0.5f);
+
+    char win_title[96];
+    snprintf(win_title, sizeof(win_title), "%s - Info",
+             client->net_server_name[0] ? client->net_server_name : "CS2D Server");
+
+    if (cs2d_ui_window_begin(ui, CS2D_UI_ID("ServerInfoWin"), win_title,
+                             win_x, win_y, win_w, win_h, &client->server_info_open)) {
+        /* 1px horizontal divider separating the title bar from the window body */
+        CS2D_UI_ELEMENT(ui, 0, {
+            .layout   = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(1.0f) } },
+            .bg_color = CS2D_UI_RGBA(96, 96, 96, 245)
+        }) {}
+
+        CS2D_UI_ELEMENT(ui, CS2D_UI_ID("ServerInfoBody"), {
+            .layout = {
+                .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_GROW(0, 0) },
+                .padding   = CS2D_UI_PAD(10, 10, 2, 4),
+                .child_gap = 6.0f,
+                .dir       = CS2D_UI_TOP_TO_BOTTOM
+            }
+        }) {
+            CS2D_UI_ELEMENT(ui, CS2D_UI_ID("ServerInfoRow"), {
+                .layout = {
+                    .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_GROW(0, 0) },
+                    .child_gap = 0.0f,
+                    .dir       = CS2D_UI_LEFT_TO_RIGHT
+                }
+            }) {
+                float box_h        = 374.0f;
+                const float line_h = 15.0f;
+                int max_vis = (int)((box_h - 8.0f) / line_h);
+                if (max_vis < 1) max_vis = 1;
+                client->server_info_visible_lines = max_vis;
+                server_info_clamp_scroll(client);
+
+                int total      = client->server_info_line_count;
+                int max_scroll = (total > max_vis) ? total - max_vis : 0;
+
+                float sb_inner_h = box_h - 4.0f;
+                if (sb_inner_h < 20.0f) sb_inner_h = 20.0f;
+                float thumb_h = sb_inner_h;
+                if (max_scroll > 0 && total > 0) {
+                    thumb_h = sb_inner_h * ((float)max_vis / (float)total);
+                    if (thumb_h < 24.0f) thumb_h = 24.0f;
+                    if (thumb_h > sb_inner_h) thumb_h = sb_inner_h;
+                }
+
+                cs2d_ui_id_t   track_id = CS2D_UI_ID("ServerInfoScrollbar");
+                cs2d_ui_id_t   thumb_id = CS2D_UI_ID("ServerInfoScrollThumb");
+                cs2d_ui_rect_t track    = cs2d_ui_get_box(ui, track_id);
+                cs2d_ui_rect_t thumb    = cs2d_ui_get_box(ui, thumb_id);
+                if (max_scroll > 0 && track.h > 0.0f) {
+                    if (ui->mouse_pressed && ui->hot_id == thumb_id) {
+                        client->server_info_sb_grab_y = ui->mouse_y - thumb.y;
+                    } else if (ui->mouse_pressed && ui->hot_id == track_id) {
+                        int page = (max_vis > 1) ? max_vis - 1 : 1;
+                        client->server_info_scroll += (ui->mouse_y < thumb.y) ? -page : page;
+                        server_info_clamp_scroll(client);
+                    }
+                    if (ui->active_id == thumb_id && ui->mouse_down && sb_inner_h > thumb_h) {
+                        float frac = (ui->mouse_y - client->server_info_sb_grab_y - track.y - 2.0f) / (sb_inner_h - thumb_h);
+                        if (frac < 0.0f) frac = 0.0f;
+                        if (frac > 1.0f) frac = 1.0f;
+                        client->server_info_scroll = (int)(frac * (float)max_scroll + 0.5f);
+                        server_info_clamp_scroll(client);
+                    }
+                }
+
+                int start_idx = client->server_info_scroll;
+                int end_idx   = start_idx + max_vis;
+                if (end_idx > total) end_idx = total;
+
+                /* Left 553x374 dark text box */
+                CS2D_UI_ELEMENT(ui, CS2D_UI_ID("ServerInfoBox"), {
+                    .layout = {
+                        .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_GROW(0, 0) },
+                        .padding   = CS2D_UI_PAD(6, 6, 4, 4),
+                        .child_gap = 0.0f,
+                        .dir       = CS2D_UI_TOP_TO_BOTTOM
+                    },
+                    .bg_color = CS2D_UI_RGBA(28, 28, 27, 246),
+                    .border   = { .width = 1.0f, .color = CS2D_UI_RGBA(140, 140, 140, 245) },
+                    .clip     = { .enabled = true }
+                }) {
+                    for (int i = start_idx; i < end_idx; i++) {
+                        const cs2d_console_line_t *ln = &client->server_info_lines[i];
+                        if (ln->text[0] == '\0') {
+                            CS2D_UI_ELEMENT(ui, 0, {
+                                .layout = { .sizing = { CS2D_UI_FIXED(1.0f), CS2D_UI_FIXED(line_h) } }
+                            }) {}
+                        } else {
+                            cs2d_ui_text(ui, ln->text, CS2D_FONT_REGULAR, CS2D_UI_RGB(ln->r, ln->g, ln->b));
+                        }
+                    }
+                }
+
+                /* Right 15x374 scrollbar track + proportional thumb (top = line 0) */
+                float top_pad = (max_scroll > 0)
+                              ? ((float)client->server_info_scroll / (float)max_scroll) * (sb_inner_h - thumb_h)
+                              : 0.0f;
+                bool thumb_hot = (ui->hot_id == thumb_id || ui->active_id == thumb_id);
+
+                CS2D_UI_ELEMENT(ui, track_id, {
+                    .layout = {
+                        .sizing  = { CS2D_UI_FIXED(15.0f), CS2D_UI_GROW(0, 0) },
+                        .padding = CS2D_UI_PAD(2.0f, 2.0f, 2.0f + top_pad, 2.0f),
+                        .dir     = CS2D_UI_TOP_TO_BOTTOM
+                    },
+                    .bg_color = CS2D_UI_RGBA(32, 32, 32, 246),
+                    .border   = { .width = 1.0f, .color = CS2D_UI_RGBA(140, 140, 140, 245) }
+                }) {
+                    CS2D_UI_ELEMENT(ui, thumb_id, {
+                        .layout   = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(thumb_h) } },
+                        .bg_color = thumb_hot ? CS2D_UI_RGBA(104, 104, 104, 250) : CS2D_UI_RGBA(66, 66, 66, 245),
+                        .border   = { .width = 1.0f, .color = CS2D_UI_RGBA(140, 140, 140, 245) }
+                    }) {}
+                }
+            }
+
+            if (cs2d_ui_button(ui, CS2D_UI_ID("BtnServerInfoClose"), "Close", 568.0f, 20.0f)) {
+                client->server_info_open = false;
+            }
+        }
+
+        cs2d_ui_window_end(ui);
+    }
+}
+
 void cs2d_client_build_ui(cs2d_client_t *client, int screen_w, int screen_h)
 {
     cs2d_ui_begin_layout(
@@ -2008,6 +2700,8 @@ void cs2d_client_build_ui(cs2d_client_t *client, int screen_w, int screen_h)
     );
     client->ui_wheel_delta = 0;
 
+    cs2d_client_build_team_menu_ui(client, screen_w, screen_h);
+    cs2d_client_build_server_info_ui(client, screen_w, screen_h);
     cs2d_client_build_console_ui(client, screen_w, screen_h);
     cs2d_client_build_create_server_ui(client, screen_w, screen_h);
     cs2d_client_build_options_ui(client, screen_w, screen_h);
