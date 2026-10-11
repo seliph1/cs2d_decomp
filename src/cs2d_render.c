@@ -373,20 +373,9 @@ static void upload_rgba_to_texture(
     tex->pad    = pad;
 }
 
-static bool load_image_via_gdiplus(cs2d_texture_t *tex, const char *filepath, int mask_mode, int cell_w, int cell_h)
+/* Converts a decoded GDI+ bitmap to RGBA, uploads it and disposes the bitmap */
+static bool upload_gdiplus_bitmap(cs2d_texture_t *tex, GpBitmap *bmp, int mask_mode, int cell_w, int cell_h)
 {
-    if (!init_gdiplus_once()) return false;
-
-    WCHAR wpath[MAX_PATH];
-    if (MultiByteToWideChar(CP_ACP, 0, filepath, -1, wpath, MAX_PATH) == 0) {
-        return false;
-    }
-
-    GpBitmap *bmp = NULL;
-    if (pGdipCreateBitmapFromFile(wpath, &bmp) != 0 || !bmp) {
-        return false;
-    }
-
     UINT w = 0, h = 0;
     pGdipGetImageWidth((GpImage *)bmp, &w);
     pGdipGetImageHeight((GpImage *)bmp, &h);
@@ -422,6 +411,83 @@ static bool load_image_via_gdiplus(cs2d_texture_t *tex, const char *filepath, in
     upload_rgba_to_texture(tex, rgba, (int)w, (int)h, has_embedded_alpha, mask_mode, cell_w, cell_h);
     free(rgba);
     return true;
+}
+
+static bool load_image_via_gdiplus(cs2d_texture_t *tex, const char *filepath, int mask_mode, int cell_w, int cell_h)
+{
+    if (!init_gdiplus_once()) return false;
+
+    WCHAR wpath[MAX_PATH];
+    if (MultiByteToWideChar(CP_ACP, 0, filepath, -1, wpath, MAX_PATH) == 0) {
+        return false;
+    }
+
+    GpBitmap *bmp = NULL;
+    if (pGdipCreateBitmapFromFile(wpath, &bmp) != 0 || !bmp) {
+        return false;
+    }
+    return upload_gdiplus_bitmap(tex, bmp, mask_mode, cell_w, cell_h);
+}
+
+typedef GpStatus (WINAPI *PFN_GdipCreateBitmapFromStream)(IStream *stream, GpBitmap **bitmap);
+typedef IStream *(WINAPI *PFN_SHCreateMemStream)(const BYTE *data, UINT size);
+
+/*
+ * Loads the largest frame of a .ico file (e.g. the 256x256 PNG frame of cs2d.ico used as the
+ * main menu logo). GdipCreateBitmapFromFile would pick one of the small frames instead.
+ */
+static bool load_ico_largest_frame(cs2d_texture_t *tex, const char *filepath, int mask_mode)
+{
+    if (!init_gdiplus_once()) return false;
+
+    FILE *f = fopen(filepath, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *data = (size > 6) ? (uint8_t *)malloc((size_t)size) : NULL;
+    bool ok = data && fread(data, 1, (size_t)size, f) == (size_t)size;
+    fclose(f);
+    if (!ok) {
+        free(data);
+        return false;
+    }
+
+    /* ICONDIR: reserved(2) type(2) count(2), then 16-byte ICONDIRENTRY records (0 means 256 px) */
+    uint16_t count = (uint16_t)(data[4] | (data[5] << 8));
+    uint32_t best_px = 0, best_off = 0, best_len = 0;
+    for (uint16_t i = 0; i < count && 6u + ((uint32_t)i + 1u) * 16u <= (uint32_t)size; i++) {
+        const uint8_t *e = data + 6 + i * 16;
+        uint32_t ew  = e[0] ? e[0] : 256;
+        uint32_t len = (uint32_t)e[8]  | ((uint32_t)e[9]  << 8) | ((uint32_t)e[10] << 16) | ((uint32_t)e[11] << 24);
+        uint32_t off = (uint32_t)e[12] | ((uint32_t)e[13] << 8) | ((uint32_t)e[14] << 16) | ((uint32_t)e[15] << 24);
+        if (ew > best_px && off + len <= (uint32_t)size) {
+            best_px  = ew;
+            best_off = off;
+            best_len = len;
+        }
+    }
+
+    /* Only PNG-compressed frames are decoded from memory; others fall back to GDI+'s own choice */
+    static const uint8_t png_sig[8] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n' };
+    HMODULE shlwapi = LoadLibraryA("shlwapi.dll");
+    PFN_SHCreateMemStream pSHCreateMemStream = shlwapi
+        ? (PFN_SHCreateMemStream)(void *)GetProcAddress(shlwapi, "SHCreateMemStream") : NULL;
+    PFN_GdipCreateBitmapFromStream pGdipCreateBitmapFromStream =
+        (PFN_GdipCreateBitmapFromStream)(void *)GetProcAddress(g_gdiplus_mod, "GdipCreateBitmapFromStream");
+
+    ok = false;
+    if (best_len >= 8 && memcmp(data + best_off, png_sig, 8) == 0 &&
+        pSHCreateMemStream && pGdipCreateBitmapFromStream) {
+        IStream *stream = pSHCreateMemStream(data + best_off, best_len);
+        GpBitmap *bmp = NULL;
+        if (stream && pGdipCreateBitmapFromStream(stream, &bmp) == 0 && bmp) {
+            ok = upload_gdiplus_bitmap(tex, bmp, mask_mode, 0, 0);
+        }
+        if (stream) stream->lpVtbl->Release(stream);
+    }
+    free(data);
+    return ok ? true : load_image_via_gdiplus(tex, filepath, mask_mode, 0, 0);
 }
 
 bool cs2d_render_init(SDL_Window *window, int width, int height)
@@ -508,6 +574,10 @@ bool cs2d_texture_load_grid(cs2d_texture_t *tex, const char *filepath, int mask_
 
     uint8_t header[54];
     size_t nread = fread(header, 1, 54, f);
+    if (nread >= 6 && header[0] == 0 && header[1] == 0 && header[2] == 1 && header[3] == 0) {
+        fclose(f);
+        return load_ico_largest_frame(tex, filepath, mask_mode);
+    }
     if (nread != 54 || header[0] != 'B' || header[1] != 'M') {
         fclose(f);
         /* Not a raw BMP (e.g. PNG tileset or gfx/hud_symbols.bmp): load via GDI+ */
@@ -1328,17 +1398,16 @@ static void clear_shadow_rect(
 
 /*
  * Reconstructed from 0x14010bb08..0x14010e37f (lighting/gfx_oclussionmap.png):
- * Adds a soft (~10px) ambient occlusion halo on floor tiles around Obstacle and Wall tiles
- * within shadowed regions (alpha_buf > 0), without darkening sunlit outer wall edges or crate tops.
+ * Accumulates a soft (~10px) ambient occlusion halo around one Obstacle/Wall tile into occl_buf.
+ * Halos are merged with max() rather than summed, so adjacent solid tiles form one continuous
+ * halo instead of double-darkening the texels near their shared vertices.
  */
-static void add_shadow_masked_occlusion(
-    const cs2d_map_t *map,
-    uint8_t *alpha_buf,
+static void accumulate_tile_occlusion(
+    uint8_t *occl_buf,
     int tex_w, int tex_h,
     float x0, float y0, float x1, float y1,
     float halo_px,
-    uint8_t max_add,
-    uint8_t cap_alpha
+    uint8_t max_add
 )
 {
     const float inv_scale = 2.0f;
@@ -1354,16 +1423,54 @@ static void add_shadow_masked_occlusion(
 
     for (int sy = sy0; sy < sy1; sy++) {
         float py = ((float)sy + 0.5f) * inv_scale;
-        int ty = (int)(py / (float)CS2D_TILE_SIZE);
-        if (ty < 0 || (uint32_t)ty >= map->height) continue;
+        float dy = 0.0f;
+        if (py < y0) dy = y0 - py;
+        else if (py > y1) dy = py - y1;
 
         for (int sx = sx0; sx < sx1; sx++) {
-            uint8_t cur = alpha_buf[sy * tex_w + sx];
-            if (cur == 0) continue; /* Only darken inside existing shadow regions */
-
             float px = ((float)sx + 0.5f) * inv_scale;
-            int tx = (int)(px / (float)CS2D_TILE_SIZE);
-            if (tx < 0 || (uint32_t)tx >= map->width) continue;
+            float dx = 0.0f;
+            if (px < x0) dx = x0 - px;
+            else if (px > x1) dx = px - x1;
+
+            float dist = sqrtf(dx * dx + dy * dy);
+            if (dist > 0.0f && dist < halo_px) {
+                float f = 1.0f - (dist / halo_px);
+                uint8_t add = (uint8_t)((float)max_add * f * f);
+                if (add > occl_buf[sy * tex_w + sx]) {
+                    occl_buf[sy * tex_w + sx] = add;
+                }
+            }
+        }
+    }
+}
+
+/*
+ * Applies the merged occlusion halo (0x14010bb08..0x14010e37f) onto alpha_buf:
+ * only inside existing shadow regions (alpha_buf > 0) and only onto floor tiles,
+ * so sunlit outer wall edges and Wall/Obstacle tops stay un-darkened.
+ */
+static void apply_shadow_masked_occlusion(
+    const cs2d_map_t *map,
+    uint8_t *alpha_buf,
+    const uint8_t *occl_buf,
+    int tex_w, int tex_h,
+    uint8_t cap_alpha
+)
+{
+    const float inv_scale = 2.0f;
+    for (int sy = 0; sy < tex_h; sy++) {
+        int ty = (int)(((float)sy + 0.5f) * inv_scale / (float)CS2D_TILE_SIZE);
+        if ((uint32_t)ty >= map->height) continue;
+
+        for (int sx = 0; sx < tex_w; sx++) {
+            size_t idx = (size_t)sy * (size_t)tex_w + (size_t)sx;
+            uint8_t add = occl_buf[idx];
+            uint8_t cur = alpha_buf[idx];
+            if (add == 0 || cur == 0) continue; /* Only darken inside existing shadow regions */
+
+            int tx = (int)(((float)sx + 0.5f) * inv_scale / (float)CS2D_TILE_SIZE);
+            if ((uint32_t)tx >= map->width) continue;
 
             /* 0x14010bb8c: Only apply occlusion onto floor tiles (skip Wall and Obstacle tops) */
             uint8_t t = map->tiles[(uint32_t)ty * map->width + (uint32_t)tx];
@@ -1373,24 +1480,9 @@ static void add_shadow_masked_occlusion(
                 continue;
             }
 
-            float dx = 0.0f;
-            if (px < x0) dx = x0 - px;
-            else if (px > x1) dx = px - x1;
-
-            float dy = 0.0f;
-            if (py < y0) dy = y0 - py;
-            else if (py > y1) dy = py - y1;
-
-            float dist = sqrtf(dx * dx + dy * dy);
-            if (dist > 0.0f && dist < halo_px) {
-                float f = 1.0f - (dist / halo_px);
-                int add = (int)((float)max_add * f * f);
-                int val = (int)cur + add;
-                if (val > (int)cap_alpha) val = (int)cap_alpha;
-                if (val > (int)cur) {
-                    alpha_buf[sy * tex_w + sx] = (uint8_t)val;
-                }
-            }
+            int val = (int)cur + (int)add;
+            if (val > (int)cap_alpha) val = (int)cap_alpha;
+            if (val > (int)cur) alpha_buf[idx] = (uint8_t)val;
         }
     }
 }
@@ -1407,8 +1499,7 @@ static void add_shadow_masked_occlusion(
  *   - Step 2: Wall tiles (mode == CS2D_TILE_WALL) & wall breakables/dynwalls cast shadows
  *   - Step 3: Env_Room Layer 0 (int_settings[9] == 0) casts shadows, followed by floor occlusion
  *             (lighting/gfx_oclussionmap.png) and Wall tile self-clear
- *   - Step 4: Env_Room Layers 1..5 (int_settings[9] == 1..5) cast rooftop shadows, self-clear,
- *             and apply lighting/gfx_roommap.png recessed parapet shadows when int_settings[8] == 1
+ *   - Step 4: Env_Room Layers 1..5 (int_settings[9] == 1..5) cast rooftop shadows, then self-clear
  *   - Step 5: Env_Light (type 33) radial light subtraction (lighting/gfx_light.png)
  */
 static void ensure_room_shadow_texture(const cs2d_map_t *map)
@@ -1533,17 +1624,22 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
     }
 
     /* Apply floor contact occlusion (lighting/gfx_oclussionmap.png) around Obstacles and Walls in shadow */
-    for (uint32_t ty = 0; ty < map->height; ty++) {
-        for (uint32_t tx = 0; tx < map->width; tx++) {
-            uint8_t t = map->tiles[ty * map->width + tx];
-            uint8_t m = map->tile_modes[t];
-            if (m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW ||
-                m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW) {
-                float x0 = (float)(tx * CS2D_TILE_SIZE);
-                float y0 = (float)(ty * CS2D_TILE_SIZE);
-                add_shadow_masked_occlusion(map, alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, 10.0f, 72, 200);
+    uint8_t *occl_buf = (uint8_t *)calloc((size_t)tex_w * (size_t)tex_h, 1);
+    if (occl_buf) {
+        for (uint32_t ty = 0; ty < map->height; ty++) {
+            for (uint32_t tx = 0; tx < map->width; tx++) {
+                uint8_t t = map->tiles[ty * map->width + tx];
+                uint8_t m = map->tile_modes[t];
+                if (m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW ||
+                    m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW) {
+                    float x0 = (float)(tx * CS2D_TILE_SIZE);
+                    float y0 = (float)(ty * CS2D_TILE_SIZE);
+                    accumulate_tile_occlusion(occl_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, 10.0f, 72);
+                }
             }
         }
+        apply_shadow_masked_occlusion(map, alpha_buf, occl_buf, tex_w, tex_h, 200);
+        free(occl_buf);
     }
 
     /* Clear Wall tiles (0x1402619d6..0x140261b11) so wall tops remain completely un-darkened */
@@ -1601,7 +1697,7 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
             cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x1, y1, dx, dy, shadow_alpha);
         }
 
-        /* Pass B (0x1402623b0..0x1402625f5): Clear interior of Env_Room on this layer & apply parapet shadow */
+        /* Pass B (0x1402623b0..0x1402625f5): White-fill (clear) interior of Env_Room on this layer */
         for (uint32_t i = 0; i < map->entity_count; i++) {
             const cs2d_entity_t *ent = &map->entities[i];
             if (ent->type != CS2D_ENT_ENV_ROOM && ent->type != CS2D_ENT_ENV_CUBE3D) continue;
@@ -1619,60 +1715,6 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
             float y1 = y0 + (float)(h_tiles * CS2D_TILE_SIZE);
 
             clear_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x1, y1);
-
-            if (ent->int_settings[8] != 0 && (x1 - x0) > 24.0f && (y1 - y0) > 24.0f) {
-                float ix0 = x0 + 8.0f;
-                float iy0 = y0 + 8.0f;
-                float ix1 = x1 - 8.0f;
-                float iy1 = y1 - 8.0f;
-                const float inv_scale = 2.0f;
-                int sx0 = (int)(ix0 / inv_scale);
-                int sy0 = (int)(iy0 / inv_scale);
-                int sx1 = (int)(ix1 / inv_scale);
-                int sy1 = (int)(iy1 / inv_scale);
-                if (sx0 < 0) sx0 = 0;
-                if (sy0 < 0) sy0 = 0;
-                if (sx1 > tex_w) sx1 = tex_w;
-                if (sy1 > tex_h) sy1 = tex_h;
-
-                float pdx = -12.0f * cos_sun;
-                float pdy = -12.0f * sin_sun;
-
-                for (int sy = sy0; sy < sy1; sy++) {
-                    float py = ((float)sy + 0.5f) * inv_scale;
-                    for (int sx = sx0; sx < sx1; sx++) {
-                        float px = ((float)sx + 0.5f) * inv_scale;
-                        float d_left  = px - ix0;
-                        float d_right = ix1 - px;
-                        float d_top   = py - iy0;
-                        float d_bot   = iy1 - py;
-                        float d_min = d_left;
-                        if (d_right < d_min) d_min = d_right;
-                        if (d_top   < d_min) d_min = d_top;
-                        if (d_bot   < d_min) d_min = d_bot;
-
-                        uint8_t a = 0;
-                        if (d_min < 6.0f) {
-                            a = (uint8_t)(55.0f * (1.0f - d_min / 6.0f));
-                        }
-                        if ((pdx > 0.0f && d_left < pdx) || (pdy > 0.0f && d_top < pdy)) {
-                            float s_edge = pdx;
-                            if (d_left < pdx && d_top < pdy) {
-                                s_edge = (d_left < d_top) ? (pdx - d_left) : (pdy - d_top);
-                            } else if (d_left < pdx) {
-                                s_edge = pdx - d_left;
-                            } else {
-                                s_edge = pdy - d_top;
-                            }
-                            uint8_t sa = (s_edge >= 2.0f) ? shadow_alpha : (uint8_t)((float)shadow_alpha * (s_edge / 2.0f));
-                            if (sa > a) a = sa;
-                        }
-                        if (a > alpha_buf[sy * tex_w + sx]) {
-                            alpha_buf[sy * tex_w + sx] = a;
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -2708,7 +2750,7 @@ typedef struct {
 static bool                    s_fonts_loaded = false;
 static GpFontCollection       *s_font_collection = NULL;
 static GpFont                 *s_gp_fonts[CS2D_FONT_COUNT] = {0};
-static float                   s_font_line_h[CS2D_FONT_COUNT] = { 15.0f, 10.0f, 15.0f, 22.0f };
+static float                   s_font_line_h[CS2D_FONT_COUNT] = { 15.0f, 10.0f, 15.0f, 22.0f, 18.0f };
 static GpStringFormat         *s_str_format = NULL;
 static GpSolidFill            *s_white_brush = NULL;
 static uint32_t               *s_scratch_pixels = NULL;
@@ -2814,6 +2856,7 @@ static void ensure_ui_fonts(void)
         pGdipCreateFont(fam_lib, 13.0f, 0, 2, &s_gp_fonts[CS2D_FONT_REGULAR]);
         pGdipCreateFont(fam_lib, 10.0f, 0, 2, &s_gp_fonts[CS2D_FONT_SMALL]);
         pGdipCreateFont(fam_lib, 13.0f, 1, 2, &s_gp_fonts[CS2D_FONT_BOLD]);
+        pGdipCreateFont(fam_lib, 15.0f, 0, 2, &s_gp_fonts[CS2D_FONT_MENU]);
     }
     if (fam_src) {
         pGdipCreateFont(fam_src, 18.0f, 0, 2, &s_gp_fonts[CS2D_FONT_TITLE]);
@@ -2995,6 +3038,28 @@ float cs2d_render_text_width_ex(cs2d_font_id_t font_id, const char *text)
     float w = 0.0f;
     cs2d_render_text_measure(font_id, text, &w, NULL);
     return w;
+}
+
+float cs2d_render_text_prefix_width(cs2d_font_id_t font_id, const char *text, int len)
+{
+    if (!text || len <= 0) return 0.0f;
+    ensure_ui_fonts();
+    if (!s_fonts_loaded || !s_scratch_gfx) return 0.0f;
+    if (font_id < 0 || font_id >= CS2D_FONT_COUNT) font_id = CS2D_FONT_REGULAR;
+    GpFont *gp_font = s_gp_fonts[font_id] ? s_gp_fonts[font_id] : s_gp_fonts[CS2D_FONT_REGULAR];
+    if (!gp_font) return 0.0f;
+
+    WCHAR wtext[256];
+    int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, len, wtext, 255);
+    if (wlen <= 0) {
+        wlen = MultiByteToWideChar(CP_ACP, 0, text, len, wtext, 255);
+    }
+    if (wlen <= 0) return 0.0f;
+
+    GpRectF layout_rect = { 0.0f, 0.0f, (float)(CS2D_TEXT_SCRATCH_W - 4), (float)CS2D_TEXT_SCRATCH_H };
+    GpRectF bbox        = { 0.0f, 0.0f, 0.0f, 0.0f };
+    pGdipMeasureString(s_scratch_gfx, wtext, wlen, gp_font, &layout_rect, s_str_format, &bbox, NULL, NULL);
+    return bbox.Width;
 }
 
 float cs2d_render_font_line_height(cs2d_font_id_t font_id)

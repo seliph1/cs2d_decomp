@@ -20,6 +20,7 @@
 #include "cs2d_network.h"
 #include "cs2d_render.h"
 #include "cs2d_ui.h"
+#include <SDL3/SDL.h>
 
 #define TEST_PASS(name) printf("  [PASS] %s\n", name)
 #define TEST_FAIL(name, msg) do { printf("  [FAIL] %s: %s\n", name, msg); return false; } while(0)
@@ -662,6 +663,132 @@ static bool test_ui_layout(void)
 }
 
 /* =========================================================================
+ * Test 9: Textbox Editing Engine (selection, word navigation, undo/redo, filters, UTF-8, focus)
+ * ========================================================================= */
+static cs2d_ui_context_t s_tb_ui;
+static char              s_tb_buf[32];
+static int               s_tb_cur;
+
+/* Runs one UI frame with the textbox focused, feeding optional text and one key (with modifiers) */
+static bool tb_frame(const char *text, int key, uint32_t mods, uint32_t flags)
+{
+    cs2d_ui_begin_layout(&s_tb_ui, 850, 480, -100.0f, -100.0f, false, 0);
+    if (text) snprintf(s_tb_ui.text_input, sizeof(s_tb_ui.text_input), "%s", text);
+    if (key) {
+        s_tb_ui.key_events[0].key  = key;
+        s_tb_ui.key_events[0].mods = mods;
+        s_tb_ui.key_event_count    = 1;
+    }
+    bool submitted = cs2d_ui_textbox_ex(&s_tb_ui, CS2D_UI_ID("TbTest"), s_tb_buf, sizeof(s_tb_buf), &s_tb_cur, 200.0f, flags);
+    cs2d_ui_end_layout(&s_tb_ui);
+    return submitted;
+}
+
+static void tb_reset(const char *text)
+{
+    snprintf(s_tb_buf, sizeof(s_tb_buf), "%s", text);
+    s_tb_cur = (int)strlen(s_tb_buf);
+    cs2d_ui_edit_reset(&s_tb_ui);
+    s_tb_ui.focused_id = CS2D_UI_ID("TbTest");
+    tb_frame(NULL, 0, 0, 0);
+}
+
+static bool test_ui_textbox(void)
+{
+    printf("\n=== Testing Textbox Editing Engine (cs2d_ui_textbox_ex) ===\n");
+    const uint32_t SH = CS2D_UI_MOD_SHIFT, CT = CS2D_UI_MOD_CTRL;
+    cs2d_ui_init(&s_tb_ui);
+
+    /* Typing, word navigation and typing over a selection */
+    tb_reset("");
+    tb_frame("hello world", 0, 0, 0);
+    if (strcmp(s_tb_buf, "hello world") != 0 || s_tb_cur != 11) TEST_FAIL("Typing", s_tb_buf);
+    tb_frame(NULL, SDLK_LEFT, CT, 0);
+    if (s_tb_cur != 6) TEST_FAIL("Ctrl+Left", "Expected caret at start of 'world'");
+    tb_frame(NULL, SDLK_LEFT, CT | SH, 0);
+    if (s_tb_cur != 0 || s_tb_ui.edit.anchor != 6) TEST_FAIL("Ctrl+Shift+Left", "Expected selection [0,6)");
+    tb_frame("bye ", 0, 0, 0);
+    if (strcmp(s_tb_buf, "bye world") != 0 || s_tb_cur != 4) TEST_FAIL("Type over selection", s_tb_buf);
+    tb_frame(NULL, SDLK_RIGHT, CT, 0);
+    if (s_tb_cur != 9) TEST_FAIL("Ctrl+Right", "Expected caret at end");
+    TEST_PASS("Typing, Ctrl+Left/Right word jumps, Shift selection, typing replaces selection");
+
+    /* Word deletion and undo / redo */
+    tb_frame(NULL, SDLK_HOME, 0, 0);
+    tb_frame(NULL, SDLK_RIGHT, CT, 0);
+    tb_frame(NULL, SDLK_BACKSPACE, CT, 0);
+    if (strcmp(s_tb_buf, "world") != 0 || s_tb_cur != 0) TEST_FAIL("Ctrl+Backspace", s_tb_buf);
+    tb_frame(NULL, SDLK_DELETE, CT, 0);
+    if (strcmp(s_tb_buf, "") != 0) TEST_FAIL("Ctrl+Delete", s_tb_buf);
+    tb_frame(NULL, SDLK_Z, CT, 0);
+    if (strcmp(s_tb_buf, "world") != 0) TEST_FAIL("Undo #1", s_tb_buf);
+    tb_frame(NULL, SDLK_Z, CT, 0);
+    if (strcmp(s_tb_buf, "bye world") != 0) TEST_FAIL("Undo #2", s_tb_buf);
+    tb_frame(NULL, SDLK_Z, CT, 0);
+    if (strcmp(s_tb_buf, "hello world") != 0) TEST_FAIL("Undo #3", s_tb_buf);
+    tb_frame(NULL, SDLK_Y, CT, 0);
+    if (strcmp(s_tb_buf, "bye world") != 0) TEST_FAIL("Redo (Ctrl+Y)", s_tb_buf);
+    tb_frame(NULL, SDLK_Z, CT | SH, 0);
+    if (strcmp(s_tb_buf, "world") != 0) TEST_FAIL("Redo (Ctrl+Shift+Z)", s_tb_buf);
+    tb_frame("!", 0, 0, 0);
+    tb_frame(NULL, SDLK_Y, CT, 0);
+    if (strcmp(s_tb_buf, "!world") != 0) TEST_FAIL("New edit drops redo branch", s_tb_buf);
+    TEST_PASS("Ctrl+Backspace/Delete word deletion, Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo");
+
+    /* Select all, Shift+Home, Delete selection */
+    tb_frame(NULL, SDLK_A, CT, 0);
+    if (s_tb_ui.edit.anchor != 0 || s_tb_cur != 6) TEST_FAIL("Ctrl+A", "Expected full selection");
+    tb_frame(NULL, SDLK_DELETE, 0, 0);
+    if (s_tb_buf[0] != '\0') TEST_FAIL("Delete selection", s_tb_buf);
+    tb_reset("abc def");
+    tb_frame(NULL, SDLK_HOME, SH, 0);
+    if (s_tb_cur != 0 || s_tb_ui.edit.anchor != 7) TEST_FAIL("Shift+Home", "Expected selection [0,7)");
+    tb_frame(NULL, SDLK_RIGHT, 0, 0);
+    if (s_tb_cur != 7 || s_tb_ui.edit.anchor != 7) TEST_FAIL("Right collapses selection", "Expected caret at selection end");
+    TEST_PASS("Ctrl+A, Shift+Home, Delete selection, arrow collapses selection");
+
+    /* Filters, capacity and UTF-8 */
+    tb_reset("");
+    tb_frame("12a3-4 5", 0, 0, CS2D_UI_TEXTBOX_NUMERIC);
+    if (strcmp(s_tb_buf, "12345") != 0) TEST_FAIL("Numeric filter", s_tb_buf);
+    tb_reset("");
+    tb_frame("0123456789012345678901234567890123456789", 0, 0, 0);
+    if (strlen(s_tb_buf) != sizeof(s_tb_buf) - 1) TEST_FAIL("Buffer capacity", "Expected text truncated to buffer size");
+    tb_reset("a\xC3\xA9");
+    tb_frame(NULL, SDLK_LEFT, 0, 0);
+    if (s_tb_cur != 1) TEST_FAIL("UTF-8 Left", "Caret must skip the whole 2-byte character");
+    tb_frame(NULL, SDLK_END, 0, 0);
+    tb_frame(NULL, SDLK_BACKSPACE, 0, 0);
+    if (strcmp(s_tb_buf, "a") != 0) TEST_FAIL("UTF-8 Backspace", "Expected the whole 2-byte character removed");
+    tb_reset("ro");
+    tb_frame("x", SDLK_BACKSPACE, 0, CS2D_UI_TEXTBOX_READONLY);
+    if (strcmp(s_tb_buf, "ro") != 0) TEST_FAIL("Read-only", s_tb_buf);
+    TEST_PASS("Numeric filter, buffer capacity, UTF-8 caret/backspace, read-only");
+
+    /* Enter submits; Tab moves focus to the next textbox */
+    tb_reset("cmd");
+    if (!tb_frame(NULL, SDLK_RETURN, 0, 0)) TEST_FAIL("Enter", "Expected submitted == true");
+    char other[16] = "next";
+    int  other_cur = 0;
+    cs2d_ui_begin_layout(&s_tb_ui, 850, 480, -100.0f, -100.0f, false, 0);
+    s_tb_ui.key_events[0].key  = SDLK_TAB;
+    s_tb_ui.key_events[0].mods = 0;
+    s_tb_ui.key_event_count    = 1;
+    cs2d_ui_textbox_ex(&s_tb_ui, CS2D_UI_ID("TbTest"), s_tb_buf, sizeof(s_tb_buf), &s_tb_cur, 200.0f, 0);
+    cs2d_ui_textbox_ex(&s_tb_ui, CS2D_UI_ID("TbOther"), other, sizeof(other), &other_cur, 200.0f, 0);
+    cs2d_ui_end_layout(&s_tb_ui);
+    if (s_tb_ui.focused_id != CS2D_UI_ID("TbOther")) TEST_FAIL("Tab", "Expected focus on the next textbox");
+    cs2d_ui_begin_layout(&s_tb_ui, 850, 480, -100.0f, -100.0f, false, 0);
+    cs2d_ui_textbox_ex(&s_tb_ui, CS2D_UI_ID("TbTest"), s_tb_buf, sizeof(s_tb_buf), &s_tb_cur, 200.0f, 0);
+    cs2d_ui_textbox_ex(&s_tb_ui, CS2D_UI_ID("TbOther"), other, sizeof(other), &other_cur, 200.0f, 0);
+    cs2d_ui_end_layout(&s_tb_ui);
+    if (s_tb_ui.edit.anchor != 0 || other_cur != 4) TEST_FAIL("Tab select-all", "Expected the focused textbox fully selected");
+    TEST_PASS("Enter submits, Tab moves focus and selects the next textbox");
+
+    return true;
+}
+
+/* =========================================================================
  * Main Runner
  * ========================================================================= */
 int main(void)
@@ -671,7 +798,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 8;
+    int total = 9;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -681,6 +808,7 @@ int main(void)
     if (test_live_server_query()) passed++;
     if (test_entities_and_sprites()) passed++;
     if (test_ui_layout()) passed++;
+    if (test_ui_textbox()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

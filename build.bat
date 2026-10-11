@@ -13,7 +13,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo [2/2] Compiling game client (cs2d_client.exe)...
-gcc -Wall -Wextra -Iinclude src/cs2d_weapons.c src/cs2d_player.c src/cs2d_map.c src/cs2d_game.c src/cs2d_network.c src/cs2d_config.c src/cs2d_render.c src/cs2d_ui.c src/cs2d_client.c src/main_client.c -lSDL3 -lopengl32 -lgdi32 -lws2_32 -lm -o cs2d_client.exe
+gcc -Wall -Wextra -Iinclude src/cs2d_weapons.c src/cs2d_player.c src/cs2d_map.c src/cs2d_game.c src/cs2d_network.c src/cs2d_config.c src/cs2d_render.c src/cs2d_ui.c src/cs2d_client.c src/cs2d_scene_lobby.c src/cs2d_scene_game.c src/cs2d_scene_editor.c src/main_client.c -lSDL3 -lopengl32 -lgdi32 -lws2_32 -lm -o cs2d_client.exe
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Failed to compile game client.
     exit /b %ERRORLEVEL%

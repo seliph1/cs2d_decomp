@@ -75,77 +75,29 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
     cs2d_config_load(&client->config, "sys/config.cfg");
     client->opt_name_cursor = (int)strlen(client->config.name);
 
-    /* Initialize game state */
-    cs2d_game_init(&client->game, CS2D_MODE_DE);
-
-    const char *actual_map = (map_name && map_name[0]) ? map_name : "de_dust2";
-    char map_path[128];
-    snprintf(map_path, sizeof(map_path), "maps/%s.map", actual_map);
-    if (!cs2d_game_load_map(&client->game, map_path)) {
-        /* Fallback */
-        actual_map = "cs_assault";
-        cs2d_game_load_map(&client->game, "maps/cs_assault.map");
-    }
-
-    /* Load map tileset texture from gfx/tiles/<map.tileset> (FUN_140113d50) */
-    cs2d_texture_load_tileset(&client->tex_tileset, client->game.map.tileset);
-    cs2d_render_invalidate_shadows();
-
-    /* Initialize local player as CT (Player 1) */
-    client->local_player_id = 1;
-    cs2d_game_add_player(&client->game, 1, client->config.name, CS2D_TEAM_CT);
-
-    /* Add enemy bots at T spawn for practice */
-    cs2d_game_add_player(&client->game, 2, "Bot_Bravo", CS2D_TEAM_T);
-    cs2d_game_add_player(&client->game, 3, "Bot_Charlie", CS2D_TEAM_T);
-
-    /* Start Round */
-    cs2d_game_start_round(&client->game);
-
-    /* Configure authentic player skins (look 0..3) and starting loadout */
-    client->game.players[1].look  = 0; /* ct1.bmp */
-    client->game.players[1].money = 16000;
-    client->game.players[1].armor = 0;
-    /* If on de_dust2, place player at exact CT spawn tile (31, 44.5) facing East */
-    if (_stricmp(actual_map, "de_dust2") == 0) {
-        client->game.players[1].pos.x = 31.0f * CS2D_TILE_SIZE;
-        client->game.players[1].pos.y = 44.5f * CS2D_TILE_SIZE;
-    }
-
-    client->game.players[2].look = 0; /* t1.bmp */
-    cs2d_player_give_weapon(&client->game.players[2], CS2D_WEP_KEVLARHELM);
-    cs2d_player_give_weapon(&client->game.players[2], CS2D_WEP_BOMB);
-    cs2d_player_give_weapon(&client->game.players[2], CS2D_WEP_AK47);
-
-    client->game.players[3].look = 2; /* t3.bmp */
-    cs2d_player_give_weapon(&client->game.players[3], CS2D_WEP_DEAGLE);
-
-    /* Center camera and default mouse aim on local player immediately */
-    client->cam_x = client->game.players[1].pos.x - (float)client->config.window_width * 0.5f;
-    client->cam_y = client->game.players[1].pos.y - (float)client->config.window_height * 0.5f;
     client->mouse_screen_x = (float)client->config.window_width * 0.5f + 110.0f;
     client->mouse_screen_y = (float)client->config.window_height * 0.5f - 10.0f;
 
     /* Initialize global CS2D sprite bank (player skins, legs, equipment, weapons, HUD, entities) */
     cs2d_gfx_bank_init(cs2d_render_get_gfx_bank());
 
-    /* Load original sprite assets with exact CS2D magenta color-key maskMode = 2 and 32x32 cell padding */
-    cs2d_texture_load_grid(&client->tex_ct,   "gfx/player/ct1.bmp",     2, 32, 32);
-    cs2d_texture_load_grid(&client->tex_t,    "gfx/player/t1.bmp",      2, 32, 32);
-    cs2d_texture_load_ex(&client->tex_ak47,   "gfx/weapons/ak47.bmp",   2);
-    cs2d_texture_load_ex(&client->tex_m4a1,   "gfx/weapons/m4a1.bmp",   2);
-    cs2d_texture_load_ex(&client->tex_deagle, "gfx/weapons/deagle.bmp", 2);
-
     /* Populate authentic startup Console log lines matching CS2D.exe */
     cs2d_client_console_print(client, 255, 220, 0,   "Steam: Not logged in");
     cs2d_client_console_print(client, 170, 170, 170, "UDP socket initialized using port 59960");
     cs2d_client_console_print(client, 255, 45,  45,  "U.S.G.N.: Transmission cancelled by user. Unable to check version/news");
-    cs2d_client_console_print(client, 170, 170, 170, "load map '%s'", actual_map);
 
-    /* Setup network */
-    client->net_sock = INVALID_SOCKET;
+    client->net_sock  = INVALID_SOCKET;
     client->connected = false;
-    cs2d_client_connect(client, client->config.server_ip, client->config.server_port);
+
+    /* Enter the first scene right away so callers can rely on its state after init */
+    if (map_name && map_name[0]) {
+        cs2d_client_start_game(client, map_name);
+    } else {
+        cs2d_client_set_scene(client, CS2D_SCENE_LOBBY);
+    }
+    client->scene = client->pending_scene;
+    client->scene_switch_pending = false;
+    cs2d_scene_get(client->scene)->enter(client);
 
     return true;
 }
@@ -154,24 +106,63 @@ void cs2d_client_shutdown(cs2d_client_t *client)
 {
     if (!client) return;
 
-    if (client->net_sock != INVALID_SOCKET) {
-        if (client->join_stage >= 1) {
-            uint8_t leave_pkt[2] = { (uint8_t)CS2D_NET_LEAVE, 0 };
-            cs2d_client_send_udp(client, leave_pkt, sizeof(leave_pkt), true);
-        }
-        closesocket(client->net_sock);
-        client->net_sock = INVALID_SOCKET;
-    }
-
-    cs2d_texture_free(&client->tex_tileset);
-    cs2d_texture_free(&client->tex_ct);
-    cs2d_texture_free(&client->tex_t);
-    cs2d_texture_free(&client->tex_ak47);
-    cs2d_texture_free(&client->tex_m4a1);
-    cs2d_texture_free(&client->tex_deagle);
+    cs2d_scene_get(client->scene)->leave(client);
     cs2d_gfx_bank_free(cs2d_render_get_gfx_bank());
+}
 
-    cs2d_game_free(&client->game);
+const cs2d_scene_t *cs2d_scene_get(cs2d_scene_id_t id)
+{
+    switch (id) {
+        case CS2D_SCENE_GAME:   return &cs2d_scene_game;
+        case CS2D_SCENE_EDITOR: return &cs2d_scene_editor;
+        case CS2D_SCENE_LOBBY:
+        default:                return &cs2d_scene_lobby;
+    }
+}
+
+void cs2d_client_set_scene(cs2d_client_t *client, cs2d_scene_id_t scene)
+{
+    if (!client) return;
+    client->pending_scene        = scene;
+    client->scene_switch_pending = true;
+}
+
+void cs2d_client_start_game(cs2d_client_t *client, const char *map_name)
+{
+    if (!client) return;
+    const char *name = (map_name && map_name[0]) ? map_name : "de_dust2";
+
+    if (client->scene == CS2D_SCENE_GAME && !client->scene_switch_pending) {
+        cs2d_scene_game_change_map(client, name);
+        return;
+    }
+    snprintf(client->pending_map, sizeof(client->pending_map), "%s", name);
+    cs2d_client_set_scene(client, CS2D_SCENE_GAME);
+}
+
+static void apply_pending_scene(cs2d_client_t *client)
+{
+    if (!client->scene_switch_pending) return;
+    client->scene_switch_pending = false;
+
+    /* Drop held input so nothing leaks from one scene into the next */
+    client->key_forward   = false;
+    client->key_back      = false;
+    client->key_left      = false;
+    client->key_right     = false;
+    client->key_walk      = false;
+    client->mouse_fire    = false;
+    client->mouse_attack2 = false;
+
+    cs2d_scene_get(client->scene)->leave(client);
+    client->scene = client->pending_scene;
+    cs2d_scene_get(client->scene)->enter(client);
+}
+
+void cs2d_client_handle_escape(cs2d_client_t *client)
+{
+    if (!client) return;
+    cs2d_scene_get(client->scene)->handle_escape(client);
 }
 
 void cs2d_client_send_udp(cs2d_client_t *client, const uint8_t *payload, size_t len, bool reliable)
@@ -493,6 +484,27 @@ static bool str_contains_icase(const char *haystack, const char *needle)
     return false;
 }
 
+/* Map shown by the active scene (game or editor); NULL in the lobby */
+static cs2d_map_t *client_active_map(cs2d_client_t *client)
+{
+    if (client->scene == CS2D_SCENE_GAME)   return &client->game.map;
+    if (client->scene == CS2D_SCENE_EDITOR) return &client->editor_map;
+    return NULL;
+}
+
+/* Commands that act on the local player and therefore need a running game */
+static bool is_game_only_command(const char *cmd)
+{
+    static const char *const cmds[] = {
+        "equip", "give", "item", "tp", "setpos", "pos", "where", "hp", "sethealth", "god",
+        "armor", "setarmor", "money", "setmoney", "team", "bot_add", "addbot", "bot_kill", "killbots"
+    };
+    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+        if (_stricmp(cmd, cmds[i]) == 0) return true;
+    }
+    return false;
+}
+
 void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
 {
     if (!client || !cmd_line) return;
@@ -509,7 +521,13 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
     int n = sscanf(cmd_line, "%63s %63s %63s", cmd, arg1, arg2);
     if (n <= 0) return;
 
-    cs2d_player_t *pl = &client->game.players[client->local_player_id];
+    cs2d_player_t *pl  = &client->game.players[client->local_player_id];
+    cs2d_map_t    *map = client_active_map(client);
+
+    if (is_game_only_command(cmd) && client->scene != CS2D_SCENE_GAME) {
+        cs2d_client_console_print(client, 255, 45, 45, "'%s' is only available in game (use: map <name>)", cmd);
+        return;
+    }
 
     if (_stricmp(cmd, "help") == 0 || _stricmp(cmd, "cmdlist") == 0 || _stricmp(cmd, "?") == 0) {
         cs2d_client_console_print(client, 255, 220, 0,   "--- CS2D Console Commands ---");
@@ -524,6 +542,7 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         cs2d_client_console_print(client, 220, 220, 220, "bot_add [t|ct]      - Spawn a bot (bot_kill to remove bots)");
         cs2d_client_console_print(client, 220, 220, 220, "status / entlist    - Inspect map, entities, player & network state");
         cs2d_client_console_print(client, 220, 220, 220, "connect <ip> [port] - Connect to CS2D server (disconnect, fps, clear, quit)");
+        cs2d_client_console_print(client, 220, 220, 220, "menu / editor [map] - Return to the main menu / open the map editor");
     } else if (_stricmp(cmd, "clear") == 0 || _stricmp(cmd, "cls") == 0) {
         client->console_line_count = 0;
         client->console_scroll     = 0;
@@ -539,15 +558,17 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         cs2d_render_set_shadows_enabled(en);
         cs2d_client_console_print(client, 170, 170, 170, "Map shadows & lighting: %s", en ? "ENABLED" : "DISABLED");
     } else if (_stricmp(cmd, "sun") == 0 || _stricmp(cmd, "daylight") == 0 || _stricmp(cmd, "light") == 0) {
-        if (n < 2) {
+        if (!map) {
+            cs2d_client_console_print(client, 255, 45, 45, "No map loaded.");
+        } else if (n < 2) {
             cs2d_client_console_print(client, 170, 170, 170,
                                       "Current map sun angle (daylight_time): %d deg (Usage: sun <0..360>)",
-                                      client->game.map.daylight_time);
+                                      map->daylight_time);
         } else {
             int ang = atoi(arg1);
             if (ang < 0) ang = 0;
             if (ang > 360) ang = 360;
-            client->game.map.daylight_time = ang;
+            map->daylight_time = ang;
             cs2d_render_invalidate_shadows();
             cs2d_client_console_print(client, 100, 255, 100,
                                       "Updated map sun angle (daylight_time) to %d deg and rebuilt shadow map.", ang);
@@ -566,26 +587,16 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
 
         char map_path[128];
         snprintf(map_path, sizeof(map_path), "maps/%s.map", mname);
-        if (!cs2d_game_load_map(&client->game, map_path)) {
+        if (GetFileAttributesA(map_path) == INVALID_FILE_ATTRIBUTES) {
             cs2d_client_console_print(client, 255, 45, 45, "Error: Unable to load map '%s'", map_path);
             return;
         }
-
-        cs2d_texture_free(&client->tex_tileset);
-        cs2d_texture_load_tileset(&client->tex_tileset, client->game.map.tileset);
-        cs2d_render_invalidate_shadows();
-        cs2d_game_start_round(&client->game);
-
-        if (_stricmp(mname, "de_dust2") == 0) {
-            pl->pos.x = 31.0f * CS2D_TILE_SIZE;
-            pl->pos.y = 44.5f * CS2D_TILE_SIZE;
-        }
-        client->cam_x = pl->pos.x - (float)client->config.window_width * 0.5f;
-        client->cam_y = pl->pos.y - (float)client->config.window_height * 0.5f;
-
-        cs2d_client_console_print(client, 170, 170, 170, "load map '%s' (%ux%u, tileset: %s, sun: %d deg)",
-                                  mname, client->game.map.width, client->game.map.height,
-                                  client->game.map.tileset, client->game.map.daylight_time);
+        cs2d_client_start_game(client, mname);
+    } else if (_stricmp(cmd, "editor") == 0) {
+        snprintf(client->editor_map_name, sizeof(client->editor_map_name), "%s", (n >= 2) ? arg1 : "");
+        char *dot = strstr(client->editor_map_name, ".map");
+        if (dot) *dot = '\0';
+        cs2d_client_set_scene(client, CS2D_SCENE_EDITOR);
     } else if (_stricmp(cmd, "maps") == 0 || _stricmp(cmd, "maplist") == 0) {
         WIN32_FIND_DATAA fd;
         HANDLE hFind = FindFirstFileA("maps\\*.map", &fd);
@@ -772,25 +783,33 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         }
         cs2d_client_console_print(client, 255, 220, 0, "Killed %d bot(s).", killed);
     } else if (_stricmp(cmd, "status") == 0 || _stricmp(cmd, "info") == 0) {
-        const cs2d_weapon_def_t *wdef = cs2d_weapon_get(pl->current_weapon);
-        cs2d_client_console_print(client, 255, 220, 0,
-                                  "Map: %ux%u tiles | Tileset: %s | Sun Angle: %d deg | Entities: %u",
-                                  client->game.map.width, client->game.map.height,
-                                  client->game.map.tileset, client->game.map.daylight_time,
-                                  client->game.map.entity_count);
-        cs2d_client_console_print(client, 170, 170, 170,
-                                  "Player [%u] '%s' | HP: %u | Armor: %u | Money: $%u | Weapon: %s",
-                                  pl->id, pl->name, pl->health, pl->armor, pl->money,
-                                  (wdef && wdef->name) ? wdef->name : "None");
+        cs2d_client_console_print(client, 255, 220, 0, "Scene: %s", cs2d_scene_get(client->scene)->name);
+        if (map) {
+            cs2d_client_console_print(client, 255, 220, 0,
+                                      "Map: %ux%u tiles | Tileset: %s | Sun Angle: %d deg | Entities: %u",
+                                      map->width, map->height, map->tileset, map->daylight_time,
+                                      map->entity_count);
+        }
+        if (client->scene == CS2D_SCENE_GAME) {
+            const cs2d_weapon_def_t *wdef = cs2d_weapon_get(pl->current_weapon);
+            cs2d_client_console_print(client, 170, 170, 170,
+                                      "Player [%u] '%s' | HP: %u | Armor: %u | Money: $%u | Weapon: %s",
+                                      pl->id, pl->name, pl->health, pl->armor, pl->money,
+                                      (wdef && wdef->name) ? wdef->name : "None");
+        }
         cs2d_client_console_print(client, 170, 170, 170,
                                   "Network: %s (join_stage=%d, up=%ub/s, down=%ub/s)",
                                   client->connected ? "CONNECTED" : "OFFLINE",
                                   client->join_stage, client->net_bps_up, client->net_bps_down);
     } else if (_stricmp(cmd, "entlist") == 0 || _stricmp(cmd, "entities") == 0) {
+        if (!map) {
+            cs2d_client_console_print(client, 255, 45, 45, "No map loaded.");
+            return;
+        }
         int filter_type = (n >= 2) ? atoi(arg1) : -1;
         int shown = 0;
-        for (uint32_t i = 0; i < client->game.map.entity_count; i++) {
-            const cs2d_entity_t *e = &client->game.map.entities[i];
+        for (uint32_t i = 0; i < map->entity_count; i++) {
+            const cs2d_entity_t *e = &map->entities[i];
             if (filter_type >= 0 && (int)e->type != filter_type) continue;
             cs2d_client_console_print(client, 170, 170, 170,
                                       "#%u type=%u '%s' at (%d,%d) int=[%d,%d,%d,%d] str0='%s'",
@@ -801,7 +820,7 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
             if (++shown >= 40 && filter_type < 0) {
                 cs2d_client_console_print(client, 255, 220, 0,
                                           "... (%u total entities; use 'entlist <type>' to filter)",
-                                          client->game.map.entity_count);
+                                          map->entity_count);
                 break;
             }
         }
@@ -810,15 +829,21 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         int port = (n >= 3) ? atoi(arg2) : client->config.server_port;
         if (port <= 0) port = 36963;
         cs2d_client_console_print(client, 170, 170, 170, "Connecting to %s:%d ...", ip, port);
-        cs2d_client_connect(client, ip, port);
-    } else if (_stricmp(cmd, "disconnect") == 0) {
-        if (client->net_sock != INVALID_SOCKET) {
-            closesocket(client->net_sock);
-            client->net_sock = INVALID_SOCKET;
+        if (client->scene == CS2D_SCENE_GAME) {
+            cs2d_client_connect(client, ip, port);
+        } else {
+            /* The Game scene connects to config.server_ip/port when it is entered */
+            snprintf(client->config.server_ip, sizeof(client->config.server_ip), "%s", ip);
+            client->config.server_port = port;
+            cs2d_client_start_game(client, NULL);
         }
-        client->connected  = false;
-        client->join_stage = 0;
-        cs2d_client_console_print(client, 255, 220, 0, "Disconnected from server.");
+    } else if (_stricmp(cmd, "disconnect") == 0) {
+        if (client->scene == CS2D_SCENE_GAME) {
+            cs2d_client_set_scene(client, CS2D_SCENE_LOBBY);
+            cs2d_client_console_print(client, 255, 220, 0, "Disconnected from server.");
+        } else {
+            cs2d_client_console_print(client, 170, 170, 170, "Not connected.");
+        }
     } else if (_stricmp(cmd, "name") == 0) {
         if (n >= 2) {
             strncpy(client->config.name, arg1, sizeof(client->config.name) - 1);
@@ -828,14 +853,19 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         } else {
             cs2d_client_console_print(client, 170, 170, 170, "Current player name: '%s'", pl->name);
         }
-    } else if (_stricmp(cmd, "menu") == 0 || _stricmp(cmd, "createserver") == 0 || _stricmp(cmd, "newgame") == 0) {
+    } else if (_stricmp(cmd, "menu") == 0 || _stricmp(cmd, "lobby") == 0) {
+        cs2d_client_set_scene(client, CS2D_SCENE_LOBBY);
+        client->console_open = false;
+    } else if (_stricmp(cmd, "createserver") == 0 || _stricmp(cmd, "newgame") == 0) {
         client->create_server_open = true;
         client->options_open       = false;
         client->console_open       = false;
+        client->ui.focused_id      = CS2D_UI_ID("SrvNameInput");
     } else if (_stricmp(cmd, "options") == 0 || _stricmp(cmd, "settings") == 0) {
         client->options_open       = true;
         client->create_server_open = false;
         client->console_open       = false;
+        client->ui.focused_id      = CS2D_UI_ID("OptPlayerName");
     } else if (_stricmp(cmd, "quit") == 0 || _stricmp(cmd, "exit") == 0) {
         client->quit_requested = true;
     } else {
@@ -843,7 +873,7 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
     }
 }
 
-static bool client_any_ui_open(const cs2d_client_t *client)
+bool cs2d_client_any_ui_open(const cs2d_client_t *client)
 {
     return client && (client->console_open || client->create_server_open || client->options_open);
 }
@@ -851,27 +881,38 @@ static bool client_any_ui_open(const cs2d_client_t *client)
 void cs2d_client_handle_text_input(cs2d_client_t *client, const char *text)
 {
     if (!client || !text) return;
-
-    if (client->create_server_open || client->options_open) {
+    if (cs2d_client_any_ui_open(client)) {
         cs2d_ui_feed_text(&client->ui, text);
     }
+}
 
-    if (!client->console_open) return;
+/* Replaces the console input line (history recall) and resets the textbox selection / undo state */
+static void console_set_input(cs2d_client_t *client, const char *text)
+{
+    snprintf(client->console_input, sizeof(client->console_input), "%s", text);
+    client->console_cursor = (int)strlen(client->console_input);
+    cs2d_ui_edit_reset(&client->ui);
+}
 
-    for (const char *p = text; *p != '\0'; p++) {
-        unsigned char ch = (unsigned char)*p;
-        /* Ignore grave/tilde key used to toggle the console */
-        if (ch == '`' || ch == '~' || ch < 32) continue;
+/* Enter in the console textbox: store in history and queue the command for the next update */
+static void console_submit(cs2d_client_t *client)
+{
+    if (client->console_input[0] == '\0') return;
 
-        int len = (int)strlen(client->console_input);
-        if (len + 1 < CS2D_CONSOLE_LINE_LEN) {
-            memmove(&client->console_input[client->console_cursor + 1],
-                    &client->console_input[client->console_cursor],
-                    (size_t)(len - client->console_cursor + 1));
-            client->console_input[client->console_cursor] = (char)ch;
-            client->console_cursor++;
-        }
+    if (client->console_history_count < CS2D_CONSOLE_HIST_MAX) {
+        snprintf(client->console_history[client->console_history_count++],
+                 CS2D_CONSOLE_LINE_LEN, "%s", client->console_input);
+    } else {
+        memmove(&client->console_history[0],
+                &client->console_history[1],
+                sizeof(client->console_history[0]) * (CS2D_CONSOLE_HIST_MAX - 1));
+        snprintf(client->console_history[CS2D_CONSOLE_HIST_MAX - 1],
+                 CS2D_CONSOLE_LINE_LEN, "%s", client->console_input);
     }
+    client->console_history_pos = client->console_history_count;
+
+    snprintf(client->console_pending_cmd, sizeof(client->console_pending_cmd), "%s", client->console_input);
+    console_set_input(client, "");
 }
 
 void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
@@ -924,94 +965,26 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
 
     if (!client->console_open) return;
 
-    int len = (int)strlen(client->console_input);
-
+    /* Console-only keys; everything else (editing, selection, clipboard, Enter) goes to the textbox */
     switch (sdl_key) {
         case SDLK_ESCAPE:
             client->console_open = false;
             break;
 
-        case SDLK_RETURN:
-        case SDLK_KP_ENTER:
-            if (len > 0) {
-                /* Save to history */
-                if (client->console_history_count < CS2D_CONSOLE_HIST_MAX) {
-                    strncpy(client->console_history[client->console_history_count++],
-                            client->console_input, CS2D_CONSOLE_LINE_LEN - 1);
-                } else {
-                    memmove(&client->console_history[0],
-                            &client->console_history[1],
-                            sizeof(client->console_history[0]) * (CS2D_CONSOLE_HIST_MAX - 1));
-                    strncpy(client->console_history[CS2D_CONSOLE_HIST_MAX - 1],
-                            client->console_input, CS2D_CONSOLE_LINE_LEN - 1);
-                }
-                client->console_history_pos = client->console_history_count;
-
-                char cmd_copy[CS2D_CONSOLE_LINE_LEN];
-                strncpy(cmd_copy, client->console_input, sizeof(cmd_copy));
-                client->console_input[0] = '\0';
-                client->console_cursor   = 0;
-
-                cs2d_client_console_exec(client, cmd_copy);
-            }
-            break;
-
-        case SDLK_BACKSPACE:
-            if (client->console_cursor > 0) {
-                memmove(&client->console_input[client->console_cursor - 1],
-                        &client->console_input[client->console_cursor],
-                        (size_t)(len - client->console_cursor + 1));
-                client->console_cursor--;
-            }
-            break;
-
-        case SDLK_DELETE:
-            if (client->console_cursor < len) {
-                memmove(&client->console_input[client->console_cursor],
-                        &client->console_input[client->console_cursor + 1],
-                        (size_t)(len - client->console_cursor));
-            }
-            break;
-
-        case SDLK_LEFT:
-            if (client->console_cursor > 0) client->console_cursor--;
-            break;
-
-        case SDLK_RIGHT:
-            if (client->console_cursor < len) client->console_cursor++;
-            break;
-
-        case SDLK_HOME:
-            client->console_cursor = 0;
-            break;
-
-        case SDLK_END:
-            client->console_cursor = len;
-            break;
-
         case SDLK_UP:
             if (client->console_history_count > 0 && client->console_history_pos > 0) {
                 client->console_history_pos--;
-                strncpy(client->console_input,
-                        client->console_history[client->console_history_pos],
-                        CS2D_CONSOLE_LINE_LEN - 1);
-                client->console_input[CS2D_CONSOLE_LINE_LEN - 1] = '\0';
-                client->console_cursor = (int)strlen(client->console_input);
+                console_set_input(client, client->console_history[client->console_history_pos]);
             }
             break;
 
         case SDLK_DOWN:
             if (client->console_history_pos + 1 < client->console_history_count) {
                 client->console_history_pos++;
-                strncpy(client->console_input,
-                        client->console_history[client->console_history_pos],
-                        CS2D_CONSOLE_LINE_LEN - 1);
-                client->console_input[CS2D_CONSOLE_LINE_LEN - 1] = '\0';
-                client->console_cursor = (int)strlen(client->console_input);
+                console_set_input(client, client->console_history[client->console_history_pos]);
             } else {
                 client->console_history_pos = client->console_history_count;
-                client->console_input[0] = '\0';
-                client->console_cursor   = 0;
+                console_set_input(client, "");
             }
             break;
 
@@ -1028,6 +1001,7 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
             break;
 
         default:
+            cs2d_ui_feed_key(&client->ui, sdl_key);
             break;
     }
 }
@@ -1047,65 +1021,8 @@ void cs2d_client_handle_mouse_wheel(cs2d_client_t *client, int delta_y)
 void cs2d_client_handle_key(cs2d_client_t *client, int key, bool pressed)
 {
     if (!client) return;
-    if (client_any_ui_open(client)) return;
-
-    switch (key) {
-        case 'W': case 'w': case VK_UP:
-            client->key_forward = pressed;
-            break;
-        case 'S': case 's': case VK_DOWN:
-            client->key_back = pressed;
-            break;
-        case 'A': case 'a': case VK_LEFT:
-            client->key_left = pressed;
-            break;
-        case 'D': case 'd': case VK_RIGHT:
-            client->key_right = pressed;
-            break;
-        case VK_SHIFT:
-            client->key_walk = pressed;
-            break;
-        case 'R': case 'r':
-            if (pressed) {
-                cs2d_player_t *pl = &client->game.players[client->local_player_id];
-                cs2d_weapon_reload(pl);
-            }
-            break;
-        case 'B': case 'b':
-            if (pressed) {
-                /* Buy menu shortcut: purchase primary rifle / armor */
-                cs2d_player_t *pl = &client->game.players[client->local_player_id];
-                uint8_t buy_wep = (pl->team == CS2D_TEAM_T) ? CS2D_WEP_AK47 : CS2D_WEP_M4A1;
-                if (!cs2d_player_buy_weapon(pl, buy_wep)) {
-                    cs2d_player_buy_weapon(pl, CS2D_WEP_DEAGLE);
-                }
-                cs2d_player_buy_weapon(pl, CS2D_WEP_KEVLARHELM);
-            }
-            break;
-        case 'G': case 'g':
-            if (pressed) {
-                cs2d_player_t *pl = &client->game.players[client->local_player_id];
-                cs2d_player_drop_weapon(pl);
-            }
-            break;
-        case '1':
-            if (pressed) cs2d_player_switch_weapon(&client->game.players[client->local_player_id], CS2D_SLOT_PRIMARY);
-            break;
-        case '2':
-            if (pressed) cs2d_player_switch_weapon(&client->game.players[client->local_player_id], CS2D_SLOT_SECONDARY);
-            break;
-        case '3':
-            if (pressed) cs2d_player_switch_weapon(&client->game.players[client->local_player_id], CS2D_SLOT_MELEE);
-            break;
-        case '4':
-            if (pressed) cs2d_player_switch_weapon(&client->game.players[client->local_player_id], CS2D_SLOT_GRENADE);
-            break;
-        case '5':
-            if (pressed) cs2d_player_switch_weapon(&client->game.players[client->local_player_id], CS2D_SLOT_BOMB);
-            break;
-        default:
-            break;
-    }
+    if (cs2d_client_any_ui_open(client)) return;
+    cs2d_scene_get(client->scene)->handle_key(client, key, pressed);
 }
 
 void cs2d_client_handle_mouse(cs2d_client_t *client, float mx, float my, int button, bool pressed)
@@ -1115,7 +1032,7 @@ void cs2d_client_handle_mouse(cs2d_client_t *client, float mx, float my, int but
     client->mouse_screen_x = mx;
     client->mouse_screen_y = my;
 
-    if (client_any_ui_open(client)) {
+    if (cs2d_client_any_ui_open(client)) {
         if (button == 1) {
             client->mouse_fire = pressed;
         }
@@ -1123,16 +1040,22 @@ void cs2d_client_handle_mouse(cs2d_client_t *client, float mx, float my, int but
         return;
     }
 
-    if (button == 1) { /* Left click: attack */
-        client->mouse_fire = pressed;
-    } else if (button == 2) { /* Right click: attack2 */
-        client->mouse_attack2 = pressed;
-    }
+    cs2d_scene_get(client->scene)->handle_mouse(client, mx, my, button, pressed);
 }
 
 void cs2d_client_update(cs2d_client_t *client, float delta_time)
 {
     if (!client) return;
+
+    /* Console commands submitted with Enter run here, outside the UI build */
+    if (client->console_pending_cmd[0] != '\0') {
+        char cmd[CS2D_CONSOLE_LINE_LEN];
+        snprintf(cmd, sizeof(cmd), "%s", client->console_pending_cmd);
+        client->console_pending_cmd[0] = '\0';
+        cs2d_client_console_exec(client, cmd);
+    }
+
+    apply_pending_scene(client);
 
     /* Update FPS & Network Traffic telemetry (1-second window) */
     client->fps_frames++;
@@ -1147,84 +1070,7 @@ void cs2d_client_update(cs2d_client_t *client, float delta_time)
         client->net_bytes_down_accum = 0;
     }
 
-    /* Update game simulation */
-    cs2d_game_update(&client->game, delta_time);
-
-    cs2d_player_t *pl = &client->game.players[client->local_player_id];
-    if (pl->alive && !client_any_ui_open(client)) {
-        /*
-         * Aiming: calculate world mouse position and rotation angle.
-         * In CS2D.exe (Tpl.draw 0x140121674), player & weapon sprites face
-         * North (-Y, Up) at angle = 0 deg, and rotate clockwise (+90 deg = East/+X).
-         */
-        float world_mx = client->mouse_screen_x + client->cam_x;
-        float world_my = client->mouse_screen_y + client->cam_y;
-        float dx = world_mx - pl->pos.x;
-        float dy = world_my - pl->pos.y;
-        pl->angle = atan2f(dx, -dy) * (180.0f / 3.14159265f);
-
-        /* Movement */
-        float speed = client->key_walk ? 100.0f : 190.0f; /* pixels/second */
-        const cs2d_weapon_def_t *cur_wep = cs2d_weapon_get(pl->current_weapon);
-        if (cur_wep) speed *= cur_wep->speed_modifier;
-
-        float move_x = 0.0f, move_y = 0.0f;
-        if (client->key_forward) move_y -= 1.0f;
-        if (client->key_back)    move_y += 1.0f;
-        if (client->key_left)    move_x -= 1.0f;
-        if (client->key_right)   move_x += 1.0f;
-
-        float len = sqrtf(move_x * move_x + move_y * move_y);
-        if (len > 0.001f) {
-            float dir_x = move_x / len;
-            float dir_y = move_y / len;
-            move_x = dir_x * speed * delta_time;
-            move_y = dir_y * speed * delta_time;
-            cs2d_player_move(pl, &client->game.map, move_x, move_y);
-
-            /* Animate legs (Tpl +0x378 feet_frame, +0x380 feet_angle, +0x388 feet_timer) */
-            pl->feet_angle = atan2f(dir_x, -dir_y) * (180.0f / 3.14159265f);
-            pl->feet_frame = fmodf(pl->feet_frame + delta_time * (client->key_walk ? 9.0f : 16.0f), 8.0f);
-            pl->feet_timer = 0.15f;
-        } else if (pl->feet_timer > 0.0f) {
-            pl->feet_timer -= delta_time;
-            if (pl->feet_timer < 0.0f) pl->feet_timer = 0.0f;
-        }
-
-        /* Firing */
-        if (client->mouse_fire) {
-            if (cs2d_weapon_fire(pl)) {
-                /* Send fire event over network */
-                if (client->connected && client->join_stage == 5) {
-                    uint8_t fire_pkt[1] = { (uint8_t)CS2D_NET_FIRE };
-                    cs2d_client_send_udp(client, fire_pkt, sizeof(fire_pkt), true);
-                }
-            }
-        }
-    }
-
-    /* Camera tracks player smoothly */
-    float target_cam_x = pl->pos.x - (float)client->config.window_width * 0.5f;
-    float target_cam_y = pl->pos.y - (float)client->config.window_height * 0.5f;
-    client->cam_x += (target_cam_x - client->cam_x) * 0.15f;
-    client->cam_y += (target_cam_y - client->cam_y) * 0.15f;
-
-    /* Network synchronization (every 33ms ~ 30Hz) */
-    client->net_sync_timer += delta_time;
-    if (client->net_sync_timer >= 0.033f) {
-        client->net_sync_timer = 0.0f;
-        if (client->connected && client->join_stage == 5 && pl->alive) {
-            uint8_t sync_buf[16];
-            /* Client -> Server posrot has player_id = 0 (7 bytes payload: [13, x, y, rot]) */
-            size_t sync_len = cs2d_net_build_posrot_packet(0, pl->pos.x, pl->pos.y, pl->angle, sync_buf, sizeof(sync_buf));
-            if (sync_len > 0) {
-                cs2d_client_send_udp(client, sync_buf, sync_len, false);
-            }
-        }
-    }
-
-    /* Poll network packets */
-    cs2d_client_poll_network(client);
+    cs2d_scene_get(client->scene)->update(client, delta_time);
 }
 
 /* ============================================================================
@@ -1339,9 +1185,11 @@ static void cs2d_client_build_console_ui(cs2d_client_t *client, int screen_w, in
         if (ui->focused_id == 0) {
             ui->focused_id = CS2D_UI_ID("ConsoleInput");
         }
-        cs2d_ui_textbox(ui, CS2D_UI_ID("ConsoleInput"),
-                        client->console_input, sizeof(client->console_input),
-                        &client->console_cursor, 0.0f, false);
+        if (cs2d_ui_textbox(ui, CS2D_UI_ID("ConsoleInput"),
+                            client->console_input, sizeof(client->console_input),
+                            &client->console_cursor, 0.0f, false)) {
+            console_submit(client);
+        }
 
         cs2d_ui_window_end(ui);
     }
@@ -1401,8 +1249,8 @@ static void cs2d_client_build_create_server_ui(cs2d_client_t *client, int screen
                     ui_form_row_end(ui);
 
                     ui_form_row_begin(ui, "Port", 105.0f);
-                    cs2d_ui_textbox(ui, CS2D_UI_ID("SrvPortInput"), client->srv_port, sizeof(client->srv_port),
-                                    &client->srv_port_cursor, 68.0f, false);
+                    cs2d_ui_textbox_ex(ui, CS2D_UI_ID("SrvPortInput"), client->srv_port, sizeof(client->srv_port),
+                                       &client->srv_port_cursor, 68.0f, CS2D_UI_TEXTBOX_NUMERIC);
                     ui_form_row_end(ui);
 
                     ui_form_row_begin(ui, "Max. Players", 105.0f);
@@ -1700,8 +1548,9 @@ static void cs2d_client_build_options_ui(cs2d_client_t *client, int screen_w, in
 
 static void cs2d_client_render_ui(cs2d_client_t *client, int screen_w, int screen_h)
 {
-    if (!client_any_ui_open(client)) {
+    if (!cs2d_client_any_ui_open(client)) {
         client->ui_wheel_delta = 0;
+        cs2d_ui_clear_input(&client->ui);
         return;
     }
 
@@ -1752,39 +1601,17 @@ void cs2d_client_render(cs2d_client_t *client, int screen_w, int screen_h)
 {
     if (!client) return;
 
-    /* 1. Map Pass 0 & 1 (background, tileset, tile modifiers, ground entities, items, hostages) */
-    cs2d_render_map_ex(&client->game.map, &client->tex_tileset, client->cam_x, client->cam_y, screen_w, screen_h);
+    /* 1. Active scene (lobby menu, game world + HUD, or editor view) */
+    cs2d_scene_get(client->scene)->render(client, screen_w, screen_h);
 
-    /* 2. Players (Tpl.draw: shadow, legs, torso frame, armor/helmet, held weapon, objective icon) */
-    for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
-        const cs2d_player_t *p = &client->game.players[i];
-        if (p->alive) {
-            const cs2d_texture_t *stex = (p->team == CS2D_TEAM_CT) ? &client->tex_ct : &client->tex_t;
-            const cs2d_texture_t *wtex = NULL;
-            if (p->current_weapon == CS2D_WEP_AK47) wtex = &client->tex_ak47;
-            else if (p->current_weapon == CS2D_WEP_M4A1) wtex = &client->tex_m4a1;
-            else if (p->current_weapon == CS2D_WEP_DEAGLE) wtex = &client->tex_deagle;
-
-            cs2d_render_player(p, stex, wtex, client->cam_x, client->cam_y);
-        }
-    }
-
-    /* 3. Map Pass 2 (Overhead entities: Env_Sprite, Env_Image over players, Env_Object trees/lamps, Shadow Map) */
-    cs2d_render_map_overhead(&client->game.map, client->cam_x, client->cam_y, screen_w, screen_h);
-
-    /* 4. In-Game HUD (hud_nums.bmp, hud_symbols.bmp, hud_radar_advanced.png) */
-    const cs2d_player_t *local_pl = &client->game.players[client->local_player_id];
-    cs2d_render_hud(local_pl, &client->game, screen_w, screen_h);
-
-    /* 5. Declarative CS2D UI Windows (Console, Create Server, Options) */
+    /* 2. Declarative CS2D UI Windows (Console, Create Server, Options) */
     cs2d_client_render_ui(client, screen_w, screen_h);
 
-    /* 6. Top-Left FPS / Renderer / Network Traffic Display */
-    cs2d_client_render_fps_overlay(client);
+    /* 3. Top-Left FPS / Renderer / Network Traffic Display (in game only; menu and editor use that corner) */
+    if (client->scene == CS2D_SCENE_GAME) {
+        cs2d_client_render_fps_overlay(client);
+    }
 
-    /* 7. Crosshair (gfx/pointer.bmp frame 0) drawn on top of everything */
+    /* 4. Crosshair (gfx/pointer.bmp frame 0) drawn on top of everything */
     cs2d_render_crosshair(client->mouse_screen_x, client->mouse_screen_y);
 }
-
-
-

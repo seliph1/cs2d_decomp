@@ -142,6 +142,10 @@ typedef struct {
     bool                      draw_cursor;
     float                     cursor_offset_x;
     cs2d_ui_color_t           cursor_color;
+    bool                      draw_selection;   /* Text selection highlight, drawn under the children */
+    float                     selection_x0;     /* Offsets from rect.x (clamped to the element) */
+    float                     selection_x1;
+    cs2d_ui_color_t           selection_color;
 } cs2d_ui_element_decl_t;
 
 typedef enum {
@@ -192,6 +196,51 @@ typedef struct {
     int            z_index;
 } cs2d_ui_box_entry_t;
 
+#define CS2D_UI_MAX_KEY_EVENTS   32
+#define CS2D_UI_MAX_FOCUSABLE    32
+#define CS2D_UI_EDIT_MAX_TEXT    256 /* Longest buffer the edit state can snapshot / measure */
+#define CS2D_UI_UNDO_DEPTH       32
+
+/* Modifier bits stored with each queued key (taken from SDL_GetModState when fed) */
+#define CS2D_UI_MOD_SHIFT 0x1u
+#define CS2D_UI_MOD_CTRL  0x2u
+#define CS2D_UI_MOD_ALT   0x4u
+
+typedef struct {
+    int      key;  /* SDL keycode */
+    uint32_t mods; /* CS2D_UI_MOD_* */
+} cs2d_ui_key_event_t;
+
+typedef struct {
+    char text[CS2D_UI_EDIT_MAX_TEXT];
+    int  cursor;
+    int  anchor;
+} cs2d_ui_undo_entry_t;
+
+/*
+ * Editing state of the focused textbox (only one textbox is focused at a time).
+ * Positions are byte offsets into the UTF-8 buffer, always on codepoint boundaries.
+ */
+typedef struct {
+    cs2d_ui_id_t         id;              /* Textbox this state belongs to (0 = none) */
+    int                  anchor;          /* Selection anchor; selection is [min(anchor,cursor), max) */
+    float                scroll_x;        /* Horizontal scroll of the text inside the box */
+    bool                 dragging;        /* Mouse selection in progress */
+    uint32_t             activity_ms;     /* Last edit/move; keeps the caret solid while typing */
+
+    /* Caret x positions for every byte offset of the displayed text (recomputed when it changes) */
+    char                 measured[CS2D_UI_EDIT_MAX_TEXT];
+    bool                 measured_password;
+    float                caret_x[CS2D_UI_EDIT_MAX_TEXT + 1];
+
+    /* Undo / redo snapshots; entries [0, undo_pos) are undo, [undo_pos, undo_count) are redo */
+    cs2d_ui_undo_entry_t undo[CS2D_UI_UNDO_DEPTH];
+    int                  undo_count;
+    int                  undo_pos;
+    int                  last_edit_kind;  /* Consecutive edits of the same kind merge into one undo step */
+    uint32_t             last_edit_ms;
+} cs2d_ui_edit_state_t;
+
 typedef struct {
     int                  screen_w;
     int                  screen_h;
@@ -204,14 +253,27 @@ typedef struct {
     bool                 mouse_released; /* True on the single frame button went up */
     bool                 prev_mouse_down;
     int                  wheel_delta;
+    int                  click_count;    /* 1 = single, 2 = double, 3 = triple click (set on mouse_pressed) */
+    uint32_t             last_click_ms;
+    float                last_click_x;
+    float                last_click_y;
 
     cs2d_ui_id_t         hot_id;
     cs2d_ui_id_t         active_id;
     cs2d_ui_id_t         focused_id;
 
-    /* Text input queue for focused textbox */
-    char                 text_input[64];
-    int                  last_key;
+    /* Input queues consumed by the focused widget during the next layout pass */
+    char                 text_input[128];
+    cs2d_ui_key_event_t  key_events[CS2D_UI_MAX_KEY_EVENTS];
+    int                  key_event_count;
+
+    /* Tab / Shift+Tab focus traversal across textboxes, in build order */
+    cs2d_ui_id_t         focus_order[CS2D_UI_MAX_FOCUSABLE];
+    int                  focus_order_count;
+    int                  focus_move;       /* +1 / -1 requested by the focused textbox this frame */
+    bool                 select_all_on_focus;
+
+    cs2d_ui_edit_state_t edit;
 
     /* Current frame node tree */
     cs2d_ui_node_t       nodes[CS2D_UI_MAX_NODES];
@@ -249,8 +311,15 @@ void cs2d_ui_begin_layout(
     bool mouse_down,
     int wheel_delta
 );
+/* Queue text (UTF-8, from SDL_EVENT_TEXT_INPUT) and key presses (with the current modifiers) */
 void cs2d_ui_feed_text(cs2d_ui_context_t *ctx, const char *text);
 void cs2d_ui_feed_key(cs2d_ui_context_t *ctx, int sdl_key);
+
+/* Drop queued input; call on frames where no UI is laid out so keys don't pile up */
+void cs2d_ui_clear_input(cs2d_ui_context_t *ctx);
+
+/* Forget selection, scroll and undo history of the focused textbox (e.g. after replacing its text) */
+void cs2d_ui_edit_reset(cs2d_ui_context_t *ctx);
 
 void cs2d_ui_open_element(cs2d_ui_context_t *ctx, cs2d_ui_id_t id, const cs2d_ui_element_decl_t *decl);
 void cs2d_ui_close_element(cs2d_ui_context_t *ctx);
@@ -324,7 +393,32 @@ bool cs2d_ui_select(
     float width
 );
 
-/* CS2D Single-Line Textbox with focus, editing, and blinking cursor */
+/* Textbox behaviour flags for cs2d_ui_textbox_ex */
+#define CS2D_UI_TEXTBOX_PASSWORD 0x1u /* Shows '*' per character; copy / cut are disabled */
+#define CS2D_UI_TEXTBOX_NUMERIC  0x2u /* Accepts digits only (typed or pasted) */
+#define CS2D_UI_TEXTBOX_READONLY 0x4u /* Selectable and copyable, but not editable */
+
+/*
+ * CS2D Single-Line Textbox. Returns true on the frame Enter is pressed while focused.
+ *   Mouse:     click to place the caret, drag / Shift+click to select,
+ *              double-click selects a word, triple-click selects everything
+ *   Movement:  Left/Right, Home/End, Ctrl+Left/Right by word; add Shift to select
+ *   Editing:   Backspace/Delete, Ctrl+Backspace/Delete by word, Ctrl+A select all
+ *   Clipboard: Ctrl+C / Ctrl+Insert copy, Ctrl+X / Shift+Delete cut, Ctrl+V / Shift+Insert paste
+ *   History:   Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo
+ *   Focus:     Tab / Shift+Tab moves to the next / previous textbox
+ * Long text scrolls horizontally to keep the caret visible.
+ */
+bool cs2d_ui_textbox_ex(
+    cs2d_ui_context_t *ctx,
+    cs2d_ui_id_t id,
+    char *buffer,
+    size_t buffer_size,
+    int *cursor_pos,
+    float width,
+    uint32_t flags
+);
+
 bool cs2d_ui_textbox(
     cs2d_ui_context_t *ctx,
     cs2d_ui_id_t id,

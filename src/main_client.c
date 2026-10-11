@@ -78,13 +78,48 @@ static void save_gl_screenshot_bmp(const char *filepath, int w, int h)
     free(pixels);
 }
 
+/*
+ * One --capture step: a console command, or a UI test action
+ *   !console                      open the console (stays open for the capture)
+ *   !text <text>                  type text into the focused textbox
+ *   !key <SDL key name> [shift] [ctrl]   press a key with modifiers (e.g. "!key Left shift ctrl")
+ */
+static void run_capture_step(const char *cmd)
+{
+    if (strcmp(cmd, "!console") == 0) {
+        cs2d_client_handle_console_key(&g_client, SDLK_GRAVE);
+    } else if (strncmp(cmd, "!text ", 6) == 0) {
+        cs2d_client_handle_text_input(&g_client, cmd + 6);
+    } else if (strncmp(cmd, "!key ", 5) == 0) {
+        char name[32] = {0};
+        sscanf(cmd + 5, "%31s", name);
+        SDL_Keycode key = SDL_GetKeyFromName(name);
+        if (key == SDLK_UNKNOWN || g_client.ui.key_event_count >= CS2D_UI_MAX_KEY_EVENTS) return;
+        uint32_t mods = 0;
+        if (strstr(cmd + 5, " shift")) mods |= CS2D_UI_MOD_SHIFT;
+        if (strstr(cmd + 5, " ctrl"))  mods |= CS2D_UI_MOD_CTRL;
+        g_client.ui.key_events[g_client.ui.key_event_count].key  = (int)key;
+        g_client.ui.key_events[g_client.ui.key_event_count].mods = mods;
+        g_client.ui.key_event_count++;
+    } else {
+        cs2d_client_console_exec(&g_client, cmd);
+        g_client.console_open = false;
+    }
+}
+
 static int run_client_app(const char *cmdline)
 {
-    const char *map_name = "de_dust2";
+    /* No argument opens the main menu; a map name starts a game on that map */
+    const char *map_name = NULL;
     bool auto_screenshot = false;
+    const char *capture_cmd = NULL; /* --capture[:<cmd>[;<cmd>...]] -> screens/capture.bmp */
+    int capture_frame = 30;
     if (cmdline && strlen(cmdline) > 0) {
         if (strstr(cmdline, "--screenshot") != NULL) {
             auto_screenshot = true;
+            map_name = "de_dust2";
+        } else if (strncmp(cmdline, "--capture", 9) == 0) {
+            capture_cmd = (cmdline[9] == ':') ? cmdline + 10 : "";
         } else {
             map_name = cmdline;
         }
@@ -151,13 +186,6 @@ static int run_client_app(const char *cmdline)
         return 1;
     }
 
-    /* Center initial camera on local player */
-    const cs2d_player_t *init_pl = &g_client.game.players[g_client.local_player_id];
-    g_client.cam_x = init_pl->pos.x - (float)win_w * 0.5f;
-    g_client.cam_y = init_pl->pos.y - (float)win_h * 0.5f;
-    g_client.mouse_screen_x = (float)win_w * 0.5f + 110.0f;
-    g_client.mouse_screen_y = (float)win_h * 0.5f - 10.0f;
-
     uint64_t freq = SDL_GetPerformanceFrequency();
     uint64_t last_time = SDL_GetPerformanceCounter();
 
@@ -203,7 +231,7 @@ static int run_client_app(const char *cmdline)
                         break;
                     }
                     if (event.key.key == SDLK_ESCAPE && !event.key.repeat) {
-                        g_client.console_open = true;
+                        cs2d_client_handle_escape(&g_client);
                         break;
                     }
                     if (!event.key.repeat) {
@@ -297,10 +325,26 @@ static int run_client_app(const char *cmdline)
             cs2d_render_end_frame(window);
             break;
         }
+        if (capture_cmd) {
+            /* Runs one ';'-separated console command every 5 frames, then captures 30 frames later */
+            if (capture_cmd[0] && frame_count > 0 && frame_count % 5 == 0) {
+                char cmd[CS2D_CONSOLE_LINE_LEN];
+                size_t len = strcspn(capture_cmd, ";");
+                snprintf(cmd, sizeof(cmd), "%.*s", (int)len, capture_cmd);
+                capture_cmd += len + (capture_cmd[len] == ';' ? 1 : 0);
+                capture_frame = frame_count + 30;
+                run_capture_step(cmd);
+            } else if (frame_count == capture_frame) {
+                CreateDirectoryA("screens", NULL);
+                save_gl_screenshot_bmp("screens/capture.bmp", g_client.config.window_width, g_client.config.window_height);
+                cs2d_render_end_frame(window);
+                break;
+            }
+        }
         cs2d_render_end_frame(window);
         frame_count++;
 
-        SDL_Delay(auto_screenshot ? 16 : 1);
+        SDL_Delay((auto_screenshot || capture_cmd) ? 16 : 1);
     }
 
     SDL_StopTextInput(window);

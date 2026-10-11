@@ -196,13 +196,16 @@ typedef enum {
     CS2D_FONT_SMALL   = 1, /* Liberation Sans 10px (Top-left FPS / GL / Network telemetry) */
     CS2D_FONT_BOLD    = 2, /* Liberation Sans 13px Bold (Active tabs, section headers) */
     CS2D_FONT_TITLE   = 3, /* Source Sans Pro Black 18px (Main menu CS2D title) */
-    CS2D_FONT_COUNT   = 4
+    CS2D_FONT_MENU    = 4, /* Liberation Sans 15px (Main menu entries: New Game, Find Servers, ...) */
+    CS2D_FONT_COUNT   = 5
 } cs2d_font_id_t;
 
 /* High-Quality TrueType UI Font Rendering & Measurement */
 void  cs2d_render_text_ex(cs2d_font_id_t font_id, float x, float y, const char *text, float r, float g, float b, float a);
 void  cs2d_render_text_measure(cs2d_font_id_t font_id, const char *text, float *out_w, float *out_h);
 float cs2d_render_text_width_ex(cs2d_font_id_t font_id, const char *text);
+/* Width of the first len bytes of text, measured without rasterizing or touching the string texture cache */
+float cs2d_render_text_prefix_width(cs2d_font_id_t font_id, const char *text, int len);
 float cs2d_render_font_line_height(cs2d_font_id_t font_id);
 
 void  cs2d_render_text(float x, float y, const char *text, float r, float g, float b, float a);

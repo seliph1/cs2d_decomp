@@ -40,10 +40,35 @@ void cs2d_ui_feed_text(cs2d_ui_context_t *ctx, const char *text)
     }
 }
 
+static uint32_t current_mods(void)
+{
+    SDL_Keymod m = SDL_GetModState();
+    uint32_t mods = 0;
+    if (m & SDL_KMOD_SHIFT) mods |= CS2D_UI_MOD_SHIFT;
+    if (m & SDL_KMOD_CTRL)  mods |= CS2D_UI_MOD_CTRL;
+    if (m & SDL_KMOD_ALT)   mods |= CS2D_UI_MOD_ALT;
+    return mods;
+}
+
 void cs2d_ui_feed_key(cs2d_ui_context_t *ctx, int sdl_key)
 {
+    if (!ctx || ctx->key_event_count >= CS2D_UI_MAX_KEY_EVENTS) return;
+    cs2d_ui_key_event_t *ev = &ctx->key_events[ctx->key_event_count++];
+    ev->key  = sdl_key;
+    ev->mods = current_mods();
+}
+
+void cs2d_ui_clear_input(cs2d_ui_context_t *ctx)
+{
     if (!ctx) return;
-    ctx->last_key = sdl_key;
+    ctx->text_input[0]   = '\0';
+    ctx->key_event_count = 0;
+}
+
+void cs2d_ui_edit_reset(cs2d_ui_context_t *ctx)
+{
+    if (!ctx) return;
+    ctx->edit.id = 0;
 }
 
 void cs2d_ui_begin_layout(
@@ -66,10 +91,22 @@ void cs2d_ui_begin_layout(
     ctx->prev_mouse_down  = mouse_down;
     ctx->wheel_delta      = wheel_delta;
 
-    ctx->node_count       = 0;
-    ctx->open_stack_depth = 0;
-    ctx->render_cmd_count = 0;
-    ctx->hot_id           = 0;
+    ctx->node_count        = 0;
+    ctx->open_stack_depth  = 0;
+    ctx->render_cmd_count  = 0;
+    ctx->hot_id            = 0;
+    ctx->focus_order_count = 0;
+    ctx->focus_move        = 0;
+
+    /* Multi-click detection: presses within 400ms and 4px of the previous one count up to 3 */
+    if (ctx->mouse_pressed) {
+        uint32_t now  = (uint32_t)GetTickCount();
+        bool     close_by = fabsf(mouse_x - ctx->last_click_x) <= 4.0f && fabsf(mouse_y - ctx->last_click_y) <= 4.0f;
+        ctx->click_count   = (close_by && now - ctx->last_click_ms <= 400u && ctx->click_count < 3) ? ctx->click_count + 1 : 1;
+        ctx->last_click_ms = now;
+        ctx->last_click_x  = mouse_x;
+        ctx->last_click_y  = mouse_y;
+    }
 
     /* Determine top-most hovered element from previous frame's solved box cache */
     int best_z = -999999;
@@ -238,6 +275,26 @@ static void emit_node_commands_recursive(cs2d_ui_context_t *ctx, int idx)
         push_render_cmd(ctx, &cmd);
     }
 
+    /* 1b. Text selection highlight (under the text) */
+    if (n->decl.draw_selection && n->decl.selection_color.a > 0) {
+        float x0 = n->rect.x + n->decl.selection_x0;
+        float x1 = n->rect.x + n->decl.selection_x1;
+        if (x0 < n->rect.x) x0 = n->rect.x;
+        if (x1 > n->rect.x + n->rect.w) x1 = n->rect.x + n->rect.w;
+        if (x1 > x0) {
+            cs2d_ui_render_cmd_t cmd;
+            memset(&cmd, 0, sizeof(cmd));
+            cmd.type    = CS2D_UI_CMD_RECT;
+            cmd.rect.x  = x0;
+            cmd.rect.y  = n->rect.y + 1.0f;
+            cmd.rect.w  = x1 - x0;
+            cmd.rect.h  = n->rect.h - 2.0f;
+            cmd.color   = n->decl.selection_color;
+            cmd.z_index = n->effective_z;
+            push_render_cmd(ctx, &cmd);
+        }
+    }
+
     /* 2. Image / Texture Sprite */
     if (n->decl.image.tex && n->decl.image.tex->id != 0) {
         cs2d_ui_render_cmd_t cmd;
@@ -307,9 +364,9 @@ static void emit_node_commands_recursive(cs2d_ui_context_t *ctx, int idx)
         memset(&cmd, 0, sizeof(cmd));
         cmd.type    = CS2D_UI_CMD_RECT;
         cmd.rect.x  = cx;
-        cmd.rect.y  = n->rect.y + 3.0f;
+        cmd.rect.y  = n->rect.y + 2.0f;
         cmd.rect.w  = 1.0f;
-        cmd.rect.h  = n->rect.h - 6.0f;
+        cmd.rect.h  = n->rect.h - 4.0f;
         cmd.color   = n->decl.cursor_color;
         cmd.z_index = n->effective_z;
         push_render_cmd(ctx, &cmd);
@@ -544,9 +601,21 @@ void cs2d_ui_end_layout(cs2d_ui_context_t *ctx)
         ctx->active_id = 0;
     }
 
+    /* Tab / Shift+Tab: move focus to the next / previous textbox in build order */
+    if (ctx->focus_move != 0 && ctx->focus_order_count > 0) {
+        int n = ctx->focus_order_count;
+        for (int i = 0; i < n; i++) {
+            if (ctx->focus_order[i] == ctx->focused_id) {
+                ctx->focused_id          = ctx->focus_order[((i + ctx->focus_move) % n + n) % n];
+                ctx->select_all_on_focus = true;
+                break;
+            }
+        }
+    }
+    ctx->focus_move = 0;
+
     /* Clear single-frame keyboard input queues */
-    ctx->text_input[0] = '\0';
-    ctx->last_key      = 0;
+    cs2d_ui_clear_input(ctx);
 }
 
 cs2d_ui_rect_t cs2d_ui_get_box(const cs2d_ui_context_t *ctx, cs2d_ui_id_t id)
@@ -968,95 +1037,530 @@ bool cs2d_ui_select(
     return false;
 }
 
-bool cs2d_ui_textbox(
+/* ============================================================================
+ * Textbox editing engine
+ * ============================================================================ */
+
+enum { EDIT_KIND_NONE = 0, EDIT_KIND_TYPE, EDIT_KIND_DELETE, EDIT_KIND_OTHER };
+enum { CHAR_SPACE = 0, CHAR_WORD, CHAR_PUNCT };
+
+/* Working copy of the buffer being edited; positions are byte offsets on UTF-8 boundaries */
+typedef struct {
+    char    *buf;
+    size_t   size;
+    int      len;
+    int      cursor;
+    int      anchor;
+    uint32_t flags;
+} textedit_t;
+
+static bool utf8_is_cont(char c)
+{
+    return ((unsigned char)c & 0xC0u) == 0x80u;
+}
+
+static int utf8_prev(const char *s, int i)
+{
+    if (i <= 0) return 0;
+    i--;
+    while (i > 0 && utf8_is_cont(s[i])) i--;
+    return i;
+}
+
+static int utf8_next(const char *s, int len, int i)
+{
+    if (i >= len) return len;
+    i++;
+    while (i < len && utf8_is_cont(s[i])) i++;
+    return i;
+}
+
+static int utf8_snap(const char *s, int len, int i)
+{
+    if (i < 0) return 0;
+    if (i > len) return len;
+    while (i > 0 && i < len && utf8_is_cont(s[i])) i--;
+    return i;
+}
+
+static int char_class(char c)
+{
+    unsigned char u = (unsigned char)c;
+    if (u == ' ' || u == '\t') return CHAR_SPACE;
+    if ((u >= '0' && u <= '9') || (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') || u == '_' || u >= 0x80) {
+        return CHAR_WORD;
+    }
+    return CHAR_PUNCT;
+}
+
+/* Ctrl+Left target: skip spaces, then the run of same-class characters before them */
+static int word_left(const char *s, int i)
+{
+    while (i > 0 && char_class(s[utf8_prev(s, i)]) == CHAR_SPACE) i = utf8_prev(s, i);
+    if (i > 0) {
+        int cls = char_class(s[utf8_prev(s, i)]);
+        while (i > 0 && char_class(s[utf8_prev(s, i)]) == cls) i = utf8_prev(s, i);
+    }
+    return i;
+}
+
+/* Ctrl+Right target: skip the current run, then the spaces after it (start of the next word) */
+static int word_right(const char *s, int len, int i)
+{
+    if (i < len) {
+        int cls = char_class(s[i]);
+        if (cls != CHAR_SPACE) {
+            while (i < len && char_class(s[i]) == cls) i = utf8_next(s, len, i);
+        }
+    }
+    while (i < len && char_class(s[i]) == CHAR_SPACE) i = utf8_next(s, len, i);
+    return i;
+}
+
+/* Double-click selection: the run of same-class characters around i */
+static void word_bounds(const char *s, int len, int i, int *out_a, int *out_b)
+{
+    if (len == 0) {
+        *out_a = *out_b = 0;
+        return;
+    }
+    int probe = (i >= len) ? utf8_prev(s, len) : i;
+    int cls   = char_class(s[probe]);
+    int a = probe, b = utf8_next(s, len, probe);
+    while (a > 0 && char_class(s[utf8_prev(s, a)]) == cls) a = utf8_prev(s, a);
+    while (b < len && char_class(s[b]) == cls) b = utf8_next(s, len, b);
+    *out_a = a;
+    *out_b = b;
+}
+
+static bool te_has_selection(const textedit_t *t)
+{
+    return t->cursor != t->anchor;
+}
+
+static void te_selection(const textedit_t *t, int *a, int *b)
+{
+    *a = (t->cursor < t->anchor) ? t->cursor : t->anchor;
+    *b = (t->cursor < t->anchor) ? t->anchor : t->cursor;
+}
+
+static void te_delete_range(textedit_t *t, int a, int b)
+{
+    if (b <= a) return;
+    memmove(&t->buf[a], &t->buf[b], (size_t)(t->len - b + 1));
+    t->len   -= (b - a);
+    t->cursor = t->anchor = a;
+}
+
+static void te_delete_selection(textedit_t *t)
+{
+    int a, b;
+    te_selection(t, &a, &b);
+    te_delete_range(t, a, b);
+}
+
+/* Inserts text at the cursor, dropping control characters (and non-digits in NUMERIC mode)
+ * and truncating on a codepoint boundary when the buffer is full */
+static void te_insert(textedit_t *t, const char *text)
+{
+    char filtered[CS2D_UI_EDIT_MAX_TEXT];
+    int  n = 0;
+    for (const char *p = text; *p != '\0' && n < (int)sizeof(filtered) - 1; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '\r') continue;
+        if (c == '\n' || c == '\t') c = ' ';
+        if (c < 32 || c == 127) continue;
+        if ((t->flags & CS2D_UI_TEXTBOX_NUMERIC) && (c < '0' || c > '9')) continue;
+        filtered[n++] = (char)c;
+    }
+    filtered[n] = '\0';
+
+    int room = (int)t->size - 1 - t->len;
+    if (n > room) n = utf8_snap(filtered, n, room);
+    if (n <= 0) return;
+
+    memmove(&t->buf[t->cursor + n], &t->buf[t->cursor], (size_t)(t->len - t->cursor + 1));
+    memcpy(&t->buf[t->cursor], filtered, (size_t)n);
+    t->len    += n;
+    t->cursor += n;
+    t->anchor  = t->cursor;
+}
+
+static void undo_store(cs2d_ui_undo_entry_t *u, const textedit_t *t)
+{
+    memcpy(u->text, t->buf, (size_t)t->len + 1);
+    u->cursor = t->cursor;
+    u->anchor = t->anchor;
+}
+
+static void undo_restore(const cs2d_ui_undo_entry_t *u, textedit_t *t)
+{
+    int n = (int)strlen(u->text);
+    if (n > (int)t->size - 1) n = utf8_snap(u->text, n, (int)t->size - 1);
+    memcpy(t->buf, u->text, (size_t)n);
+    t->buf[n] = '\0';
+    t->len    = n;
+    t->cursor = (u->cursor <= n) ? u->cursor : n;
+    t->anchor = (u->anchor <= n) ? u->anchor : n;
+}
+
+/* Snapshots the text before an edit. Consecutive typing / deleting within 1s merges into one step. */
+static void undo_push(cs2d_ui_edit_state_t *e, const textedit_t *t, int kind)
+{
+    uint32_t now = (uint32_t)GetTickCount();
+    bool merge = (kind != EDIT_KIND_OTHER && kind == e->last_edit_kind &&
+                  now - e->last_edit_ms < 1000u && e->undo_pos > 0);
+    e->last_edit_kind = kind;
+    e->last_edit_ms   = now;
+    if (merge || t->len >= CS2D_UI_EDIT_MAX_TEXT) return;
+
+    if (e->undo_pos >= CS2D_UI_UNDO_DEPTH) {
+        memmove(&e->undo[0], &e->undo[1], sizeof(e->undo[0]) * (CS2D_UI_UNDO_DEPTH - 1));
+        e->undo_pos = CS2D_UI_UNDO_DEPTH - 1;
+    }
+    undo_store(&e->undo[e->undo_pos++], t);
+    e->undo_count = e->undo_pos; /* A new edit drops the redo branch */
+}
+
+static void undo_step(cs2d_ui_edit_state_t *e, textedit_t *t, bool redo)
+{
+    if (redo) {
+        if (e->undo_pos + 1 >= e->undo_count) return;
+        undo_restore(&e->undo[++e->undo_pos], t);
+    } else {
+        if (e->undo_pos <= 0 || t->len >= CS2D_UI_EDIT_MAX_TEXT) return;
+        /* Save the current text once so redo can come back to it */
+        if (e->undo_pos == e->undo_count) {
+            if (e->undo_count >= CS2D_UI_UNDO_DEPTH) {
+                memmove(&e->undo[0], &e->undo[1], sizeof(e->undo[0]) * (CS2D_UI_UNDO_DEPTH - 1));
+                e->undo_pos--;
+                e->undo_count--;
+            }
+            undo_store(&e->undo[e->undo_count++], t);
+        }
+        undo_restore(&e->undo[--e->undo_pos], t);
+    }
+    e->last_edit_kind = EDIT_KIND_NONE;
+}
+
+static void te_copy(const textedit_t *t)
+{
+    if (!te_has_selection(t) || (t->flags & CS2D_UI_TEXTBOX_PASSWORD)) return;
+    int a, b;
+    te_selection(t, &a, &b);
+    char tmp[CS2D_UI_EDIT_MAX_TEXT];
+    int  n = b - a;
+    if (n > (int)sizeof(tmp) - 1) n = (int)sizeof(tmp) - 1;
+    memcpy(tmp, &t->buf[a], (size_t)n);
+    tmp[n] = '\0';
+    SDL_SetClipboardText(tmp);
+}
+
+static void te_paste(cs2d_ui_edit_state_t *e, textedit_t *t)
+{
+    if ((t->flags & CS2D_UI_TEXTBOX_READONLY) || !SDL_HasClipboardText()) return;
+    char *clip = SDL_GetClipboardText();
+    if (!clip) return;
+    if (clip[0] != '\0') {
+        undo_push(e, t, EDIT_KIND_OTHER);
+        te_delete_selection(t);
+        te_insert(t, clip);
+    }
+    SDL_free(clip);
+}
+
+/* Builds the displayed text ('*' per codepoint in password mode) and the byte -> display offset map */
+static int te_display(const char *buf, int len, bool password, char *disp, int disp_size, int *map)
+{
+    int j = 0;
+    for (int i = 0; i < len && j < disp_size - 1;) {
+        int next = utf8_next(buf, len, i);
+        for (int k = i; k < next; k++) map[k] = j;
+        if (password) {
+            disp[j++] = '*';
+        } else {
+            for (int k = i; k < next && j < disp_size - 1; k++) disp[j++] = buf[k];
+        }
+        i = next;
+    }
+    map[len] = j;
+    disp[j] = '\0';
+    return j;
+}
+
+/* Recomputes caret x positions when the displayed text changed */
+static void te_update_metrics(cs2d_ui_edit_state_t *e, const char *buf, int len, bool password, cs2d_font_id_t font)
+{
+    if (len >= CS2D_UI_EDIT_MAX_TEXT) len = utf8_snap(buf, len, CS2D_UI_EDIT_MAX_TEXT - 1);
+    bool same = (e->measured_password == password && strncmp(e->measured, buf, (size_t)len) == 0 &&
+                 e->measured[len] == '\0' && (len == 0 || e->caret_x[len] > 0.0f));
+    if (same) return;
+
+    char disp[CS2D_UI_EDIT_MAX_TEXT];
+    int  map[CS2D_UI_EDIT_MAX_TEXT + 1];
+    te_display(buf, len, password, disp, sizeof(disp), map);
+
+    e->caret_x[0] = 0.0f;
+    for (int i = 1; i <= len; i++) {
+        e->caret_x[i] = (i == len || !utf8_is_cont(buf[i]))
+                      ? cs2d_render_text_prefix_width(font, disp, map[i])
+                      : e->caret_x[i - 1];
+    }
+    memcpy(e->measured, buf, (size_t)len);
+    e->measured[len]     = '\0';
+    e->measured_password = password;
+}
+
+static int te_index_at(const cs2d_ui_edit_state_t *e, const char *buf, int len, float x)
+{
+    if (len >= CS2D_UI_EDIT_MAX_TEXT) len = utf8_snap(buf, len, CS2D_UI_EDIT_MAX_TEXT - 1);
+    int   best   = 0;
+    float best_d = 1e9f;
+    for (int i = 0; i <= len; i = (i < len) ? utf8_next(buf, len, i) : len + 1) {
+        float d = fabsf(e->caret_x[i] - x);
+        if (d < best_d) {
+            best_d = d;
+            best   = i;
+        }
+    }
+    return best;
+}
+
+static float te_caret_x(const cs2d_ui_edit_state_t *e, int i)
+{
+    if (i >= CS2D_UI_EDIT_MAX_TEXT) i = CS2D_UI_EDIT_MAX_TEXT - 1;
+    return e->caret_x[i];
+}
+
+/* Applies one queued key to the focused textbox; returns true on Enter */
+static bool te_handle_key(cs2d_ui_context_t *ctx, textedit_t *t, const cs2d_ui_key_event_t *ev)
+{
+    cs2d_ui_edit_state_t *e = &ctx->edit;
+    bool shift    = (ev->mods & CS2D_UI_MOD_SHIFT) != 0;
+    bool ctrl     = (ev->mods & CS2D_UI_MOD_CTRL)  != 0;
+    bool readonly = (t->flags & CS2D_UI_TEXTBOX_READONLY) != 0;
+    int  a, b;
+
+    /* Cursor movement ends the current undo group so the next edit starts a new step */
+    if (ev->key == SDLK_LEFT || ev->key == SDLK_RIGHT || ev->key == SDLK_HOME || ev->key == SDLK_END ||
+        (ctrl && ev->key == SDLK_A)) {
+        e->last_edit_kind = EDIT_KIND_NONE;
+    }
+
+    switch (ev->key) {
+        case SDLK_LEFT:
+            if (te_has_selection(t) && !shift) {
+                te_selection(t, &a, &b);
+                t->cursor = t->anchor = a;
+            } else {
+                t->cursor = ctrl ? word_left(t->buf, t->cursor) : utf8_prev(t->buf, t->cursor);
+                if (!shift) t->anchor = t->cursor;
+            }
+            break;
+        case SDLK_RIGHT:
+            if (te_has_selection(t) && !shift) {
+                te_selection(t, &a, &b);
+                t->cursor = t->anchor = b;
+            } else {
+                t->cursor = ctrl ? word_right(t->buf, t->len, t->cursor) : utf8_next(t->buf, t->len, t->cursor);
+                if (!shift) t->anchor = t->cursor;
+            }
+            break;
+        case SDLK_HOME:
+            t->cursor = 0;
+            if (!shift) t->anchor = t->cursor;
+            break;
+        case SDLK_END:
+            t->cursor = t->len;
+            if (!shift) t->anchor = t->cursor;
+            break;
+        case SDLK_BACKSPACE:
+            if (readonly) break;
+            if (te_has_selection(t)) {
+                undo_push(e, t, EDIT_KIND_OTHER);
+                te_delete_selection(t);
+            } else if (t->cursor > 0) {
+                undo_push(e, t, ctrl ? EDIT_KIND_OTHER : EDIT_KIND_DELETE); /* Word deletes are separate steps */
+                te_delete_range(t, ctrl ? word_left(t->buf, t->cursor) : utf8_prev(t->buf, t->cursor), t->cursor);
+            }
+            break;
+        case SDLK_DELETE:
+            if (shift && !ctrl) { /* Shift+Delete: cut */
+                if (readonly || !te_has_selection(t) || (t->flags & CS2D_UI_TEXTBOX_PASSWORD)) break;
+                te_copy(t);
+                undo_push(e, t, EDIT_KIND_OTHER);
+                te_delete_selection(t);
+                break;
+            }
+            if (readonly) break;
+            if (te_has_selection(t)) {
+                undo_push(e, t, EDIT_KIND_OTHER);
+                te_delete_selection(t);
+            } else if (t->cursor < t->len) {
+                undo_push(e, t, ctrl ? EDIT_KIND_OTHER : EDIT_KIND_DELETE);
+                te_delete_range(t, t->cursor, ctrl ? word_right(t->buf, t->len, t->cursor) : utf8_next(t->buf, t->len, t->cursor));
+            }
+            break;
+        case SDLK_INSERT:
+            if (ctrl) te_copy(t);
+            else if (shift) te_paste(e, t);
+            break;
+        case SDLK_A:
+            if (ctrl) {
+                t->anchor = 0;
+                t->cursor = t->len;
+            }
+            break;
+        case SDLK_C:
+            if (ctrl) te_copy(t);
+            break;
+        case SDLK_X:
+            if (ctrl && !readonly && te_has_selection(t) && !(t->flags & CS2D_UI_TEXTBOX_PASSWORD)) {
+                te_copy(t);
+                undo_push(e, t, EDIT_KIND_OTHER);
+                te_delete_selection(t);
+            }
+            break;
+        case SDLK_V:
+            if (ctrl) te_paste(e, t);
+            break;
+        case SDLK_Z:
+            if (ctrl && !readonly) undo_step(e, t, shift);
+            break;
+        case SDLK_Y:
+            if (ctrl && !readonly) undo_step(e, t, true);
+            break;
+        case SDLK_TAB:
+            ctx->focus_move = shift ? -1 : 1;
+            break;
+        case SDLK_RETURN:
+        case SDLK_KP_ENTER:
+            return true;
+        default:
+            return false;
+    }
+    e->activity_ms = (uint32_t)GetTickCount();
+    return false;
+}
+
+bool cs2d_ui_textbox_ex(
     cs2d_ui_context_t *ctx,
     cs2d_ui_id_t id,
     char *buffer,
     size_t buffer_size,
     int *cursor_pos,
     float width,
-    bool password_mode
+    uint32_t flags
 )
 {
     if (!ctx || !buffer || buffer_size == 0) return false;
 
-    bool hov = cs2d_ui_hovered(ctx, id);
-    if (ctx->mouse_pressed && hov) {
-        ctx->focused_id = id;
-    }
-    bool focused = (ctx->focused_id == id);
-    bool submitted = false;
+    const cs2d_font_id_t font = CS2D_FONT_REGULAR;
+    cs2d_ui_edit_state_t *e   = &ctx->edit;
+    cs2d_ui_id_t inner_id     = id ^ 0x5001u;
+    bool password             = (flags & CS2D_UI_TEXTBOX_PASSWORD) != 0;
+    bool submitted            = false;
 
+    if (ctx->focus_order_count < CS2D_UI_MAX_FOCUSABLE) {
+        ctx->focus_order[ctx->focus_order_count++] = id;
+    }
+
+    bool hov          = (ctx->hot_id == id || ctx->hot_id == inner_id);
+    bool clicked_here = (ctx->mouse_pressed && hov);
+    if (clicked_here) ctx->focused_id = id;
+    bool focused = (ctx->focused_id == id);
+
+    buffer[buffer_size - 1] = '\0';
     int len = (int)strlen(buffer);
-    int cur = cursor_pos ? *cursor_pos : len;
-    if (cur < 0) cur = 0;
-    if (cur > len) cur = len;
+    int cur = utf8_snap(buffer, len, cursor_pos ? *cursor_pos : len);
 
     if (focused) {
-        /* Process queued text input */
-        for (const char *p = ctx->text_input; *p != '\0'; p++) {
-            if ((size_t)(len + 1) < buffer_size) {
-                memmove(&buffer[cur + 1], &buffer[cur], (size_t)(len - cur + 1));
-                buffer[cur++] = *p;
-                len++;
+        /* (Re)initialize the edit state when focus arrives at this textbox */
+        if (e->id != id) {
+            e->id             = id;
+            e->anchor         = cur;
+            e->scroll_x       = 0.0f;
+            e->dragging       = false;
+            e->undo_count     = 0;
+            e->undo_pos       = 0;
+            e->last_edit_kind = EDIT_KIND_NONE;
+            e->activity_ms    = (uint32_t)GetTickCount();
+            if (ctx->select_all_on_focus) {
+                e->anchor = 0;
+                cur       = len;
             }
         }
-        /* Process special editing keys */
-        switch (ctx->last_key) {
-            case SDLK_BACKSPACE:
-                if (cur > 0) {
-                    memmove(&buffer[cur - 1], &buffer[cur], (size_t)(len - cur + 1));
-                    cur--;
-                    len--;
-                }
-                break;
-            case SDLK_DELETE:
-                if (cur < len) {
-                    memmove(&buffer[cur], &buffer[cur + 1], (size_t)(len - cur));
-                    len--;
-                }
-                break;
-            case SDLK_LEFT:
-                if (cur > 0) cur--;
-                break;
-            case SDLK_RIGHT:
-                if (cur < len) cur++;
-                break;
-            case SDLK_HOME:
-                cur = 0;
-                break;
-            case SDLK_END:
-                cur = len;
-                break;
-            case SDLK_RETURN:
-            case SDLK_KP_ENTER:
-                submitted = true;
-                break;
-            default:
-                break;
+        ctx->select_all_on_focus = false;
+
+        textedit_t t = { buffer, buffer_size, len, cur, utf8_snap(buffer, len, e->anchor), flags };
+        te_update_metrics(e, buffer, len, password, font);
+
+        /* Mouse: place caret, drag-select, Shift+click extend, double-click word, triple-click all */
+        cs2d_ui_rect_t inner = cs2d_ui_get_box(ctx, inner_id);
+        float local_x = ctx->mouse_x - inner.x + e->scroll_x;
+        if (clicked_here) {
+            int idx = te_index_at(e, buffer, len, local_x);
+            if (ctx->click_count >= 3 || (ctx->click_count == 2 && password)) {
+                t.anchor = 0;
+                t.cursor = len;
+            } else if (ctx->click_count == 2) {
+                word_bounds(buffer, len, idx, &t.anchor, &t.cursor);
+            } else {
+                t.cursor = idx;
+                if (!(current_mods() & CS2D_UI_MOD_SHIFT)) t.anchor = idx;
+                e->dragging = true;
+            }
+            e->activity_ms    = (uint32_t)GetTickCount();
+            e->last_edit_kind = EDIT_KIND_NONE;
+        } else if (e->dragging && ctx->mouse_down) {
+            t.cursor = te_index_at(e, buffer, len, local_x);
         }
+        if (!ctx->mouse_down) e->dragging = false;
+
+        /* Typed text replaces the selection */
+        if (ctx->text_input[0] != '\0' && !(flags & CS2D_UI_TEXTBOX_READONLY)) {
+            if (te_has_selection(&t)) e->last_edit_kind = EDIT_KIND_NONE; /* Replacing a selection is its own step */
+            undo_push(e, &t, EDIT_KIND_TYPE);
+            te_delete_selection(&t);
+            te_insert(&t, ctx->text_input);
+            e->activity_ms = (uint32_t)GetTickCount();
+        }
+
+        for (int k = 0; k < ctx->key_event_count; k++) {
+            if (te_handle_key(ctx, &t, &ctx->key_events[k])) submitted = true;
+        }
+
+        len       = t.len;
+        cur       = t.cursor;
+        e->anchor = t.anchor;
+        te_update_metrics(e, buffer, len, password, font);
         if (cursor_pos) *cursor_pos = cur;
+
+        /* Keep the caret inside the visible part of the box */
+        float view_w = (inner.w > 0.0f) ? inner.w : ((width > 10.0f) ? width - 10.0f : 100.0f);
+        float caret  = te_caret_x(e, cur);
+        float text_w = te_caret_x(e, len);
+        if (caret - e->scroll_x > view_w - 2.0f) e->scroll_x = caret - view_w + 2.0f;
+        if (caret - e->scroll_x < 0.0f)          e->scroll_x = caret;
+        if (text_w - e->scroll_x < view_w - 2.0f) {
+            e->scroll_x = text_w - view_w + 2.0f;
+            if (e->scroll_x < 0.0f) e->scroll_x = 0.0f;
+        }
     }
 
-    char disp_buf[192];
-    if (password_mode) {
-        int plen = len < 190 ? len : 190;
-        memset(disp_buf, '*', (size_t)plen);
-        disp_buf[plen] = '\0';
-    } else {
-        strncpy(disp_buf, buffer, sizeof(disp_buf) - 1);
-        disp_buf[sizeof(disp_buf) - 1] = '\0';
-    }
+    char disp[192];
+    int  map[CS2D_UI_EDIT_MAX_TEXT + 1];
+    int  disp_len = (len < CS2D_UI_EDIT_MAX_TEXT) ? len : utf8_snap(buffer, len, CS2D_UI_EDIT_MAX_TEXT - 1);
+    te_display(buffer, disp_len, password, disp, sizeof(disp), map);
 
-    bool show_cursor = (focused && (((GetTickCount() / 500) & 1) == 0));
-    float cursor_off = 5.0f;
-    if (show_cursor) {
-        char prefix[192];
-        int cpos = cur < 190 ? cur : 190;
-        memcpy(prefix, disp_buf, (size_t)cpos);
-        prefix[cpos] = '\0';
-        cursor_off = 5.0f + cs2d_render_text_width_ex(CS2D_FONT_REGULAR, prefix);
-    }
+    /* Caret blinks with a 1s period, held solid for 500ms after any activity */
+    uint32_t since    = (uint32_t)GetTickCount() - e->activity_ms;
+    bool show_cursor  = focused && ((since / 500u) & 1u) == 0;
+    float scroll      = focused ? e->scroll_x : 0.0f;
+    float cursor_off  = focused ? te_caret_x(e, cur) - scroll : 0.0f;
+    bool has_sel      = focused && e->anchor != cur;
+    int sel_a = has_sel ? ((e->anchor < cur) ? e->anchor : cur) : 0;
+    int sel_b = has_sel ? ((e->anchor < cur) ? cur : e->anchor) : 0;
 
     CS2D_UI_ELEMENT(ctx, id, {
         .layout = {
@@ -1070,15 +1574,43 @@ bool cs2d_ui_textbox(
             .width = 1.0f,
             .color = focused ? CS2D_UI_RGB(175, 175, 175)
                              : (hov ? CS2D_UI_RGB(140, 140, 140) : CS2D_UI_RGB(108, 108, 108))
-        },
-        .draw_cursor     = show_cursor,
-        .cursor_offset_x = cursor_off,
-        .cursor_color    = CS2D_UI_RGB(235, 235, 235)
+        }
     }) {
-        cs2d_ui_text(ctx, disp_buf, CS2D_FONT_REGULAR, CS2D_UI_RGB(235, 235, 235));
+        CS2D_UI_ELEMENT(ctx, inner_id, {
+            .layout = {
+                .sizing  = { CS2D_UI_GROW(0, 0), CS2D_UI_GROW(0, 0) },
+                .dir     = CS2D_UI_LEFT_TO_RIGHT,
+                .align_y = CS2D_UI_ALIGN_Y_CENTER
+            },
+            .clip            = { .enabled = true, .scroll_x = scroll },
+            .draw_cursor     = show_cursor,
+            .cursor_offset_x = cursor_off,
+            .cursor_color    = CS2D_UI_RGB(235, 235, 235),
+            .draw_selection  = has_sel,
+            .selection_x0    = has_sel ? te_caret_x(e, sel_a) - scroll : 0.0f,
+            .selection_x1    = has_sel ? te_caret_x(e, sel_b) - scroll : 0.0f,
+            .selection_color = CS2D_UI_RGBA(52, 92, 150, 235)
+        }) {
+            cs2d_ui_text(ctx, disp, font,
+                         (flags & CS2D_UI_TEXTBOX_READONLY) ? CS2D_UI_RGB(185, 185, 185) : CS2D_UI_RGB(235, 235, 235));
+        }
     }
 
     return submitted;
+}
+
+bool cs2d_ui_textbox(
+    cs2d_ui_context_t *ctx,
+    cs2d_ui_id_t id,
+    char *buffer,
+    size_t buffer_size,
+    int *cursor_pos,
+    float width,
+    bool password_mode
+)
+{
+    return cs2d_ui_textbox_ex(ctx, id, buffer, buffer_size, cursor_pos, width,
+                              password_mode ? CS2D_UI_TEXTBOX_PASSWORD : 0u);
 }
 
 void cs2d_ui_section_header(

@@ -10,6 +10,7 @@
 #include "cs2d_render.h"
 #include "cs2d_config.h"
 #include "cs2d_ui.h"
+#include "cs2d_scene.h"
 
 #define CS2D_CONSOLE_MAX_LINES 256
 #define CS2D_CONSOLE_LINE_LEN  192
@@ -22,8 +23,26 @@ typedef struct {
     uint8_t b;
 } cs2d_console_line_t;
 
-typedef struct {
+struct cs2d_client {
     cs2d_config_t   config;
+
+    /* Scene state: the active scene and a deferred switch applied at the start of the next update */
+    cs2d_scene_id_t scene;
+    cs2d_scene_id_t pending_scene;
+    bool            scene_switch_pending;
+    char            pending_map[64];
+
+    /* Lobby scene (its textures are private to cs2d_scene_lobby.c) */
+    int             lobby_hover;
+
+    /* Editor scene */
+    cs2d_map_t      editor_map;
+    cs2d_texture_t  editor_tileset;
+    char            editor_map_name[64];
+    float           editor_cam_x;
+    float           editor_cam_y;
+
+    /* Game scene */
     cs2d_game_t     game;
     uint8_t         local_player_id;
     float           cam_x;
@@ -100,6 +119,7 @@ typedef struct {
     int                 console_scroll;
     char                console_input[CS2D_CONSOLE_LINE_LEN];
     int                 console_cursor;
+    char                console_pending_cmd[CS2D_CONSOLE_LINE_LEN]; /* Submitted with Enter, run on the next update */
     char                console_history[CS2D_CONSOLE_HIST_MAX][CS2D_CONSOLE_LINE_LEN];
     int                 console_history_count;
     int                 console_history_pos;
@@ -113,10 +133,22 @@ typedef struct {
     uint32_t            net_bytes_down_accum;
     uint32_t            net_bps_up;
     uint32_t            net_bps_down;
-} cs2d_client_t;
+};
 
-/* Initialize client state, load configuration and map */
+/* Initialize client state and configuration; starts in the Game scene on map_name, or in the Lobby when NULL/empty */
 bool cs2d_client_init(cs2d_client_t *client, const char *map_name);
+
+/* Request a scene switch; it takes effect at the start of the next cs2d_client_update */
+void cs2d_client_set_scene(cs2d_client_t *client, cs2d_scene_id_t scene);
+
+/* Load map_name: changes map in place while in game, otherwise switches to the Game scene */
+void cs2d_client_start_game(cs2d_client_t *client, const char *map_name);
+
+/* True while a shared UI window (console, Create Server, Options) captures input */
+bool cs2d_client_any_ui_open(const cs2d_client_t *client);
+
+/* ESC pressed while no shared UI window is open */
+void cs2d_client_handle_escape(cs2d_client_t *client);
 
 /* Shutdown client and free resources */
 void cs2d_client_shutdown(cs2d_client_t *client);
