@@ -18,7 +18,7 @@ static uint8_t mode_collision(uint8_t mode)
     return 0;
 }
 
-/* Collision an active (state 0) DynWall / Breakable adds on its tile; 0 when it adds none */
+/* Collision an active (state 0) DynWall / Breakable sets on its tile */
 static uint8_t entity_collision(const cs2d_map_t *map, const cs2d_entity_t *e)
 {
     if (e->type == CS2D_ENT_FUNC_DYNWALL) {
@@ -32,7 +32,7 @@ static uint8_t entity_collision(const cs2d_map_t *map, const cs2d_entity_t *e)
         }
     }
     if (e->type == CS2D_ENT_ENV_BREAKABLE) {
-        return (e->int_settings[6] == 2) ? 2 : 1;
+        return (e->int_settings[6] == 3) ? 2 : 1;
     }
     return 0;
 }
@@ -47,8 +47,9 @@ static void refresh_tile_collision(cs2d_map_t *map, int tx, int ty)
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *e = &map->entities[i];
         if (e->x != tx || e->y != ty || map->entity_state[i] != 0) continue;
-        uint8_t c = entity_collision(map, e);
-        if (c) col = c;
+        if (e->type == CS2D_ENT_FUNC_DYNWALL || e->type == CS2D_ENT_ENV_BREAKABLE) {
+            col = entity_collision(map, e);
+        }
     }
     map->collision[idx] = col;
 }

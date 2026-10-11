@@ -1470,6 +1470,7 @@ static void accumulate_tile_occlusion(
  */
 static void apply_shadow_masked_occlusion(
     const cs2d_map_t *map,
+    const uint8_t *eff_modes,
     uint8_t *alpha_buf,
     const uint8_t *occl_buf,
     int tex_w, int tex_h,
@@ -1491,8 +1492,7 @@ static void apply_shadow_masked_occlusion(
             if ((uint32_t)tx >= map->width) continue;
 
             /* 0x14010bb8c: Only apply occlusion onto floor tiles (skip Wall and Obstacle tops) */
-            uint8_t t = map->tiles[(uint32_t)ty * map->width + (uint32_t)tx];
-            uint8_t m = map->tile_modes[t];
+            uint8_t m = eff_modes[(uint32_t)ty * map->width + (uint32_t)tx];
             if (m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW ||
                 m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW) {
                 continue;
@@ -1506,17 +1506,20 @@ static void apply_shadow_masked_occlusion(
 }
 
 /*
- * Reconstructed from 0x140260330..0x1402626d0 and 0x1401da4a6..0x1401da82d in CS2D.exe:
+ * Reconstructed from 0x1401413b0..0x14014276d, 0x140260330..0x1402626d0, and 0x1401da4a6..0x1401da82d in CS2D.exe:
  * Builds the complete map shadow & lighting texture using:
+ *   - Effective tile mode table (0x140a100a0): base tile mode overridden by active Func_DynWall
+ *     (ints[1]: 0=Wall, 1=Obstacle, 2=Wall w/o Shdw, 3=Obstacle w/o Shdw, 4=Floor+Tile Behavior)
+ *     and Env_Breakable (ints[6]: 0/1=Wall, 2=No shadow, 3=Obstacle)
  *   - Map sun angle (0x1401da4a6): if map->daylight_time > 999, (daylight_time - 1000) % 360, else 225.0f
  *   - Extrusion math (0x1402603a9..0x14026071c):
  *       s_factor = fabsf(sinf((sun_angle - 180.0f) * PI/180)) * 0.5f
  *       dz = -(h / 2) - h * s_factor
  *       dx = dz * cosf(sun_angle * PI/180), dy = dz * sinf(sun_angle * PI/180)
- *   - Step 1: Obstacle tiles (mode == CS2D_TILE_OBSTACLE) cast shadows, then self-clear
- *   - Step 2: Wall tiles (mode == CS2D_TILE_WALL) & wall breakables/dynwalls cast shadows
+ *   - Step 1: Effective Obstacle tiles (CS2D_TILE_OBSTACLE) cast shadows, then Obstacle/Obstacle-NoShadow self-clear
+ *   - Step 2: Effective Wall tiles (CS2D_TILE_WALL) cast shadows
  *   - Step 3: Env_Room Layer 0 (int_settings[9] == 0) casts shadows, followed by floor occlusion
- *             (lighting/gfx_oclussionmap.png) and Wall tile self-clear
+ *             (lighting/gfx_oclussionmap.png) and effective Wall/Wall-NoShadow self-clear
  *   - Step 4: Env_Room Layers 1..5 (int_settings[9] == 1..5) cast rooftop shadows, then self-clear
  *   - Step 5: Env_Light (type 33) radial light subtraction (lighting/gfx_light.png)
  */
@@ -1542,6 +1545,58 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
     uint8_t *alpha_buf = (uint8_t *)calloc((size_t)tex_w * (size_t)tex_h, 1);
     if (!alpha_buf) return;
 
+    size_t map_tiles = (size_t)map->width * (size_t)map->height;
+    uint8_t  *eff_modes   = (uint8_t *)malloc(map_tiles);
+    uint16_t *eff_heights = (uint16_t *)calloc(map_tiles, sizeof(uint16_t));
+    if (!eff_modes || !eff_heights) {
+        free(eff_modes);
+        free(eff_heights);
+        free(alpha_buf);
+        return;
+    }
+
+    /* Base tile modes and custom heights (0x1401414b4..0x1401415c0) */
+    for (size_t idx = 0; idx < map_tiles; idx++) {
+        uint8_t t = map->tiles[idx];
+        eff_modes[idx] = map->tile_modes[t];
+        if (map->save_tile_heights != 0 && map->tile_heights[t] > 0) {
+            eff_heights[idx] = map->tile_heights[t];
+        }
+    }
+
+    /* Override effective tile modes with active Func_DynWall and Env_Breakable (0x140141cb4..0x14014276d) */
+    for (uint32_t i = 0; i < map->entity_count; i++) {
+        const cs2d_entity_t *e = &map->entities[i];
+        if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
+        if (e->x < 0 || e->y < 0 || (uint32_t)e->x >= map->width || (uint32_t)e->y >= map->height) continue;
+        size_t idx = (size_t)e->y * (size_t)map->width + (size_t)e->x;
+        int tile_f = e->int_settings[0];
+        if (e->type == CS2D_ENT_FUNC_DYNWALL) {
+            switch (e->int_settings[1]) {
+                case 0:  eff_modes[idx] = CS2D_TILE_WALL; break;
+                case 1:  eff_modes[idx] = CS2D_TILE_OBSTACLE; break;
+                case 2:  eff_modes[idx] = CS2D_TILE_WALL_NOSHADOW; break;
+                case 3:  eff_modes[idx] = CS2D_TILE_OBSTACLE_NOSHADOW; break;
+                default:
+                    eff_modes[idx] = (tile_f >= 0 && tile_f <= (int)map->tile_count)
+                                     ? map->tile_modes[tile_f] : CS2D_TILE_FLOOR_NOSOUND;
+                    break;
+            }
+            eff_heights[idx] = (map->save_tile_heights != 0 && tile_f >= 0 && tile_f < 256 && map->tile_heights[tile_f] > 0)
+                               ? map->tile_heights[tile_f] : 0;
+        } else if (e->type == CS2D_ENT_ENV_BREAKABLE) {
+            if (e->int_settings[6] == 2) {
+                eff_modes[idx] = CS2D_TILE_FLOOR_NOSOUND;
+            } else if (e->int_settings[6] == 3) {
+                eff_modes[idx] = CS2D_TILE_OBSTACLE;
+            } else {
+                eff_modes[idx] = CS2D_TILE_WALL;
+            }
+            eff_heights[idx] = (map->save_tile_heights != 0 && tile_f >= 0 && tile_f < 256 && map->tile_heights[tile_f] > 0)
+                               ? map->tile_heights[tile_f] : 0;
+        }
+    }
+
     const uint8_t shadow_alpha = 126; /* Base shadow darkness matching CS2D original (255 -> 128 on sandstone) */
 
     /* Reconstructed from 0x1401da4a6..0x1401da82d: custom angle stored as 1000 + deg (or already decoded 0..359) */
@@ -1557,13 +1612,12 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
     float cos_sun  = cosf(rad_sun);
     float sin_sun  = sinf(rad_sun);
 
-    /* Step 1: Obstacle Tiles (CS2D_TILE_OBSTACLE = 2) cast shadows, then clear own 32x32 tops */
+    /* Step 1: Effective Obstacle Tiles (CS2D_TILE_OBSTACLE = 2) cast shadows, then clear own 32x32 tops */
     for (uint32_t ty = 0; ty < map->height; ty++) {
         for (uint32_t tx = 0; tx < map->width; tx++) {
-            uint8_t t = map->tiles[ty * map->width + tx];
-            if (map->tile_modes[t] == CS2D_TILE_OBSTACLE) {
-                int h = (map->save_tile_heights != 0 && map->tile_heights[t] > 0)
-                        ? (int)map->tile_heights[t] : 16;
+            size_t idx = (size_t)ty * (size_t)map->width + (size_t)tx;
+            if (eff_modes[idx] == CS2D_TILE_OBSTACLE) {
+                int h = (eff_heights[idx] > 0) ? (int)eff_heights[idx] : 16;
                 float dz = (float)(-(h / 2)) - (float)h * s_factor;
                 float dx = dz * cos_sun;
                 float dy = dz * sin_sun;
@@ -1575,8 +1629,8 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
     }
     for (uint32_t ty = 0; ty < map->height; ty++) {
         for (uint32_t tx = 0; tx < map->width; tx++) {
-            uint8_t t = map->tiles[ty * map->width + tx];
-            if (map->tile_modes[t] == CS2D_TILE_OBSTACLE || map->tile_modes[t] == CS2D_TILE_OBSTACLE_NOSHADOW) {
+            uint8_t m = eff_modes[(size_t)ty * (size_t)map->width + (size_t)tx];
+            if (m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW) {
                 float x0 = (float)(tx * CS2D_TILE_SIZE);
                 float y0 = (float)(ty * CS2D_TILE_SIZE);
                 clear_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f);
@@ -1584,35 +1638,17 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
         }
     }
 
-    /* Step 2: Wall Tiles (CS2D_TILE_WALL = 1) and Wall-mode Env_Breakable / Func_DynWall cast shadows */
+    /* Step 2: Effective Wall Tiles (CS2D_TILE_WALL = 1, including Wall-mode Func_DynWall & Env_Breakable) cast shadows */
     for (uint32_t ty = 0; ty < map->height; ty++) {
         for (uint32_t tx = 0; tx < map->width; tx++) {
-            uint8_t t = map->tiles[ty * map->width + tx];
-            if (map->tile_modes[t] == CS2D_TILE_WALL) {
-                int h = (map->save_tile_heights != 0 && map->tile_heights[t] > 0)
-                        ? (int)map->tile_heights[t] : 32;
+            size_t idx = (size_t)ty * (size_t)map->width + (size_t)tx;
+            if (eff_modes[idx] == CS2D_TILE_WALL) {
+                int h = (eff_heights[idx] > 0) ? (int)eff_heights[idx] : 32;
                 float dz = (float)(-(h / 2)) - (float)h * s_factor;
                 float dx = dz * cos_sun;
                 float dy = dz * sin_sun;
                 float x0 = (float)(tx * CS2D_TILE_SIZE);
                 float y0 = (float)(ty * CS2D_TILE_SIZE);
-                cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, dx, dy, shadow_alpha);
-            }
-        }
-    }
-    for (uint32_t i = 0; i < map->entity_count; i++) {
-        const cs2d_entity_t *e = &map->entities[i];
-        if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
-        if (e->type == CS2D_ENT_ENV_BREAKABLE || e->type == CS2D_ENT_FUNC_DYNWALL) {
-            int tile_f = e->int_settings[0];
-            if (tile_f > 0 && tile_f < 256 && map->tile_modes[tile_f] == CS2D_TILE_WALL) {
-                int h = (map->save_tile_heights != 0 && map->tile_heights[tile_f] > 0)
-                        ? (int)map->tile_heights[tile_f] : 32;
-                float dz = (float)(-(h / 2)) - (float)h * s_factor;
-                float dx = dz * cos_sun;
-                float dy = dz * sin_sun;
-                float x0 = (float)(e->x * CS2D_TILE_SIZE);
-                float y0 = (float)(e->y * CS2D_TILE_SIZE);
                 cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, dx, dy, shadow_alpha);
             }
         }
@@ -1649,8 +1685,7 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
     if (occl_buf) {
         for (uint32_t ty = 0; ty < map->height; ty++) {
             for (uint32_t tx = 0; tx < map->width; tx++) {
-                uint8_t t = map->tiles[ty * map->width + tx];
-                uint8_t m = map->tile_modes[t];
+                uint8_t m = eff_modes[(size_t)ty * (size_t)map->width + (size_t)tx];
                 if (m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW ||
                     m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW) {
                     float x0 = (float)(tx * CS2D_TILE_SIZE);
@@ -1659,15 +1694,14 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
                 }
             }
         }
-        apply_shadow_masked_occlusion(map, alpha_buf, occl_buf, tex_w, tex_h, 200);
+        apply_shadow_masked_occlusion(map, eff_modes, alpha_buf, occl_buf, tex_w, tex_h, 200);
         free(occl_buf);
     }
 
     /* Clear Wall tiles (0x1402619d6..0x140261b11) so wall tops remain completely un-darkened */
     for (uint32_t ty = 0; ty < map->height; ty++) {
         for (uint32_t tx = 0; tx < map->width; tx++) {
-            uint8_t t = map->tiles[ty * map->width + tx];
-            uint8_t m = map->tile_modes[t];
+            uint8_t m = eff_modes[(size_t)ty * (size_t)map->width + (size_t)tx];
             if (m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW) {
                 float x0 = (float)(tx * CS2D_TILE_SIZE);
                 float y0 = (float)(ty * CS2D_TILE_SIZE);
@@ -1675,19 +1709,9 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
             }
         }
     }
-    for (uint32_t i = 0; i < map->entity_count; i++) {
-        const cs2d_entity_t *e = &map->entities[i];
-        if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
-        if (e->type == CS2D_ENT_ENV_BREAKABLE || e->type == CS2D_ENT_FUNC_DYNWALL) {
-            int tile_f = e->int_settings[0];
-            if (tile_f > 0 && tile_f < 256 &&
-                (map->tile_modes[tile_f] == CS2D_TILE_WALL || map->tile_modes[tile_f] == CS2D_TILE_WALL_NOSHADOW)) {
-                float x0 = (float)(e->x * CS2D_TILE_SIZE);
-                float y0 = (float)(e->y * CS2D_TILE_SIZE);
-                clear_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f);
-            }
-        }
-    }
+
+    free(eff_modes);
+    free(eff_heights);
 
     /*
      * Step 4: Env_Room Layers 1..5 (0x1402620be..0x140262608) for multi-level roofs.
@@ -1942,7 +1966,7 @@ void cs2d_render_map_ex(
             if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
             if (ent->type == CS2D_ENT_ENV_BREAKABLE || ent->type == CS2D_ENT_FUNC_DYNWALL) {
                 int tile_f = ent->int_settings[0];
-                if (tile_f > 0 && tile_f <= (int)map->tile_count) {
+                if (tile_f >= 0 && tile_f <= (int)map->tile_count) {
                     float rx = (float)(ent->x * CS2D_TILE_SIZE) - cam_x;
                     float ry = (float)(ent->y * CS2D_TILE_SIZE) - cam_y;
                     float trans = ent->str_settings[0][0] ? (float)atof(ent->str_settings[0]) : 0.0f;
@@ -1951,7 +1975,7 @@ void cs2d_render_map_ex(
                     float alpha = 1.0f - fabsf(trans);
                     if (alpha < 0.1f) alpha = 1.0f;
                     if (alpha > 1.0f) alpha = 1.0f;
-                    draw_tile_frame(tileset_tex, tile_src, cols, (uint8_t)tile_f, 0, rx, ry, alpha);
+                    draw_tile_frame(tileset_tex, tile_src, cols, anim_remap[(uint8_t)tile_f], 0, rx, ry, alpha);
                 }
             }
         }
