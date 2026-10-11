@@ -29,6 +29,7 @@ void cs2d_player_spawn(cs2d_player_t *player, cs2d_team_t team, cs2d_vec2_t spaw
     player->vel.x = 0.0f;
     player->vel.y = 0.0f;
     player->angle = 0.0f;
+    player->draw_angle = 0.0f;
     player->health = 100;
     player->armor = 0;
     player->has_helmet = false;
@@ -39,6 +40,8 @@ void cs2d_player_spawn(cs2d_player_t *player, cs2d_team_t team, cs2d_vec2_t spaw
     player->is_defusing = false;
     player->plant_progress = 0.0f;
     player->defuse_progress = 0.0f;
+    player->recoil = 0.0f;
+    player->slash_timer = 0.0f;
     player->fire_cooldown = 0.0f;
     player->reload_timer = 0.0f;
 
@@ -76,6 +79,20 @@ void cs2d_player_update(cs2d_player_t *player, float delta_time)
             cs2d_weapon_finish_reload(player);
         }
     }
+
+    /* Visual recoil decay: 0.5 px per 60 Hz frame = 30.0 px/s (Tpl.updateAll 0x14021d1b1, 0x140bd69e8 = 0.5f) */
+    if (player->recoil > 0.0f) {
+        player->recoil -= 0.5f * (delta_time * 60.0f);
+        if (player->recoil < 0.0f) player->recoil = 0.0f;
+    }
+
+    /* Melee swing decay: 1.0 per 60 Hz frame = 60.0/s; draw_angle = angle + 6.0f * slash_timer
+     * (Tpl.updateAll 0x14021d68a..0x14021d6d2, 0x140bd69e4 = 6.0f, and 0x14021da21..0x14021da6a) */
+    if (player->slash_timer > 0.0f) {
+        player->slash_timer -= delta_time * 60.0f;
+        if (player->slash_timer < 0.0f) player->slash_timer = 0.0f;
+    }
+    player->draw_angle = player->angle + ((player->slash_timer > 0.0f) ? (6.0f * player->slash_timer) : 0.0f);
 }
 
 bool cs2d_player_apply_damage(cs2d_player_t *player, int hp_dmg, int armor_dmg)
@@ -123,6 +140,10 @@ bool cs2d_player_give_weapon(cs2d_player_t *player, uint8_t weapon_id)
 
     /* Set as active weapon */
     player->current_weapon = weapon_id;
+    player->fire_cooldown = 0.0f;
+    player->reload_timer = 0.0f;
+    player->slash_timer = 0.0f;
+    player->draw_angle = player->angle;
     return true;
 }
 
@@ -150,7 +171,10 @@ bool cs2d_player_switch_weapon(cs2d_player_t *player, cs2d_weapon_slot_t slot)
     if (wep_id == CS2D_WEP_NONE) return false;
 
     player->current_weapon = wep_id;
+    player->fire_cooldown = 0.0f;
     player->reload_timer = 0.0f; /* Interrupt reload on switch */
+    player->slash_timer = 0.0f;
+    player->draw_angle = player->angle;
     return true;
 }
 
@@ -228,7 +252,12 @@ bool cs2d_player_select_weapon(cs2d_player_t *player, uint8_t weapon_id)
     if (!player || weapon_id == CS2D_WEP_NONE) return false;
     for (int s = 0; s < CS2D_SLOT_COUNT; s++) {
         if (player->inventory[s] == weapon_id) {
-            if (player->current_weapon != weapon_id) player->reload_timer = 0.0f;
+            if (player->current_weapon != weapon_id) {
+                player->fire_cooldown = 0.0f;
+                player->reload_timer = 0.0f;
+                player->slash_timer = 0.0f;
+                player->draw_angle = player->angle;
+            }
             player->current_weapon = weapon_id;
             return true;
         }

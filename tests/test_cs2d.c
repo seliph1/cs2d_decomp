@@ -1404,6 +1404,97 @@ static bool test_server_info_and_team_menu(void)
     return true;
 }
 
+/* =========================================================================
+ * Test 16: Firearm Visual Recoil Kickback & Melee Swing Animation
+ *   (CS2D.exe 0x1409eda18, Tpl.attack 0x1402166a7, Tpl.slash 0x14018cebc,
+ *    Tpl.updateAll 0x14021d1b1 / 0x14021d68a / 0x14021da21, Tp.create 0x14004b4e0)
+ * ========================================================================= */
+static bool test_recoil_and_swing(void)
+{
+    printf("\n=== Testing Firearm Recoil Kickback & Melee Swing Animation (CS2D.exe) ===\n");
+    cs2d_weapons_init();
+
+    /* 16.1 Verify per-weapon visual_recoil table (0x1409eda18 in CS2D.exe) */
+    if (cs2d_weapon_get(CS2D_WEP_MP5)->visual_recoil    != 1 ||
+        cs2d_weapon_get(CS2D_WEP_M4A1)->visual_recoil   != 1 ||
+        cs2d_weapon_get(CS2D_WEP_USP)->visual_recoil    != 2 ||
+        cs2d_weapon_get(CS2D_WEP_GLOCK)->visual_recoil  != 2 ||
+        cs2d_weapon_get(CS2D_WEP_AK47)->visual_recoil   != 2 ||
+        cs2d_weapon_get(CS2D_WEP_DEAGLE)->visual_recoil != 4 ||
+        cs2d_weapon_get(CS2D_WEP_M3)->visual_recoil     != 5 ||
+        cs2d_weapon_get(CS2D_WEP_AWP)->visual_recoil    != 6 ||
+        cs2d_weapon_get(CS2D_WEP_LASER)->visual_recoil  != 6 ||
+        cs2d_weapon_get(CS2D_WEP_KNIFE)->visual_recoil  != 0) {
+        TEST_FAIL("visual_recoil table (0x1409eda18)", "Per-weapon visual recoil pixel table mismatch");
+    }
+    TEST_PASS("Per-weapon visual_recoil table verified against CS2D.exe (0x1409eda18)");
+
+    /* 16.2 Firearm backward recoil kickback on shot and 0.5 px / 60 Hz frame decay */
+    cs2d_player_t pl;
+    cs2d_player_init(&pl, 1, "Shooter");
+    cs2d_vec2_t pt = { 256.0f, 256.0f };
+    cs2d_player_spawn(&pl, CS2D_TEAM_CT, pt);
+    cs2d_player_give_weapon(&pl, CS2D_WEP_AWP);
+    pl.angle = 90.0f;
+
+    if (!cs2d_weapon_fire(&pl) || pl.recoil < 6.0f || pl.recoil > 7.0f) {
+        TEST_FAIL("AWP recoil on shot (0x1402166a7)", "Expected recoil in [6.0, 7.0] px");
+    }
+    float r0 = pl.recoil;
+    cs2d_player_update(&pl, 1.0f / 60.0f);
+    if (fabsf(pl.recoil - (r0 - 0.5f)) > 0.001f) {
+        TEST_FAIL("Recoil decay rate (0x14021d1b1)", "Expected 0.5 px decay per 60 Hz frame (30 px/s)");
+    }
+    cs2d_player_update(&pl, 14.0f / 60.0f);
+    if (pl.recoil != 0.0f) {
+        TEST_FAIL("Recoil return to zero", "Expected recoil to clamp to 0.0 after decaying");
+    }
+    TEST_PASS("Firearm recoil kickback (visual_recoil + Rnd(0,1)) and 0.5 px/frame decay verified");
+
+    /* 16.3 Melee swing timer (8.0 -> 0.0 at 60 Hz), torso/weapon draw_angle (+48 deg -> 0), and knifeslash FX */
+    cs2d_player_switch_weapon(&pl, CS2D_SLOT_MELEE);
+    pl.fire_cooldown = 0.0f;
+    pl.angle = 90.0f;
+    if (!cs2d_weapon_fire(&pl) ||
+        fabsf(pl.slash_timer - 8.0f) > 0.001f ||
+        fabsf(pl.draw_angle - (90.0f + 48.0f)) > 0.001f ||
+        pl.recoil != 0.0f) {
+        TEST_FAIL("Knife swing start (0x14018cebc)", "Expected slash_timer=8.0, draw_angle=angle+48, recoil=0");
+    }
+    cs2d_player_update(&pl, 4.0f / 60.0f);
+    if (fabsf(pl.slash_timer - 4.0f) > 0.001f ||
+        fabsf(pl.draw_angle - (90.0f + 24.0f)) > 0.001f) {
+        TEST_FAIL("Knife swing mid-arc (0x14021d68a)", "Expected slash_timer=4.0 and draw_angle=angle+24 after 4 frames");
+    }
+    cs2d_player_update(&pl, 4.0f / 60.0f);
+    if (pl.slash_timer != 0.0f || fabsf(pl.draw_angle - 90.0f) > 0.001f) {
+        TEST_FAIL("Knife swing finish (0x14021da21)", "Expected slash_timer=0 and draw_angle=angle after 8 frames");
+    }
+
+    /* Chainsaw (85) must not trigger slash_timer (0x14018ce92) */
+    cs2d_player_give_weapon(&pl, CS2D_WEP_CHAINSAW);
+    pl.fire_cooldown = 0.0f;
+    if (!cs2d_weapon_fire(&pl) || pl.slash_timer != 0.0f) {
+        TEST_FAIL("Chainsaw exception (0x14018ce92)", "Chainsaw (85) must not set slash_timer");
+    }
+
+    /* Knife slash arc particle (Tp type 13, 0x14004b4e0: fade 0.07 per 60 Hz frame) */
+    static cs2d_fx_t fx;
+    cs2d_fx_clear(&fx);
+    cs2d_fx_knifeslash(&fx, 256.0f, 256.0f, 90.0f);
+    if (fx.count != 1 || fx.p[0].kind != CS2D_FX_KNIFESLASH ||
+        fabsf(fx.p[0].max_life - (1.0f / (0.07f * 60.0f))) > 0.001f) {
+        TEST_FAIL("Knife slash FX (0x14004b4e0)", "Expected CS2D_FX_KNIFESLASH with 0.07/frame fade rate");
+    }
+    cs2d_fx_update(&fx, 0.30f);
+    if (fx.count != 0) {
+        TEST_FAIL("Knife slash FX expiry", "Expected knifeslash particle to expire after ~0.24s");
+    }
+    TEST_PASS("Melee swing (slash_timer 8->0, draw_angle +48..0 deg, Chainsaw exception, knifeslash FX) verified");
+
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -1411,7 +1502,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 15;
+    int total = 16;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -1428,6 +1519,7 @@ int main(void)
     if (test_player_physics()) passed++;
     if (test_breakables()) passed++;
     if (test_server_info_and_team_menu()) passed++;
+    if (test_recoil_and_swing()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

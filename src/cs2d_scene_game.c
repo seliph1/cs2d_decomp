@@ -177,7 +177,7 @@ static void fire_shot(cs2d_client_t *client, const cs2d_player_t *pl)
 {
     const cs2d_weapon_def_t *wep = cs2d_weapon_get(pl->current_weapon);
     if (!wep) return;
-    bool melee = (wep->slot == CS2D_SLOT_MELEE);
+    bool melee = (wep->slot == CS2D_SLOT_MELEE || pl->current_weapon == CS2D_WEP_WRENCH);
 
     if (client->connected && client->join_stage == 5) {
         uint8_t seed = 0;
@@ -193,7 +193,11 @@ static void fire_shot(cs2d_client_t *client, const cs2d_player_t *pl)
     float reach = cs2d_weapon_shot_reach(wep);
     int hit = cs2d_ents_trace_shot(&client->ents, pl->pos.x, pl->pos.y, pl->angle, reach, &hx, &hy);
 
-    if (!melee) {
+    if (melee) {
+        if (pl->current_weapon != CS2D_WEP_CHAINSAW) {
+            cs2d_fx_knifeslash(&client->fx, pl->pos.x, pl->pos.y, pl->angle);
+        }
+    } else {
         /* Tracer, muzzle flash and case: measured on CS2D.exe captures (AK-47 flash ~30 px ahead) */
         float ddx = hx - pl->pos.x, ddy = hy - pl->pos.y;
         bool hit_wall = (hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < reach - 1.0f);
@@ -208,19 +212,33 @@ static void fire_shot(cs2d_client_t *client, const cs2d_player_t *pl)
     if (!client->connected) cs2d_ents_damage_breakable(&client->ents, hit, wep->damage);
 }
 
-/* Another player's shot reported by the server: same tracer / flash / case as a local shot */
-void cs2d_scene_game_remote_shot(cs2d_client_t *client, const cs2d_player_t *pl)
+/* Another player's shot or melee swing reported by the server: same recoil / swing / tracer / flash / case as a local shot */
+void cs2d_scene_game_remote_shot(cs2d_client_t *client, cs2d_player_t *pl)
 {
+    if (!pl || !pl->alive) return;
     const cs2d_weapon_def_t *wep = cs2d_weapon_get(pl->current_weapon);
-    if (!wep || wep->slot == CS2D_SLOT_MELEE || !pl->alive) return;
+    if (!wep) return;
+    bool melee = (wep->slot == CS2D_SLOT_MELEE || pl->current_weapon == CS2D_WEP_WRENCH);
+
+    if (wep->visual_recoil > 0) {
+        pl->recoil = (float)wep->visual_recoil + ((float)(rand() & 0x7FFF) / 32768.0f);
+    }
+    if (melee && pl->current_weapon != CS2D_WEP_CHAINSAW) {
+        pl->slash_timer = 8.0f;
+        pl->draw_angle  = pl->angle + 6.0f * pl->slash_timer;
+        cs2d_fx_knifeslash(&client->fx, pl->pos.x, pl->pos.y, pl->angle);
+    }
+
     float hx, hy, reach = cs2d_weapon_shot_reach(wep);
     int hit = cs2d_ents_trace_shot(&client->ents, pl->pos.x, pl->pos.y, pl->angle, reach, &hx, &hy);
-    float ddx = hx - pl->pos.x, ddy = hy - pl->pos.y;
-    bool hit_wall = (hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < reach - 1.0f);
-    int shell = (pl->current_weapon == CS2D_WEP_M3 || pl->current_weapon == CS2D_WEP_XM1014) ? 2 :
-                (wep->slot == CS2D_SLOT_SECONDARY ? 0 : 1);
-    cs2d_fx_shot(&client->fx, pl->pos.x, pl->pos.y, pl->angle, wep->slot == CS2D_SLOT_SECONDARY ? 22.0f : 30.0f,
-                 hx, hy, hit_wall, shell);
+    if (!melee) {
+        float ddx = hx - pl->pos.x, ddy = hy - pl->pos.y;
+        bool hit_wall = (hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < reach - 1.0f);
+        int shell = (pl->current_weapon == CS2D_WEP_M3 || pl->current_weapon == CS2D_WEP_XM1014) ? 2 :
+                    (wep->slot == CS2D_SLOT_SECONDARY ? 0 : 1);
+        cs2d_fx_shot(&client->fx, pl->pos.x, pl->pos.y, pl->angle, wep->slot == CS2D_SLOT_SECONDARY ? 22.0f : 30.0f,
+                     hx, hy, hit_wall, shell);
+    }
     if (hit >= 0) cs2d_fx_breakable_hit(&client->fx, hx, hy, client->game.map.entities[hit].int_settings[2], pl->angle);
 }
 
@@ -371,6 +389,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
         float dx = world_mx - pl->pos.x;
         float dy = world_my - pl->pos.y;
         pl->angle = atan2f(dx, -dy) * (180.0f / 3.14159265f);
+        pl->draw_angle = pl->angle + ((pl->slash_timer > 0.0f) ? (6.0f * pl->slash_timer) : 0.0f);
         client->aim_distance = sqrtf(dx * dx + dy * dy);
 
         /* Movement (FUN_1402563a0): (2 + weapon bonus) * 1.2 px per 60 Hz frame = 144 px/s; walking halves it.
@@ -423,8 +442,15 @@ static void game_update(cs2d_client_t *client, float delta_time)
             if (pl->feet_timer < 0.0f) pl->feet_timer = 0.0f;
         }
 
-        /* Firing */
-        if (client->mouse_fire && cs2d_weapon_fire(pl)) fire_shot(client, pl);
+        /* Firing (left-click attack, or right-click attack2 for Knife/Claw per Tpl.attack2 0x1401fdd37) */
+        bool melee_atk2 = client->mouse_attack2 &&
+                          (pl->current_weapon == CS2D_WEP_KNIFE || pl->current_weapon == CS2D_WEP_CLAW);
+        if ((client->mouse_fire || melee_atk2) && cs2d_weapon_fire(pl)) {
+            if (melee_atk2 && !client->mouse_fire) {
+                pl->fire_cooldown = 21.0f * 0.02f; /* 21 ticks at 50 Hz (0x1401fdc28) */
+            }
+            fire_shot(client, pl);
+        }
     }
 
     /* Offline the client runs the entity logic itself; online the server does and sends the results */

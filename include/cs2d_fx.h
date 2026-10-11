@@ -20,8 +20,9 @@ typedef enum {
     CS2D_FX_EXPLOSION = 2, /* explosion.png animation */
     CS2D_FX_TRACER    = 3, /* Bullet path: line from the muzzle to the impact */
     CS2D_FX_GLOWDOT   = 4, /* incbindata/glowdot.bmp left along the bullet path / impact sparks */
-    CS2D_FX_MUZZLE    = 5, /* incbindata/flare_x.png at the muzzle (+ yellow light around the shooter) */
-    CS2D_FX_SHELL     = 6  /* gfx/shells.bmp case flying out of the weapon (then lies on the floor) */
+    CS2D_FX_MUZZLE     = 5, /* incbindata/flare_x.png at the muzzle (+ yellow light around the shooter) */
+    CS2D_FX_SHELL      = 6, /* gfx/shells.bmp case flying out of the weapon (then lies on the floor) */
+    CS2D_FX_KNIFESLASH = 7  /* gfx/knifeslash.bmp melee swing arc (Tp type 13, 0x14004b4e0 & 0x140265220) */
 } cs2d_fx_kind_t;
 
 typedef struct {
@@ -67,6 +68,13 @@ void cs2d_fx_explosion(cs2d_fx_t *fx, float x, float y, float range);
  */
 void cs2d_fx_shot(cs2d_fx_t *fx, float px, float py, float angle_deg, float muzzle_dist,
                   float ex, float ey, bool hit_wall, int shell_frame);
+
+/*
+ * Melee weapon slash arc (CS2D.exe Tpl.slash 0x14018cf63 -> Tp.create type 13 at 0x14004b4e0,
+ * drawn in Tp.drawAll at 0x140265220): gfx/knifeslash.bmp centered at (px, py), rotated by
+ * angle_deg, additive blend (LIGHTBLEND = 4), alpha 1.0 fading by 0.07 per 60 Hz frame (4.2/s).
+ */
+void cs2d_fx_knifeslash(cs2d_fx_t *fx, float px, float py, float angle_deg);
 
 void cs2d_fx_update(cs2d_fx_t *fx, float dt);
 

@@ -70,6 +70,7 @@ typedef struct {
     cs2d_texture_t            tex_flare_x;       /* incbindata/flare_x.png muzzle flash (32x32) */
     cs2d_texture_t            tex_glowdot;       /* incbindata/glowdot.bmp (3x3) bullet path / sparks */
     cs2d_texture_t            tex_shells;        /* gfx/shells.bmp|png (32x8 -> 4 frames of 8x8, maskMode=2) */
+    cs2d_texture_t            tex_knifeslash;    /* gfx/knifeslash.bmp (32x32, maskMode=3, 0x140a0dcd8) */
     cs2d_texture_t            tex_bspot_a;       /* gfx/sprites/bspot_a.png */
     cs2d_texture_t            tex_bspot_b;       /* gfx/sprites/bspot_b.png */
     cs2d_texture_t            tex_npc[5];        /* gfx/npc/zombie, headcrab, snark, vortigaunt, soldier */

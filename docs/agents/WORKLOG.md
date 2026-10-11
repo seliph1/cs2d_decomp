@@ -8,6 +8,20 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-11 — Antigravity — firearm visual recoil kickback, melee swing animation, and GitHub Actions release workflow
+- **Firearm visual recoil (`Tpl +0x308`):** extracted the per-weapon visual recoil table (`0x1409eda18` in
+  `CS2D.exe`, `1..6 px`) from `init_weapons` (`0x1402305db..0x1402340a9`). Firing sets
+  `recoil = visual_recoil + Rnd(0, 1)` (`0x1402166a7`), which displaces the player backward along `-angle`
+  in `cs2d_render_player` (`0x14012131c..0x1401213cc`) and decays by `0.5 px` per 60 Hz frame (`30 px/s`, `0x14021d1b1`).
+- **Melee swing (`Tpl +0x31c`, `+0x24c`, `Tp` type 13):** melee attacks (except Chainsaw `85`) set
+  `slash_timer = 8.0f` (`0x14018cebc`) and `draw_angle = angle + 6.0f * slash_timer` (`+48° -> 0°` over 8
+  frames at 60 Hz, `0x14021d68a` & `0x14021da21`), rotating both the torso and held weapon (`13.5 px` offset)
+  and spawning the additive `gfx/knifeslash.bmp` arc (`0.07/frame` fade, `0x14004b4e0` & `0x140265220`).
+- **GitHub Actions CI & Releases:** added `.github/workflows/build.yml` (MSYS2 MinGW-w64 + SDL3) to compile
+  `cs2d_client.exe` and `test_cs2d.exe`, run the regression suite, upload workflow artifacts, and publish
+  `cs2d-binaries-win64.zip` + `SDL3.dll` to GitHub Releases.
+- **Verification:** added `test_recoil_and_swing` in `tests/test_cs2d.c` (`16 / 16` passing).
+
 ## 2026-10-11 — Antigravity — Server Info ("<Server> - Info") and "Select Team" / skin subcategory UI
 - **Protocol & parsing:** parsed `server_name` from `[252,6]`, `opcode 240` (`CS2D_NET_MSG2`) `mode 50`
   (`"1"` clear, `"2"` open) and `mode 51` (UTF-16LE `serverinfo.txt` lines with `U+00A9` `RRRGGGBBB`

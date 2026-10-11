@@ -159,6 +159,42 @@ void cs2d_weapons_init(void)
     set_wep(90, "M134",             CS2D_SLOT_PRIMARY,   1, 8100, 13, 0,   0,   200, 200, 2,  600, 300, 40, -6.0f, 8, 0,    1,  true);
     set_wep(91, "FN F2000",         CS2D_SLOT_PRIMARY,   1, 3500, 26, 0,   0,   30,  90,  3,  220, 300, 20, -1.0f, 8, 0,    1,  true);
 
+    /*
+     * Per-weapon visual backward recoil kickback in pixels (0x1409eda18 in CS2D.exe,
+     * initialized in init_weapons at 0x1402305db..0x1402340a9).
+     */
+    g_weapon_table[1].visual_recoil  = 2; /* USP (0x140230609) */
+    g_weapon_table[2].visual_recoil  = 2; /* Glock (0x1402307f4) */
+    g_weapon_table[3].visual_recoil  = 4; /* Deagle (0x1402309b8) */
+    g_weapon_table[4].visual_recoil  = 2; /* P228 (0x140230b7c) */
+    g_weapon_table[5].visual_recoil  = 2; /* Elite (0x140230d40) */
+    g_weapon_table[6].visual_recoil  = 2; /* Five-Seven (0x140230efe) */
+    g_weapon_table[10].visual_recoil = 5; /* M3 (0x1402310d3) */
+    g_weapon_table[11].visual_recoil = 5; /* XM1014 (0x140231297) */
+    g_weapon_table[20].visual_recoil = 1; /* MP5 (0x140231449) */
+    g_weapon_table[21].visual_recoil = 1; /* TMP (0x14023161a) */
+    g_weapon_table[22].visual_recoil = 1; /* P90 (0x1402317c8) */
+    g_weapon_table[23].visual_recoil = 1; /* Mac 10 (0x140231991) */
+    g_weapon_table[24].visual_recoil = 1; /* UMP45 (0x140231b39) */
+    g_weapon_table[30].visual_recoil = 2; /* AK-47 (0x140231ceb) */
+    g_weapon_table[31].visual_recoil = 1; /* SG552 (0x140231ef1) */
+    g_weapon_table[32].visual_recoil = 1; /* M4A1 (0x1402320c4) */
+    g_weapon_table[33].visual_recoil = 1; /* Aug (0x1402322b6) */
+    g_weapon_table[34].visual_recoil = 2; /* Scout (0x1402324db) */
+    g_weapon_table[35].visual_recoil = 6; /* AWP (0x140232737) */
+    g_weapon_table[36].visual_recoil = 4; /* G3SG1 (0x140232971) */
+    g_weapon_table[37].visual_recoil = 4; /* SG550 (0x140232ba8) */
+    g_weapon_table[38].visual_recoil = 2; /* Galil (0x140232d53) */
+    g_weapon_table[39].visual_recoil = 2; /* Famas (0x140232f2c) */
+    g_weapon_table[40].visual_recoil = 2; /* M249 (0x140233462) */
+    g_weapon_table[45].visual_recoil = 6; /* Laser (0x1402336a5) */
+    g_weapon_table[47].visual_recoil = 2; /* RPG Launcher (0x1402339d7) */
+    g_weapon_table[48].visual_recoil = 2; /* Rocket Launcher (0x140233b80) */
+    g_weapon_table[49].visual_recoil = 2; /* Grenade Launcher (0x140233d29) */
+    g_weapon_table[88].visual_recoil = 5; /* Portal Gun (0x140233ed4) */
+    g_weapon_table[90].visual_recoil = 1; /* M134 (0x1402340a2) */
+    g_weapon_table[91].visual_recoil = 1; /* FN F2000 (0x1402330dc) */
+
     g_weapons_initialized = true;
 
     /* Load sys/weapons_recoil.cfg or sys/weapons.cfg if present (FUN_140112bc0) */
@@ -288,7 +324,7 @@ bool cs2d_weapon_can_fire(const cs2d_player_t *player)
     const cs2d_weapon_def_t *wep = cs2d_weapon_get(player->current_weapon);
     if (!wep) return false;
 
-    if (wep->slot == CS2D_SLOT_MELEE) return true;
+    if (wep->slot == CS2D_SLOT_MELEE || player->current_weapon == CS2D_WEP_WRENCH) return true;
 
     return player->clip_ammo[player->current_weapon] > 0;
 }
@@ -302,8 +338,22 @@ bool cs2d_weapon_fire(cs2d_player_t *player)
 
     player->fire_cooldown = wep->fire_delay;
 
-    if (wep->slot != CS2D_SLOT_MELEE && wep->clip_size > 0) {
+    if (wep->slot != CS2D_SLOT_MELEE && player->current_weapon != CS2D_WEP_WRENCH && wep->clip_size > 0) {
         player->clip_ammo[player->current_weapon]--;
+    }
+
+    /* Visual backward recoil kickback on shot (Tpl.attack 0x1402166a7 & 0x140216a70:
+     * player->recoil = (float)visual_recoil[id] + Rnd(0.0, 1.0)) */
+    if (wep->visual_recoil > 0) {
+        player->recoil = (float)wep->visual_recoil + ((float)(rand() & 0x7FFF) / 32768.0f);
+    }
+
+    /* Melee swing timer (Tpl.slash 0x14018cebc, Tpl.attack2 0x1401fdd37, Wrench 0x1401fad67:
+     * slash_timer = 8.0f for all melee swings except Chainsaw id == 85 at 0x14018ce92) */
+    if ((wep->slot == CS2D_SLOT_MELEE || player->current_weapon == CS2D_WEP_WRENCH) &&
+        player->current_weapon != CS2D_WEP_CHAINSAW) {
+        player->slash_timer = 8.0f;
+        player->draw_angle  = player->angle + 6.0f * player->slash_timer;
     }
     return true;
 }

@@ -142,7 +142,7 @@ static int run_client_app(const char *cmdline)
     bool auto_screenshot = false;
     const char *capture_cmd = NULL; /* --capture[:<cmd>[;<cmd>...]] -> screens/capture.bmp */
     int capture_frame = 30;
-    int capture_resume = 0;   /* "!wait <frames>" holds the next step until this frame */
+    int capture_resume = 5;   /* Next frame to run a capture step (default 5 frames apart, or !wait <frames>) */
     double frame_ms_sum = 0.0, frame_ms_max = 0.0;
     int    frame_ms_count = 0;
     if (cmdline && strlen(cmdline) > 0) {
@@ -365,14 +365,21 @@ static int run_client_app(const char *cmdline)
             break;
         }
         if (capture_cmd) {
-            /* Runs one ';'-separated console command every 5 frames, then captures 30 frames later */
-            if (capture_cmd[0] && frame_count > 0 && frame_count % 5 == 0 && frame_count >= capture_resume) {
+            /* Runs one ';'-separated console command every 5 frames (or after !wait <frames>), then captures 30 frames later */
+            if (capture_cmd[0] && frame_count >= capture_resume) {
                 char cmd[CS2D_CONSOLE_LINE_LEN];
                 size_t len = strcspn(capture_cmd, ";");
                 snprintf(cmd, sizeof(cmd), "%.*s", (int)len, capture_cmd);
                 capture_cmd += len + (capture_cmd[len] == ';' ? 1 : 0);
-                if (strncmp(cmd, "!wait ", 6) == 0) capture_resume = frame_count + atoi(cmd + 6); /* !wait <frames> */
-                capture_frame = ((capture_resume > frame_count) ? capture_resume : frame_count) + 30;
+                if (strncmp(cmd, "!wait ", 6) == 0) {
+                    int w = atoi(cmd + 6);
+                    capture_resume = frame_count + (w > 0 ? w : 1);
+                } else if (strncmp(capture_cmd, "!shot ", 6) == 0 || strncmp(capture_cmd, "!wait ", 6) == 0) {
+                    capture_resume = frame_count + 1;
+                } else {
+                    capture_resume = frame_count + 5;
+                }
+                capture_frame = capture_resume + 25;
                 if (strncmp(cmd, "!shot ", 6) == 0) {
                     save_gl_screenshot_bmp(cmd + 6, g_client.config.window_width, g_client.config.window_height);
                 } else {

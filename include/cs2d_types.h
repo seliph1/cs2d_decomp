@@ -230,19 +230,21 @@ typedef struct {
     int                recoil_accuracy;   /* PTR_DAT_14059d408 (from weapons_recoil.cfg) */
     int                recoil_recover;    /* PTR_DAT_14059d400 (from weapons_recoil.cfg) */
     int                recoil_attack;     /* PTR_DAT_14059d3f8 (from weapons_recoil.cfg) */
+    int                visual_recoil;     /* 0x1409eda18 in CS2D.exe: visual backward kickback px on shot */
     int                range;             /* PTR_DAT_14059d458 (range, default 300) */
     bool               is_automatic;
 } cs2d_weapon_def_t;
 
-/* Player State (reconstructed from Tpl in cs2d_dedicated.exe) */
+/* Player State (reconstructed from Tpl in CS2D.exe / cs2d_dedicated.exe) */
 typedef struct {
     uint8_t     id;                  /* 1..32 */
     char        name[CS2D_MAX_NAME_LEN];
     cs2d_team_t team;
     uint8_t     look;                /* skin index (0..3) */
-    cs2d_vec2_t pos;                 /* pixel position */
+    cs2d_vec2_t pos;                 /* pixel position (Tpl +0x23c, +0x240) */
     cs2d_vec2_t vel;                 /* pixel velocity */
-    float       angle;               /* degrees -180..180 or 0..360 */
+    float       angle;               /* degrees -180..180 or 0..360 (Tpl +0x248) */
+    float       draw_angle;          /* rendered torso/weapon angle: angle + 6*slash_timer (Tpl +0x24c) */
     int         health;              /* 0..100 (or up to 250) */
     int         max_health;          /* default 100 */
     int         armor;               /* 0..200 (201..206 special armors in CS2D) */
@@ -260,7 +262,8 @@ typedef struct {
     uint8_t     zoom_mode;           /* 0=normal, 1=zoom1, 2=zoom2, 3=silencer */
     float       plant_progress;      /* 0.0 .. 3.0 */
     float       defuse_progress;     /* 0.0 .. 10.0 (or 5.0 with kit) */
-    float       recoil;              /* dynamic recoil accumulator */
+    float       recoil;              /* visual backward kickback offset in px on shot (Tpl +0x308) */
+    float       slash_timer;         /* melee swing timer: 8.0 -> 0.0 at 60 Hz (Tpl +0x31c) */
     float       feet_frame;          /* 0..7 leg animation frame (Tpl +0x380) */
     float       feet_angle;          /* leg movement direction deg (Tpl +0x388) */
     float       feet_timer;          /* leg movement active timer (Tpl +0x378) */

@@ -190,6 +190,18 @@ void cs2d_fx_shot(cs2d_fx_t *fx, float px, float py, float angle_deg, float muzz
     }
 }
 
+void cs2d_fx_knifeslash(cs2d_fx_t *fx, float px, float py, float angle_deg)
+{
+    if (!fx) return;
+    cs2d_fx_particle_t *p = alloc_particle(fx);
+    p->kind     = CS2D_FX_KNIFESLASH;
+    p->x        = px;
+    p->y        = py;
+    p->rot      = angle_deg;
+    p->max_life = p->life = 1.0f / (0.07f * 60.0f); /* 0.07 per 60 Hz frame (Tp.create 0x14004b518) */
+    p->size     = 32.0f;
+}
+
 void cs2d_fx_update(cs2d_fx_t *fx, float dt)
 {
     if (!fx) return;

@@ -804,6 +804,7 @@ bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank)
     if (!cs2d_texture_load_grid(&bank->tex_shells, "gfx/shells.bmp", 2, 8, 8)) {
         cs2d_texture_load_grid(&bank->tex_shells, "gfx/shells.png", 2, 8, 8);
     }
+    cs2d_texture_load_ex(&bank->tex_knifeslash, "gfx/knifeslash.bmp",      3);
     cs2d_texture_load_ex(&bank->tex_bspot_a,   "gfx/sprites/bspot_a.png",  2);
     cs2d_texture_load_ex(&bank->tex_bspot_b,   "gfx/sprites/bspot_b.png",  2);
 
@@ -868,6 +869,7 @@ void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank)
     cs2d_texture_free(&bank->tex_flare_x);
     cs2d_texture_free(&bank->tex_glowdot);
     cs2d_texture_free(&bank->tex_shells);
+    cs2d_texture_free(&bank->tex_knifeslash);
     cs2d_texture_free(&bank->tex_bspot_a);
     cs2d_texture_free(&bank->tex_bspot_b);
     for (int i = 0; i < 5; i++) {
@@ -1087,11 +1089,12 @@ int cs2d_player_get_frame(const cs2d_player_t *player, bool lefthanded)
 
 /*
  * Reconstructed from Tpl.draw (FUN_140121160..0x140122b20 in CS2D.exe):
- *   1. Visual recoil knockback offset: sx -= sin(rad)*recoil, sy += cos(rad)*recoil (0x14012138e)
- *   2. Walking legs (gfx/player/legs.bmp, 8 frames of 32x32) offset 5.0px behind torso (0x140121cb0)
- *   3. Player torso skin (ct1..4.bmp, t1..4.bmp, vip.bmp, 6 frames of 32x32) frame from Tpl.getFrame (0x140121463)
+ *   1. Visual recoil backward kickback offset: sx -= sin(rad)*recoil, sy += cos(rad)*recoil (0x14012131c..0x1401213cc)
+ *   2. Walking legs (gfx/player/legs.bmp, 8 frames of 32x32) offset 5.0px behind torso (0x140122a26..0x140122af8)
+ *   3. Player torso skin (ct1..4.bmp, t1..4.bmp, vip.bmp, 6 frames of 32x32) rotated by draw_angle = angle + 6*slash_timer (0x140121463)
  *   4. Special armor overlay (Tpl.getArmorImage 0x1400320a0) if armor in 201..205 (0x140121596)
- *   5.Held weapon sprite (gfx/weapons/<wep>.bmp) offset 16.5px in front of torso + silencer overlay (0x1401215ee..0x1401218a0)
+ *   5. Held weapon sprite (gfx/weapons/<wep>.bmp) along draw_angle at 16.5px (guns, 0x14012168e),
+ *      13.5px (melee/bomb, 0x1401229b5), or 12.5px (grenades, 0x1401227ab) + silencer overlay (0x1401217e4)
  *   6. Equipment overlay (gfx/equipment.bmp, 3 frames of 32x32: 0=bomb/defuse at angle-10, 1=NVG, 2=gasmask) (0x1401218b0..0x140121f19)
  */
 void cs2d_render_player(
@@ -1112,8 +1115,15 @@ void cs2d_render_player(
     float sin_a = sinf(rad);
     float cos_a = cosf(rad);
 
-    /* Recoil visual knockback (0x14012138e..0x1401213cc) */
-    float recoil_px = (player->recoil > 6.0f) ? 6.0f : player->recoil;
+    /* Rendered torso & held weapon angle: angle + 6.0f * slash_timer during melee swing
+     * (Tpl.updateAll 0x14021d68a..0x14021d6d2, Tpl.draw 0x14012146b & 0x14012299b) */
+    float draw_ang = player->angle + ((player->slash_timer > 0.0f) ? (6.0f * player->slash_timer) : 0.0f);
+    float draw_rad = draw_ang * (3.14159265f / 180.0f);
+    float sin_d = sinf(draw_rad);
+    float cos_d = cosf(draw_rad);
+
+    /* Recoil visual backward kickback (0x14012131c..0x1401213cc) */
+    float recoil_px = (player->recoil > 0.0f) ? player->recoil : 0.0f;
     float sx = (player->pos.x - cam_x) - sin_a * recoil_px;
     float sy = (player->pos.y - cam_y) + cos_a * recoil_px;
 
@@ -1157,7 +1167,7 @@ void cs2d_render_player(
         int cell_w = (active_skin->width >= 64) ? (active_skin->width / 2) : active_skin->width;
         int cell_h = (active_skin->height >= 96) ? (active_skin->height / 3) : active_skin->height;
         cs2d_render_sprite_frame(active_skin, cell_w, cell_h, body_frame,
-                                 sx, sy, 32.0f, 32.0f, player->angle,
+                                 sx, sy, 32.0f, 32.0f, draw_ang,
                                  1.0f, 1.0f, 1.0f, 1.0f, 0);
     }
 
@@ -1166,11 +1176,11 @@ void cs2d_render_player(
         int arm_wep_id = 79 + (player->armor - 201);
         const cs2d_texture_t *arm_tex = &bank->tex_weapons[arm_wep_id];
         if (arm_tex->id) {
-            cs2d_render_sprite(arm_tex, sx, sy, 32.0f, 32.0f, player->angle, 1.0f, 1.0f, 1.0f, 1.0f);
+            cs2d_render_sprite(arm_tex, sx, sy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
         }
     }
 
-    /* 4. Held Weapon in Hands (0x1401215ee..0x1401218a0) */
+    /* 4. Held Weapon in Hands (0x1401215ee..0x1401218a0 & 0x140122791..0x140122a20) */
     const cs2d_texture_t *active_wep = wep_tex;
     if (bank && player->current_weapon > 0 && player->current_weapon < CS2D_MAX_WEAPONS) {
         if (bank->tex_weapons[player->current_weapon].id) {
@@ -1178,23 +1188,33 @@ void cs2d_render_player(
         }
     }
 
-    if (player->is_reloading && bank && bank->tex_reload.id) {
+    if ((player->is_reloading || player->reload_timer > 0.0f) && bank && bank->tex_reload.id) {
         /* Reloading sprite at 13.5px in front of player (0x140122983) */
-        float wx = sx + sin_a * 13.5f;
-        float wy = sy - cos_a * 13.5f;
-        cs2d_render_sprite(&bank->tex_reload, wx, wy, 32.0f, 32.0f, player->angle, 1.0f, 1.0f, 1.0f, 1.0f);
+        float wx = sx + sin_d * 13.5f;
+        float wy = sy - cos_d * 13.5f;
+        cs2d_render_sprite(&bank->tex_reload, wx, wy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
     } else if (active_wep && active_wep->id) {
-        /* Held weapon sprite at 16.5px in front of player (0x14012168e: 0x140bd7058 = 16.5) */
-        float wx = sx + sin_a * 16.5f;
-        float wy = sy - cos_a * 16.5f;
-        cs2d_render_sprite(active_wep, wx, wy, 32.0f, 32.0f, player->angle, 1.0f, 1.0f, 1.0f, 1.0f);
+        /* Held weapon distance along draw_angle: 16.5px for firearms (0x14012168e),
+         * 12.5px for grenades (0x1401227ab), 13.5px for melee/bomb (0x1401229b5) */
+        const cs2d_weapon_def_t *wdef = cs2d_weapon_get(player->current_weapon);
+        float wep_dist = 16.5f;
+        if (wdef) {
+            if (wdef->slot == CS2D_SLOT_GRENADE) {
+                wep_dist = 12.5f;
+            } else if (wdef->slot == CS2D_SLOT_MELEE || wdef->slot == CS2D_SLOT_BOMB) {
+                wep_dist = 13.5f;
+            }
+        }
+        float wx = sx + sin_d * wep_dist;
+        float wy = sy - cos_d * wep_dist;
+        cs2d_render_sprite(active_wep, wx, wy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
 
         /* Silencer attachment overlay for USP (1) and M4A1 (32) when zoom_mode == 3 (0x1401217e4) */
         if (bank && player->zoom_mode == 3) {
             if (player->current_weapon == CS2D_WEP_USP && bank->tex_silencer.id) {
-                cs2d_render_sprite(&bank->tex_silencer, wx, wy, 32.0f, 32.0f, player->angle, 1.0f, 1.0f, 1.0f, 1.0f);
+                cs2d_render_sprite(&bank->tex_silencer, wx, wy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
             } else if (player->current_weapon == CS2D_WEP_M4A1 && bank->tex_m4a1s.id) {
-                cs2d_render_sprite(&bank->tex_m4a1s, wx, wy, 32.0f, 32.0f, player->angle, 1.0f, 1.0f, 1.0f, 1.0f);
+                cs2d_render_sprite(&bank->tex_m4a1s, wx, wy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
             }
         }
     }
@@ -3250,6 +3270,12 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
             if (frame > 24) frame = 24;
             cs2d_render_sprite_frame(&bank->tex_explosion, 64, 64, frame, sx, sy, p->size, p->size,
                                      p->rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
+        } else if (p->kind == CS2D_FX_KNIFESLASH && bank && bank->tex_knifeslash.id) {
+            /* Tp type 13 (0x140265220..0x140265361): gfx/knifeslash.bmp, LIGHTBLEND (4), rotated by angle */
+            float w = (float)bank->tex_knifeslash.width;
+            float h = (float)bank->tex_knifeslash.height;
+            cs2d_render_sprite_frame(&bank->tex_knifeslash, 0, 0, 0, sx, sy, w, h,
+                                     p->rot, 1.0f, 1.0f, 1.0f, t, 4);
         }
     }
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
