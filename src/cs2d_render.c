@@ -1291,6 +1291,7 @@ static void draw_tile_frame(
 static cs2d_texture_t s_room_shadow_tex = {0};
 static uint32_t       s_room_shadow_map_w = 0;
 static uint32_t       s_room_shadow_map_h = 0;
+static uint32_t       s_room_shadow_solid_version = 0; /* Rebuild when a DynWall / Breakable toggles */
 static bool           s_shadows_enabled = true;
 
 /*
@@ -1507,9 +1508,11 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
     if (!map || !map->tiles || map->width == 0 || map->height == 0 || !g_gl_ctx) return;
     if (s_room_shadow_tex.id != 0 &&
         s_room_shadow_map_w == map->width &&
-        s_room_shadow_map_h == map->height) {
+        s_room_shadow_map_h == map->height &&
+        s_room_shadow_solid_version == map->entity_solid_version) {
         return;
     }
+    s_room_shadow_solid_version = map->entity_solid_version;
 
     if (s_room_shadow_tex.id != 0) {
         cs2d_texture_free(&s_room_shadow_tex);
@@ -1582,6 +1585,7 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
     }
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *e = &map->entities[i];
+        if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
         if (e->type == CS2D_ENT_ENV_BREAKABLE || e->type == CS2D_ENT_FUNC_DYNWALL) {
             int tile_f = e->int_settings[0];
             if (tile_f > 0 && tile_f < 256 && map->tile_modes[tile_f] == CS2D_TILE_WALL) {
@@ -1656,6 +1660,7 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
     }
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *e = &map->entities[i];
+        if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
         if (e->type == CS2D_ENT_ENV_BREAKABLE || e->type == CS2D_ENT_FUNC_DYNWALL) {
             int tile_f = e->int_settings[0];
             if (tile_f > 0 && tile_f < 256 &&
@@ -1917,6 +1922,7 @@ void cs2d_render_map_ex(
     if (has_tileset) {
         for (uint32_t i = 0; i < map->entity_count; i++) {
             const cs2d_entity_t *ent = &map->entities[i];
+            if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
             if (ent->type == CS2D_ENT_ENV_BREAKABLE || ent->type == CS2D_ENT_FUNC_DYNWALL) {
                 int tile_f = ent->int_settings[0];
                 if (tile_f > 0 && tile_f <= (int)map->tile_count) {
@@ -1938,6 +1944,7 @@ void cs2d_render_map_ex(
     int bombspot_idx = 0;
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *ent = &map->entities[i];
+        if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
         float ex = (float)(ent->x * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_x;
         float ey = (float)(ent->y * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_y;
 
@@ -2127,6 +2134,7 @@ void cs2d_render_map_overhead(
     /* Pass 1: Non-additive rooftop sprites & overhead images (shaded by Layer 1..5 rooftop shadows) */
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *ent = &map->entities[i];
+        if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
         switch (ent->type) {
             case CS2D_ENT_ENV_SPRITE: {
                 if (atoi(ent->str_settings[4]) == 0 &&
@@ -2174,6 +2182,7 @@ void cs2d_render_map_overhead(
 
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *ent = &map->entities[i];
+        if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
         float ex = (float)(ent->x * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_x;
         float ey = (float)(ent->y * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_y;
 

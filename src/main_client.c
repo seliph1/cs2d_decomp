@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+#include <ctype.h>
 #include "cs2d_client.h"
 #include "cs2d_render.h"
 
@@ -19,6 +20,7 @@ static int sdl_key_to_cs2d_key(SDL_Keycode key)
         case SDLK_A:      return 'A';
         case SDLK_D:      return 'D';
         case SDLK_R:      return 'R';
+        case SDLK_E:      return 'E';
         case SDLK_B:      return 'B';
         case SDLK_G:      return 'G';
         case SDLK_1:      return '1';
@@ -83,6 +85,9 @@ static void save_gl_screenshot_bmp(const char *filepath, int w, int h)
  *   !console                      open the console (stays open for the capture)
  *   !text <text>                  type text into the focused textbox
  *   !key <SDL key name> [shift] [ctrl]   press a key with modifiers (e.g. "!key Left shift ctrl")
+ *   !wheel <n>                    mouse wheel (positive = up)
+ *   !mouse <x> <y> [down|up]      move the pointer, optionally pressing / releasing the left button
+ *   !wait <frames>                wait before the next step
  */
 static void run_capture_step(const char *cmd)
 {
@@ -90,6 +95,23 @@ static void run_capture_step(const char *cmd)
         cs2d_client_handle_console_key(&g_client, SDLK_GRAVE);
     } else if (strncmp(cmd, "!text ", 6) == 0) {
         cs2d_client_handle_text_input(&g_client, cmd + 6);
+    } else if (strncmp(cmd, "!mouse ", 7) == 0) {
+        float mx = 0.0f, my = 0.0f;
+        char state[8] = {0};
+        if (sscanf(cmd + 7, "%f %f %7s", &mx, &my, state) >= 2) {
+            int  button  = state[0] ? 1 : 0;
+            bool pressed = (strcmp(state, "down") == 0);
+            cs2d_client_handle_mouse(&g_client, mx, my, button, pressed);
+        }
+    } else if (strncmp(cmd, "!press ", 7) == 0) {
+        /* Game key press + release (e.g. "!press E" = use) */
+        int k = toupper((unsigned char)cmd[7]);
+        cs2d_client_handle_key(&g_client, k, true);
+        cs2d_client_handle_key(&g_client, k, false);
+    } else if (strncmp(cmd, "!wait ", 6) == 0) {
+        /* Handled by the capture scheduler */
+    } else if (strncmp(cmd, "!wheel ", 7) == 0) {
+        cs2d_client_handle_mouse_wheel(&g_client, atoi(cmd + 7));
     } else if (strncmp(cmd, "!key ", 5) == 0) {
         char name[32] = {0};
         sscanf(cmd + 5, "%31s", name);
@@ -102,8 +124,10 @@ static void run_capture_step(const char *cmd)
         g_client.ui.key_events[g_client.ui.key_event_count].mods = mods;
         g_client.ui.key_event_count++;
     } else {
+        /* Commands don't change whether the console is shown (only "!console" opens it) */
+        bool was_open = g_client.console_open;
         cs2d_client_console_exec(&g_client, cmd);
-        g_client.console_open = false;
+        g_client.console_open = was_open;
     }
 }
 
@@ -114,6 +138,9 @@ static int run_client_app(const char *cmdline)
     bool auto_screenshot = false;
     const char *capture_cmd = NULL; /* --capture[:<cmd>[;<cmd>...]] -> screens/capture.bmp */
     int capture_frame = 30;
+    int capture_resume = 0;   /* "!wait <frames>" holds the next step until this frame */
+    double frame_ms_sum = 0.0, frame_ms_max = 0.0;
+    int    frame_ms_count = 0;
     if (cmdline && strlen(cmdline) > 0) {
         if (strstr(cmdline, "--screenshot") != NULL) {
             auto_screenshot = true;
@@ -284,6 +311,14 @@ static int run_client_app(const char *cmdline)
         /* Render */
         cs2d_render_begin_frame();
         cs2d_client_render(&g_client, g_client.config.window_width, g_client.config.window_height);
+        if (capture_cmd) {
+            /* Capture mode: time update + render including GPU work (excludes the 16ms pacing delay) */
+            glFinish();
+            double work_ms = (double)(SDL_GetPerformanceCounter() - current_time) * 1000.0 / (double)freq;
+            frame_ms_sum += work_ms;
+            frame_ms_count++;
+            if (work_ms > frame_ms_max) frame_ms_max = work_ms;
+        }
         if (auto_screenshot && frame_count == 45) {
             save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot.bmp",
                                    g_client.config.window_width, g_client.config.window_height);
@@ -327,16 +362,23 @@ static int run_client_app(const char *cmdline)
         }
         if (capture_cmd) {
             /* Runs one ';'-separated console command every 5 frames, then captures 30 frames later */
-            if (capture_cmd[0] && frame_count > 0 && frame_count % 5 == 0) {
+            if (capture_cmd[0] && frame_count > 0 && frame_count % 5 == 0 && frame_count >= capture_resume) {
                 char cmd[CS2D_CONSOLE_LINE_LEN];
                 size_t len = strcspn(capture_cmd, ";");
                 snprintf(cmd, sizeof(cmd), "%.*s", (int)len, capture_cmd);
                 capture_cmd += len + (capture_cmd[len] == ';' ? 1 : 0);
-                capture_frame = frame_count + 30;
+                if (strncmp(cmd, "!wait ", 6) == 0) capture_resume = frame_count + atoi(cmd + 6); /* !wait <frames> */
+                capture_frame = ((capture_resume > frame_count) ? capture_resume : frame_count) + 30;
                 run_capture_step(cmd);
+                if (strncmp(cmd, "!wheel", 6) != 0) { /* Scrolling steps accumulate into one measurement */
+                    frame_ms_sum = frame_ms_max = 0.0;
+                    frame_ms_count = 0;
+                }
             } else if (frame_count == capture_frame) {
                 CreateDirectoryA("screens", NULL);
                 save_gl_screenshot_bmp("screens/capture.bmp", g_client.config.window_width, g_client.config.window_height);
+                printf("[capture] frame time over last %d frames: avg %.3f ms, max %.3f ms\n",
+                       frame_ms_count, frame_ms_count ? frame_ms_sum / frame_ms_count : 0.0, frame_ms_max);
                 cs2d_render_end_frame(window);
                 break;
             }

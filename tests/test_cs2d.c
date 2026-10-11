@@ -20,6 +20,8 @@
 #include "cs2d_network.h"
 #include "cs2d_render.h"
 #include "cs2d_ui.h"
+#include "cs2d_client.h"
+#include "cs2d_entities.h"
 #include <SDL3/SDL.h>
 
 #define TEST_PASS(name) printf("  [PASS] %s\n", name)
@@ -585,7 +587,7 @@ static bool test_ui_layout(void)
 {
     printf("\n=== Testing Declarative UI Layout Engine (cs2d_ui) ===\n");
 
-    cs2d_ui_context_t ui;
+    static cs2d_ui_context_t ui; /* ~1MB: too large for the stack */
     cs2d_ui_init(&ui);
 
     cs2d_ui_begin_layout(&ui, 850, 480, 120.0f, 80.0f, false, 0);
@@ -789,6 +791,363 @@ static bool test_ui_textbox(void)
 }
 
 /* =========================================================================
+ * Test 10: Dropdown (cs2d_ui_select) & Number Box (cs2d_ui_numberbox)
+ * ========================================================================= */
+static cs2d_ui_context_t s_dd_ui;
+
+static const char *s_dd_opts[] = {
+    "Opt 0", "Opt 1", "Opt 2", "Opt 3", "Opt 4", "Opt 5",
+    "Opt 6", "Opt 7", "Opt 8", "Opt 9", "Opt 10", "Opt 11"
+};
+
+/* One frame with a 12-option dropdown at (0,0) 120x18 and a checkbox laid out below it */
+static bool dd_frame(int *sel, float mx, float my, bool down, int wheel, int key)
+{
+    cs2d_ui_begin_layout(&s_dd_ui, 850, 480, mx, my, down, wheel);
+    if (key) {
+        s_dd_ui.key_events[0].key  = key;
+        s_dd_ui.key_events[0].mods = 0;
+        s_dd_ui.key_event_count    = 1;
+    }
+    bool changed = cs2d_ui_select(&s_dd_ui, CS2D_UI_ID("DdTest"), s_dd_opts, 12, sel, 120.0f);
+    bool below = false;
+    cs2d_ui_checkbox(&s_dd_ui, CS2D_UI_ID("DdBelow"), "Below", &below);
+    cs2d_ui_end_layout(&s_dd_ui);
+    return changed;
+}
+
+/* One frame with a [1, 32] number box at (0,0), optionally typing text and pressing a key */
+static void nb_frame(int *value, const char *text, int key, uint32_t mods, int wheel, float mx, float my)
+{
+    cs2d_ui_begin_layout(&s_dd_ui, 850, 480, mx, my, false, wheel);
+    if (text) snprintf(s_dd_ui.text_input, sizeof(s_dd_ui.text_input), "%s", text);
+    if (key) {
+        s_dd_ui.key_events[0].key  = key;
+        s_dd_ui.key_events[0].mods = mods;
+        s_dd_ui.key_event_count    = 1;
+    }
+    cs2d_ui_numberbox(&s_dd_ui, CS2D_UI_ID("NbTest"), value, 1, 32, 40.0f);
+    cs2d_ui_end_layout(&s_dd_ui);
+}
+
+static bool test_ui_dropdown_numberbox(void)
+{
+    printf("\n=== Testing Dropdown & Number Box (cs2d_ui_select, cs2d_ui_numberbox) ===\n");
+    cs2d_ui_id_t dd = CS2D_UI_ID("DdTest");
+    int sel = 0;
+    cs2d_ui_init(&s_dd_ui);
+
+    /* Open with a click, then pick the third visible row with the mouse */
+    dd_frame(&sel, 60.0f, 9.0f, false, 0, 0);
+    dd_frame(&sel, 60.0f, 9.0f, true, 0, 0);
+    if (s_dd_ui.dropdown_id != dd) TEST_FAIL("Dropdown open", "Click on the box must open the list");
+    dd_frame(&sel, 60.0f, 9.0f, false, 0, 0);
+    if (cs2d_ui_get_box(&s_dd_ui, dd ^ 0x6002u).h != 8 * 20.0f + 2.0f) TEST_FAIL("Dropdown list", "Expected 8 visible rows");
+
+    int last = s_dd_ui.render_order[s_dd_ui.render_cmd_count - 1];
+    if (s_dd_ui.render_cmds[last].z_index != 100) TEST_FAIL("Z-order", "Open list must be drawn last (above the checkbox)");
+    for (int i = 1; i < s_dd_ui.render_cmd_count; i++) {
+        if (s_dd_ui.render_cmds[s_dd_ui.render_order[i - 1]].z_index > s_dd_ui.render_cmds[s_dd_ui.render_order[i]].z_index) {
+            TEST_FAIL("Z-order", "render_order must be sorted by z_index");
+        }
+    }
+
+    float row2_y = 18.0f + 1.0f + 2.0f * 20.0f + 10.0f;
+    dd_frame(&sel, 40.0f, row2_y, false, 0, 0);
+    dd_frame(&sel, 40.0f, row2_y, true, 0, 0);
+    bool changed = dd_frame(&sel, 40.0f, row2_y, false, 0, 0);
+    if (!changed || sel != 2 || s_dd_ui.dropdown_id != 0) TEST_FAIL("Dropdown pick", "Expected option 2 picked and list closed");
+    TEST_PASS("Click opens list (8 rows, drawn above later widgets), click on a row picks it and closes");
+
+    /* Wheel scrolls the list, ESC closes it, keyboard changes the value while closed */
+    dd_frame(&sel, 60.0f, 9.0f, true, 0, 0);
+    dd_frame(&sel, 60.0f, 9.0f, false, 0, 0);
+    dd_frame(&sel, 40.0f, 60.0f, false, -10, 0);
+    if (s_dd_ui.dropdown_top != 4) TEST_FAIL("Dropdown wheel", "Expected list scrolled to the last page (top = 4)");
+    if (!cs2d_ui_capture_escape(&s_dd_ui) || s_dd_ui.dropdown_id != 0) TEST_FAIL("Dropdown ESC", "ESC must close the list");
+    if (cs2d_ui_capture_escape(&s_dd_ui)) TEST_FAIL("Dropdown ESC", "ESC with no open list must not be captured");
+    dd_frame(&sel, 400.0f, 400.0f, false, 0, SDLK_DOWN);
+    if (sel != 3) TEST_FAIL("Dropdown Down", "Expected value 3");
+    dd_frame(&sel, 400.0f, 400.0f, false, 0, SDLK_END);
+    if (sel != 11) TEST_FAIL("Dropdown End", "Expected value 11");
+    dd_frame(&sel, 400.0f, 400.0f, false, 0, SDLK_RETURN);
+    if (s_dd_ui.dropdown_id != dd || s_dd_ui.dropdown_hover != 11) TEST_FAIL("Dropdown Enter", "Enter must open the list on the value");
+    dd_frame(&sel, 400.0f, 400.0f, false, 0, SDLK_UP);
+    dd_frame(&sel, 400.0f, 400.0f, false, 0, SDLK_RETURN);
+    if (sel != 10 || s_dd_ui.dropdown_id != 0) TEST_FAIL("Dropdown keyboard pick", "Expected option 10 picked");
+    dd_frame(&sel, 400.0f, 400.0f, true, 0, 0);
+    TEST_PASS("Wheel scrolls the list, ESC closes it, Up/Down/End/Enter keyboard navigation");
+
+    /* Number box */
+    cs2d_ui_init(&s_dd_ui);
+    cs2d_ui_id_t nb = CS2D_UI_ID("NbTest");
+    int val = 12;
+    nb_frame(&val, NULL, 0, 0, 0, 400.0f, 400.0f);
+    s_dd_ui.focused_id = nb;
+    nb_frame(&val, NULL, SDLK_A, CS2D_UI_MOD_CTRL, 0, 400.0f, 400.0f);
+    nb_frame(&val, "4x5", 0, 0, 0, 400.0f, 400.0f);
+    if (strcmp(s_dd_ui.numbox_text, "45") != 0 || val != 12) TEST_FAIL("Numberbox typing", "Out-of-range text must not change the value yet");
+    nb_frame(&val, NULL, SDLK_RETURN, 0, 0, 400.0f, 400.0f);
+    if (val != 32 || strcmp(s_dd_ui.numbox_text, "32") != 0) TEST_FAIL("Numberbox Enter", "Expected clamp to 32");
+    nb_frame(&val, NULL, SDLK_DOWN, CS2D_UI_MOD_SHIFT, 0, 400.0f, 400.0f);
+    if (val != 22) TEST_FAIL("Numberbox Shift+Down", "Expected 22");
+    nb_frame(&val, NULL, SDLK_BACKSPACE, 0, 0, 400.0f, 400.0f);
+    if (val != 2) TEST_FAIL("Numberbox live value", "Valid in-range text must update the value");
+    nb_frame(&val, NULL, SDLK_BACKSPACE, 0, 0, 400.0f, 400.0f);
+    s_dd_ui.focused_id = 0;
+    nb_frame(&val, NULL, 0, 0, 0, 400.0f, 400.0f);
+    if (val != 1 || s_dd_ui.numbox_id != 0) TEST_FAIL("Numberbox focus loss", "Empty text must commit as the minimum");
+    nb_frame(&val, NULL, 0, 0, 3, 20.0f, 9.0f);
+    if (val != 4) TEST_FAIL("Numberbox wheel", "Wheel over the box must step the value");
+    TEST_PASS("Number box: digits only, live value, clamp on Enter / focus loss, arrows and wheel");
+
+    return true;
+}
+
+/* =========================================================================
+ * Test 11: Console Ring Buffer, Scrolling & Performance (cs2d_client)
+ * ========================================================================= */
+static cs2d_client_t s_con;
+
+static double now_ms(void)
+{
+    LARGE_INTEGER f, c;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return (double)c.QuadPart * 1000.0 / (double)f.QuadPart;
+}
+
+/* Lays out the console and returns its log box node (children = visible lines) */
+static const cs2d_ui_node_t *console_layout(void)
+{
+    cs2d_client_build_ui(&s_con, 850, 480);
+    for (int i = 0; i < s_con.ui.node_count; i++) {
+        if (s_con.ui.nodes[i].id == CS2D_UI_ID("ConsoleLogBox")) return &s_con.ui.nodes[i];
+    }
+    return NULL;
+}
+
+static const char *visible_line(const cs2d_ui_node_t *box, int i)
+{
+    return s_con.ui.nodes[box->children[i]].text;
+}
+
+static bool test_console(void)
+{
+    printf("\n=== Testing Console Ring Buffer, Scrolling & Performance ===\n");
+    memset(&s_con, 0, sizeof(s_con));
+    cs2d_ui_init(&s_con.ui);
+    s_con.config.window_width  = 850;
+    s_con.config.window_height = 480;
+    s_con.console_open         = true;
+
+    /* Throughput: 100k lines through the 1024-line ring buffer */
+    const int N = 100000;
+    double t0 = now_ms();
+    for (int i = 0; i < N; i++) {
+        cs2d_client_console_print(&s_con, 170, 170, 170, "console line %d", i);
+    }
+    double print_ms = now_ms() - t0;
+    char expect[64];
+    snprintf(expect, sizeof(expect), "console line %d", N - CS2D_CONSOLE_MAX_LINES);
+    if (s_con.console_line_count != CS2D_CONSOLE_MAX_LINES || strcmp(cs2d_client_console_line(&s_con, 0)->text, expect) != 0) {
+        TEST_FAIL("Ring buffer", "Expected the newest 1024 lines, oldest first");
+    }
+    snprintf(expect, sizeof(expect), "console line %d", N - 1);
+    if (strcmp(cs2d_client_console_line(&s_con, CS2D_CONSOLE_MAX_LINES - 1)->text, expect) != 0) {
+        TEST_FAIL("Ring buffer", "Newest line must be last");
+    }
+    printf("  [INFO] %d prints: %.2f ms (%.3f us/line)\n", N, print_ms, print_ms * 1000.0 / N);
+    if (print_ms > 500.0) TEST_FAIL("Print throughput", "100k console prints took longer than 500ms");
+    TEST_PASS("Ring buffer keeps the newest 1024 of 100k lines in order");
+
+    /* Regression: scrolling up must never empty the log box (lines used to vanish from the bottom) */
+    const cs2d_ui_node_t *box = console_layout();
+    int vis = s_con.console_visible_lines;
+    if (!box || vis < 5 || box->child_count != vis) TEST_FAIL("Console layout", "Log box must show a full page of lines");
+    for (int step = 0; step < 400; step++) {
+        cs2d_client_handle_mouse_wheel(&s_con, 1);
+        box = console_layout();
+        if (box->child_count != vis) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Scroll step %d shows %d of %d lines", step, box->child_count, vis);
+            TEST_FAIL("Scroll up", msg);
+        }
+    }
+    if (s_con.console_scroll != CS2D_CONSOLE_MAX_LINES - vis) TEST_FAIL("Scroll clamp", "Scroll must stop when the oldest line is at the top");
+    if (strcmp(visible_line(box, 0), cs2d_client_console_line(&s_con, 0)->text) != 0) TEST_FAIL("Scroll top", "Oldest line must be the first visible line");
+    TEST_PASS("Scrolling to the top and beyond keeps every row filled; stops at the oldest line");
+
+    /* While scrolled up, new output keeps the view on the same lines */
+    for (int i = 0; i < 300; i++) cs2d_client_handle_mouse_wheel(&s_con, -1);
+    box = console_layout();
+    char first[CS2D_CONSOLE_LINE_LEN];
+    snprintf(first, sizeof(first), "%s", visible_line(box, 0));
+    for (int i = 0; i < 10; i++) cs2d_client_console_print(&s_con, 255, 255, 255, "new output %d", i);
+    box = console_layout();
+    if (strcmp(visible_line(box, 0), first) != 0) TEST_FAIL("Scroll anchor", "New lines must not move a scrolled-up view");
+    s_con.console_scroll = 0;
+    box = console_layout();
+    if (strcmp(visible_line(box, vis - 1), "new output 9") != 0) TEST_FAIL("Follow output", "At the bottom the newest line must be visible");
+    TEST_PASS("Scrolled-up view stays put on new output; bottom view follows it");
+
+    /* Layout cost of a full console window (headless: CPU layout only) */
+    const int FRAMES = 2000;
+    t0 = now_ms();
+    for (int f = 0; f < FRAMES; f++) {
+        s_con.console_scroll = (f * 7) % (CS2D_CONSOLE_MAX_LINES - vis);
+        console_layout();
+    }
+    double layout_ms = (now_ms() - t0) / FRAMES;
+    printf("  [INFO] console layout with %d lines: %.3f ms/frame (%d visible)\n", s_con.console_line_count, layout_ms, vis);
+    if (layout_ms > 2.0) TEST_FAIL("Layout performance", "Console layout must stay under 2ms per frame");
+    TEST_PASS("Console layout cost independent of history size");
+
+    return true;
+}
+
+/* =========================================================================
+ * Test 12: Map Entity Logic vs. Dedicated Server Ground Truth (prison_funst3r)
+ * The fixture was recorded on cs2d_dedicated with a Lua sweep that fires every trigger name
+ * of the map and samples entity(x,y,"state") (see the fixture header for the timing).
+ * ========================================================================= */
+static cs2d_map_t          s_pmap;
+static cs2d_entity_world_t s_pworld;
+static uint8_t             s_expected[CS2D_MAX_ENTITIES];
+
+static int prison_entity_at(int x, int y)
+{
+    for (uint32_t i = 0; i < s_pmap.entity_count; i++) {
+        if (s_pmap.entities[i].x == x && s_pmap.entities[i].y == y) return (int)i;
+    }
+    return -1;
+}
+
+/* Round restart scheduled by Func_GameAction (0 = draw, 1 = T win, 2 = CT win: new round 3 s later) */
+static float s_prestart = -1.0f;
+
+static void prison_handle_events(void)
+{
+    cs2d_ent_event_t ev;
+    while (cs2d_ents_pop_event(&s_pworld, &ev)) {
+        const cs2d_entity_t *e = &s_pmap.entities[ev.entity];
+        if (ev.type == CS2D_ENT_EVENT_ACTION && e->int_settings[0] >= 0 && e->int_settings[0] <= 2) {
+            s_prestart = 3.0f;
+        }
+    }
+}
+
+static void prison_advance(float seconds)
+{
+    const float dt = 0.01f;
+    for (float t = 0.0f; t < seconds - dt * 0.5f; t += dt) {
+        cs2d_ents_update(&s_pworld, dt);
+        prison_handle_events();
+        if (s_prestart >= 0.0f) {
+            s_prestart -= dt;
+            if (s_prestart <= 0.005f) {
+                s_prestart = -1.0f;
+                cs2d_ents_round_start(&s_pworld);
+                prison_handle_events();
+            }
+        }
+    }
+}
+
+/* Applies "+x,y" / "-x,y" tokens (or plain "x,y" = 1) to s_expected; returns false on an unknown position */
+static bool prison_apply_tokens(char *tokens)
+{
+    for (char *tok = strtok(tokens, " \r\n"); tok; tok = strtok(NULL, " \r\n")) {
+        uint8_t v = 1;
+        if (*tok == '+' || *tok == '-') v = (*tok++ == '+') ? 1 : 0;
+        int x, y;
+        if (sscanf(tok, "%d,%d", &x, &y) != 2) return false;
+        int idx = prison_entity_at(x, y);
+        if (idx < 0) return false;
+        s_expected[idx] = v;
+    }
+    return true;
+}
+
+static int prison_compare(const char *where, int *reported)
+{
+    int bad = 0;
+    for (uint32_t i = 0; i < s_pmap.entity_count; i++) {
+        if (s_pmap.entities[i].type == CS2D_ENT_ENV_DECAL) continue; /* Not exposed to Lua */
+        if (s_pmap.entity_state[i] != s_expected[i]) {
+            if (*reported < 12) {
+                printf("  [DIFF] %s: #%u %s at (%d,%d) name='%s' expected %u, got %u\n", where, i,
+                       cs2d_entity_type_name(s_pmap.entities[i].type), s_pmap.entities[i].x, s_pmap.entities[i].y,
+                       s_pmap.entities[i].name, s_expected[i], s_pmap.entity_state[i]);
+                (*reported)++;
+            }
+            bad++;
+        }
+    }
+    return bad;
+}
+
+static bool test_entities_prison(void)
+{
+    printf("\n=== Testing Entity Logic vs. Dedicated Server (prison_funst3r, all trigger names) ===\n");
+    FILE *f = fopen("tests/data/prison_funst3r_triggers.txt", "r");
+    if (!f) TEST_FAIL("Fixture", "tests/data/prison_funst3r_triggers.txt not found");
+    if (!cs2d_map_load_file(&s_pmap, "maps/prison_funst3r.map")) {
+        fclose(f);
+        TEST_FAIL("Map", "maps/prison_funst3r.map not found");
+    }
+    cs2d_ents_init(&s_pworld, &s_pmap);
+    cs2d_ents_round_start(&s_pworld);
+    s_prestart = -1.0f;
+    prison_handle_events();
+
+    static char line[65536];
+    int reported = 0, samples = 0, bad_samples = 0, names = 0;
+    bool first_step = true;
+    while (fgets(line, sizeof(line), f)) {
+        if (line[0] == '#' || line[0] == '\n') continue;
+        if (strncmp(line, "init ", 5) == 0) {
+            memset(s_expected, 0, sizeof(s_expected));
+            if (!prison_apply_tokens(line + 5)) {
+                fclose(f);
+                TEST_FAIL("Fixture", "bad init record");
+            }
+            if (prison_compare("round start", &reported) != 0) bad_samples++;
+            continue;
+        }
+        char name[64];
+        int sample = 0, consumed = 0;
+        if (sscanf(line, "step %63s %d%n", name, &sample, &consumed) != 2) continue;
+        if (sample == 1) {
+            if (!first_step) prison_advance(0.1f);
+            first_step = false;
+            cs2d_ents_trigger(&s_pworld, name);
+            prison_handle_events();
+            prison_advance(0.5f);
+            names++;
+        } else {
+            prison_advance(1.0f);
+        }
+        if (!prison_apply_tokens(line + consumed)) {
+            fclose(f);
+            TEST_FAIL("Fixture", "bad step record");
+        }
+        char where[96];
+        snprintf(where, sizeof(where), "trigger '%s' sample %d", name, sample);
+        if (prison_compare(where, &reported) != 0) bad_samples++;
+        samples++;
+    }
+    fclose(f);
+
+    printf("  [INFO] %d trigger names, %d samples, %u activations, %d sample(s) differing from the server\n",
+           names, samples, s_pworld.activations, bad_samples);
+    cs2d_map_free(&s_pmap);
+    if (bad_samples != 0) TEST_FAIL("Entity logic", "entity states differ from the dedicated server");
+    TEST_PASS("Round start + every trigger name of prison_funst3r match the dedicated server state-for-state");
+    return true;
+}
+
+/* =========================================================================
  * Main Runner
  * ========================================================================= */
 int main(void)
@@ -798,7 +1157,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 9;
+    int total = 12;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -809,6 +1168,9 @@ int main(void)
     if (test_entities_and_sprites()) passed++;
     if (test_ui_layout()) passed++;
     if (test_ui_textbox()) passed++;
+    if (test_ui_dropdown_numberbox()) passed++;
+    if (test_console()) passed++;
+    if (test_entities_prison()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

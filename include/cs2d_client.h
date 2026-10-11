@@ -11,8 +11,9 @@
 #include "cs2d_config.h"
 #include "cs2d_ui.h"
 #include "cs2d_scene.h"
+#include "cs2d_entities.h"
 
-#define CS2D_CONSOLE_MAX_LINES 256
+#define CS2D_CONSOLE_MAX_LINES 1024 /* Ring buffer: the oldest line is dropped when full */
 #define CS2D_CONSOLE_LINE_LEN  192
 #define CS2D_CONSOLE_HIST_MAX  32
 
@@ -44,6 +45,18 @@ struct cs2d_client {
 
     /* Game scene */
     cs2d_game_t     game;
+    char            game_map_name[64]; /* Map loaded by the game scene (e.g. "prison_funst3r") */
+    cs2d_entity_world_t ents;          /* Name/trigger entity logic for game.map (simulated offline) */
+    bool            snapshot_states_reset; /* Join snapshot: entity states cleared before applying section 4 */
+    uint32_t        ents_round;        /* game.round_number the entity logic was last reset for */
+    int             last_tile_x;       /* Local player tile, to detect Trigger_Move / Func_Teleport entry */
+    int             last_tile_y;
+
+    /* "walkto" test command: follow a BFS tile path at running speed */
+    bool            walk_active;
+    cs2d_vec2_t     walk_path[1024];
+    int             walk_len;
+    int             walk_pos;
     uint8_t         local_player_id;
     float           cam_x;
     float           cam_y;
@@ -89,9 +102,8 @@ struct cs2d_client {
     int                 srv_name_cursor;
     char                srv_password[64];
     int                 srv_password_cursor;
-    char                srv_port[16];
-    int                 srv_port_cursor;
-    int                 srv_max_players_idx;
+    int                 srv_port;
+    int                 srv_max_players;
     int                 srv_gamemode_idx;
     int                 srv_fow_idx;
     bool                srv_reg_usgn;
@@ -115,8 +127,11 @@ struct cs2d_client {
     bool                show_fps;
     bool                quit_requested;
     cs2d_console_line_t console_lines[CS2D_CONSOLE_MAX_LINES];
+    int                 console_line_head;      /* Ring index of the oldest line */
     int                 console_line_count;
-    int                 console_scroll;
+    int                 console_scroll;         /* Lines scrolled up from the bottom (0 = follow new output) */
+    int                 console_visible_lines;  /* Lines that fit in the log box (set by the console layout) */
+    float               console_sb_grab_y;      /* Scrollbar thumb drag offset */
     char                console_input[CS2D_CONSOLE_LINE_LEN];
     int                 console_cursor;
     char                console_pending_cmd[CS2D_CONSOLE_LINE_LEN]; /* Submitted with Enter, run on the next update */
@@ -160,12 +175,17 @@ void cs2d_client_handle_mouse(cs2d_client_t *client, float mx, float my, int but
 /* Console UI & Command Interpreter */
 void cs2d_client_console_print(cs2d_client_t *client, uint8_t r, uint8_t g, uint8_t b, const char *fmt, ...);
 void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line);
+/* i-th stored console line, 0 = oldest */
+const cs2d_console_line_t *cs2d_client_console_line(const cs2d_client_t *client, int i);
 void cs2d_client_handle_text_input(cs2d_client_t *client, const char *text);
 void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key);
 void cs2d_client_handle_mouse_wheel(cs2d_client_t *client, int delta_y);
 
 /* Update client game tick (runs at 60 FPS) */
 void cs2d_client_update(cs2d_client_t *client, float delta_time);
+
+/* Lay out the shared UI windows (console, Create Server, Options) without drawing them */
+void cs2d_client_build_ui(cs2d_client_t *client, int screen_w, int screen_h);
 
 /* Render entire frame (map, players, particles, HUD, Console, FPS, crosshair) */
 void cs2d_client_render(cs2d_client_t *client, int screen_w, int screen_h);

@@ -335,12 +335,20 @@ typedef struct {
     /* Section (5) Entities */
     cs2d_entity_t entities[CS2D_MAX_ENTITIES];
     uint32_t      entity_count;
+
+    /* Runtime entity state (cs2d_entities.c): 0 = active/visible/closed, 1 = inactive/hidden/open.
+     * Triggering an entity toggles it; the server sends the entities in state 1 when a client joins. */
+    uint8_t       entity_state[CS2D_MAX_ENTITIES];
+    uint32_t      entity_state_version;  /* Bumped on every state change (render caches) */
+    uint32_t      entity_solid_version;  /* Bumped when a DynWall / Breakable changes (shadow map) */
+    uint8_t      *base_collision;        /* Tile-only collision; entity overlays are applied on top */
 } cs2d_map_t;
 
 /* Game Simulation State */
 typedef struct {
     cs2d_gamemode_t    gamemode;
     cs2d_round_state_t round_state;
+    uint32_t           round_number;     /* Incremented by every round start (entity logic resets on change) */
     float              state_timer;
     float              round_time;       /* current remaining round time */
     float              freeze_time;      /* freeze time remaining */

@@ -81,6 +81,7 @@ void cs2d_game_start_round(cs2d_game_t *game)
     if (!game) return;
 
     game->round_state = CS2D_ROUND_FREEZETIME;
+    game->round_number++;
     game->freeze_time = game->cfg_freezetime;
     game->round_time = game->cfg_roundtime;
     game->bomb_planted = false;
@@ -218,7 +219,7 @@ void cs2d_game_end_round(cs2d_game_t *game, cs2d_team_t winner, const char *reas
     if (!game || game->round_state == CS2D_ROUND_ENDED) return;
 
     game->round_state = CS2D_ROUND_ENDED;
-    game->state_timer = 5.0f; /* 5 second round end intermission */
+    game->state_timer = 3.0f; /* Round end intermission: 3 s, measured on cs2d_dedicated 1.0.1.8 (Func_GameAction win) */
 
     if (winner == CS2D_TEAM_CT) {
         game->score_ct++;

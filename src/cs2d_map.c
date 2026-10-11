@@ -410,6 +410,10 @@ void cs2d_map_free(cs2d_map_t *map)
         free(map->collision);
         map->collision = NULL;
     }
+    if (map->base_collision) {
+        free(map->base_collision);
+        map->base_collision = NULL;
+    }
     map->width = 0;
     map->height = 0;
     map->entity_count = 0;

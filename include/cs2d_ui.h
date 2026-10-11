@@ -257,6 +257,7 @@ typedef struct {
     uint32_t             last_click_ms;
     float                last_click_x;
     float                last_click_y;
+    bool                 mouse_moved;    /* Pointer moved since the previous layout */
 
     cs2d_ui_id_t         hot_id;
     cs2d_ui_id_t         active_id;
@@ -275,6 +276,18 @@ typedef struct {
 
     cs2d_ui_edit_state_t edit;
 
+    /* Open dropdown list (only one at a time) */
+    cs2d_ui_id_t         dropdown_id;
+    bool                 dropdown_seen;     /* Built this frame; a dropdown that disappears is closed */
+    int                  dropdown_hover;    /* Highlighted option (mouse or keyboard) */
+    int                  dropdown_top;      /* First visible option */
+    float                dropdown_grab_y;   /* Scrollbar thumb drag offset */
+
+    /* Text of the focused numberbox while it is being edited */
+    cs2d_ui_id_t         numbox_id;
+    char                 numbox_text[16];
+    int                  numbox_cursor;
+
     /* Current frame node tree */
     cs2d_ui_node_t       nodes[CS2D_UI_MAX_NODES];
     int                  node_count;
@@ -285,8 +298,9 @@ typedef struct {
     cs2d_ui_box_entry_t  box_cache[CS2D_UI_MAX_BOX_CACHE];
     int                  box_cache_count;
 
-    /* Emitted Render Commands */
+    /* Emitted Render Commands, drawn in render_order (stable sort by z_index) */
     cs2d_ui_render_cmd_t render_cmds[CS2D_UI_MAX_RENDER_CMDS];
+    int                  render_order[CS2D_UI_MAX_RENDER_CMDS];
     int                  render_cmd_count;
 } cs2d_ui_context_t;
 
@@ -320,6 +334,9 @@ void cs2d_ui_clear_input(cs2d_ui_context_t *ctx);
 
 /* Forget selection, scroll and undo history of the focused textbox (e.g. after replacing its text) */
 void cs2d_ui_edit_reset(cs2d_ui_context_t *ctx);
+
+/* ESC handling: closes an open dropdown and returns true, so the caller keeps its window open */
+bool cs2d_ui_capture_escape(cs2d_ui_context_t *ctx);
 
 void cs2d_ui_open_element(cs2d_ui_context_t *ctx, cs2d_ui_id_t id, const cs2d_ui_element_decl_t *decl);
 void cs2d_ui_close_element(cs2d_ui_context_t *ctx);
@@ -383,7 +400,13 @@ bool cs2d_ui_radio(
     int *current_value
 );
 
-/* CS2D Dropdown / Cycle Selector ([ Value           |+| ]) */
+/*
+ * CS2D Dropdown ([ Value           |+| ]). Returns true when the selection changed.
+ * Click opens a list below the box (up to 8 rows, scrollbar, drawn above everything else);
+ * click an option to pick it, click outside or ESC to close. Mouse wheel scrolls the list.
+ * Keyboard (after clicking it): Up/Down/Home/End change the value (or the highlight when open),
+ * PageUp/PageDown page the list, Enter/Space open the list or pick the highlighted option.
+ */
 bool cs2d_ui_select(
     cs2d_ui_context_t *ctx,
     cs2d_ui_id_t id,
@@ -427,6 +450,21 @@ bool cs2d_ui_textbox(
     int *cursor_pos,
     float width,
     bool password_mode
+);
+
+/*
+ * CS2D Number Box: a digits-only textbox bound to an int in [min_value, max_value].
+ * The value follows the text while it is a valid in-range number and is clamped on Enter or when
+ * focus leaves. Up/Down step by 1 (Shift: 10), PageUp/PageDown by 10, mouse wheel by 1 while hovered.
+ * Returns true when *value changed.
+ */
+bool cs2d_ui_numberbox(
+    cs2d_ui_context_t *ctx,
+    cs2d_ui_id_t id,
+    int *value,
+    int min_value,
+    int max_value,
+    float width
 );
 
 /* CS2D Gradient Section Header inside lists (e.g. "DE - Bomb Defuse", "Communication") */

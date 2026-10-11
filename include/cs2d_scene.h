@@ -47,4 +47,11 @@ const cs2d_scene_t *cs2d_scene_get(cs2d_scene_id_t id);
 /* Game scene helpers used by the console ("map" while already in game) */
 bool cs2d_scene_game_change_map(cs2d_client_t *client, const char *map_name);
 
+/* Starts running along a BFS tile path to (tx, ty); false when unreachable */
+bool cs2d_scene_game_walk_to(cs2d_client_t *client, int tx, int ty);
+
+/* Server state for the entity at tile (tx, ty): the first entity there still in state 0
+ * takes it (the server lists entities in map order) */
+void cs2d_scene_game_apply_entity_state(cs2d_client_t *client, int tx, int ty, uint8_t state);
+
 #endif /* CS2D_SCENE_H */

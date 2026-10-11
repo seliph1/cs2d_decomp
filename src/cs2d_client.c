@@ -12,6 +12,16 @@
 #include <ctype.h>
 #include <math.h>
 
+/* Scrolling stops when the oldest line reaches the top of the log box */
+static void console_clamp_scroll(cs2d_client_t *client)
+{
+    int visible    = (client->console_visible_lines > 0) ? client->console_visible_lines : 1;
+    int max_scroll = client->console_line_count - visible;
+    if (max_scroll < 0) max_scroll = 0;
+    if (client->console_scroll > max_scroll) client->console_scroll = max_scroll;
+    if (client->console_scroll < 0) client->console_scroll = 0;
+}
+
 void cs2d_client_console_print(cs2d_client_t *client, uint8_t r, uint8_t g, uint8_t b, const char *fmt, ...)
 {
     if (!client || !fmt) return;
@@ -22,22 +32,40 @@ void cs2d_client_console_print(cs2d_client_t *client, uint8_t r, uint8_t g, uint
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
 
-    if (client->console_line_count >= CS2D_CONSOLE_MAX_LINES) {
-        memmove(&client->console_lines[0],
-                &client->console_lines[1],
-                sizeof(cs2d_console_line_t) * (CS2D_CONSOLE_MAX_LINES - 1));
-        client->console_line_count = CS2D_CONSOLE_MAX_LINES - 1;
+    /* Echo to stdout while tracing the network protocol (CS2D_NET_LOG) */
+    static int echo = -1;
+    if (echo < 0) echo = (getenv("CS2D_NET_LOG") != NULL);
+    if (echo) {
+        printf("[console] %s\n", buf);
+        fflush(stdout);
     }
 
-    cs2d_console_line_t *line = &client->console_lines[client->console_line_count++];
-    strncpy(line->text, buf, CS2D_CONSOLE_LINE_LEN - 1);
-    line->text[CS2D_CONSOLE_LINE_LEN - 1] = '\0';
+    /* Ring buffer: when full, the new line overwrites the oldest one */
+    int slot;
+    if (client->console_line_count < CS2D_CONSOLE_MAX_LINES) {
+        slot = (client->console_line_head + client->console_line_count++) % CS2D_CONSOLE_MAX_LINES;
+    } else {
+        slot = client->console_line_head;
+        client->console_line_head = (client->console_line_head + 1) % CS2D_CONSOLE_MAX_LINES;
+    }
+
+    cs2d_console_line_t *line = &client->console_lines[slot];
+    memcpy(line->text, buf, sizeof(line->text));
     line->r = r;
     line->g = g;
     line->b = b;
 
-    /* Auto-scroll to bottom when new output arrives */
-    client->console_scroll = 0;
+    /* At the bottom the view follows new output; scrolled up, it stays on the same lines */
+    if (client->console_scroll > 0) {
+        client->console_scroll++;
+        console_clamp_scroll(client);
+    }
+}
+
+const cs2d_console_line_t *cs2d_client_console_line(const cs2d_client_t *client, int i)
+{
+    if (!client || i < 0 || i >= client->console_line_count) return NULL;
+    return &client->console_lines[(client->console_line_head + i) % CS2D_CONSOLE_MAX_LINES];
 }
 
 bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
@@ -52,9 +80,8 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
     /* Default Create Server & Options UI state matching CS2D screenshots */
     strncpy(client->srv_name, "Unreal Software's CS2D", sizeof(client->srv_name) - 1);
     client->srv_name_cursor     = (int)strlen(client->srv_name);
-    strncpy(client->srv_port, "36963", sizeof(client->srv_port) - 1);
-    client->srv_port_cursor     = (int)strlen(client->srv_port);
-    client->srv_max_players_idx = 1; /* "12" */
+    client->srv_port            = 36963;
+    client->srv_max_players     = 12;
     client->srv_gamemode_idx    = 0; /* "Standard" */
     client->srv_fow_idx         = 0; /* "Off" */
     client->srv_reg_usgn        = true;
@@ -165,6 +192,18 @@ void cs2d_client_handle_escape(cs2d_client_t *client)
     cs2d_scene_get(client->scene)->handle_escape(client);
 }
 
+/* Raw datagram trace to stdout when the CS2D_NET_LOG environment variable is set (protocol research) */
+static void net_log_datagram(const char *dir, const uint8_t *data, int len)
+{
+    static int enabled = -1;
+    if (enabled < 0) enabled = (getenv("CS2D_NET_LOG") != NULL);
+    if (!enabled || len <= 0) return;
+    printf("[net %s %4d]", dir, len);
+    for (int i = 0; i < len; i++) printf(" %02x", data[i]);
+    printf("\n");
+    fflush(stdout);
+}
+
 void cs2d_client_send_udp(cs2d_client_t *client, const uint8_t *payload, size_t len, bool reliable)
 {
     if (!client || client->net_sock == INVALID_SOCKET || !payload || len == 0 || len > 2046) return;
@@ -180,6 +219,7 @@ void cs2d_client_send_udp(cs2d_client_t *client, const uint8_t *payload, size_t 
 
     memcpy(dgram, &hdr, 2);
     memcpy(dgram + 2, payload, len);
+    net_log_datagram("out", dgram, (int)(len + 2));
     int sent = sendto(client->net_sock, (const char *)dgram, (int)(len + 2), 0,
                       (struct sockaddr *)&client->server_addr, sizeof(client->server_addr));
     if (sent > 0) {
@@ -252,6 +292,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
 
     while (recvd >= 2) {
         client->net_bytes_down_accum += (uint32_t)recvd;
+        net_log_datagram("in ", buffer, recvd);
 
         uint16_t srv_seq = 0;
         memcpy(&srv_seq, buffer, 2);
@@ -310,6 +351,11 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         snprintf(map_path, sizeof(map_path), "maps/%s.map", client->net_map_name);
                         cs2d_net_sha256_file(map_path, client->net_map_checksum);
 
+                        /* Play on the server's map, not the one loaded locally before connecting */
+                        if (_stricmp(client->net_map_name, client->game_map_name) != 0) {
+                            cs2d_scene_game_change_map(client, client->net_map_name);
+                        }
+
                         cs2d_pkt_t p3;
                         cs2d_net_build_join_stage2(&p3, client->net_map_checksum, client->net_raw_secret);
                         cs2d_client_send_udp(client, p3.buf, (size_t)p3.pos, true);
@@ -339,7 +385,23 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     /* Stage 4 snapshot chunks: [252, 7, snap_type, ...] */
                     if (pos >= recvd) break;
                     uint8_t snap_type = buffer[pos++];
-                    if (snap_type == 200) {
+                    if (snap_type == 4) {
+                        /* Entity states: [count u8] then {x u16, y u16, state u8}; only non-zero states are sent */
+                        if (!client->snapshot_states_reset) {
+                            for (uint32_t i = 0; i < client->game.map.entity_count; i++) {
+                                cs2d_ents_set_state(&client->ents, (int)i, 0);
+                            }
+                            client->snapshot_states_reset = true;
+                        }
+                        if (pos < recvd) {
+                            int count = buffer[pos++];
+                            for (int k = 0; k < count && pos + 5 <= recvd; k++, pos += 5) {
+                                int sx = buffer[pos] | (buffer[pos + 1] << 8);
+                                int sy = buffer[pos + 2] | (buffer[pos + 3] << 8);
+                                cs2d_scene_game_apply_entity_state(client, sx, sy, buffer[pos + 4]);
+                            }
+                        }
+                    } else if (snap_type == 200) {
                         client->join_stage = 5;
                         client->connected  = true;
                         printf("[CS2D Net] Connected to server '%s' (player_id=%u)! Joining CT...\n",
@@ -454,6 +516,48 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     }
                 }
                 pos += 5;
+            } else if (opcode == CS2D_NET_ROUNDSTART) {
+                /* Server -> Client: [22, round u8, count u8] + count x 16-byte player records
+                 * {id u8, x u16, y u16, angle f32, 7 bytes}. Entity states are not resent: every
+                 * client rebuilds the round start state itself (Trigger_Start is deterministic). */
+                if (pos + 3 > recvd) break;
+                int count = buffer[pos + 2];
+                if (pos + 3 + count * 16 > recvd) break;
+                for (int k = 0; k < count; k++) {
+                    const uint8_t *r = &buffer[pos + 3 + k * 16];
+                    uint8_t pid = r[0];
+                    if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
+                        float angle;
+                        memcpy(&angle, &r[5], 4);
+                        cs2d_player_t *p = &client->game.players[pid];
+                        p->pos.x = (float)(r[1] | (r[2] << 8));
+                        p->pos.y = (float)(r[3] | (r[4] << 8));
+                        p->angle = angle;
+                        p->alive = true;
+                    }
+                }
+                cs2d_ents_round_start(&client->ents);
+                client->walk_active = false;
+                pos += 3 + count * 16;
+            } else if (opcode == CS2D_NET_SPAWNITEM) {
+                /* Server -> Client: [33, item type u8, item id u16, x u16, y u16, 4 bytes] (12 bytes).
+                 * Ground items are not modelled yet; the record is skipped to keep parsing the datagram. */
+                if (pos + 12 > recvd) break;
+                pos += 12;
+            } else if (opcode == CS2D_NET_MSG) {
+                /* Server -> Client: [226, 1, u16, text length u16, text, u8] */
+                if (pos + 6 > recvd) break;
+                int tlen = buffer[pos + 4] | (buffer[pos + 5] << 8);
+                if (pos + 6 + tlen + 1 > recvd) break;
+                cs2d_client_console_print(client, 255, 220, 0, "%.*s", tlen, (const char *)&buffer[pos + 6]);
+                pos += 6 + tlen + 1;
+            } else if (opcode == CS2D_NET_ENTITYEVENT) {
+                /* Server -> Client: [31, x u16, y u16, state u8] (6 bytes): entity at tile (x, y) changed state */
+                if (pos + 6 > recvd) break;
+                int ex = buffer[pos + 1] | (buffer[pos + 2] << 8);
+                int ey = buffer[pos + 3] | (buffer[pos + 4] << 8);
+                cs2d_scene_game_apply_entity_state(client, ex, ey, buffer[pos + 5]);
+                pos += 6;
             } else if (opcode == CS2D_NET_PING_INGAME) {
                 /* Server -> Client: [249, int32_t ts] -> Reply [249, int32_t ts] (0x1401d9f10) */
                 if (pos + 5 > recvd) break;
@@ -497,7 +601,7 @@ static bool is_game_only_command(const char *cmd)
 {
     static const char *const cmds[] = {
         "equip", "give", "item", "tp", "setpos", "pos", "where", "hp", "sethealth", "god",
-        "armor", "setarmor", "money", "setmoney", "team", "bot_add", "addbot", "bot_kill", "killbots"
+        "armor", "setarmor", "money", "setmoney", "team", "bot_add", "addbot", "bot_kill", "killbots", "walkto"
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
         if (_stricmp(cmd, cmds[i]) == 0) return true;
@@ -544,8 +648,83 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         cs2d_client_console_print(client, 220, 220, 220, "connect <ip> [port] - Connect to CS2D server (disconnect, fps, clear, quit)");
         cs2d_client_console_print(client, 220, 220, 220, "menu / editor [map] - Return to the main menu / open the map editor");
     } else if (_stricmp(cmd, "clear") == 0 || _stricmp(cmd, "cls") == 0) {
+        client->console_line_head  = 0;
         client->console_line_count = 0;
         client->console_scroll     = 0;
+    } else if (_stricmp(cmd, "entdump") == 0) {
+        /* Positions of every entity in state 1, in map order (compared against the server in tests) */
+        if (!map) {
+            cs2d_client_console_print(client, 255, 45, 45, "No map loaded.");
+            return;
+        }
+        char out[CS2D_CONSOLE_LINE_LEN] = "entdump:";
+        int count = 0;
+        for (uint32_t i = 0; i < map->entity_count; i++) {
+            if (!map->entity_state[i]) continue;
+            char item[24];
+            snprintf(item, sizeof(item), " %d,%d", map->entities[i].x, map->entities[i].y);
+            if (strlen(out) + strlen(item) >= sizeof(out) - 1) {
+                cs2d_client_console_print(client, 170, 170, 170, "%s", out);
+                snprintf(out, sizeof(out), "entdump:");
+            }
+            strcat(out, item);
+            count++;
+        }
+        cs2d_client_console_print(client, 170, 170, 170, "%s", out);
+        cs2d_client_console_print(client, 170, 170, 170, "entdump: %d entities in state 1", count);
+    } else if (_stricmp(cmd, "entstate") == 0) {
+        if (!map || n < 3) {
+            cs2d_client_console_print(client, 255, 45, 45, "Usage: entstate <tile_x> <tile_y> (map required)");
+            return;
+        }
+        int tx = atoi(arg1), ty = atoi(arg2), shown = 0;
+        for (uint32_t i = 0; i < map->entity_count; i++) {
+            const cs2d_entity_t *e = &map->entities[i];
+            if (e->x != tx || e->y != ty) continue;
+            cs2d_client_console_print(client, 170, 170, 170, "#%u %s name='%s' trigger='%s' state=%u",
+                                      i, cs2d_entity_type_name(e->type), e->name, e->trigger, map->entity_state[i]);
+            shown++;
+        }
+        if (!shown) cs2d_client_console_print(client, 170, 170, 170, "No entity at (%d, %d)", tx, ty);
+    } else if (_stricmp(cmd, "walkto") == 0) {
+        if (n < 3) {
+            cs2d_client_console_print(client, 255, 45, 45, "Usage: walkto <tile_x> <tile_y>");
+            return;
+        }
+        if (!cs2d_scene_game_walk_to(client, atoi(arg1), atoi(arg2))) {
+            cs2d_client_console_print(client, 255, 45, 45, "walkto: no path to tile (%s, %s)", arg1, arg2);
+        }
+    } else if (_stricmp(cmd, "net_send") == 0) {
+        /* Protocol research: send raw payload bytes (hex) as one reliable message */
+        uint8_t payload[256];
+        int     plen = 0;
+        const char *p = cmd_line + strlen(cmd);
+        unsigned int byte;
+        int consumed;
+        while (plen < (int)sizeof(payload) && sscanf(p, " %2x%n", &byte, &consumed) == 1) {
+            payload[plen++] = (uint8_t)byte;
+            p += consumed;
+        }
+        if (plen == 0 || client->net_sock == INVALID_SOCKET) {
+            cs2d_client_console_print(client, 255, 45, 45, "Usage: net_send <hex bytes> (requires a server connection)");
+        } else {
+            cs2d_client_send_udp(client, payload, (size_t)plen, true);
+            cs2d_client_console_print(client, 170, 170, 170, "net_send: %d byte(s) sent", plen);
+        }
+    } else if (_stricmp(cmd, "consolebench") == 0) {
+        /* Floods the console with varied lines to measure print cost and scrolling with a full history */
+        int lines = (n >= 2) ? atoi(arg1) : 5000;
+        if (lines < 1) lines = 1;
+        if (lines > 1000000) lines = 1000000;
+        uint64_t t0 = SDL_GetPerformanceCounter();
+        for (int i = 0; i < lines; i++) {
+            cs2d_client_console_print(client, (uint8_t)(120 + (i * 37) % 136), (uint8_t)(120 + (i * 53) % 136), 170,
+                                      "bench %06d | %.*s", i, 8 + (i * 13) % 60,
+                                      "the quick brown fox jumps over the lazy dog while CS2D prints console lines");
+        }
+        double ms = (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+        cs2d_client_console_print(client, 100, 255, 100, "consolebench: %d lines in %.2f ms (%.3f us/line), %d kept",
+                                  lines, ms, ms * 1000.0 / lines, client->console_line_count);
     } else if (_stricmp(cmd, "fps") == 0 || _stricmp(cmd, "showfps") == 0) {
         if (n >= 2) {
             client->show_fps = (atoi(arg1) != 0);
@@ -954,7 +1133,7 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
     }
 
     if (client->create_server_open || client->options_open) {
-        if (sdl_key == SDLK_ESCAPE) {
+        if (sdl_key == SDLK_ESCAPE && !cs2d_ui_capture_escape(&client->ui)) {
             client->create_server_open = false;
             client->options_open       = false;
             return;
@@ -989,16 +1168,13 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
             break;
 
         case SDLK_PAGEUP:
-            client->console_scroll += 5;
-            if (client->console_scroll > client->console_line_count - 1) {
-                client->console_scroll = (client->console_line_count > 0) ? (client->console_line_count - 1) : 0;
-            }
+        case SDLK_PAGEDOWN: {
+            /* Page by one screen minus a line of overlap */
+            int page = (client->console_visible_lines > 1) ? client->console_visible_lines - 1 : 1;
+            client->console_scroll += (sdl_key == SDLK_PAGEUP) ? page : -page;
+            console_clamp_scroll(client);
             break;
-
-        case SDLK_PAGEDOWN:
-            client->console_scroll -= 5;
-            if (client->console_scroll < 0) client->console_scroll = 0;
-            break;
+        }
 
         default:
             cs2d_ui_feed_key(&client->ui, sdl_key);
@@ -1011,11 +1187,8 @@ void cs2d_client_handle_mouse_wheel(cs2d_client_t *client, int delta_y)
     if (!client) return;
     client->ui_wheel_delta += delta_y;
     if (!client->console_open) return;
-    client->console_scroll += delta_y * 2;
-    if (client->console_scroll < 0) client->console_scroll = 0;
-    if (client->console_scroll > client->console_line_count - 1) {
-        client->console_scroll = (client->console_line_count > 0) ? (client->console_line_count - 1) : 0;
-    }
+    client->console_scroll += delta_y * 3;
+    console_clamp_scroll(client);
 }
 
 void cs2d_client_handle_key(cs2d_client_t *client, int key, bool pressed)
@@ -1125,10 +1298,43 @@ static void cs2d_client_build_console_ui(cs2d_client_t *client, int screen_w, in
             const float line_h = 15.0f;
             int max_vis = (int)((log_h - 8.0f) / line_h);
             if (max_vis < 1) max_vis = 1;
+            client->console_visible_lines = max_vis;
+            console_clamp_scroll(client);
 
-            int end_idx = client->console_line_count - client->console_scroll;
-            if (end_idx > client->console_line_count) end_idx = client->console_line_count;
-            if (end_idx < 0) end_idx = 0;
+            int total      = client->console_line_count;
+            int max_scroll = (total > max_vis) ? total - max_vis : 0;
+
+            /* Scrollbar geometry (track inner height excludes the 2px padding on each side) */
+            float sb_inner_h = log_h - 4.0f;
+            if (sb_inner_h < 20.0f) sb_inner_h = 20.0f;
+            float thumb_h = sb_inner_h;
+            if (max_scroll > 0) {
+                thumb_h = sb_inner_h * ((float)max_vis / (float)total);
+                if (thumb_h < 20.0f) thumb_h = 20.0f;
+            }
+
+            /* Scrollbar input: drag the thumb, or click the track above / below it to page */
+            cs2d_ui_id_t   track_id = CS2D_UI_ID("ConsoleScrollbar");
+            cs2d_ui_id_t   thumb_id = CS2D_UI_ID("ConsoleScrollThumb");
+            cs2d_ui_rect_t track    = cs2d_ui_get_box(ui, track_id);
+            cs2d_ui_rect_t thumb    = cs2d_ui_get_box(ui, thumb_id);
+            if (max_scroll > 0 && track.h > 0.0f) {
+                if (ui->mouse_pressed && ui->hot_id == thumb_id) {
+                    client->console_sb_grab_y = ui->mouse_y - thumb.y;
+                } else if (ui->mouse_pressed && ui->hot_id == track_id) {
+                    int page = (max_vis > 1) ? max_vis - 1 : 1;
+                    client->console_scroll += (ui->mouse_y < thumb.y) ? page : -page;
+                    console_clamp_scroll(client);
+                }
+                if (ui->active_id == thumb_id && ui->mouse_down && sb_inner_h > thumb_h) {
+                    float frac = (ui->mouse_y - client->console_sb_grab_y - track.y - 2.0f) / (sb_inner_h - thumb_h);
+                    if (frac < 0.0f) frac = 0.0f;
+                    if (frac > 1.0f) frac = 1.0f;
+                    client->console_scroll = (int)((1.0f - frac) * (float)max_scroll + 0.5f);
+                }
+            }
+
+            int end_idx   = total - client->console_scroll;
             int start_idx = end_idx - max_vis;
             if (start_idx < 0) start_idx = 0;
 
@@ -1145,27 +1351,18 @@ static void cs2d_client_build_console_ui(cs2d_client_t *client, int screen_w, in
                 .clip     = { .enabled = true }
             }) {
                 for (int i = start_idx; i < end_idx; i++) {
-                    const cs2d_console_line_t *ln = &client->console_lines[i];
+                    const cs2d_console_line_t *ln = cs2d_client_console_line(client, i);
                     cs2d_ui_text(ui, ln->text, CS2D_FONT_REGULAR, CS2D_UI_RGB(ln->r, ln->g, ln->b));
                 }
             }
 
-            /* Right: Vertical scrollbar track + proportional thumb */
-            float sb_inner_h = log_h - 4.0f;
-            if (sb_inner_h < 20.0f) sb_inner_h = 20.0f;
-            float thumb_h = sb_inner_h;
-            float top_pad = 0.0f;
-            if (client->console_line_count > max_vis) {
-                thumb_h = sb_inner_h * ((float)max_vis / (float)client->console_line_count);
-                if (thumb_h < 20.0f) thumb_h = 20.0f;
-                int max_scroll = client->console_line_count - max_vis;
-                int cur_scroll = client->console_scroll;
-                if (cur_scroll > max_scroll) cur_scroll = max_scroll;
-                float frac = 1.0f - ((float)cur_scroll / (float)max_scroll);
-                top_pad = frac * (sb_inner_h - thumb_h);
-            }
+            /* Right: Vertical scrollbar track + proportional thumb (top = oldest line) */
+            float top_pad = (max_scroll > 0)
+                          ? (1.0f - (float)client->console_scroll / (float)max_scroll) * (sb_inner_h - thumb_h)
+                          : 0.0f;
+            bool thumb_hot = (ui->hot_id == thumb_id || ui->active_id == thumb_id);
 
-            CS2D_UI_ELEMENT(ui, CS2D_UI_ID("ConsoleScrollbar"), {
+            CS2D_UI_ELEMENT(ui, track_id, {
                 .layout = {
                     .sizing  = { CS2D_UI_FIXED(9.0f), CS2D_UI_GROW(0, 0) },
                     .padding = CS2D_UI_PAD(2.0f, 2.0f, 2.0f + top_pad, 2.0f),
@@ -1174,9 +1371,9 @@ static void cs2d_client_build_console_ui(cs2d_client_t *client, int screen_w, in
                 .bg_color = CS2D_UI_RGBA(18, 18, 18, 246),
                 .border   = { .width = 1.0f, .color = CS2D_UI_RGBA(92, 92, 92, 245) }
             }) {
-                CS2D_UI_ELEMENT(ui, CS2D_UI_ID("ConsoleScrollThumb"), {
+                CS2D_UI_ELEMENT(ui, thumb_id, {
                     .layout   = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(thumb_h) } },
-                    .bg_color = CS2D_UI_RGBA(74, 74, 74, 245)
+                    .bg_color = thumb_hot ? CS2D_UI_RGBA(104, 104, 104, 250) : CS2D_UI_RGBA(74, 74, 74, 245)
                 }) {}
             }
         }
@@ -1206,7 +1403,6 @@ static void cs2d_client_build_create_server_ui(cs2d_client_t *client, int screen
     float win_y = floorf(((float)screen_h - win_h) * 0.5f);
 
     static const char *srv_tabs[] = { "Server", "Map", "Settings", "Bots", "Mods", "More Settings" };
-    static const char *max_pl_opts[] = { "8", "12", "16", "24", "32" };
     static const char *gm_opts[]     = { "Standard", "Deathmatch", "Team Deathmatch", "Construction", "Zombies!" };
     static const char *fow_opts[]    = { "Off", "On", "Line of Sight" };
     static const char *map_names[]   = {
@@ -1249,12 +1445,11 @@ static void cs2d_client_build_create_server_ui(cs2d_client_t *client, int screen
                     ui_form_row_end(ui);
 
                     ui_form_row_begin(ui, "Port", 105.0f);
-                    cs2d_ui_textbox_ex(ui, CS2D_UI_ID("SrvPortInput"), client->srv_port, sizeof(client->srv_port),
-                                       &client->srv_port_cursor, 68.0f, CS2D_UI_TEXTBOX_NUMERIC);
+                    cs2d_ui_numberbox(ui, CS2D_UI_ID("SrvPortInput"), &client->srv_port, 1, 65535, 68.0f);
                     ui_form_row_end(ui);
 
                     ui_form_row_begin(ui, "Max. Players", 105.0f);
-                    cs2d_ui_select(ui, CS2D_UI_ID("SrvMaxPlSel"), max_pl_opts, 5, &client->srv_max_players_idx, 68.0f);
+                    cs2d_ui_numberbox(ui, CS2D_UI_ID("SrvMaxPlayers"), &client->srv_max_players, 1, 32, 40.0f);
                     ui_form_row_end(ui);
 
                     cs2d_ui_checkbox(ui, CS2D_UI_ID("SrvRegUsgn"), "Register in Serverlist (U.S.G.N., Internet)", &client->srv_reg_usgn);
@@ -1546,14 +1741,8 @@ static void cs2d_client_build_options_ui(cs2d_client_t *client, int screen_w, in
     }
 }
 
-static void cs2d_client_render_ui(cs2d_client_t *client, int screen_w, int screen_h)
+void cs2d_client_build_ui(cs2d_client_t *client, int screen_w, int screen_h)
 {
-    if (!cs2d_client_any_ui_open(client)) {
-        client->ui_wheel_delta = 0;
-        cs2d_ui_clear_input(&client->ui);
-        return;
-    }
-
     cs2d_ui_begin_layout(
         &client->ui,
         screen_w, screen_h,
@@ -1568,6 +1757,16 @@ static void cs2d_client_render_ui(cs2d_client_t *client, int screen_w, int scree
     cs2d_client_build_options_ui(client, screen_w, screen_h);
 
     cs2d_ui_end_layout(&client->ui);
+}
+
+static void cs2d_client_render_ui(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    if (!cs2d_client_any_ui_open(client)) {
+        client->ui_wheel_delta = 0;
+        cs2d_ui_clear_input(&client->ui);
+        return;
+    }
+    cs2d_client_build_ui(client, screen_w, screen_h);
     cs2d_ui_render(&client->ui);
 }
 

@@ -2,6 +2,7 @@
 #include <SDL3/SDL.h>
 #include <windows.h>
 #include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
 
@@ -65,6 +66,13 @@ void cs2d_ui_clear_input(cs2d_ui_context_t *ctx)
     ctx->key_event_count = 0;
 }
 
+bool cs2d_ui_capture_escape(cs2d_ui_context_t *ctx)
+{
+    if (!ctx || ctx->dropdown_id == 0) return false;
+    ctx->dropdown_id = 0;
+    return true;
+}
+
 void cs2d_ui_edit_reset(cs2d_ui_context_t *ctx)
 {
     if (!ctx) return;
@@ -83,6 +91,7 @@ void cs2d_ui_begin_layout(
 
     ctx->screen_w         = screen_w;
     ctx->screen_h         = screen_h;
+    ctx->mouse_moved      = (mouse_x != ctx->mouse_x || mouse_y != ctx->mouse_y);
     ctx->mouse_x          = mouse_x;
     ctx->mouse_y          = mouse_y;
     ctx->mouse_pressed    = (mouse_down && !ctx->prev_mouse_down);
@@ -614,6 +623,22 @@ void cs2d_ui_end_layout(cs2d_ui_context_t *ctx)
     }
     ctx->focus_move = 0;
 
+    /* A dropdown that was not built this frame (its window closed) stays closed */
+    if (!ctx->dropdown_seen) ctx->dropdown_id = 0;
+    ctx->dropdown_seen = false;
+
+    /* Draw order: stable insertion sort by z_index (commands are already nearly sorted) */
+    for (int i = 0; i < ctx->render_cmd_count; i++) {
+        int v = i;
+        int z = ctx->render_cmds[v].z_index;
+        int j = i - 1;
+        while (j >= 0 && ctx->render_cmds[ctx->render_order[j]].z_index > z) {
+            ctx->render_order[j + 1] = ctx->render_order[j];
+            j--;
+        }
+        ctx->render_order[j + 1] = v;
+    }
+
     /* Clear single-frame keyboard input queues */
     cs2d_ui_clear_input(ctx);
 }
@@ -660,7 +685,7 @@ void cs2d_ui_render(const cs2d_ui_context_t *ctx)
     if (!ctx) return;
 
     for (int i = 0; i < ctx->render_cmd_count; i++) {
-        const cs2d_ui_render_cmd_t *cmd = &ctx->render_cmds[i];
+        const cs2d_ui_render_cmd_t *cmd = &ctx->render_cmds[ctx->render_order[i]];
         float r1 = (float)cmd->color.r  / 255.0f;
         float g1 = (float)cmd->color.g  / 255.0f;
         float b1 = (float)cmd->color.b  / 255.0f;
@@ -984,6 +1009,37 @@ bool cs2d_ui_radio(
     return false;
 }
 
+#define DROPDOWN_ROW_H    20.0f
+#define DROPDOWN_MAX_ROWS 8
+#define DROPDOWN_SB_W     14.0f
+
+static bool rect_contains(const cs2d_ui_rect_t *r, float x, float y)
+{
+    return r->w > 0.0f && x >= r->x && x < r->x + r->w && y >= r->y && y < r->y + r->h;
+}
+
+static int clamp_int(int v, int lo, int hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+/* Scrolls the open list so option i is visible */
+static void dropdown_reveal(cs2d_ui_context_t *ctx, int i, int rows, int count)
+{
+    if (i < ctx->dropdown_top) ctx->dropdown_top = i;
+    if (i >= ctx->dropdown_top + rows) ctx->dropdown_top = i - rows + 1;
+    ctx->dropdown_top = clamp_int(ctx->dropdown_top, 0, count - rows);
+}
+
+static void dropdown_open(cs2d_ui_context_t *ctx, cs2d_ui_id_t id, int selected, int rows, int count)
+{
+    ctx->dropdown_id    = id;
+    ctx->dropdown_hover = selected;
+    ctx->dropdown_top   = clamp_int(selected - rows / 2, 0, count - rows);
+}
+
 bool cs2d_ui_select(
     cs2d_ui_context_t *ctx,
     cs2d_ui_id_t id,
@@ -996,45 +1052,320 @@ bool cs2d_ui_select(
     if (!ctx || !options || option_count <= 0) return false;
     int idx = selected_index ? *selected_index : 0;
     if (idx < 0 || idx >= option_count) idx = 0;
+    int old_idx = idx;
 
-    bool hov = cs2d_ui_hovered(ctx, id);
+    cs2d_ui_id_t btn_id   = id ^ 0x6001u;
+    cs2d_ui_id_t list_id  = id ^ 0x6002u;
+    cs2d_ui_id_t track_id = id ^ 0x6003u;
+    cs2d_ui_id_t thumb_id = id ^ 0x6004u;
 
+    int  rows    = (option_count < DROPDOWN_MAX_ROWS) ? option_count : DROPDOWN_MAX_ROWS;
+    int  max_top = option_count - rows;
+    bool hov     = (ctx->hot_id == id || ctx->hot_id == btn_id);
+    bool open    = (ctx->dropdown_id == id);
+
+    cs2d_ui_rect_t box   = cs2d_ui_get_box(ctx, id);
+    cs2d_ui_rect_t list  = cs2d_ui_get_box(ctx, list_id);
+    cs2d_ui_rect_t track = cs2d_ui_get_box(ctx, track_id);
+    cs2d_ui_rect_t thumb = cs2d_ui_get_box(ctx, thumb_id);
+
+    /* Mouse press on the box toggles the list and gives the dropdown keyboard focus */
+    if (ctx->mouse_pressed && hov) {
+        ctx->focused_id = id;
+        if (open) {
+            ctx->dropdown_id = 0;
+        } else {
+            dropdown_open(ctx, id, idx, rows, option_count);
+        }
+        open = (ctx->dropdown_id == id);
+    }
+
+    /* Keyboard */
+    if (ctx->focused_id == id) {
+        for (int k = 0; k < ctx->key_event_count; k++) {
+            int key  = ctx->key_events[k].key;
+            int step = 0;
+            switch (key) {
+                case SDLK_UP:       step = -1; break;
+                case SDLK_DOWN:     step = 1; break;
+                case SDLK_PAGEUP:   step = -rows; break;
+                case SDLK_PAGEDOWN: step = rows; break;
+                case SDLK_HOME:     step = -option_count; break;
+                case SDLK_END:      step = option_count; break;
+                case SDLK_RETURN:
+                case SDLK_KP_ENTER:
+                case SDLK_SPACE:
+                    if (open) {
+                        idx = ctx->dropdown_hover;
+                        ctx->dropdown_id = 0;
+                        open = false;
+                    } else {
+                        dropdown_open(ctx, id, idx, rows, option_count);
+                        open = true;
+                    }
+                    break;
+                default:
+                    break;
+            }
+            if (step != 0) {
+                if (open) {
+                    ctx->dropdown_hover = clamp_int(ctx->dropdown_hover + step, 0, option_count - 1);
+                    dropdown_reveal(ctx, ctx->dropdown_hover, rows, option_count);
+                } else {
+                    idx = clamp_int(idx + step, 0, option_count - 1);
+                }
+            }
+        }
+    }
+
+    if (open) {
+        ctx->dropdown_seen = true;
+
+        /* Mouse wheel over the box or the list scrolls the list */
+        if (ctx->wheel_delta != 0 &&
+            (rect_contains(&list, ctx->mouse_x, ctx->mouse_y) || rect_contains(&box, ctx->mouse_x, ctx->mouse_y))) {
+            ctx->dropdown_top = clamp_int(ctx->dropdown_top - ctx->wheel_delta, 0, max_top);
+        }
+
+        /* Highlight follows the mouse over the options */
+        bool over_items = rect_contains(&list, ctx->mouse_x, ctx->mouse_y) &&
+                          ctx->mouse_x < list.x + list.w - DROPDOWN_SB_W - 1.0f;
+        if (over_items && (ctx->mouse_moved || ctx->mouse_pressed || ctx->wheel_delta != 0)) {
+            int row = (int)((ctx->mouse_y - list.y - 1.0f) / DROPDOWN_ROW_H);
+            ctx->dropdown_hover = clamp_int(ctx->dropdown_top + row, 0, option_count - 1);
+        }
+
+        /* Scrollbar: drag the thumb, or click the track to page */
+        float track_inner = track.h - 2.0f;
+        float thumb_h     = (max_top > 0) ? track_inner * (float)rows / (float)option_count : track_inner;
+        if (thumb_h < 10.0f) thumb_h = 10.0f;
+        if (ctx->mouse_pressed && ctx->hot_id == thumb_id) {
+            ctx->dropdown_grab_y = ctx->mouse_y - thumb.y;
+        } else if (ctx->mouse_pressed && ctx->hot_id == track_id && max_top > 0) {
+            int page = (ctx->mouse_y < thumb.y) ? -rows : rows;
+            ctx->dropdown_top = clamp_int(ctx->dropdown_top + page, 0, max_top);
+        }
+        if (ctx->active_id == thumb_id && ctx->mouse_down && max_top > 0 && track_inner > thumb_h) {
+            float frac = (ctx->mouse_y - ctx->dropdown_grab_y - track.y - 1.0f) / (track_inner - thumb_h);
+            ctx->dropdown_top = clamp_int((int)(frac * (float)max_top + 0.5f), 0, max_top);
+        }
+
+        /* Click (press + release) on an option picks it */
+        if (cs2d_ui_clicked(ctx, list_id) && over_items) {
+            idx = ctx->dropdown_hover;
+            ctx->dropdown_id = 0;
+            open = false;
+        }
+
+        /* Pressing anywhere outside the box and the list closes it */
+        if (open && ctx->mouse_pressed &&
+            !rect_contains(&box, ctx->mouse_x, ctx->mouse_y) && !rect_contains(&list, ctx->mouse_x, ctx->mouse_y)) {
+            ctx->dropdown_id = 0;
+            open = false;
+        }
+    }
+
+    /* Closed box: [ value      |+| ] */
     CS2D_UI_ELEMENT(ctx, id, {
         .layout = {
             .sizing  = { CS2D_UI_FIXED(width), CS2D_UI_FIXED(18.0f) },
-            .padding = CS2D_UI_PAD(5, 0, 0, 0),
+            .padding = CS2D_UI_PAD(4, 0, 0, 0),
             .dir     = CS2D_UI_LEFT_TO_RIGHT,
             .align_y = CS2D_UI_ALIGN_Y_CENTER
         },
-        .bg_color = CS2D_UI_RGBA(26, 26, 26, 248),
-        .border   = { .width = 1.0f, .color = hov ? CS2D_UI_RGB(165, 165, 165) : CS2D_UI_RGB(108, 108, 108) }
+        .bg_color = CS2D_UI_RGBA(39, 39, 41, 250),
+        .border   = {
+            .width = 1.0f,
+            .color = open ? CS2D_UI_RGB(255, 255, 255)
+                          : ((hov || ctx->focused_id == id) ? CS2D_UI_RGB(175, 175, 175) : CS2D_UI_RGB(130, 130, 130))
+        },
+        .clip     = { .enabled = true }
     }) {
-        cs2d_ui_text(ctx, options[idx], CS2D_FONT_REGULAR, CS2D_UI_RGB(205, 205, 205));
+        cs2d_ui_text(ctx, options[idx], CS2D_FONT_REGULAR,
+                     (open || hov) ? CS2D_UI_RGB(255, 255, 255) : CS2D_UI_RGB(205, 205, 205));
 
         CS2D_UI_ELEMENT(ctx, 0, {
             .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(1.0f) } }
         }) {}
 
-        /* Right-side [+] button matching CS2D selector widget */
+        /* Divider + [+] button */
         CS2D_UI_ELEMENT(ctx, 0, {
+            .layout   = { .sizing = { CS2D_UI_FIXED(1.0f), CS2D_UI_GROW(0, 0) } },
+            .bg_color = CS2D_UI_RGB(90, 90, 90)
+        }) {}
+        CS2D_UI_ELEMENT(ctx, btn_id, {
             .layout = {
-                .sizing  = { CS2D_UI_FIXED(16.0f), CS2D_UI_FIXED(18.0f) },
+                .sizing  = { CS2D_UI_FIXED(15.0f), CS2D_UI_GROW(0, 0) },
                 .align_x = CS2D_UI_ALIGN_X_CENTER,
                 .align_y = CS2D_UI_ALIGN_Y_CENTER
             },
-            .bg_color = hov ? CS2D_UI_RGBA(55, 55, 55, 255) : CS2D_UI_RGBA(36, 36, 36, 255),
-            .border   = { .width = 1.0f, .color = CS2D_UI_RGB(108, 108, 108) }
+            .bg_color = hov ? CS2D_UI_RGBA(60, 60, 60, 255) : CS2D_UI_RGBA(0, 0, 0, 0)
         }) {
-            cs2d_ui_text(ctx, "+", CS2D_FONT_SMALL, CS2D_UI_RGB(185, 185, 185));
+            cs2d_ui_text(ctx, "+", CS2D_FONT_SMALL, hov ? CS2D_UI_RGB(230, 230, 230) : CS2D_UI_RGB(150, 150, 150));
         }
     }
 
-    if (cs2d_ui_clicked(ctx, id)) {
-        idx = (idx + 1) % option_count;
-        if (selected_index) *selected_index = idx;
-        return true;
+    /* Open list: floats right below the box, above every other element (z 100) */
+    if (open && box.w > 0.0f) {
+        int top = clamp_int(ctx->dropdown_top, 0, max_top);
+        float list_h      = (float)rows * DROPDOWN_ROW_H + 2.0f;
+        float track_inner = list_h - 4.0f;
+        float thumb_h     = (max_top > 0) ? track_inner * (float)rows / (float)option_count : track_inner;
+        if (thumb_h < 10.0f) thumb_h = 10.0f;
+        float thumb_y = (max_top > 0) ? (track_inner - thumb_h) * (float)top / (float)max_top : 0.0f;
+
+        CS2D_UI_ELEMENT(ctx, list_id, {
+            .layout = {
+                .sizing  = { CS2D_UI_FIXED(box.w), CS2D_UI_FIXED(list_h) },
+                .padding = CS2D_UI_PAD_ALL(1),
+                .dir     = CS2D_UI_LEFT_TO_RIGHT
+            },
+            .floating = { .enabled = true, .x = box.x, .y = box.y + box.h, .z_index = 100 },
+            .bg_color = CS2D_UI_RGBA(62, 62, 62, 215),
+            .border   = { .width = 1.0f, .color = CS2D_UI_RGBA(150, 150, 150, 235) },
+            .clip     = { .enabled = true }
+        }) {
+            CS2D_UI_ELEMENT(ctx, 0, {
+                .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_GROW(0, 0) }, .dir = CS2D_UI_TOP_TO_BOTTOM }
+            }) {
+                for (int r = 0; r < rows; r++) {
+                    int  i   = top + r;
+                    bool hl  = (i == ctx->dropdown_hover);
+                    CS2D_UI_ELEMENT(ctx, 0, {
+                        .layout = {
+                            .sizing  = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(DROPDOWN_ROW_H) },
+                            .padding = CS2D_UI_PAD(5, 2, 0, 0),
+                            .align_y = CS2D_UI_ALIGN_Y_CENTER
+                        },
+                        .bg_color = hl ? CS2D_UI_RGBA(92, 92, 92, 240) : CS2D_UI_RGBA(0, 0, 0, 0)
+                    }) {
+                        cs2d_ui_text(ctx, options[i], CS2D_FONT_REGULAR,
+                                     hl ? CS2D_UI_RGB(255, 255, 255) : CS2D_UI_RGB(200, 200, 200));
+                    }
+                }
+            }
+
+            /* Scrollbar track + thumb (shown even when every option fits, like CS2D) */
+            CS2D_UI_ELEMENT(ctx, track_id, {
+                .layout = {
+                    .sizing  = { CS2D_UI_FIXED(DROPDOWN_SB_W), CS2D_UI_GROW(0, 0) },
+                    .padding = CS2D_UI_PAD(1, 1, 1.0f + thumb_y, 1),
+                    .dir     = CS2D_UI_TOP_TO_BOTTOM
+                },
+                .bg_color = CS2D_UI_RGBA(24, 24, 24, 240),
+                .border   = { .width = 1.0f, .color = CS2D_UI_RGB(8, 8, 8) }
+            }) {
+                CS2D_UI_ELEMENT(ctx, thumb_id, {
+                    .layout   = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(thumb_h) } },
+                    .bg_color = (ctx->active_id == thumb_id || ctx->hot_id == thumb_id)
+                              ? CS2D_UI_RGB(72, 72, 72) : CS2D_UI_RGB(53, 53, 53)
+                }) {}
+            }
+        }
     }
-    return false;
+
+    if (selected_index) *selected_index = idx;
+    return idx != old_idx;
+}
+
+bool cs2d_ui_numberbox(
+    cs2d_ui_context_t *ctx,
+    cs2d_ui_id_t id,
+    int *value,
+    int min_value,
+    int max_value,
+    float width
+)
+{
+    if (!ctx || !value) return false;
+    int old = *value;
+    *value = clamp_int(*value, min_value, max_value);
+    bool focused = (ctx->focused_id == id);
+
+    /* Focus left: clamp whatever was typed */
+    if (ctx->numbox_id == id && !focused) {
+        long v = (ctx->numbox_text[0] != '\0') ? strtol(ctx->numbox_text, NULL, 10) : min_value;
+        *value = clamp_int((v > max_value) ? max_value : (int)v, min_value, max_value);
+        ctx->numbox_id = 0;
+    }
+
+    /* Stepping with Up/Down/PageUp/PageDown (focused) or the mouse wheel (hovered) */
+    int delta = 0;
+    if (focused) {
+        for (int k = 0; k < ctx->key_event_count; k++) {
+            int mult = (ctx->key_events[k].mods & CS2D_UI_MOD_SHIFT) ? 10 : 1;
+            switch (ctx->key_events[k].key) {
+                case SDLK_UP:       delta += mult; break;
+                case SDLK_DOWN:     delta -= mult; break;
+                case SDLK_PAGEUP:   delta += 10; break;
+                case SDLK_PAGEDOWN: delta -= 10; break;
+                default: break;
+            }
+        }
+    }
+    if ((ctx->hot_id == id || ctx->hot_id == (id ^ 0x5001u)) && ctx->wheel_delta != 0) {
+        delta += ctx->wheel_delta;
+    }
+    if (delta != 0) {
+        *value = clamp_int(*value + delta, min_value, max_value);
+        if (focused) {
+            snprintf(ctx->numbox_text, sizeof(ctx->numbox_text), "%d", *value);
+            ctx->numbox_cursor = (int)strlen(ctx->numbox_text);
+            ctx->numbox_id     = id;
+            cs2d_ui_edit_reset(ctx);
+        }
+    }
+
+    /* While focused the box edits a private text copy; otherwise it shows the value */
+    char  shown[16];
+    int   shown_cursor = 0;
+    char *buf = shown;
+    int  *cur = &shown_cursor;
+    if (focused) {
+        if (ctx->numbox_id != id) {
+            snprintf(ctx->numbox_text, sizeof(ctx->numbox_text), "%d", *value);
+            ctx->numbox_cursor = (int)strlen(ctx->numbox_text);
+            ctx->numbox_id     = id;
+        }
+        buf = ctx->numbox_text;
+        cur = &ctx->numbox_cursor;
+    } else {
+        snprintf(shown, sizeof(shown), "%d", *value);
+        shown_cursor = (int)strlen(shown);
+    }
+
+    /* Leave room for every digit of max_value (and nothing more) */
+    char max_digits[16];
+    int  cap = snprintf(max_digits, sizeof(max_digits), "%d", max_value) + 1;
+    if (cap > (int)sizeof(ctx->numbox_text)) cap = (int)sizeof(ctx->numbox_text);
+
+    bool submitted = cs2d_ui_textbox_ex(ctx, id, buf, (size_t)cap, cur, width, CS2D_UI_TEXTBOX_NUMERIC);
+
+    /* Focus arrived this frame by clicking: continue editing from the displayed text */
+    if (!focused && ctx->focused_id == id) {
+        snprintf(ctx->numbox_text, sizeof(ctx->numbox_text), "%s", shown);
+        ctx->numbox_cursor = shown_cursor;
+        ctx->numbox_id     = id;
+    }
+
+    if (focused) {
+        if (buf[0] != '\0') {
+            long v = strtol(buf, NULL, 10);
+            if (v >= min_value && v <= max_value) *value = (int)v; /* Follow the text while it is valid */
+            if (submitted) {
+                *value = clamp_int((v > max_value) ? max_value : (int)v, min_value, max_value);
+            }
+        } else if (submitted) {
+            *value = min_value;
+        }
+        if (submitted) {
+            snprintf(ctx->numbox_text, sizeof(ctx->numbox_text), "%d", *value);
+            ctx->numbox_cursor = (int)strlen(ctx->numbox_text);
+            cs2d_ui_edit_reset(ctx);
+        }
+    }
+
+    return *value != old;
 }
 
 /* ============================================================================
