@@ -1495,6 +1495,125 @@ static bool test_recoil_and_swing(void)
     return true;
 }
 
+/* =========================================================================
+ * Server browser (pingServers 0x1403012d0, info parser 0x1402d2d80, svl.cache 0x1400f25d0).
+ * Byte strings are a proxy capture of CS2D.exe against cs2d_dedicated.exe -offline.
+ * ========================================================================= */
+static bool test_serverlist(void)
+{
+    printf("\n=== Testing Server Browser (Find Servers) ===\n");
+
+    /* Requests, byte for byte as the original sends them */
+    static const uint8_t lan_req[9]  = { 0x01, 0x00, 0x03, 0x97, 0x00, 0xfb, 0x02, 0xfa, 0x03 };
+    static const uint8_t inet_req[9] = { 0x01, 0x00, 0x03, 0x8f, 0x00, 0xfb, 0x01, 0xfa, 0x03 };
+    static const uint8_t ping_req[7] = { 0x01, 0x00, 0xfa, 0x39, 0x87, 0x00, 0x00 };
+    uint8_t buf[32];
+    if (cs2d_sv_build_info_request(2, 0x0097, buf, sizeof(buf)) != 9 || memcmp(buf, lan_req, 9) != 0 ||
+        cs2d_sv_build_info_request(1, 0x008f, buf, sizeof(buf)) != 9 || memcmp(buf, inet_req, 9) != 0 ||
+        cs2d_sv_build_ping(0x8739, buf, sizeof(buf)) != 7 || memcmp(buf, ping_req, 7) != 0) {
+        TEST_FAIL("Server browser requests", "Info / ping request bytes differ from the capture");
+    }
+    TEST_PASS("Info request [01 00][03][tick][FB][mode][1018] and ping [01 00][FA][ms] match the capture");
+
+    /* Info reply of the offline dedicated (prison_funst3r, default settings) */
+    static const uint8_t reply[36] = {
+        0x01, 0x00, 0xfb, 0x02, 0x10, 0x0b, 'C', 'S', '2', 'D', ' ', 'S', 'e', 'r', 'v', 'e', 'r',
+        0x0e, 'p', 'r', 'i', 's', 'o', 'n', '_', 'f', 'u', 'n', 's', 't', '3', 'r', 0x00, 0x0c, 0x00, 0x02
+    };
+    cs2d_sv_t sv;
+    memset(&sv, 0, sizeof(sv));
+    if (!cs2d_sv_parse_info(&sv, reply + 2, sizeof(reply) - 2) ||
+        strcmp(sv.name, "CS2D Server") != 0 || strcmp(sv.map, "prison_funst3r") != 0 ||
+        sv.players != 0 || sv.max_players != 12 || sv.bots != 0 || sv.gamemode != 0 ||
+        !sv.same_version || !sv.offscreen_damage || sv.password || sv.lua || sv.dyn_recoil ||
+        !sv.active || !sv.info_done) {
+        TEST_FAIL("Info reply", "Captured reply decoded wrong");
+    }
+    /* Game mode byte only when flags bit 5; bots are clamped to the slot count */
+    static const uint8_t reply_dm[] = { 0xfb, 0x01, 0x61, 0x01, 'A', 0x02, 'd', 'm', 0x05, 0x08, 0x01, 0x09, 0x05 };
+    memset(&sv, 0, sizeof(sv));
+    if (!cs2d_sv_parse_info(&sv, reply_dm, sizeof(reply_dm)) || !sv.password || !sv.lua || sv.gamemode != 1 ||
+        sv.players != 5 || sv.max_players != 8 || sv.bots != 8 || !sv.dyn_recoil || sv.offscreen_damage || !sv.transfers) {
+        TEST_FAIL("Info reply flags", "Game mode / flags / flags2 decoded wrong");
+    }
+    cs2d_net_server_info_t ni;
+    if (!cs2d_net_parse_info_packet(reply + 2, sizeof(reply) - 2, &ni) || strcmp(ni.map_name, "prison_funst3r") != 0 ||
+        ni.players_max != 12 || ni.flags2 != 0x02) {
+        TEST_FAIL("cs2d_net_parse_info_packet", "Captured reply decoded wrong");
+    }
+    TEST_PASS("Info reply: u8-length name/map, players, max, optional game mode, bots, flags2");
+
+    /* sys/core/svl.cache: comment line, then {ip i32 LE (first octet in the MSB), port u16 LE} */
+    static const uint8_t cache[] = {
+        '/', '/', ' ', 'x', '\r', '\n',
+        0xae, 0x03, 0xe6, 0x17, 0x65, 0x90,   /* 23.230.3.174:36965 (first entry of the real cache) */
+        0x01, 0x00, 0x00, 0x7f, 0x74, 0x90,   /* 127.0.0.1:36980 */
+        0x01, 0x00, 0x00, 0x7f, 0x74, 0x90    /* duplicate: ignored */
+    };
+    static cs2d_sv_list_t list;
+    memset(&list, 0, sizeof(list));
+    char addr[16];
+    if (cs2d_sv_parse_cache(cache, sizeof(cache), &list, 100000u) != 2 || list.count != 2) {
+        TEST_FAIL("svl.cache", "Wrong entry count");
+    }
+    cs2d_sv_ip_to_str(list.entries[0].ip, addr);
+    if (strcmp(addr, "23.230.3.174") != 0 || list.entries[0].port != 36965 ||
+        list.entries[1].ip != cs2d_sv_ip_from_octets(127, 0, 0, 1) || list.entries[1].port != 36980) {
+        TEST_FAIL("svl.cache", "Address byte order wrong");
+    }
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    if (!cs2d_sv_parse_address("25.38.11.44:36963\n", &ip, &port) || ip != cs2d_sv_ip_from_octets(25, 38, 11, 44) ||
+        port != 36963 || cs2d_sv_parse_address("// comment", &ip, &port)) {
+        TEST_FAIL("recentlyjoined.lst", "ip:port line parsed wrong");
+    }
+    TEST_PASS("svl.cache entries (23.230.3.174:36965) and ip:port list lines");
+
+    /* pingServers: entry n is due n * 30 ms after the list is filled; then every 3 s,
+     * up to 3 pings and 5 info requests (the capture shows ping + info every 3 s) */
+    bool p, i;
+    cs2d_sv_schedule(&list.entries[1], 100000u + 29u, &p, &i);
+    if (p || i) TEST_FAIL("pingServers", "Second entry queried before its 30 ms stagger");
+    int pings = 0, infos = 0;
+    for (uint32_t t = 100031u; t < 100031u + 30000u; t += 100u) {
+        cs2d_sv_schedule(&list.entries[1], t, &p, &i);
+        pings += p;
+        infos += i;
+    }
+    if (pings != 3 || infos != 5) TEST_FAIL("pingServers", "Expected 3 pings and 5 info requests");
+    cs2d_sv_refresh(&list.entries[1], 200000u);
+    pings = infos = 0;
+    for (uint32_t t = 200001u; t < 230000u; t += 100u) {
+        cs2d_sv_schedule(&list.entries[1], t, &p, &i);
+        pings += p;
+        infos += i;
+    }
+    if (pings != 1 || infos != 5) TEST_FAIL("Tsv.refresh", "Refresh must send one ping (pingc = 2) and 5 info requests");
+
+    /* Ping echo: average of the last two samples, blend flash */
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_apply_ping(&sv, 1000, 1080u);
+    cs2d_sv_apply_ping(&sv, 4000, 4120u);
+    if (!sv.got_ping || sv.ping != 100 || sv.ping_blend != 255.0f) TEST_FAIL("Ping echo", "Ping average wrong");
+    TEST_PASS("pingServers schedule (30 ms stagger, 3 s period, 3 pings, 5 info requests) and ping average");
+
+    /* Default order: human players (players - bots), descending */
+    memset(&list, 0, sizeof(list));
+    static const int pl[4][2] = { { 6, 5 }, { 0, 0 }, { 4, 0 }, { 26, 26 } };
+    for (int k = 0; k < 4; k++) {
+        cs2d_sv_t *e = cs2d_sv_list_add(&list, (uint32_t)(k + 1), 36963, 0);
+        e->players = pl[k][0];
+        e->bots    = pl[k][1];
+    }
+    cs2d_sv_sort_by_humans(&list);
+    if (list.entries[0].ip != 3 || list.entries[1].ip != 1 || list.entries[2].ip != 2 || list.entries[3].ip != 4) {
+        TEST_FAIL("Server list order", "Expected human players descending, stable");
+    }
+    TEST_PASS("Server list sorted by human players (4/12 > 6/32 with 5 bots > 0/32)");
+
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -1502,7 +1621,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 16;
+    int total = 17;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -1520,6 +1639,7 @@ int main(void)
     if (test_breakables()) passed++;
     if (test_server_info_and_team_menu()) passed++;
     if (test_recoil_and_swing()) passed++;
+    if (test_serverlist()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

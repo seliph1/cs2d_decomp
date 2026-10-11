@@ -41,19 +41,13 @@ bool cs2d_net_parse_ping_serverlist(const uint8_t *packet, size_t len, int32_t *
 }
 
 /*
- * Opcode 251 (CS2D_NET_INFO) - Reconstructed from FUN_1401dac80:
- *   Client request: [251, mode (1..5), uint16_t version (0x03fa = 1018)]
+ * Opcode 251 (CS2D_NET_INFO) - ded FUN_1401da400, client parser 0x1402d2d80, proxy capture:
+ *   Client request: [251, mode (1 internet, 2 LAN, 5 player list), uint16_t version (0x03fa = 1018)]
  *   Server response (mode 1 or 2):
- *     WriteByte(251);
- *     WriteByte(mode);
- *     WriteByte(flags);
- *     WriteLine(server_name); // \r\n terminated
- *     WriteLine(map_name);    // \r\n terminated
- *     WriteByte(players_current);
- *     WriteByte(players_max);
- *     WriteByte(gamemode);
- *     WriteByte(bots);
- *     WriteByte(extra_flags);
+ *     [251][mode][flags][name: u8 len + text][map: u8 len + text][players][max]
+ *     ([gamemode] when flags bit 5)[bots][flags2]
+ *   e.g. fb 01 10 0b "CS2D Server" 0e "prison_funst3r" 00 0c 00 02
+ *   (the full datagram decoder for the browser is cs2d_sv_parse_info in cs2d_serverlist.c)
  */
 size_t cs2d_net_build_info_request(uint8_t mode, uint8_t *out_buf, size_t max_len)
 {
@@ -66,33 +60,26 @@ size_t cs2d_net_build_info_request(uint8_t mode, uint8_t *out_buf, size_t max_le
     return 4;
 }
 
-static void write_sline(uint8_t *buf, size_t *offset, const char *str, size_t max_chars)
+static void write_bstr(uint8_t *buf, size_t *offset, const char *str, size_t max_chars)
 {
     size_t len = str ? strlen(str) : 0;
     if (len > max_chars) len = max_chars;
+    buf[(*offset)++] = (uint8_t)len;
     if (len > 0) {
         memcpy(&buf[*offset], str, len);
         *offset += len;
     }
-    buf[(*offset)++] = '\r';
-    buf[(*offset)++] = '\n';
 }
 
-static bool read_sline(const uint8_t *buf, size_t len, size_t *offset, char *out_str, size_t max_out)
+static bool read_bstr(const uint8_t *buf, size_t len, size_t *offset, char *out_str, size_t max_out)
 {
     if (*offset >= len) return false;
-    size_t out_idx = 0;
-    while (*offset < len) {
-        uint8_t c = buf[(*offset)++];
-        if (c == '\n') break;
-        if (c == '\r') continue;
-        if (out_str && out_idx + 1 < max_out) {
-            out_str[out_idx++] = (char)c;
-        }
-    }
-    if (out_str && max_out > 0) {
-        out_str[out_idx] = '\0';
-    }
+    size_t n = buf[(*offset)++];
+    if (*offset + n > len) return false;
+    size_t copy = (n < max_out - 1) ? n : max_out - 1;
+    memcpy(out_str, &buf[*offset], copy);
+    out_str[copy] = '\0';
+    *offset += n;
     return true;
 }
 
@@ -111,21 +98,18 @@ size_t cs2d_net_build_info_packet(
     uint8_t flags = info->flags;
     if (info->password_protected) flags |= 0x01;
     if (info->gamemode != 0)      flags |= 0x20;
-    if (info->bots > 0)           flags |= 0x40;
     out_buf[offset++] = flags;
 
-    write_sline(out_buf, &offset, info->server_name, 60);
-    write_sline(out_buf, &offset, info->map_name, 30);
+    write_bstr(out_buf, &offset, info->server_name, 60);
+    write_bstr(out_buf, &offset, info->map_name, 30);
 
     out_buf[offset++] = info->players_current;
     out_buf[offset++] = info->players_max;
     if (flags & 0x20) {
         out_buf[offset++] = info->gamemode;
     }
-    if (flags & 0x40) {
-        out_buf[offset++] = info->bots;
-    }
-    out_buf[offset++] = 0; /* extra flags */
+    out_buf[offset++] = info->bots;
+    out_buf[offset++] = info->flags2;
 
     return offset;
 }
@@ -145,8 +129,8 @@ bool cs2d_net_parse_info_packet(
     out_info->flags = packet[offset++];
     out_info->password_protected = (out_info->flags & 0x01) != 0;
 
-    if (!read_sline(packet, len, &offset, out_info->server_name, sizeof(out_info->server_name))) return false;
-    if (!read_sline(packet, len, &offset, out_info->map_name, sizeof(out_info->map_name))) return false;
+    if (!read_bstr(packet, len, &offset, out_info->server_name, sizeof(out_info->server_name))) return false;
+    if (!read_bstr(packet, len, &offset, out_info->map_name, sizeof(out_info->map_name))) return false;
 
     if (offset + 2 > len) return false;
     out_info->players_current = packet[offset++];
@@ -155,9 +139,8 @@ bool cs2d_net_parse_info_packet(
     if ((out_info->flags & 0x20) && offset < len) {
         out_info->gamemode = packet[offset++];
     }
-    if ((out_info->flags & 0x40) && offset < len) {
-        out_info->bots = packet[offset++];
-    }
+    if (offset < len) out_info->bots   = packet[offset++];
+    if (offset < len) out_info->flags2 = packet[offset++];
     return true;
 }
 

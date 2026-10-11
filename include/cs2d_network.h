@@ -119,6 +119,7 @@ typedef struct {
     uint8_t     players_max;
     uint8_t     gamemode;
     uint8_t     bots;
+    uint8_t     flags2;      /* 0 recoil, 1 off-screen damage, 2 server transfers */
     bool        password_protected;
     uint16_t    port;
 } cs2d_net_server_info_t;

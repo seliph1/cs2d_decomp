@@ -8,6 +8,27 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-11 — Claude Code — server browser (Find Servers)
+- **Changed:**
+  - New `cs2d_serverlist.c/.h`:
+    - `Tsv` model;
+    - `svl.cache`, `favorites.lst` and `recentlyjoined.lst` readers;
+    - info / ping packets;
+    - `pingServers` scheduler;
+    - LAN broadcast;
+    - its own UDP socket.
+  - "Servers" window in `cs2d_client.c`: tabs, flag icons, mode letters, players and bots, latency bars,
+    scrollbar, stats, tooltip, the 15 s cache reload, joining, and "Connect to IP". It opens from the lobby's
+    "Find Servers".
+  - Fixed `cs2d_net_parse_info_packet`: strings are u8-length, and bots + flags2 are always present.
+- **Verified:**
+  - Proxy captures of the original (`tools/agent/browser_proxy.py` + a test `svl.cache`), and our client
+    against the same dedicated: identical request and ping bytes, the same 15 s reload, and joining from the
+    list reaches "Connected".
+  - Screenshots compared with the original.
+  - `test_serverlist` (17/17).
+- **Left:** see `OPEN_ISSUES.md` (U.S.G.N. list, filters, favorites, writing the lists).
+
 ## 2026-10-11 — Antigravity — firearm visual recoil kickback, melee swing animation, and GitHub Actions release workflow
 - **Firearm visual recoil (`Tpl +0x308`):** extracted the per-weapon visual recoil table (`0x1409eda18` in
   `CS2D.exe`, `1..6 px`) from `init_weapons` (`0x1402305db..0x1402340a9`). Firing sets

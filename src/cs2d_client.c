@@ -325,6 +325,8 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
 
     client->net_sock  = INVALID_SOCKET;
     client->connected = false;
+    client->servers.sock     = INVALID_SOCKET;
+    client->servers.epoch_ms = (uint32_t)GetTickCount();   /* MilliSecs() base for pings and request ticks */
 
     /* Enter the first scene right away so callers can rely on its state after init */
     if (map_name && map_name[0]) {
@@ -344,7 +346,77 @@ void cs2d_client_shutdown(cs2d_client_t *client)
     if (!client) return;
 
     cs2d_scene_get(client->scene)->leave(client);
+    cs2d_sv_browser_close(&client->servers);
     cs2d_gfx_bank_free(cs2d_render_get_gfx_bank());
+}
+
+/* Number of active entries in sys/filters.cfg, shown on the "Filters (N)" button */
+static int count_server_filters(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char line[128];
+    int n = 0;
+    while (fgets(line, sizeof(line), f)) {
+        char key[64], val[64] = "";
+        if (sscanf(line, "%63s %63s", key, val) < 1 || strncmp(key, "filter_", 7) != 0) continue;
+        if (val[0] != '\0' && strcmp(val, "0") != 0) n++;
+    }
+    fclose(f);
+    return n;
+}
+
+/*
+ * "Find Servers". There is no U.S.G.N. connection, so the Internet list is the cache
+ * sys/core/svl.cache: loaded here like at the original's startup (offlineserverlist_load(1)),
+ * then cleared and reloaded when the 15 s U.S.G.N. wait runs out (servers_use_cache).
+ */
+void cs2d_client_open_servers(cs2d_client_t *client)
+{
+    if (!client) return;
+    uint32_t now = (uint32_t)GetTickCount();
+    cs2d_sv_browser_t *b = &client->servers;
+
+    if (b->lists[CS2D_SV_TAB_INTERNET].count == 0) {
+        int n = cs2d_sv_load_cache("sys/core/svl.cache", &b->lists[CS2D_SV_TAB_INTERNET], now);
+        if (n > 0) cs2d_client_console_print(client, 220, 220, 220, "Cached servers added to list: %d", n);
+    } else {
+        cs2d_sv_browser_refresh(b, CS2D_SV_TAB_INTERNET, now);
+    }
+    b->using_cache = false;
+    if (b->lists[CS2D_SV_TAB_FAVORITES].count == 0) {
+        cs2d_sv_load_address_file("sys/favorites.lst", &b->lists[CS2D_SV_TAB_FAVORITES], now);
+    }
+    if (b->lists[CS2D_SV_TAB_RECENT].count == 0) {
+        cs2d_sv_load_address_file("sys/recentlyjoined.lst", &b->lists[CS2D_SV_TAB_RECENT], now);
+    }
+    cs2d_sv_browser_open(b, now);
+    b->open_ms = now;
+
+    client->servers_filters    = count_server_filters("sys/filters.cfg");
+    client->servers_open       = true;
+    client->servers_scroll     = 0;
+    client->create_server_open = false;
+    client->options_open       = false;
+}
+
+/* Joins a server from the browser; the entry is remembered in the Recently Joined tab */
+static void servers_join(cs2d_client_t *client, uint32_t ip, uint16_t port)
+{
+    char addr[16], cmd[64];
+    cs2d_sv_ip_to_str(ip, addr);
+    snprintf(cmd, sizeof(cmd), "connect %s %u", addr, (unsigned)port);
+    cs2d_sv_t *src    = NULL;
+    cs2d_sv_t *recent = cs2d_sv_list_add(&client->servers.lists[CS2D_SV_TAB_RECENT], ip, port, (uint32_t)GetTickCount());
+    for (int t = 0; t < CS2D_SV_TAB_COUNT && !src; t++) {
+        src = cs2d_sv_list_find(&client->servers.lists[t], ip, port);
+        if (src == recent) src = NULL;
+    }
+    if (recent && src && src->active) *recent = *src;
+    client->servers_open    = false;
+    client->connect_ip_open = false;
+    cs2d_sv_browser_close(&client->servers);
+    cs2d_client_console_exec(client, cmd);
 }
 
 const cs2d_scene_t *cs2d_scene_get(cs2d_scene_id_t id)
@@ -1583,7 +1655,7 @@ bool cs2d_client_any_ui_open(const cs2d_client_t *client)
 {
     return client && (client->console_open || client->create_server_open ||
                       client->options_open || client->server_info_open ||
-                      client->team_menu_open);
+                      client->team_menu_open || client->servers_open || client->connect_ip_open);
 }
 
 void cs2d_client_handle_text_input(cs2d_client_t *client, const char *text)
@@ -1668,6 +1740,29 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
             return;
         }
         cs2d_ui_feed_key(&client->ui, sdl_key);
+        return;
+    }
+
+    if (!client->console_open && client->connect_ip_open) {
+        if (sdl_key == SDLK_ESCAPE && !cs2d_ui_capture_escape(&client->ui)) {
+            client->connect_ip_open = false;
+            return;
+        }
+        if (sdl_key == SDLK_RETURN || sdl_key == SDLK_KP_ENTER) {
+            uint32_t ip;
+            uint16_t port;
+            if (cs2d_sv_parse_address(client->connect_ip_text, &ip, &port)) servers_join(client, ip, port);
+            return;
+        }
+        cs2d_ui_feed_key(&client->ui, sdl_key);
+        return;
+    }
+
+    if (!client->console_open && client->servers_open) {
+        if (sdl_key == SDLK_ESCAPE) {
+            client->servers_open = false;
+            cs2d_sv_browser_close(&client->servers);
+        }
         return;
     }
 
@@ -1783,6 +1878,8 @@ void cs2d_client_handle_mouse_wheel(cs2d_client_t *client, int delta_y)
     } else if (client->server_info_open) {
         client->server_info_scroll -= delta_y * 3;
         server_info_clamp_scroll(client);
+    } else if (client->servers_open && !client->connect_ip_open) {
+        client->servers_scroll -= delta_y * 3;   /* Clamped when the list is laid out */
     }
 }
 
@@ -1840,6 +1937,13 @@ void cs2d_client_update(cs2d_client_t *client, float delta_time)
     }
 
     apply_pending_scene(client);
+
+    /* Server browser queries (pingServers) for the visible tab, LAN scan and replies */
+    if (client->servers_open) {
+        cs2d_sv_browser_update(&client->servers, client->servers_tab, (uint32_t)GetTickCount(), delta_time * 60.0f);
+    } else if (client->servers.open && !client->connect_ip_open) {
+        cs2d_sv_browser_close(&client->servers);
+    }
 
     /* Update FPS & Network Traffic telemetry (1-second window) */
     client->fps_frames++;
@@ -2689,6 +2793,448 @@ static void cs2d_client_build_server_info_ui(cs2d_client_t *client, int screen_w
     }
 }
 
+/*
+ * "Servers" window (Find Servers), Tgui_sl (draw 0x14016b5d0, draw_stats 0x1401083f0).
+ * Geometry measured on CS2D.exe at 850x480: window (5,5) 840x470, tabs at y 30..50, column header
+ * 50..75, list box (21,75)-(838,433) with 15 px rows and a 15 px scrollbar, buttons 20 px high at
+ * y 439: Filters x 21, Refresh x 126 (100 wide), Connect to IP x 604 (120), Connect x 729 (100).
+ */
+#define SERVERS_ROW_H      15.0f
+#define SERVERS_LOADING_MS 15000u  /* "Failed to load online serverlist within 15 sec" */
+
+static int servers_visible(cs2d_client_t *client, cs2d_sv_t **out, int max_out)
+{
+    cs2d_sv_list_t *list = &client->servers.lists[client->servers_tab];
+    cs2d_sv_sort_by_humans(list);
+    int n = 0;
+    for (int i = 0; i < list->count && n < max_out; i++) {
+        if (list->entries[i].active) out[n++] = &list->entries[i];
+    }
+    return n;
+}
+
+static void servers_clamp_scroll(cs2d_client_t *client, int total)
+{
+    int vis = (client->servers_visible_rows > 0) ? client->servers_visible_rows : 1;
+    int max_scroll = (total > vis) ? total - vis : 0;
+    if (client->servers_scroll > max_scroll) client->servers_scroll = max_scroll;
+    if (client->servers_scroll < 0) client->servers_scroll = 0;
+}
+
+/* "Loading Serverlist": waiting for U.S.G.N., or no Internet server answered while requests are pending */
+static bool servers_loading(const cs2d_client_t *client, int visible)
+{
+    const cs2d_sv_list_t *list = &client->servers.lists[CS2D_SV_TAB_INTERNET];
+    if (client->servers_tab != CS2D_SV_TAB_INTERNET || visible > 0 || list->count == 0) return false;
+    if (!client->servers.using_cache) return true;
+    for (int i = 0; i < list->count; i++) {
+        if (!list->entries[i].info_done && list->entries[i].info_reqs < CS2D_SV_INFO_TRIES) return true;
+    }
+    return false;
+}
+
+/*
+ * No U.S.G.N. answer within 15 s (always the case here): offlineserverlist_load(0) clears the Internet
+ * list and reloads sys/core/svl.cache, so every entry starts again with 3 pings and 5 info requests
+ * (proxy capture: the original re-queries the cached server 15 s after Find Servers was opened).
+ */
+static void servers_use_cache(cs2d_client_t *client, uint32_t now)
+{
+    cs2d_sv_browser_t *b = &client->servers;
+    cs2d_client_console_print(client, 255, 0, 0, "WARNING: Failed to load online serverlist within 15 sec! Trying To Load cached list...");
+    b->lists[CS2D_SV_TAB_INTERNET].count = 0;
+    int n = cs2d_sv_load_cache("sys/core/svl.cache", &b->lists[CS2D_SV_TAB_INTERNET], now);
+    cs2d_client_console_print(client, 255, 0, 0, "WARNING: Using cached list (servers: %d)", n > 0 ? n : 0);
+    b->using_cache = true;
+}
+
+static void cs2d_client_build_servers_ui(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    (void)screen_w;
+    (void)screen_h;
+    if (!client->servers_open) return;
+
+    cs2d_ui_context_t *ui = &client->ui;
+    cs2d_sv_browser_t *b  = &client->servers;
+
+    if (!b->using_cache && (uint32_t)GetTickCount() - b->open_ms >= SERVERS_LOADING_MS) {
+        servers_use_cache(client, (uint32_t)GetTickCount());
+    }
+
+    char tab_text[CS2D_SV_TAB_COUNT][40];
+    const char *tab_labels[CS2D_SV_TAB_COUNT];
+    static const char *tab_names[CS2D_SV_TAB_COUNT] = { "Internet", "LAN", "Favorites", "Recently Joined" };
+    for (int t = 0; t < CS2D_SV_TAB_COUNT; t++) {
+        snprintf(tab_text[t], sizeof(tab_text[t]), "%s (%d)", tab_names[t], b->lists[t].count);
+        tab_labels[t] = tab_text[t];
+    }
+
+    static cs2d_sv_t *rows[CS2D_SV_MAX];
+    int total = servers_visible(client, rows, CS2D_SV_MAX);
+
+    /* Row clicks: the first click selects, a click on the selected row joins (0x14016e7e6) */
+    cs2d_ui_rect_t box = cs2d_ui_get_box(ui, CS2D_UI_ID("SrvListBox"));
+    client->servers_visible_rows = (box.h > 2.0f) ? (int)((box.h - 2.0f) / SERVERS_ROW_H) : 23;
+    servers_clamp_scroll(client, total);
+    if (ui->mouse_pressed && !client->connect_ip_open && box.w > 0.0f &&
+        ui->mouse_x >= box.x + 1.0f && ui->mouse_x < box.x + box.w - 16.0f &&
+        ui->mouse_y >= box.y + 1.0f && ui->mouse_y < box.y + box.h - 1.0f) {
+        int row = client->servers_scroll + (int)((ui->mouse_y - box.y - 1.0f) / SERVERS_ROW_H);
+        if (row < total) {
+            cs2d_sv_t *sv = rows[row];
+            if (sv->ip == client->servers_sel_ip && sv->port == client->servers_sel_port) {
+                servers_join(client, sv->ip, sv->port);
+                return;
+            }
+            client->servers_sel_ip   = sv->ip;
+            client->servers_sel_port = sv->port;
+        }
+    }
+
+    const char *title = b->using_cache ? "Servers - using cached list - see console" : "Servers";
+    if (cs2d_ui_window_begin(ui, CS2D_UI_ID("ServersWin"), title, 5.0f, 5.0f, 840.0f, 470.0f, &client->servers_open)) {
+        CS2D_UI_ELEMENT(ui, CS2D_UI_ID("ServersBody"), {
+            .layout = {
+                .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_GROW(0, 0) },
+                .padding   = CS2D_UI_PAD(10, 0, 2, 0),
+                .child_gap = 0.0f,
+                .dir       = CS2D_UI_TOP_TO_BOTTOM
+            }
+        }) {
+            int prev_tab = client->servers_tab;
+            cs2d_ui_tab_bar(ui, CS2D_UI_ID("ServersTabs"), tab_labels, CS2D_SV_TAB_COUNT, &client->servers_tab);
+            if (client->servers_tab != prev_tab) client->servers_scroll = 0;
+
+            /* Column header row, drawn in cs2d_client_render_servers_rows */
+            CS2D_UI_ELEMENT(ui, 0, {
+                .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(25.0f) } }
+            }) {}
+
+            CS2D_UI_ELEMENT(ui, CS2D_UI_ID("SrvListBox"), {
+                .layout   = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(359.0f) } },
+                .bg_color = CS2D_UI_RGBA(28, 28, 30, 246),
+                .border   = { .width = 1.0f, .color = CS2D_UI_RGB(150, 150, 150) }
+            }) {}
+
+            CS2D_UI_ELEMENT(ui, 0, {
+                .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(5.0f) } }
+            }) {}
+
+            CS2D_UI_ELEMENT(ui, CS2D_UI_ID("ServersFooter"), {
+                .layout = {
+                    .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(20.0f) },
+                    .padding   = CS2D_UI_PAD(0, 10, 0, 0),
+                    .child_gap = 5.0f,
+                    .dir       = CS2D_UI_LEFT_TO_RIGHT
+                }
+            }) {
+                char filters[32];
+                snprintf(filters, sizeof(filters), "Filters (%d)", client->servers_filters);
+                if (cs2d_ui_button(ui, CS2D_UI_ID("BtnSrvFilters"), filters, 100.0f, 20.0f)) {
+                    cs2d_client_console_print(client, 255, 45, 45, "'Filters' is not reconstructed yet.");
+                }
+                /* "Stop" while the U.S.G.N. list is awaited (stops waiting and takes the cache) */
+                bool waiting = !b->using_cache && client->servers_tab == CS2D_SV_TAB_INTERNET;
+                if (cs2d_ui_button(ui, CS2D_UI_ID("BtnSrvRefresh"), waiting ? "Stop" : "Refresh", 100.0f, 20.0f)) {
+                    uint32_t now = (uint32_t)GetTickCount();
+                    if (waiting) {
+                        servers_use_cache(client, now);
+                    } else {
+                        cs2d_sv_browser_refresh(b, client->servers_tab, now);
+                    }
+                }
+
+                CS2D_UI_ELEMENT(ui, 0, {
+                    .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(1.0f) } }
+                }) {}
+
+                if (cs2d_ui_button(ui, CS2D_UI_ID("BtnSrvConnectIP"), "Connect to IP", 120.0f, 20.0f)) {
+                    client->connect_ip_open = true;
+                    if (client->connect_ip_text[0] == '\0') {
+                        snprintf(client->connect_ip_text, sizeof(client->connect_ip_text), "%.40s:%d",
+                                 client->config.server_ip[0] ? client->config.server_ip : "127.0.0.1",
+                                 client->config.server_port > 0 ? client->config.server_port : CS2D_SV_LAN_PORT);
+                    }
+                    client->connect_ip_cursor = (int)strlen(client->connect_ip_text);
+                    ui->focused_id = CS2D_UI_ID("ConnectIPInput");
+                }
+                if (cs2d_ui_button(ui, CS2D_UI_ID("BtnSrvConnect"), "Connect", 100.0f, 20.0f) && client->servers_sel_port) {
+                    servers_join(client, client->servers_sel_ip, client->servers_sel_port);
+                }
+            }
+        }
+        cs2d_ui_window_end(ui);
+    }
+
+    if (!client->servers_open) cs2d_sv_browser_close(b);
+}
+
+/* "Connect to IP" dialog (layout not measured on the original yet) */
+static void cs2d_client_build_connect_ip_ui(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    if (!client->connect_ip_open) return;
+
+    cs2d_ui_context_t *ui = &client->ui;
+    float win_w = 300.0f;
+    float win_h = 88.0f;
+    float win_x = floorf(((float)screen_w - win_w) * 0.5f);
+    float win_y = floorf(((float)screen_h - win_h) * 0.5f);
+
+    bool join = false;
+    if (cs2d_ui_window_begin(ui, CS2D_UI_ID("ConnectIPWin"), "Connect to IP",
+                             win_x, win_y, win_w, win_h, &client->connect_ip_open)) {
+        CS2D_UI_ELEMENT(ui, 0, {
+            .layout = {
+                .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_GROW(0, 0) },
+                .padding   = CS2D_UI_PAD(10, 10, 4, 0),
+                .child_gap = 8.0f,
+                .dir       = CS2D_UI_TOP_TO_BOTTOM
+            }
+        }) {
+            cs2d_ui_textbox(ui, CS2D_UI_ID("ConnectIPInput"), client->connect_ip_text, sizeof(client->connect_ip_text),
+                            &client->connect_ip_cursor, 276.0f, false);
+            CS2D_UI_ELEMENT(ui, 0, {
+                .layout = {
+                    .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(20.0f) },
+                    .child_gap = 5.0f,
+                    .dir       = CS2D_UI_LEFT_TO_RIGHT
+                }
+            }) {
+                CS2D_UI_ELEMENT(ui, 0, {
+                    .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(1.0f) } }
+                }) {}
+                join = cs2d_ui_button(ui, CS2D_UI_ID("BtnConnectIPOk"), "Connect", 100.0f, 20.0f);
+                if (cs2d_ui_button(ui, CS2D_UI_ID("BtnConnectIPCancel"), "Cancel", 100.0f, 20.0f)) {
+                    client->connect_ip_open = false;
+                }
+            }
+        }
+        cs2d_ui_window_end(ui);
+    }
+
+    uint32_t ip;
+    uint16_t port;
+    if (join && cs2d_sv_parse_address(client->connect_ip_text, &ip, &port)) servers_join(client, ip, port);
+}
+
+static cs2d_texture_t s_tex_gui_server; /* gfx/gui_server.bmp: 9 icons of 10x10, maskMode 3 (0x140a0de98) */
+static cs2d_texture_t s_tex_netspeed;   /* gfx/netspeed.bmp: 3x11 latency bar, maskMode 2 (0x140a0de90) */
+static cs2d_texture_t s_tex_gui_load;   /* gfx/gui_load.bmp: 16x16 spinner, midhandle (0x140a0de80) */
+
+/* Game mode letter and color, initialised in FUN_140304090 (0x1403181a8..): S D T C Z */
+static const char    *s_mode_letters[5]   = { "S", "D", "T", "C", "Z" };
+static const uint8_t  s_mode_colors[5][3] = {
+    { 175, 175,  50 }, { 200, 100, 100 }, { 200, 125,  50 }, { 100, 150, 175 }, { 100, 175, 100 }
+};
+
+static void servers_icon(int frame, float x, float y, float c, float a)
+{
+    cs2d_render_sprite_frame(&s_tex_gui_server, 10, 10, frame, x + 5.0f, y + 5.0f, 10.0f, 10.0f,
+                             0.0f, c, c, c, a, 0);
+}
+
+static void servers_count_line(float right, float y, int n, const char *one, const char *many, int paren)
+{
+    char text[64];
+    snprintf(text, sizeof(text), "%d %s (%d)", n, (n == 1) ? one : many, paren);
+    float w = cs2d_render_text_width_ex(CS2D_FONT_SMALL, text);
+    cs2d_render_text_ex(CS2D_FONT_SMALL, right - w, y, text, 150.0f / 255.0f, 150.0f / 255.0f, 150.0f / 255.0f, 1.0f);
+}
+
+/* Header, rows, scrollbar and messages over the list box (Tgui_sl.draw 0x14016b5d0) */
+static void cs2d_client_render_servers_rows(cs2d_client_t *client)
+{
+    if (!client->servers_open) return;
+    if (!s_tex_gui_server.id) {
+        cs2d_texture_load_grid(&s_tex_gui_server, "gfx/gui_server.bmp", 3, 10, 10);
+        cs2d_texture_load_ex(&s_tex_netspeed, "gfx/netspeed.bmp", 2);
+        cs2d_texture_load_ex(&s_tex_gui_load, "gfx/gui_load.bmp", 3);
+    }
+
+    cs2d_ui_rect_t box = cs2d_ui_get_box(&client->ui, CS2D_UI_ID("SrvListBox"));
+    if (box.w <= 0.0f) return;
+    const float g150 = 150.0f / 255.0f;
+    float right = box.x + box.w - 1.0f;
+
+    static cs2d_sv_t *rows[CS2D_SV_MAX];
+    int total = servers_visible(client, rows, CS2D_SV_MAX);
+    servers_clamp_scroll(client, total);
+
+    /* Stats (draw_stats): servers (answered), human players, bots */
+    int humans = 0, bots = 0;
+    for (int i = 0; i < total; i++) {
+        humans += cs2d_sv_humans(rows[i]);
+        bots   += rows[i]->bots;
+    }
+    int count = client->servers.lists[client->servers_tab].count;
+    servers_count_line(right, box.y - 49.0f, count,  "Server", "Servers", total);
+    servers_count_line(right, box.y - 37.0f, humans, "Player", "Players", humans);
+    servers_count_line(right, box.y - 25.0f, bots,   "Bot",    "Bots",    bots);
+
+    /* Column header: flag icons (lock, U.S.G.N., fog, light, recoil, off-screen, transfers, M) */
+    static const int header_frames[8] = { 0, 1, 2, 6, 7, 8, 3, 5 };
+    float hy = box.y - 15.0f;
+    for (int k = 0; k < 8; k++) servers_icon(header_frames[k], box.x + 4.0f + 13.0f * (float)k, hy - 1.0f, g150, 1.0f);
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, box.x + 109.0f, hy - 2.0f, "Name",    g150, g150, g150, 1.0f);
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, box.x + 401.0f, hy - 2.0f, "Map",     g150, g150, g150, 1.0f);
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, box.x + 693.0f, hy - 2.0f, "Players", 1.0f, 1.0f, 1.0f, 1.0f);
+    float pw = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, "Players");
+    servers_icon(3, box.x + 695.0f + pw, hy - 1.0f, 1.0f, 1.0f);
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, box.x + 755.0f, hy - 2.0f, "Latency", g150, g150, g150, 1.0f);
+
+    /* Scrollbar: 15 px track inside the right border */
+    int vis = client->servers_visible_rows;
+    float track_x = right - 15.0f;
+    cs2d_render_rect(track_x, box.y + 1.0f, 1.0f, box.h - 2.0f, g150, g150, g150, 1.0f, true);
+    cs2d_render_rect(track_x + 1.0f, box.y + 1.0f, 14.0f, box.h - 2.0f, 6.0f / 255.0f, 6.0f / 255.0f, 6.0f / 255.0f, 1.0f, true);
+    float inner_h = box.h - 4.0f;
+    float thumb_h = (total > vis) ? inner_h * (float)vis / (float)total : inner_h;
+    if (thumb_h < 24.0f) thumb_h = 24.0f;
+    float thumb_y = box.y + 2.0f;
+    if (total > vis) thumb_y += (inner_h - thumb_h) * (float)client->servers_scroll / (float)(total - vis);
+    cs2d_render_rect(track_x + 2.0f, thumb_y, 12.0f, thumb_h, 53.0f / 255.0f, 53.0f / 255.0f, 53.0f / 255.0f, 1.0f, true);
+    cs2d_render_rect(track_x + 2.0f, thumb_y, 12.0f, thumb_h, 100.0f / 255.0f, 100.0f / 255.0f, 100.0f / 255.0f, 1.0f, false);
+
+    float mx = client->mouse_screen_x;
+    float my = client->mouse_screen_y;
+
+    /* The rows are drawn over the UI pass, so they would cover the Connect to IP dialog */
+    if (client->connect_ip_open) return;
+
+    if (total == 0) {
+        float cx = box.x + (box.w - 16.0f) * 0.5f;
+        float cy = box.y + box.h * 0.5f;
+        const char *l1 = NULL, *l2 = NULL;
+        if (servers_loading(client, total)) {
+            l1 = "Loading Serverlist";
+            cs2d_render_sprite(&s_tex_gui_load, cx, cy + 9.0f, 16.0f, 16.0f,
+                               (float)(GetTickCount() % 1000u) * 0.36f, 1.0f, 1.0f, 1.0f, 1.0f);
+        } else if (client->servers_tab == CS2D_SV_TAB_INTERNET) {
+            l1 = "No Internet Servers online";
+        } else if (client->servers_tab == CS2D_SV_TAB_LAN) {
+            l1 = "Trying to find Servers in LAN";
+            l2 = "(only servers with port 36963 will be listed)";
+        } else if (client->servers_tab == CS2D_SV_TAB_FAVORITES) {
+            l1 = "You have no Favorite Servers";
+            l2 = "(rightclick a server to make it a favorite)";
+        } else {
+            l1 = "No servers have been joined recently";
+            l2 = "(this list will be filled automatically when you join servers)";
+        }
+        float w1 = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, l1);
+        float c1 = l2 ? g150 : 1.0f;
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, floorf(cx - w1 * 0.5f), cy - 22.0f, l1, c1, c1, c1, 1.0f);
+        if (l2) {
+            float w2 = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, l2);
+            cs2d_render_text_ex(CS2D_FONT_REGULAR, floorf(cx - w2 * 0.5f), cy - 2.0f, l2, 0.39f, 0.39f, 0.39f, 1.0f);
+        }
+        return;
+    }
+
+    cs2d_render_scissor_begin((int)box.x + 1, (int)box.y + 1, (int)(box.w - 17.0f), (int)(box.h - 2.0f));
+    const cs2d_sv_t *hover_sv = NULL;
+    for (int r = 0; r < vis && client->servers_scroll + r < total; r++) {
+        const cs2d_sv_t *sv = rows[client->servers_scroll + r];
+        float ry = box.y + 1.0f + SERVERS_ROW_H * (float)r;
+        bool sel = (sv->ip == client->servers_sel_ip && sv->port == client->servers_sel_port);
+        bool hot = mx >= box.x + 1.0f && mx < right - 15.0f && my >= ry && my < ry + SERVERS_ROW_H;
+        if (hot) hover_sv = sv;
+
+        /* Highlight: light blend over the row (alpha calibrated by eye) */
+        if (sel || hot) {
+            cs2d_render_rect(box.x + 1.0f, ry, box.w - 17.0f, SERVERS_ROW_H, 1.0f, 1.0f, 1.0f, sel ? 0.16f : 0.08f, true);
+        }
+        float base = (sel || hot) ? 1.0f : g150;
+
+        /* Flag icons in the header columns */
+        float icon_c = base * 0.75f;
+        if (sv->password)         servers_icon(0, box.x + 4.0f,  ry + 2.0f, icon_c, 1.0f);
+        if (sv->usgn_only)        servers_icon(1, box.x + 17.0f, ry + 2.0f, icon_c, 1.0f);
+        if (sv->fog)              servers_icon(2, box.x + 30.0f, ry + 2.0f, icon_c, 1.0f);
+        if (sv->light)            servers_icon(6, box.x + 43.0f, ry + 2.0f, icon_c, 1.0f);
+        if (sv->dyn_recoil)       servers_icon(7, box.x + 56.0f, ry + 2.0f, icon_c, 1.0f);
+        if (sv->offscreen_damage) servers_icon(8, box.x + 69.0f, ry + 2.0f, icon_c, 1.0f);
+        if (sv->transfers)        servers_icon(3, box.x + 82.0f, ry + 2.0f, icon_c, 1.0f);
+
+        /* Game mode letter and Lua "s" (115,110,255) */
+        if (sv->gamemode >= 0 && sv->gamemode < 5) {
+            const uint8_t *mc = s_mode_colors[sv->gamemode];
+            cs2d_render_text_ex(CS2D_FONT_REGULAR, box.x + 94.0f, ry - 1.0f, s_mode_letters[sv->gamemode],
+                                mc[0] / 255.0f, mc[1] / 255.0f, mc[2] / 255.0f, 1.0f);
+        }
+        if (sv->lua) {
+            cs2d_render_text_ex(CS2D_FONT_SMALL, box.x + 100.0f, ry + 4.0f, "s", 115.0f / 255.0f, 110.0f / 255.0f, 1.0f, 1.0f);
+        }
+
+        /* Name (max 225 px) and map (max 188 px, half bright when maps/<map>.map is missing) */
+        cs2d_render_scissor_begin((int)box.x + 109, (int)ry, 225, (int)SERVERS_ROW_H);
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, box.x + 109.0f, ry - 1.0f, sv->name, base, base, base, 1.0f);
+        cs2d_render_scissor_end();
+        float mapc = sv->existing_map ? base : base * 0.5f;
+        cs2d_render_scissor_begin((int)box.x + 401, (int)ry, 188, (int)SERVERS_ROW_H);
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, box.x + 401.0f, ry - 1.0f, sv->map, mapc, mapc, mapc, 1.0f);
+        cs2d_render_scissor_end();
+        cs2d_render_scissor_begin((int)box.x + 1, (int)box.y + 1, (int)(box.w - 17.0f), (int)(box.h - 2.0f));
+
+        /* Players: empty half bright, humans green (0,175,0), full red (175,0,0), bots yellow */
+        char pl[16];
+        snprintf(pl, sizeof(pl), "%d/%d", sv->players, sv->max_players);
+        float pr = base, pg = base, pb = base;
+        if (sv->players == 0) {
+            pr = pg = pb = base * 0.5f;
+        } else if (sv->players >= sv->max_players) {
+            pr = (sel || hot) ? 1.0f : 175.0f / 255.0f;
+            pg = pb = (sel || hot) ? 50.0f / 255.0f : 0.0f;
+        } else if (sv->players > sv->bots) {
+            pg = (sel || hot) ? 225.0f / 255.0f : 175.0f / 255.0f;
+            pr = pb = (sel || hot) ? 50.0f / 255.0f : 0.0f;
+        }
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, box.x + 693.0f, ry - 1.0f, pl, pr, pg, pb, 1.0f);
+        if (sv->bots > 0) {
+            char bt[8];
+            snprintf(bt, sizeof(bt), "%d", sv->bots);
+            float yc = (sel || hot) ? 1.0f : 200.0f / 255.0f;
+            cs2d_render_text_ex(CS2D_FONT_REGULAR, box.x + 714.0f, ry - 1.0f, bt, yc, yc, 0.0f, 1.0f);
+        }
+
+        /* Latency: 10 bars, 4 px apart; lit = ceil(10 * (1 - ping/500)), color r = 510 f, g = 510 (1 - f) */
+        float bx = box.x + 757.0f;
+        for (int k = 0; k < 10; k++) {
+            cs2d_render_sprite(&s_tex_netspeed, bx + 4.0f * (float)k + 1.5f, ry + 7.5f, 3.0f, 11.0f, 0.0f,
+                               50.0f / 255.0f, 50.0f / 255.0f, 50.0f / 255.0f, 1.0f);
+        }
+        if (sv->got_ping) {
+            float f = (sv->ping >= 500) ? 1.0f : (float)sv->ping * 0.002f;
+            float lr = fminf(510.0f * f, 255.0f) / 255.0f;
+            float lg = fminf(510.0f * (1.0f - f), 255.0f) / 255.0f;
+            float lb = sv->ping_blend / 255.0f;
+            int lit = (int)ceilf((1.0f - f) * 10.0f);
+            if (lit < 1) lit = 1;
+            for (int k = 0; k < lit && k < 10; k++) {
+                cs2d_render_sprite(&s_tex_netspeed, bx + 4.0f * (float)k + 1.5f, ry + 7.5f, 3.0f, 11.0f, 0.0f,
+                                   lr, lg, lb, 1.0f);
+            }
+        } else {
+            float a = fabsf(sinf((float)(GetTickCount() / 3u) * 0.017453292f)) * 0.7f;
+            float qw = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, "?");
+            cs2d_render_text_ex(CS2D_FONT_REGULAR, bx + 18.0f - qw * 0.5f, ry - 1.0f, "?",
+                                100.0f / 255.0f, 100.0f / 255.0f, 100.0f / 255.0f, a);
+        }
+    }
+    cs2d_render_scissor_end();
+
+    /* Tooltip with the address of the hovered row, at mouse + (15, 5) (Tgui_sl.draw, DAT_140ddf358 / 354) */
+    if (hover_sv) {
+        char addr[16], tip[32];
+        cs2d_sv_ip_to_str(hover_sv->ip, addr);
+        snprintf(tip, sizeof(tip), "%s:%u", addr, (unsigned)hover_sv->port);
+        float tw = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, tip);
+        cs2d_render_rect(mx + 15.0f, my + 5.0f, tw + 8.0f, 17.0f, 0.0f, 0.0f, 0.0f, 0.8f, true);
+        cs2d_render_rect(mx + 15.0f, my + 5.0f, tw + 8.0f, 17.0f, g150, g150, g150, 1.0f, false);
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, mx + 19.0f, my + 6.0f, tip, 1.0f, 1.0f, 1.0f, 1.0f);
+    }
+}
+
 void cs2d_client_build_ui(cs2d_client_t *client, int screen_w, int screen_h)
 {
     cs2d_ui_begin_layout(
@@ -2705,6 +3251,8 @@ void cs2d_client_build_ui(cs2d_client_t *client, int screen_w, int screen_h)
     cs2d_client_build_console_ui(client, screen_w, screen_h);
     cs2d_client_build_create_server_ui(client, screen_w, screen_h);
     cs2d_client_build_options_ui(client, screen_w, screen_h);
+    cs2d_client_build_servers_ui(client, screen_w, screen_h);
+    cs2d_client_build_connect_ip_ui(client, screen_w, screen_h);
 
     cs2d_ui_end_layout(&client->ui);
 }
@@ -2718,6 +3266,7 @@ static void cs2d_client_render_ui(cs2d_client_t *client, int screen_w, int scree
     }
     cs2d_client_build_ui(client, screen_w, screen_h);
     cs2d_ui_render(&client->ui);
+    cs2d_client_render_servers_rows(client);
 }
 
 /*

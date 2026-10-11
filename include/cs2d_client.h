@@ -13,6 +13,7 @@
 #include "cs2d_scene.h"
 #include "cs2d_entities.h"
 #include "cs2d_fx.h"
+#include "cs2d_serverlist.h"
 
 #define CS2D_CONSOLE_MAX_LINES     1024 /* Ring buffer: the oldest line is dropped when full */
 #define CS2D_CONSOLE_LINE_LEN      192
@@ -124,6 +125,18 @@ struct cs2d_client {
     float               server_info_sb_grab_y;
     bool                team_menu_open;
     int                 team_menu_page;            /* 0 = Select Team, 1 = Terrorists, 2 = Counter-Terrorists */
+    bool                servers_open;              /* "Servers" window (Find Servers) */
+    int                 servers_tab;               /* cs2d_sv_tab_t */
+    int                 servers_scroll;            /* First visible row */
+    int                 servers_visible_rows;
+    float               servers_sb_grab_y;
+    uint32_t            servers_sel_ip;            /* Selected row (clicking it again joins) */
+    uint16_t            servers_sel_port;
+    int                 servers_filters;           /* Active filters in sys/filters.cfg */
+    bool                connect_ip_open;           /* "Connect to IP" dialog */
+    char                connect_ip_text[64];
+    int                 connect_ip_cursor;
+    cs2d_sv_browser_t   servers;
     int                 create_server_tab;
     int                 options_tab;
     char                srv_name[64];
@@ -189,6 +202,9 @@ void cs2d_client_start_game(cs2d_client_t *client, const char *map_name);
 
 /* True while a shared UI window (console, Create Server, Options, Server Info, Select Team) captures input */
 bool cs2d_client_any_ui_open(const cs2d_client_t *client);
+
+/* Open the "Servers" window (Find Servers): loads the cached / favorite / recent lists and starts querying */
+void cs2d_client_open_servers(cs2d_client_t *client);
 
 /* Load welcome lines from sys/serverinfo.txt and parse UTF-16LE opcode 240 mode 51 lines */
 bool cs2d_client_load_serverinfo(cs2d_client_t *client, const char *filepath);

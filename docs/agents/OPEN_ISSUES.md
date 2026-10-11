@@ -19,6 +19,17 @@ the same one.
 - **Dedicated broadcast quirk:** after some round restarts the dedicated stops broadcasting entity
   changes; the original client shows the same, so it is server behaviour.
 - **Buy menu:** there is no UI; `B` buys a rifle and kevlar + helmet as a shortcut.
+- **Server browser, not reconstructed:**
+  - U.S.G.N. serverlist download: the Internet tab always uses `sys/core/svl.cache`.
+  - Filters dialog: the button only shows the count from `sys/filters.cfg`, and filters are not applied.
+  - Right-click to add a favorite, and the "Add to Favorites" button in the middle of the footer.
+  - Writing `favorites.lst` / `recentlyjoined.lst`: joined servers go to the Recently Joined tab in memory only.
+  - Sorting by the other columns, and the player list request `[FB][5]`.
+- **Server browser, not measured:**
+  - The meaning of the "M" header icon (frame 5 of `gui_server.bmp`).
+  - The "Connect to IP" dialog layout.
+  - The hover / selection highlight alpha (calibrated by eye).
+  - Long names: the original scales them down to fit (`SetScale(225 / width)`), ours clips them.
 
 ## Verification debt
 - **Original + our client, one session:** not re-run after the latest join/leave fix (the session ended

@@ -80,6 +80,9 @@ static void lobby_activate(cs2d_client_t *client, const lobby_entry_t *entry)
             client->console_open  = true;
             client->ui.focused_id = CS2D_UI_ID("ConsoleInput");
             break;
+        case LOBBY_ACT_FIND_SERVERS:
+            cs2d_client_open_servers(client);
+            break;
         case LOBBY_ACT_NEW_GAME:
             client->create_server_open = true;
             client->options_open       = false;

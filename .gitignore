@@ -49,6 +49,7 @@ CS2D -fullscreen.bat
 *.gpr
 *.rep/
 *.bndb
+docs/dump
 
 # =============================================================================
 # Logs, Caches, Credenciais e Capturas de Tela em Tempo de Execução
