@@ -795,6 +795,15 @@ bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank)
     cs2d_texture_load_ex(&bank->tex_flare3,    "gfx/sprites/flare3.bmp",   3);
     cs2d_texture_load_grid(&bank->tex_fragments, "gfx/fragments.bmp",     3, 32, 32);
     cs2d_texture_load_grid(&bank->tex_explosion, "gfx/explosion.png",     1, 64, 64);
+    if (!cs2d_texture_load_ex(&bank->tex_flare_x, "incbindata/flare_x.png", 1)) {
+        cs2d_texture_load_ex(&bank->tex_flare_x, "gfx/incbindata/flare_x.png", 1);
+    }
+    if (!cs2d_texture_load_ex(&bank->tex_glowdot, "incbindata/glowdot.bmp", 3)) {
+        cs2d_texture_load_ex(&bank->tex_glowdot, "gfx/incbindata/glowdot.bmp", 3);
+    }
+    if (!cs2d_texture_load_grid(&bank->tex_shells, "gfx/shells.bmp", 2, 8, 8)) {
+        cs2d_texture_load_grid(&bank->tex_shells, "gfx/shells.png", 2, 8, 8);
+    }
     cs2d_texture_load_ex(&bank->tex_bspot_a,   "gfx/sprites/bspot_a.png",  2);
     cs2d_texture_load_ex(&bank->tex_bspot_b,   "gfx/sprites/bspot_b.png",  2);
 
@@ -856,6 +865,9 @@ void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank)
     cs2d_texture_free(&bank->tex_flare3);
     cs2d_texture_free(&bank->tex_fragments);
     cs2d_texture_free(&bank->tex_explosion);
+    cs2d_texture_free(&bank->tex_flare_x);
+    cs2d_texture_free(&bank->tex_glowdot);
+    cs2d_texture_free(&bank->tex_shells);
     cs2d_texture_free(&bank->tex_bspot_a);
     cs2d_texture_free(&bank->tex_bspot_b);
     for (int i = 0; i < 5; i++) {
@@ -3135,10 +3147,18 @@ void cs2d_render_scissor_end(void)
 /* Breakable effects (cs2d_fx): tile quarters, material fragments and explosions, all fading out */
 void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2d_texture_t *tileset_tex, float cam_x, float cam_y)
 {
-    if (!fx || fx->count == 0) return;
+    if (!fx) return;
     cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
     cam_x = roundf(cam_x);
     cam_y = roundf(cam_y);
+
+    /* Cases on the floor (and in flight) */
+    for (int i = 0; bank && i < CS2D_FX_MAX_SHELLS; i++) {
+        const cs2d_fx_particle_t *c = &fx->shells[i];
+        if (c->kind != CS2D_FX_SHELL) continue;
+        cs2d_render_sprite_frame(&bank->tex_shells, 8, 8, c->frame, c->x - cam_x, c->y - cam_y, 8.0f, 8.0f,
+                                 c->rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
+    }
     bool has_tileset = (map && tileset_tex && tileset_tex->id != 0 && tileset_tex->width >= 32);
     int tile_src = (map && map->use_64x64_tiles == 1) ? 64 : 32;
     int cols = has_tileset ? (tileset_tex->width / tile_src) : 1;
@@ -3188,6 +3208,19 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
         } else if (p->kind == CS2D_FX_FRAGMENT && bank) {
             cs2d_render_sprite_frame(&bank->tex_fragments, 32, 32, p->frame, sx, sy, p->size, p->size,
                                      p->rot, p->r, p->g, p->b, t, 0);
+        } else if (p->kind == CS2D_FX_MUZZLE && bank) {
+            /* Yellow light around the shooter, then the flash stretched along the aim */
+            cs2d_render_sprite_frame(&bank->tex_flare3, 0, 0, 0, p->x2 - cam_x, p->y2 - cam_y, 320.0f, 320.0f,
+                                     0.0f, 1.0f, 0.85f, 0.35f, 0.6f * t, 3);
+            cs2d_render_sprite_frame(&bank->tex_flare_x, 0, 0, 0, sx, sy, p->size * 1.7f, p->size * 2.9f,
+                                     p->rot, 1.0f, 1.0f, 1.0f, t, 3);
+        } else if (p->kind == CS2D_FX_TRACER) {
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+            cs2d_render_line(sx, sy, p->x2 - cam_x, p->y2 - cam_y, 1.0f, 0.9f, 0.4f, 0.6f * t);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        } else if (p->kind == CS2D_FX_GLOWDOT && bank) {
+            cs2d_render_sprite_frame(&bank->tex_glowdot, 0, 0, 0, sx, sy, p->size + 1.0f, p->size + 1.0f,
+                                     0.0f, p->r, p->g, p->b, t, 3);
         } else if (p->kind == CS2D_FX_EXPLOSION && bank) {
             int frame = (int)((1.0f - t) * 25.0f);
             if (frame > 24) frame = 24;

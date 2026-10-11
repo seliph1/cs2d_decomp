@@ -18,6 +18,16 @@
 #define CS2D_CONSOLE_LINE_LEN  192
 #define CS2D_CONSOLE_HIST_MAX  32
 
+/* Weapon / item lying on the ground (server: spawnitem 33, drop 24, collect 25) */
+#define CS2D_MAX_GROUND_ITEMS 256
+typedef struct {
+    bool     active;
+    uint16_t id;        /* Server item id */
+    uint8_t  type;      /* Weapon / item type */
+    float    x, y;      /* Tile center in px */
+    int16_t  clip, reserve;
+} cs2d_ground_item_t;
+
 typedef struct {
     char    text[CS2D_CONSOLE_LINE_LEN];
     uint8_t r;
@@ -49,6 +59,7 @@ struct cs2d_client {
     char            game_map_name[64]; /* Map loaded by the game scene (e.g. "prison_funst3r") */
     cs2d_entity_world_t ents;          /* Name/trigger entity logic for game.map (simulated offline) */
     cs2d_fx_t       fx;                /* Breakable debris / explosion effects */
+    cs2d_ground_item_t ground_items[CS2D_MAX_GROUND_ITEMS];
     int             fire_seed;         /* Shot counter sent with every fire packet (-1: none sent yet) */
     bool            snapshot_states_reset; /* Join snapshot: entity states cleared before applying section 4 */
     uint32_t        ents_round;        /* game.round_number the entity logic was last reset for */

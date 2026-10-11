@@ -284,6 +284,32 @@ bool cs2d_client_connect(cs2d_client_t *client, const char *ip, int port)
     return true;
 }
 
+static void add_ground_item(cs2d_client_t *client, uint16_t id, uint8_t type, int tx, int ty, int16_t clip, int16_t reserve)
+{
+    cs2d_ground_item_t *slot = NULL;
+    for (int i = 0; i < CS2D_MAX_GROUND_ITEMS && !slot; i++) {
+        if (client->ground_items[i].active && client->ground_items[i].id == id) slot = &client->ground_items[i];
+    }
+    for (int i = 0; i < CS2D_MAX_GROUND_ITEMS && !slot; i++) {
+        if (!client->ground_items[i].active) slot = &client->ground_items[i];
+    }
+    if (!slot) return;
+    slot->active  = true;
+    slot->id      = id;
+    slot->type    = type;
+    slot->x       = (float)tx * CS2D_TILE_SIZE + 16.0f;
+    slot->y       = (float)ty * CS2D_TILE_SIZE + 16.0f;
+    slot->clip    = clip;
+    slot->reserve = reserve;
+}
+
+static void remove_ground_item(cs2d_client_t *client, uint16_t id)
+{
+    for (int i = 0; i < CS2D_MAX_GROUND_ITEMS; i++) {
+        if (client->ground_items[i].active && client->ground_items[i].id == id) client->ground_items[i].active = false;
+    }
+}
+
 void cs2d_client_poll_network(cs2d_client_t *client)
 {
     if (!client || client->net_sock == INVALID_SOCKET) return;
@@ -417,6 +443,20 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                                                   "Connected to server (map: %s, player ID: %u)",
                                                   client->net_map_name, client->local_player_id);
 
+                        /*
+                         * Client data, as CS2D.exe sends it right after the snapshot: [252, 10, 28, 2,
+                         * size u16, raw size u32, zlib] carrying the 32x32 spray logo (1024 bytes, blank
+                         * here), then [67, 1]. Only after this does the server run its "join" (Lua hook,
+                         * player list entry and the [248] announcement to the other players).
+                         */
+                        static const uint8_t client_data[] = {
+                            0xfc, 0x0a, 0x1c, 0x02, 0x15, 0x00, 0x00, 0x04, 0x00, 0x00,
+                            0x78, 0xda, 0x63, 0x60, 0x18, 0x05, 0xa3, 0x60, 0x14, 0x8c, 0x54, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01
+                        };
+                        cs2d_client_send_udp(client, client_data, sizeof(client_data), true);
+                        uint8_t spec_pkt[2] = { (uint8_t)CS2D_NET_CLIENTSPEC, 1 };
+                        cs2d_client_send_udp(client, spec_pkt, sizeof(spec_pkt), true);
+
                         /* Send Team Selection [20, 2 (CT), 0 (look 0)] */
                         uint8_t team_pkt[4];
                         size_t team_len = cs2d_net_build_team_packet(0, CS2D_TEAM_CT, 0, team_pkt, sizeof(team_pkt));
@@ -458,13 +498,12 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         pl->money          = money;
                         pl->pos.x          = (float)sx;
                         pl->pos.y          = (float)sy;
-                        cs2d_player_give_weapon(pl, CS2D_WEP_KNIFE);
+                        /* The spawn record lists the whole inventory (prison_funst3r: only the knife) */
+                        cs2d_player_clear_inventory(pl);
                         for (uint8_t k = 0; k < item_cnt && k < 32; k++) {
                             cs2d_player_give_weapon(pl, items[k]);
                         }
-                        if (wep > 0) {
-                            pl->current_weapon = wep;
-                        }
+                        if (!cs2d_player_select_weapon(pl, wep)) cs2d_player_select_weapon(pl, CS2D_WEP_KNIFE);
                         if (pid == client->local_player_id) {
                             client->cam_x = pl->pos.x - (float)client->config.window_width * 0.5f;
                             client->cam_y = pl->pos.y - (float)client->config.window_height * 0.5f;
@@ -524,30 +563,50 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 }
                 pos += 5;
             } else if (opcode == CS2D_NET_ROUNDSTART) {
-                /* Server -> Client: [22, round u8, count u8] + count x 16-byte player records
-                 * {id u8, x u16, y u16, angle f32, 7 bytes}. Entity states are not resent: every
-                 * client rebuilds the round start state itself (Trigger_Start is deterministic). */
+                /* Server -> Client: [22, round u8, count u8] + count x 12-byte player records
+                 * {id u8, x u16, y u16, angle f32, weapon u8, armor u8, flag u8} + the receiving player's
+                 * inventory {money u16, n u8, n x item u8} (recorded with 1 and 2 players). Entity states
+                 * are not resent: every client rebuilds the round start state itself (Trigger_Start is
+                 * deterministic). */
                 if (pos + 3 > recvd) break;
                 int count = buffer[pos + 2];
-                if (pos + 3 + count * 16 > recvd) break;
+                int tail = pos + 3 + count * 12;
+                if (tail + 3 > recvd) break;
+                int n_items = buffer[tail + 2];
+                if (tail + 3 + n_items > recvd) break;
                 for (int k = 0; k < count; k++) {
-                    const uint8_t *r = &buffer[pos + 3 + k * 16];
+                    const uint8_t *r = &buffer[pos + 3 + k * 12];
                     uint8_t pid = r[0];
                     if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
                         float angle;
                         memcpy(&angle, &r[5], 4);
                         cs2d_player_t *p = &client->game.players[pid];
-                        p->pos.x = (float)(r[1] | (r[2] << 8));
-                        p->pos.y = (float)(r[3] | (r[4] << 8));
-                        p->angle = angle;
-                        p->alive = true;
+                        p->pos.x  = (float)(r[1] | (r[2] << 8));
+                        p->pos.y  = (float)(r[3] | (r[4] << 8));
+                        p->angle  = angle;
+                        p->armor  = r[10];
+                        p->alive  = true;
+                        p->health = 100;
+                        if (pid != client->local_player_id) {
+                            cs2d_player_give_weapon(p, r[9]);
+                        }
                     }
                 }
+                cs2d_player_t *me = &client->game.players[client->local_player_id];
+                const uint8_t *held = NULL;
+                for (int k = 0; k < count; k++) {
+                    if (buffer[pos + 3 + k * 12] == client->local_player_id) held = &buffer[pos + 3 + k * 12 + 9];
+                }
+                me->money = buffer[tail] | (buffer[tail + 1] << 8);
+                cs2d_player_clear_inventory(me);
+                for (int k = 0; k < n_items; k++) cs2d_player_give_weapon(me, buffer[tail + 3 + k]);
+                if (!held || !cs2d_player_select_weapon(me, *held)) cs2d_player_select_weapon(me, CS2D_WEP_KNIFE);
+
                 cs2d_ents_round_start(&client->ents);
                 cs2d_fx_clear(&client->fx);
                 client->fire_seed   = -1;
                 client->walk_active = false;
-                pos += 3 + count * 16;
+                pos = tail + 3 + n_items;
             } else if (opcode == CS2D_NET_SETPOS) {
                 /* Server -> Client: [15, player u8, x u16, y u16] (6 bytes): the server moves a player,
                  * e.g. Func_Teleport. The local player takes it too, otherwise it would keep sending
@@ -566,15 +625,124 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 }
                 pos += 6;
             } else if (opcode == CS2D_NET_COLLECT) {
-                /* Server -> Client: [25, player u8, item id u16, 6 bytes] (10 bytes, recorded from CS2D.exe
-                 * sessions; usually followed by the Env_Item entityevent). Skipped to keep parsing. */
+                /* Server -> Client: [25, player, item id u16, type u8, clip u16, reserve u16, u8] (10 bytes):
+                 * the player picked the ground item up (recorded from CS2D.exe sessions) */
                 if (pos + 10 > recvd) break;
+                uint8_t  pid  = buffer[pos + 1];
+                uint16_t iid  = (uint16_t)(buffer[pos + 2] | (buffer[pos + 3] << 8));
+                uint8_t  type = buffer[pos + 4];
+                int16_t  clip = (int16_t)(buffer[pos + 5] | (buffer[pos + 6] << 8));
+                int16_t  res  = (int16_t)(buffer[pos + 7] | (buffer[pos + 8] << 8));
+                remove_ground_item(client, iid);
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
+                    cs2d_player_t *p = &client->game.players[pid];
+                    const cs2d_weapon_def_t *w = cs2d_weapon_get(type);
+                    uint8_t held = p->current_weapon;
+                    if (cs2d_player_give_weapon(p, type) && w && w->slot != CS2D_SLOT_ITEM) {
+                        p->clip_ammo[type]    = clip;
+                        p->reserve_ammo[type] = res;
+                        p->current_weapon     = held ? held : type; /* The server reports a switch (9) itself */
+                    }
+                }
                 pos += 10;
             } else if (opcode == CS2D_NET_SPAWNITEM) {
-                /* Server -> Client: [33, item type u8, item id u16, x u16, y u16, 4 bytes] (12 bytes).
-                 * Ground items are not modelled yet; the record is skipped to keep parsing the datagram. */
+                /* Server -> Client: [33, type u8, item id u16, tile x u16, tile y u16, clip u16, reserve u16] (12 bytes) */
                 if (pos + 12 > recvd) break;
+                add_ground_item(client, (uint16_t)(buffer[pos + 2] | (buffer[pos + 3] << 8)), buffer[pos + 1],
+                                buffer[pos + 4] | (buffer[pos + 5] << 8), buffer[pos + 6] | (buffer[pos + 7] << 8),
+                                (int16_t)(buffer[pos + 8] | (buffer[pos + 9] << 8)),
+                                (int16_t)(buffer[pos + 10] | (buffer[pos + 11] << 8)));
                 pos += 12;
+            } else if (opcode == CS2D_NET_DROP) {
+                /* Server -> Client: [24, player, type, clip u16, reserve u16, u8, item id u16, tile x u16,
+                 * tile y u16, u8] (15 bytes): the weapon leaves the player and lies on that tile */
+                if (pos + 15 > recvd) break;
+                uint8_t pid  = buffer[pos + 1];
+                uint8_t type = buffer[pos + 2];
+                int16_t clip = (int16_t)(buffer[pos + 3] | (buffer[pos + 4] << 8));
+                int16_t res  = (int16_t)(buffer[pos + 5] | (buffer[pos + 6] << 8));
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS) cs2d_player_strip_weapon(&client->game.players[pid], type);
+                add_ground_item(client, (uint16_t)(buffer[pos + 8] | (buffer[pos + 9] << 8)), type,
+                                buffer[pos + 10] | (buffer[pos + 11] << 8), buffer[pos + 12] | (buffer[pos + 13] << 8),
+                                clip, res);
+                pos += 15;
+            } else if (opcode == CS2D_NET_SELECT_WEAPON) {
+                /* Server -> Client: [9, player, type, mode] (4 bytes): weapon held (e.g. Lua setweapon) */
+                if (pos + 4 > recvd) break;
+                uint8_t pid = buffer[pos + 1];
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
+                    cs2d_player_t *p = &client->game.players[pid];
+                    if (!cs2d_player_select_weapon(p, buffer[pos + 2]) && pid != client->local_player_id) {
+                        /* Other players' inventories are not sent: show what they hold */
+                        cs2d_player_give_weapon(p, buffer[pos + 2]);
+                    }
+                }
+                pos += 4;
+            } else if (opcode == CS2D_NET_RELOAD) {
+                /* Server -> Client: [16, player, 1 = reload started | 2 = reload finished] (3 bytes) */
+                if (pos + 3 > recvd) break;
+                uint8_t pid = buffer[pos + 1];
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
+                    cs2d_player_t *p = &client->game.players[pid];
+                    if (buffer[pos + 2] == 2) {
+                        p->reload_timer = 0.0f;
+                        cs2d_weapon_finish_reload(p);
+                    } else if (buffer[pos + 2] == 1 && p->reload_timer <= 0.0f && pid != client->local_player_id) {
+                        cs2d_weapon_reload(p);
+                    }
+                }
+                pos += 3;
+            } else if (opcode == CS2D_NET_SETAMMO) {
+                /* Server -> Client: [61, player, type, clip u16, reserve u16] (7 bytes) */
+                if (pos + 7 > recvd) break;
+                uint8_t pid = buffer[pos + 1], type = buffer[pos + 2];
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
+                    client->game.players[pid].clip_ammo[type]    = (int16_t)(buffer[pos + 3] | (buffer[pos + 4] << 8));
+                    client->game.players[pid].reserve_ammo[type] = (int16_t)(buffer[pos + 5] | (buffer[pos + 6] << 8));
+                }
+                pos += 7;
+            } else if (opcode == CS2D_NET_BUY) {
+                /* Server -> Client: [23, player, type (250 = refused), money u16, u8] (6 bytes) */
+                if (pos + 6 > recvd) break;
+                uint8_t pid = buffer[pos + 1], type = buffer[pos + 2];
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
+                    cs2d_player_t *p = &client->game.players[pid];
+                    p->money = buffer[pos + 3] | (buffer[pos + 4] << 8);
+                    if (type != 250) {
+                        const cs2d_weapon_def_t *w = cs2d_weapon_get(type);
+                        /* Bought armor arrives as playerdata (armor); weapons go into their slot */
+                        if (w && w->slot != CS2D_SLOT_ITEM) cs2d_player_give_weapon(p, type);
+                        else if (type == CS2D_WEP_DEFUSEKIT) p->has_defuse_kit = true;
+                        else if (type == CS2D_WEP_KEVLARHELM) p->has_helmet = true;
+                    } else if (pid == client->local_player_id) {
+                        cs2d_client_console_print(client, 255, 45, 45, "You can not buy this now");
+                    }
+                }
+                pos += 6;
+            } else if (opcode == CS2D_NET_PLAYERDATA) {
+                /* Server -> Client: [42, player, field, value u16] (5 bytes). Fields recorded with Lua:
+                 * 0 health, 2 money, 3 armor, 5 weapon given, 6 weapon taken, 8 max health */
+                if (pos + 5 > recvd) break;
+                uint8_t pid = buffer[pos + 1], field = buffer[pos + 2];
+                int value = buffer[pos + 3] | (buffer[pos + 4] << 8);
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
+                    cs2d_player_t *p = &client->game.players[pid];
+                    switch (field) {
+                        case 0: p->health = value; if (value <= 0) p->alive = false; break;
+                        case 2: p->money = value; break;
+                        case 3: p->armor = value; break;
+                        case 5: {
+                            uint8_t held = p->current_weapon;
+                            cs2d_player_give_weapon(p, (uint8_t)value);
+                            if (held) p->current_weapon = held; /* Lua equip does not switch weapons */
+                            break;
+                        }
+                        case 6: cs2d_player_strip_weapon(p, (uint8_t)value); break;
+                        case 8: p->max_health = value; break;
+                        default: break;
+                    }
+                }
+                pos += 5;
             } else if (opcode == CS2D_NET_MSG) {
                 /* Server -> Client: [226, 1, u16, text length u16, text, u8] */
                 if (pos + 6 > recvd) break;
@@ -589,6 +757,44 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 int ey = buffer[pos + 3] | (buffer[pos + 4] << 8);
                 cs2d_scene_game_apply_entity_state(client, ex, ey, buffer[pos + 5]);
                 pos += 6;
+            } else if (opcode == CS2D_NET_PLAYERJOINS) {
+                /* Server -> Client: [248, player, name (u8 length + text), 18 bytes]: a player joined */
+                if (pos + 3 > recvd) break;
+                uint8_t pid = buffer[pos + 1];
+                int nlen = buffer[pos + 2];
+                if (pos + 3 + nlen + 18 > recvd) break;
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS && pid != client->local_player_id) {
+                    char name[CS2D_MAX_NAME_LEN];
+                    snprintf(name, sizeof(name), "%.*s", nlen, (const char *)&buffer[pos + 3]);
+                    memset(&client->game.players[pid], 0, sizeof(cs2d_player_t));
+                    cs2d_game_add_player(&client->game, pid, name, CS2D_TEAM_SPEC);
+                    client->game.players[pid].alive = false;
+                    cs2d_client_console_print(client, 255, 220, 0, "%s has joined the game", name);
+                }
+                pos += 3 + nlen + 18;
+            } else if (opcode == CS2D_NET_LEAVE) {
+                /* Server -> Client: [253, player, reason u8] (3 bytes): the player left (the server
+                 * then drops what it carried with [24] and announces it with a [226] message) */
+                if (pos + 3 > recvd) break;
+                uint8_t pid = buffer[pos + 1];
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS && pid != client->local_player_id) {
+                    memset(&client->game.players[pid], 0, sizeof(cs2d_player_t));
+                }
+                pos += 3;
+            } else if (opcode == CS2D_NET_SPRAY) {
+                /* Server -> Client: [28, player, 2, size u16, size bytes]: relay of a player's spray logo */
+                if (pos + 5 > recvd) break;
+                int len = buffer[pos + 3] | (buffer[pos + 4] << 8);
+                if (pos + 5 + len > recvd) break;
+                pos += 5 + len;
+            } else if (opcode == CS2D_NET_FIRE) {
+                /* Server -> Client: [7, player, seed] (3 bytes): another player fired; draw the shot */
+                if (pos + 3 > recvd) break;
+                uint8_t pid = buffer[pos + 1];
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS && pid != client->local_player_id) {
+                    cs2d_scene_game_remote_shot(client, &client->game.players[pid]);
+                }
+                pos += 3;
             } else if (opcode == CS2D_NET_PING_INGAME) {
                 /* Server -> Client: [249, int32_t ts] -> Reply [249, int32_t ts] (0x1401d9f10) */
                 if (pos + 5 > recvd) break;
@@ -725,6 +931,17 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
             shown++;
         }
         if (!shown) cs2d_client_console_print(client, 170, 170, 170, "No entity at (%d, %d)", tx, ty);
+    } else if (_stricmp(cmd, "inv") == 0) {
+        /* Inventory of the local player (compared against the server's Lua view in tests) */
+        const cs2d_player_t *ip = &client->game.players[client->local_player_id];
+        char out[CS2D_CONSOLE_LINE_LEN];
+        int len = snprintf(out, sizeof(out), "inv: hp=%d armor=%d money=%d held=%u weapons:", ip->health, ip->armor,
+                           ip->money, ip->current_weapon);
+        for (int s = 0; s < CS2D_SLOT_COUNT && len < (int)sizeof(out) - 24; s++) {
+            uint8_t w = ip->inventory[s];
+            if (w) len += snprintf(out + len, sizeof(out) - (size_t)len, " %u(%d/%d)", w, ip->clip_ammo[w], ip->reserve_ammo[w]);
+        }
+        cs2d_client_console_print(client, 170, 170, 170, "%s", out);
     } else if (_stricmp(cmd, "walkto") == 0) {
         if (n < 3) {
             cs2d_client_console_print(client, 255, 45, 45, "Usage: walkto <tile_x> <tile_y>");

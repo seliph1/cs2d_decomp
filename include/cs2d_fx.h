@@ -17,12 +17,17 @@
 typedef enum {
     CS2D_FX_FRAGMENT  = 0, /* fragments.bmp frame */
     CS2D_FX_TILE_PART = 1, /* Quarter of a map tile */
-    CS2D_FX_EXPLOSION = 2  /* explosion.png animation */
+    CS2D_FX_EXPLOSION = 2, /* explosion.png animation */
+    CS2D_FX_TRACER    = 3, /* Bullet path: line from the muzzle to the impact */
+    CS2D_FX_GLOWDOT   = 4, /* incbindata/glowdot.bmp left along the bullet path / impact sparks */
+    CS2D_FX_MUZZLE    = 5, /* incbindata/flare_x.png at the muzzle (+ yellow light around the shooter) */
+    CS2D_FX_SHELL     = 6  /* gfx/shells.bmp case flying out of the weapon (then lies on the floor) */
 } cs2d_fx_kind_t;
 
 typedef struct {
     cs2d_fx_kind_t kind;
     float          x, y;       /* World position (center) */
+    float          x2, y2;     /* Tracer end */
     float          vx, vy;     /* px/s */
     float          rot, vrot;  /* Degrees, degrees/s */
     float          life, max_life;
@@ -32,9 +37,13 @@ typedef struct {
     int            quarter;    /* Tile part: 0 TL, 1 TR, 2 BL, 3 BR */
 } cs2d_fx_particle_t;
 
+#define CS2D_FX_MAX_SHELLS 64
+
 typedef struct cs2d_fx_s {
     cs2d_fx_particle_t p[CS2D_FX_MAX];
     int                count;
+    cs2d_fx_particle_t shells[CS2D_FX_MAX_SHELLS]; /* Ring buffer: cases stay on the floor */
+    int                shell_next;
     uint32_t           seed;
 } cs2d_fx_t;
 
@@ -49,6 +58,15 @@ void cs2d_fx_breakable_break(cs2d_fx_t *fx, const cs2d_entity_t *e);
 
 /* Explosion animation centered at (x, y) */
 void cs2d_fx_explosion(cs2d_fx_t *fx, float x, float y, float range);
+
+/*
+ * A firearm shot (CS2D.exe 0x140148f40 draws the muzzle flashes: flare_x scaled by 0.1 * 5,
+ * stretched along the aim, fading by 0.4 per 60 Hz frame). (px, py) is the shooter, angle the aim
+ * (0 = north, clockwise), (ex, ey) where the bullet stopped; hit_wall adds impact sparks.
+ * shell_frame selects the gfx/shells.bmp case (-1: none).
+ */
+void cs2d_fx_shot(cs2d_fx_t *fx, float px, float py, float angle_deg, float muzzle_dist,
+                  float ex, float ey, bool hit_wall, int shell_frame);
 
 void cs2d_fx_update(cs2d_fx_t *fx, float dt);
 

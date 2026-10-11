@@ -174,6 +174,68 @@ uint8_t cs2d_player_drop_weapon(cs2d_player_t *player)
     return dropped;
 }
 
+void cs2d_player_clear_inventory(cs2d_player_t *player)
+{
+    if (!player) return;
+    memset(player->inventory, 0, sizeof(player->inventory));
+    memset(player->clip_ammo, 0, sizeof(player->clip_ammo));
+    memset(player->reserve_ammo, 0, sizeof(player->reserve_ammo));
+    player->current_weapon = CS2D_WEP_NONE;
+    player->reload_timer   = 0.0f;
+}
+
+/* Best weapon left after losing the held one: primary, secondary, melee, then anything */
+static void select_fallback_weapon(cs2d_player_t *player)
+{
+    static const cs2d_weapon_slot_t order[] = { CS2D_SLOT_PRIMARY, CS2D_SLOT_SECONDARY, CS2D_SLOT_MELEE };
+    for (size_t i = 0; i < sizeof(order) / sizeof(order[0]); i++) {
+        if (player->inventory[order[i]] != CS2D_WEP_NONE) {
+            player->current_weapon = player->inventory[order[i]];
+            return;
+        }
+    }
+    player->current_weapon = CS2D_WEP_NONE;
+    for (int s = 0; s < CS2D_SLOT_COUNT; s++) {
+        if (player->inventory[s] != CS2D_WEP_NONE) {
+            player->current_weapon = player->inventory[s];
+            return;
+        }
+    }
+}
+
+bool cs2d_player_strip_weapon(cs2d_player_t *player, uint8_t weapon_id)
+{
+    if (!player || weapon_id == CS2D_WEP_NONE) return false;
+    bool found = false;
+    for (int s = 0; s < CS2D_SLOT_COUNT; s++) {
+        if (player->inventory[s] == weapon_id) {
+            player->inventory[s] = CS2D_WEP_NONE;
+            found = true;
+        }
+    }
+    if (!found) return false;
+    player->clip_ammo[weapon_id]    = 0;
+    player->reserve_ammo[weapon_id] = 0;
+    if (player->current_weapon == weapon_id) {
+        player->reload_timer = 0.0f;
+        select_fallback_weapon(player);
+    }
+    return true;
+}
+
+bool cs2d_player_select_weapon(cs2d_player_t *player, uint8_t weapon_id)
+{
+    if (!player || weapon_id == CS2D_WEP_NONE) return false;
+    for (int s = 0; s < CS2D_SLOT_COUNT; s++) {
+        if (player->inventory[s] == weapon_id) {
+            if (player->current_weapon != weapon_id) player->reload_timer = 0.0f;
+            player->current_weapon = weapon_id;
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Tile at pixel (px, py) blocks players: wall / obstacle collision (tile modes 1..9, DynWall, Breakable) */
 static bool move_blocked(const cs2d_map_t *map, float px, float py)
 {

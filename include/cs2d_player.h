@@ -27,6 +27,15 @@ bool cs2d_player_switch_weapon(cs2d_player_t *player, cs2d_weapon_slot_t slot);
 /* Drop active weapon from current slot */
 uint8_t cs2d_player_drop_weapon(cs2d_player_t *player);
 
+/* Empties the inventory (no weapon held); the server's spawn packet lists what the player really has */
+void cs2d_player_clear_inventory(cs2d_player_t *player);
+
+/* Removes weapon_id (and its ammo); if it was held, the best weapon left is taken. False if not owned. */
+bool cs2d_player_strip_weapon(cs2d_player_t *player, uint8_t weapon_id);
+
+/* Holds weapon_id if the player owns it */
+bool cs2d_player_select_weapon(cs2d_player_t *player, uint8_t weapon_id);
+
 /* Check map collision and move player */
 bool cs2d_player_move(cs2d_player_t *player, const cs2d_map_t *map, float dx, float dy);
 

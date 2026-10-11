@@ -39,6 +39,7 @@ static bool game_load_map(cs2d_client_t *client, const char *map_name)
     cs2d_ents_init(&client->ents, &client->game.map);
     cs2d_ents_round_start(&client->ents);
     cs2d_fx_clear(&client->fx);
+    memset(client->ground_items, 0, sizeof(client->ground_items));
     client->ents_round = client->game.round_number;
     client->snapshot_states_reset = false;
     client->walk_active = false;
@@ -189,11 +190,38 @@ static void fire_shot(cs2d_client_t *client, const cs2d_player_t *pl)
     }
 
     float hx, hy;
-    int hit = cs2d_ents_trace_shot(&client->ents, pl->pos.x, pl->pos.y, pl->angle, cs2d_weapon_shot_reach(wep), &hx, &hy);
+    float reach = cs2d_weapon_shot_reach(wep);
+    int hit = cs2d_ents_trace_shot(&client->ents, pl->pos.x, pl->pos.y, pl->angle, reach, &hx, &hy);
+
+    if (!melee) {
+        /* Tracer, muzzle flash and case: measured on CS2D.exe captures (AK-47 flash ~30 px ahead) */
+        float ddx = hx - pl->pos.x, ddy = hy - pl->pos.y;
+        bool hit_wall = (hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < reach - 1.0f);
+        int shell = (pl->current_weapon == CS2D_WEP_M3 || pl->current_weapon == CS2D_WEP_XM1014) ? 2 :
+                    (wep->slot == CS2D_SLOT_SECONDARY ? 0 : 1);
+        float muzzle = (wep->slot == CS2D_SLOT_SECONDARY) ? 22.0f : 30.0f;
+        cs2d_fx_shot(&client->fx, pl->pos.x, pl->pos.y, pl->angle, muzzle, hx, hy, hit_wall, shell);
+    }
     if (hit < 0) return;
     const cs2d_entity_t *e = &client->game.map.entities[hit];
     cs2d_fx_breakable_hit(&client->fx, hx, hy, e->int_settings[2], pl->angle);
     if (!client->connected) cs2d_ents_damage_breakable(&client->ents, hit, wep->damage);
+}
+
+/* Another player's shot reported by the server: same tracer / flash / case as a local shot */
+void cs2d_scene_game_remote_shot(cs2d_client_t *client, const cs2d_player_t *pl)
+{
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(pl->current_weapon);
+    if (!wep || wep->slot == CS2D_SLOT_MELEE || !pl->alive) return;
+    float hx, hy, reach = cs2d_weapon_shot_reach(wep);
+    int hit = cs2d_ents_trace_shot(&client->ents, pl->pos.x, pl->pos.y, pl->angle, reach, &hx, &hy);
+    float ddx = hx - pl->pos.x, ddy = hy - pl->pos.y;
+    bool hit_wall = (hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < reach - 1.0f);
+    int shell = (pl->current_weapon == CS2D_WEP_M3 || pl->current_weapon == CS2D_WEP_XM1014) ? 2 :
+                (wep->slot == CS2D_SLOT_SECONDARY ? 0 : 1);
+    cs2d_fx_shot(&client->fx, pl->pos.x, pl->pos.y, pl->angle, wep->slot == CS2D_SLOT_SECONDARY ? 22.0f : 30.0f,
+                 hx, hy, hit_wall, shell);
+    if (hit >= 0) cs2d_fx_breakable_hit(&client->fx, hx, hy, client->game.map.entities[hit].int_settings[2], pl->angle);
 }
 
 /* Explosion of an Env_Breakable (offline): players and breakables in range take power * (1 - d / range) */
@@ -462,10 +490,28 @@ static void game_update(cs2d_client_t *client, float delta_time)
     cs2d_client_poll_network(client);
 }
 
+/* Weapons lying on the ground (gfx/weapons/<name>_d.bmp, like Env_Item) */
+static void render_ground_items(const cs2d_client_t *client)
+{
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    if (!bank) return;
+    float cx = roundf(client->cam_x), cy = roundf(client->cam_y);
+    for (int i = 0; i < CS2D_MAX_GROUND_ITEMS; i++) {
+        const cs2d_ground_item_t *it = &client->ground_items[i];
+        if (!it->active || it->type == 0 || it->type >= CS2D_MAX_WEAPONS) continue;
+        const cs2d_texture_t *dtex = &bank->tex_weapons_d[it->type];
+        if (!dtex->id) continue;
+        float dw = (dtex->width > 64) ? (float)(dtex->width / 2) : (float)dtex->width;
+        float dh = (dtex->height > 32) ? (float)(dtex->height / 2) : (float)dtex->height;
+        cs2d_render_sprite(dtex, it->x - cx, it->y - cy, dw, dh, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+    }
+}
+
 static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
 {
     /* 1. Map Pass 0 & 1 (background, tileset, tile modifiers, ground entities, items, hostages) */
     cs2d_render_map_ex(&client->game.map, &client->tex_tileset, client->cam_x, client->cam_y, screen_w, screen_h);
+    render_ground_items(client);
 
     /* 2. Players (Tpl.draw: shadow, legs, torso frame, armor/helmet, held weapon, objective icon) */
     for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
@@ -473,7 +519,10 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
         if (p->alive) {
             const cs2d_texture_t *stex = (p->team == CS2D_TEAM_CT) ? &client->tex_ct : &client->tex_t;
             const cs2d_texture_t *wtex = NULL;
-            if (p->current_weapon == CS2D_WEP_AK47) wtex = &client->tex_ak47;
+            cs2d_gfx_bank_t *wbank = cs2d_render_get_gfx_bank();
+            if (wbank && p->current_weapon < CS2D_MAX_WEAPONS && wbank->tex_weapons[p->current_weapon].id) {
+                wtex = &wbank->tex_weapons[p->current_weapon]; /* gfx/weapons/<name>.bmp held sprite */
+            } else if (p->current_weapon == CS2D_WEP_AK47) wtex = &client->tex_ak47;
             else if (p->current_weapon == CS2D_WEP_M4A1) wtex = &client->tex_m4a1;
             else if (p->current_weapon == CS2D_WEP_DEAGLE) wtex = &client->tex_deagle;
 
@@ -492,9 +541,21 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     cs2d_render_hud(local_pl, &client->game, screen_w, screen_h);
 }
 
+/* Weapon slot keys; online the new weapon is announced as [9, type, 0] (recorded from CS2D.exe) */
+static void switch_slot(cs2d_client_t *client, cs2d_player_t *pl, cs2d_weapon_slot_t slot)
+{
+    uint8_t before = pl->current_weapon;
+    if (!cs2d_player_switch_weapon(pl, slot) || pl->current_weapon == before) return;
+    if (client->connected && client->join_stage == 5) {
+        uint8_t pkt[3] = { (uint8_t)CS2D_NET_SELECT_WEAPON, pl->current_weapon, 0 };
+        cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+    }
+}
+
 static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
 {
     cs2d_player_t *pl = &client->game.players[client->local_player_id];
+    bool online = client->connected && client->join_stage == 5;
 
     switch (key) {
         case 'W': case 'w': case VK_UP:
@@ -513,20 +574,44 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
             client->key_walk = pressed;
             break;
         case 'R': case 'r':
-            if (pressed) cs2d_weapon_reload(pl);
+            /* [16, 1]: the server answers [16, player, 1] and refills the clip with [16, player, 2] */
+            if (pressed && cs2d_weapon_reload(pl) && online) {
+                uint8_t pkt[2] = { (uint8_t)CS2D_NET_RELOAD, 1 };
+                cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+            }
             break;
         case 'B': case 'b':
             if (pressed) {
-                /* Buy menu shortcut: purchase primary rifle / armor */
+                /* Buy menu shortcut: primary rifle and kevlar + helmet. Online the server decides:
+                 * [23, type u16] -> [23, player, type | 250 refused, money u16, u8] */
                 uint8_t buy_wep = (pl->team == CS2D_TEAM_T) ? CS2D_WEP_AK47 : CS2D_WEP_M4A1;
-                if (!cs2d_player_buy_weapon(pl, buy_wep)) {
-                    cs2d_player_buy_weapon(pl, CS2D_WEP_DEAGLE);
+                if (online) {
+                    uint8_t pkt1[3] = { (uint8_t)CS2D_NET_BUY, buy_wep, 0 };
+                    uint8_t pkt2[3] = { (uint8_t)CS2D_NET_BUY, CS2D_WEP_KEVLARHELM, 0 };
+                    cs2d_client_send_udp(client, pkt1, sizeof(pkt1), true);
+                    cs2d_client_send_udp(client, pkt2, sizeof(pkt2), true);
+                } else {
+                    if (!cs2d_player_buy_weapon(pl, buy_wep)) {
+                        cs2d_player_buy_weapon(pl, CS2D_WEP_DEAGLE);
+                    }
+                    cs2d_player_buy_weapon(pl, CS2D_WEP_KEVLARHELM);
                 }
-                cs2d_player_buy_weapon(pl, CS2D_WEP_KEVLARHELM);
             }
             break;
         case 'G': case 'g':
-            if (pressed) cs2d_player_drop_weapon(pl);
+            if (!pressed) break;
+            if (online) {
+                /* [24, type, clip u16, reserve u16, 0]; the server's drop record removes it */
+                const cs2d_weapon_def_t *w = cs2d_weapon_get(pl->current_weapon);
+                if (w && w->slot != CS2D_SLOT_MELEE) {
+                    int c = pl->clip_ammo[pl->current_weapon], r = pl->reserve_ammo[pl->current_weapon];
+                    uint8_t pkt[7] = { (uint8_t)CS2D_NET_DROP, pl->current_weapon,
+                                       (uint8_t)(c & 0xFF), (uint8_t)(c >> 8), (uint8_t)(r & 0xFF), (uint8_t)(r >> 8), 0 };
+                    cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+                }
+            } else {
+                cs2d_player_drop_weapon(pl);
+            }
             break;
         case 'E': case 'e':
             /* Use key: the server evaluates Trigger_Use online; offline the client does */
@@ -547,19 +632,19 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
             }
             break;
         case '1':
-            if (pressed) cs2d_player_switch_weapon(pl, CS2D_SLOT_PRIMARY);
+            if (pressed) switch_slot(client, pl, CS2D_SLOT_PRIMARY);
             break;
         case '2':
-            if (pressed) cs2d_player_switch_weapon(pl, CS2D_SLOT_SECONDARY);
+            if (pressed) switch_slot(client, pl, CS2D_SLOT_SECONDARY);
             break;
         case '3':
-            if (pressed) cs2d_player_switch_weapon(pl, CS2D_SLOT_MELEE);
+            if (pressed) switch_slot(client, pl, CS2D_SLOT_MELEE);
             break;
         case '4':
-            if (pressed) cs2d_player_switch_weapon(pl, CS2D_SLOT_GRENADE);
+            if (pressed) switch_slot(client, pl, CS2D_SLOT_GRENADE);
             break;
         case '5':
-            if (pressed) cs2d_player_switch_weapon(pl, CS2D_SLOT_BOMB);
+            if (pressed) switch_slot(client, pl, CS2D_SLOT_BOMB);
             break;
         default:
             break;
