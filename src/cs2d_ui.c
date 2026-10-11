@@ -1025,20 +1025,152 @@ static int clamp_int(int v, int lo, int hi)
     return v;
 }
 
+/* ============================================================================
+ * Scrolling (shared by the dropdown list and every scrollable view of the client)
+ * ============================================================================ */
+
+int cs2d_ui_scroll_max(int visible, int total)
+{
+    if (visible < 1) visible = 1;
+    return (total > visible) ? total - visible : 0;
+}
+
+void cs2d_ui_scroll_clamp(cs2d_ui_scroll_t *s, int visible, int total)
+{
+    if (s) s->top = clamp_int(s->top, 0, cs2d_ui_scroll_max(visible, total));
+}
+
+bool cs2d_ui_scroll_by(cs2d_ui_scroll_t *s, int rows, int visible, int total)
+{
+    if (!s) return false;
+    int before = s->top;
+    s->top = clamp_int(s->top + rows, 0, cs2d_ui_scroll_max(visible, total));
+    return s->top != before;
+}
+
+bool cs2d_ui_scroll_page(cs2d_ui_scroll_t *s, int dir, int visible, int total)
+{
+    int page = (visible > 1) ? visible - 1 : 1;
+    return cs2d_ui_scroll_by(s, (dir < 0) ? -page : page, visible, total);
+}
+
+bool cs2d_ui_scroll_wheel(cs2d_ui_context_t *ctx, cs2d_ui_scroll_t *s, const cs2d_ui_rect_t *area,
+                          int step, int visible, int total)
+{
+    if (!ctx || !s || ctx->wheel_delta == 0) return false;
+    if (area && !rect_contains(area, ctx->mouse_x, ctx->mouse_y)) return false;
+    if (ctx->dropdown_id != 0) {
+        cs2d_ui_rect_t list = cs2d_ui_get_box(ctx, ctx->dropdown_id ^ 0x6002u);
+        if (rect_contains(&list, ctx->mouse_x, ctx->mouse_y)) return false;
+    }
+    return cs2d_ui_scroll_by(s, -ctx->wheel_delta * step, visible, total);
+}
+
+/* Thumb length and offset inside a track of inner height `inner` */
+static void scroll_thumb(const cs2d_ui_scrollbar_style_t *st, const cs2d_ui_scroll_t *s, float inner,
+                         int visible, int total, float *out_h, float *out_off)
+{
+    int   max_top = cs2d_ui_scroll_max(visible, total);
+    float h       = inner;
+    if (max_top > 0) {
+        h = inner * (float)visible / (float)total;
+        if (h < st->min_thumb) h = st->min_thumb;
+        if (h > inner) h = inner;
+    }
+    *out_h   = h;
+    *out_off = (max_top > 0) ? (inner - h) * (float)s->top / (float)max_top : 0.0f;
+}
+
+/* Thin dark track with a gray thumb (the console's look) */
+static const cs2d_ui_scrollbar_style_t s_scrollbar_default = {
+    .width = 9.0f, .pad = 2.0f, .min_thumb = 20.0f,
+    .track_bg = { 18, 18, 18, 246 }, .track_border = { 92, 92, 92, 245 },
+    .thumb = { 74, 74, 74, 245 }, .thumb_hot = { 104, 104, 104, 250 }
+};
+
+void cs2d_ui_scrollbar(cs2d_ui_context_t *ctx, cs2d_ui_id_t id, cs2d_ui_scroll_t *s, int visible, int total,
+                       float height, const cs2d_ui_scrollbar_style_t *style)
+{
+    if (!ctx || !s) return;
+    const cs2d_ui_scrollbar_style_t *st = style ? style : &s_scrollbar_default;
+    cs2d_ui_id_t thumb_id = id ^ 0x7001u;
+    if (visible < 1) visible = 1;
+    int   max_top = cs2d_ui_scroll_max(visible, total);
+    float inner   = height - 2.0f * st->pad;
+    cs2d_ui_scroll_clamp(s, visible, total);
+
+    /* Input on the previous frame's track: press the thumb to grab it, the track to page towards the pointer */
+    float thumb_h, thumb_off;
+    scroll_thumb(st, s, inner, visible, total, &thumb_h, &thumb_off);
+    cs2d_ui_rect_t track = cs2d_ui_get_box(ctx, id);
+    if (max_top > 0 && track.h > 0.0f) {
+        float thumb_y = track.y + st->pad + thumb_off;
+        if (ctx->mouse_pressed && ctx->hot_id == thumb_id) {
+            s->grab_y = ctx->mouse_y - thumb_y;
+        } else if (ctx->mouse_pressed && ctx->hot_id == id) {
+            cs2d_ui_scroll_page(s, (ctx->mouse_y < thumb_y) ? -1 : 1, visible, total);
+        }
+        if (ctx->active_id == thumb_id && ctx->mouse_down && inner > thumb_h) {
+            float frac = (ctx->mouse_y - s->grab_y - track.y - st->pad) / (inner - thumb_h);
+            if (frac < 0.0f) frac = 0.0f;
+            if (frac > 1.0f) frac = 1.0f;
+            s->top = (int)(frac * (float)max_top + 0.5f);
+        }
+        scroll_thumb(st, s, inner, visible, total, &thumb_h, &thumb_off);
+    }
+
+    bool hot = ctx->hot_id == thumb_id || (ctx->active_id == thumb_id && ctx->mouse_down);
+    CS2D_UI_ELEMENT(ctx, id, {
+        .layout = {
+            .sizing  = { CS2D_UI_FIXED(st->width), CS2D_UI_FIXED(height) },
+            .padding = CS2D_UI_PAD(st->pad, st->pad, st->pad + thumb_off, st->pad),
+            .dir     = CS2D_UI_TOP_TO_BOTTOM
+        },
+        .bg_color = st->track_bg,
+        .border   = { .width = st->track_border.a ? 1.0f : 0.0f, .color = st->track_border }
+    }) {
+        if (max_top > 0 || !st->hide_full_thumb) {
+            CS2D_UI_ELEMENT(ctx, thumb_id, {
+                .layout   = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(thumb_h) } },
+                .bg_color = hot ? st->thumb_hot : st->thumb,
+                .border   = { .width = st->thumb_border.a ? 1.0f : 0.0f, .color = st->thumb_border }
+            }) {}
+        }
+    }
+}
+
+void cs2d_ui_scrollbar_at(cs2d_ui_context_t *ctx, cs2d_ui_id_t id, cs2d_ui_scroll_t *s, int visible, int total,
+                          float x, float y, float height, int z_index, const cs2d_ui_scrollbar_style_t *style)
+{
+    if (!ctx) return;
+    CS2D_UI_ELEMENT(ctx, 0, { .floating = { .enabled = true, .x = x, .y = y, .z_index = z_index } }) {
+        cs2d_ui_scrollbar(ctx, id, s, visible, total, height, style);
+    }
+}
+
 /* Scrolls the open list so option i is visible */
 static void dropdown_reveal(cs2d_ui_context_t *ctx, int i, int rows, int count)
 {
-    if (i < ctx->dropdown_top) ctx->dropdown_top = i;
-    if (i >= ctx->dropdown_top + rows) ctx->dropdown_top = i - rows + 1;
-    ctx->dropdown_top = clamp_int(ctx->dropdown_top, 0, count - rows);
+    cs2d_ui_scroll_t *s = &ctx->dropdown_scroll;
+    if (i < s->top) s->top = i;
+    if (i >= s->top + rows) s->top = i - rows + 1;
+    cs2d_ui_scroll_clamp(s, rows, count);
 }
 
 static void dropdown_open(cs2d_ui_context_t *ctx, cs2d_ui_id_t id, int selected, int rows, int count)
 {
-    ctx->dropdown_id    = id;
-    ctx->dropdown_hover = selected;
-    ctx->dropdown_top   = clamp_int(selected - rows / 2, 0, count - rows);
+    ctx->dropdown_id         = id;
+    ctx->dropdown_hover      = selected;
+    ctx->dropdown_scroll.top = selected - rows / 2;
+    cs2d_ui_scroll_clamp(&ctx->dropdown_scroll, rows, count);
 }
+
+/* Dropdown list scrollbar */
+static const cs2d_ui_scrollbar_style_t s_dropdown_scrollbar = {
+    .width = DROPDOWN_SB_W, .pad = 1.0f, .min_thumb = 10.0f,
+    .track_bg = { 24, 24, 24, 240 }, .track_border = { 8, 8, 8, 255 },
+    .thumb = { 53, 53, 53, 255 }, .thumb_hot = { 72, 72, 72, 255 }
+};
 
 bool cs2d_ui_select(
     cs2d_ui_context_t *ctx,
@@ -1057,17 +1189,13 @@ bool cs2d_ui_select(
     cs2d_ui_id_t btn_id   = id ^ 0x6001u;
     cs2d_ui_id_t list_id  = id ^ 0x6002u;
     cs2d_ui_id_t track_id = id ^ 0x6003u;
-    cs2d_ui_id_t thumb_id = id ^ 0x6004u;
 
     int  rows    = (option_count < DROPDOWN_MAX_ROWS) ? option_count : DROPDOWN_MAX_ROWS;
-    int  max_top = option_count - rows;
     bool hov     = (ctx->hot_id == id || ctx->hot_id == btn_id);
     bool open    = (ctx->dropdown_id == id);
 
     cs2d_ui_rect_t box   = cs2d_ui_get_box(ctx, id);
     cs2d_ui_rect_t list  = cs2d_ui_get_box(ctx, list_id);
-    cs2d_ui_rect_t track = cs2d_ui_get_box(ctx, track_id);
-    cs2d_ui_rect_t thumb = cs2d_ui_get_box(ctx, thumb_id);
 
     /* Mouse press on the box toggles the list and gives the dropdown keyboard focus */
     if (ctx->mouse_pressed && hov) {
@@ -1124,7 +1252,7 @@ bool cs2d_ui_select(
         /* Mouse wheel over the box or the list scrolls the list */
         if (ctx->wheel_delta != 0 &&
             (rect_contains(&list, ctx->mouse_x, ctx->mouse_y) || rect_contains(&box, ctx->mouse_x, ctx->mouse_y))) {
-            ctx->dropdown_top = clamp_int(ctx->dropdown_top - ctx->wheel_delta, 0, max_top);
+            cs2d_ui_scroll_by(&ctx->dropdown_scroll, -ctx->wheel_delta, rows, option_count);
         }
 
         /* Highlight follows the mouse over the options */
@@ -1132,22 +1260,7 @@ bool cs2d_ui_select(
                           ctx->mouse_x < list.x + list.w - DROPDOWN_SB_W - 1.0f;
         if (over_items && (ctx->mouse_moved || ctx->mouse_pressed || ctx->wheel_delta != 0)) {
             int row = (int)((ctx->mouse_y - list.y - 1.0f) / DROPDOWN_ROW_H);
-            ctx->dropdown_hover = clamp_int(ctx->dropdown_top + row, 0, option_count - 1);
-        }
-
-        /* Scrollbar: drag the thumb, or click the track to page */
-        float track_inner = track.h - 2.0f;
-        float thumb_h     = (max_top > 0) ? track_inner * (float)rows / (float)option_count : track_inner;
-        if (thumb_h < 10.0f) thumb_h = 10.0f;
-        if (ctx->mouse_pressed && ctx->hot_id == thumb_id) {
-            ctx->dropdown_grab_y = ctx->mouse_y - thumb.y;
-        } else if (ctx->mouse_pressed && ctx->hot_id == track_id && max_top > 0) {
-            int page = (ctx->mouse_y < thumb.y) ? -rows : rows;
-            ctx->dropdown_top = clamp_int(ctx->dropdown_top + page, 0, max_top);
-        }
-        if (ctx->active_id == thumb_id && ctx->mouse_down && max_top > 0 && track_inner > thumb_h) {
-            float frac = (ctx->mouse_y - ctx->dropdown_grab_y - track.y - 1.0f) / (track_inner - thumb_h);
-            ctx->dropdown_top = clamp_int((int)(frac * (float)max_top + 0.5f), 0, max_top);
+            ctx->dropdown_hover = clamp_int(ctx->dropdown_scroll.top + row, 0, option_count - 1);
         }
 
         /* Click (press + release) on an option picks it */
@@ -1207,12 +1320,9 @@ bool cs2d_ui_select(
 
     /* Open list: floats right below the box, above every other element (z 100) */
     if (open && box.w > 0.0f) {
-        int top = clamp_int(ctx->dropdown_top, 0, max_top);
-        float list_h      = (float)rows * DROPDOWN_ROW_H + 2.0f;
-        float track_inner = list_h - 4.0f;
-        float thumb_h     = (max_top > 0) ? track_inner * (float)rows / (float)option_count : track_inner;
-        if (thumb_h < 10.0f) thumb_h = 10.0f;
-        float thumb_y = (max_top > 0) ? (track_inner - thumb_h) * (float)top / (float)max_top : 0.0f;
+        cs2d_ui_scroll_clamp(&ctx->dropdown_scroll, rows, option_count);
+        int   top    = ctx->dropdown_scroll.top;
+        float list_h = (float)rows * DROPDOWN_ROW_H + 2.0f;
 
         CS2D_UI_ELEMENT(ctx, list_id, {
             .layout = {
@@ -1245,22 +1355,10 @@ bool cs2d_ui_select(
                 }
             }
 
-            /* Scrollbar track + thumb (shown even when every option fits, like CS2D) */
-            CS2D_UI_ELEMENT(ctx, track_id, {
-                .layout = {
-                    .sizing  = { CS2D_UI_FIXED(DROPDOWN_SB_W), CS2D_UI_GROW(0, 0) },
-                    .padding = CS2D_UI_PAD(1, 1, 1.0f + thumb_y, 1),
-                    .dir     = CS2D_UI_TOP_TO_BOTTOM
-                },
-                .bg_color = CS2D_UI_RGBA(24, 24, 24, 240),
-                .border   = { .width = 1.0f, .color = CS2D_UI_RGB(8, 8, 8) }
-            }) {
-                CS2D_UI_ELEMENT(ctx, thumb_id, {
-                    .layout   = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(thumb_h) } },
-                    .bg_color = (ctx->active_id == thumb_id || ctx->hot_id == thumb_id)
-                              ? CS2D_UI_RGB(72, 72, 72) : CS2D_UI_RGB(53, 53, 53)
-                }) {}
-            }
+            /* Scrollbar track + thumb (shown even when every option fits, like CS2D); drag / page / wheel
+             * scroll the list without moving the highlight */
+            cs2d_ui_scrollbar(ctx, track_id, &ctx->dropdown_scroll, rows, option_count, list_h - 2.0f,
+                              &s_dropdown_scrollbar);
         }
     }
 

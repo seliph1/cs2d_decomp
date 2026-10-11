@@ -123,6 +123,10 @@ void cs2d_texture_free(cs2d_texture_t *tex);
 
 /* 2D Primitives */
 void cs2d_render_rect(float x, float y, float w, float h, float r, float g, float b, float a, bool fill);
+/* One tileset frame at (x, y) scaled to size px, with its modifier (rotation, brightness), color (or NULL)
+ * and a gray tint (Tgui_tilelist: 0.78 = 200/255, 1 when hovered) */
+void cs2d_render_tile_frame(const cs2d_texture_t *tileset_tex, uint8_t frame, uint8_t mod, const uint8_t *rgb,
+                            float x, float y, float size, float tint, float alpha);
 void cs2d_render_line(float x1, float y1, float x2, float y2, float r, float g, float b, float a);
 void cs2d_render_circle(float cx, float cy, float radius, float r, float g, float b, float a, bool fill);
 

@@ -332,7 +332,10 @@ typedef struct {
 
     /* Section (4) Map Grid (stored row-major [y * width + x], loaded column-major per spec) */
     uint8_t      *tiles;             /* tile frame indices [width * height] */
-    uint8_t      *modifiers;         /* tile modifier bytes [width * height] */
+    uint8_t      *modifiers;         /* tile modifier bytes [width * height] (TileProp.Get 0x140010450):
+                                      * bits 0-1 rotation (90 deg steps), bits 2-5 brightness b (b * 10 %, 0 = 100 %),
+                                      * 0x40 blend frame, 0x80 color, 0xc0 string (unused) */
+    uint8_t      *tile_data;         /* Tmap_d per tile [width * height * 4]: r, g, b, frame (overlay / blend) */
     uint8_t      *collision;         /* 0=floor, 1=wall, 2=obstacle, 3=deadly [width * height] */
 
     /* Section (5) Entities */

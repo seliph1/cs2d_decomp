@@ -62,9 +62,10 @@ Our client must be able to play on the original dedicated server without the ser
 | `src/cs2d_player.c` | Player state and movement with collision (port of `FUN_1401f7600`) |
 | `src/cs2d_fx.c` | Cosmetic effects: breakable debris, explosions, tracer, muzzle flash, shells |
 | `src/cs2d_serverlist.c` | Server browser (Find Servers): server list, `svl.cache`, info/ping queries, LAN scan |
+| `src/cs2d_editor.c` | Map editor model: brush / modifier byte, painting, tile properties and `.inf`, entity tables |
 | `src/cs2d_transfer.c` | Join-time file transfer `[252,50]`: file list checks, requests, blocks, zlib, saving, `dls.cache` |
 | `src/cs2d_render.c` | OpenGL 1.x immediate mode, GDI+ image loading, shadows, HUD, text |
-| `src/cs2d_ui.c` | Immediate-mode UI library (textbox, dropdown, numberbox, console) |
+| `src/cs2d_ui.c` | Immediate-mode UI library (textbox, dropdown, numberbox, shared scrolling `cs2d_ui_scroll_*` / `cs2d_ui_scrollbar`) |
 | `tests/test_cs2d.c` | Regression suite (`test_cs2d.exe`) |
 | `tools/agent/` | Capture and reverse-engineering scripts (see `docs/agents/TOOLS.md`) |
 | `tools/entity_truth/` | Generator of the entity fixture from the dedicated's Lua |

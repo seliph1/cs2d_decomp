@@ -207,8 +207,9 @@ bool cs2d_map_load_file(cs2d_map_t *map, const char *filepath)
     map->tiles     = (uint8_t *)calloc(total_tiles, sizeof(uint8_t));
     map->modifiers = (uint8_t *)calloc(total_tiles, sizeof(uint8_t));
     map->collision = (uint8_t *)calloc(total_tiles, sizeof(uint8_t));
+    map->tile_data = (uint8_t *)calloc(total_tiles * 4, sizeof(uint8_t));
 
-    if (!map->tiles || !map->modifiers || !map->collision) {
+    if (!map->tiles || !map->modifiers || !map->collision || !map->tile_data) {
         cs2d_map_free(map);
         free(buffer);
         return false;
@@ -243,16 +244,17 @@ bool cs2d_map_load_file(cs2d_map_t *map, const char *filepath)
                 map->modifiers[idx] = mod;
                 if (mod > 0x3f) {
                     uint8_t flags = mod & 0xc0;
+                    uint8_t *d = &map->tile_data[idx * 4];
                     if (flags == 0xc0) {
                         stream_read_line(&s, NULL, 0);
                     } else if (flags == 0x40) {
-                        (void)stream_read_byte(&s);
+                        d[3] = stream_read_byte(&s);         /* Blend frame */
                     } else {
                         /* flags == 0x80: R, G, B, overlay frame */
-                        (void)stream_read_byte(&s);
-                        (void)stream_read_byte(&s);
-                        (void)stream_read_byte(&s);
-                        (void)stream_read_byte(&s);
+                        d[0] = stream_read_byte(&s);
+                        d[1] = stream_read_byte(&s);
+                        d[2] = stream_read_byte(&s);
+                        d[3] = stream_read_byte(&s);
                     }
                 }
             }
@@ -369,8 +371,17 @@ bool cs2d_map_save_file(const cs2d_map_t *map, const char *filepath)
     if (map->use_modifiers == 1 && map->modifiers) {
         for (uint32_t x = 0; x < map->width; x++) {
             for (uint32_t y = 0; y < map->height; y++) {
-                uint8_t m = map->modifiers[y * map->width + x] & 0x3f;
+                size_t idx = (size_t)y * map->width + x;
+                uint8_t m = map->modifiers[idx];
+                if ((m & 0xc0) == 0xc0) m &= 0x3f; /* The string form is unused */
                 fwrite(&m, 1, 1, f);
+                static const uint8_t no_data[4] = { 0, 0, 0, 0 };
+                const uint8_t *d = map->tile_data ? &map->tile_data[idx * 4] : no_data;
+                if ((m & 0xc0) == 0x40) {
+                    fwrite(&d[3], 1, 1, f);
+                } else if ((m & 0xc0) == 0x80) {
+                    fwrite(d, 1, 4, f);
+                }
             }
         }
     }
@@ -410,6 +421,8 @@ void cs2d_map_free(cs2d_map_t *map)
         free(map->collision);
         map->collision = NULL;
     }
+    free(map->tile_data);
+    map->tile_data = NULL;
     if (map->base_collision) {
         free(map->base_collision);
         map->base_collision = NULL;

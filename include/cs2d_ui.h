@@ -196,6 +196,29 @@ typedef struct {
     int            z_index;
 } cs2d_ui_box_entry_t;
 
+/*
+ * Vertical scroll position of a row-based view (console, lists, dropdowns). Every scrollable element keeps
+ * one of these and goes through the cs2d_ui_scroll_* helpers, so they all scroll the same way:
+ * mouse wheel over the view, drag the thumb, click the track to page, PageUp/PageDown by a page.
+ */
+typedef struct {
+    int   top;     /* First visible row (0 = top) */
+    float grab_y;  /* Thumb drag: pointer y minus the thumb top when the drag started */
+} cs2d_ui_scroll_t;
+
+/* Look of a vertical scrollbar; each view keeps the colors measured for it */
+typedef struct {
+    float           width;         /* Track width, border included */
+    float           pad;           /* Gap between the track edge and the thumb (border included) */
+    float           min_thumb;     /* Shortest thumb */
+    bool            hide_full_thumb; /* No thumb while every row fits (else it fills the track) */
+    cs2d_ui_color_t track_bg;
+    cs2d_ui_color_t track_border;  /* 1 px; alpha 0 = none */
+    cs2d_ui_color_t thumb;
+    cs2d_ui_color_t thumb_hot;     /* Hovered or dragged */
+    cs2d_ui_color_t thumb_border;  /* 1 px; alpha 0 = none */
+} cs2d_ui_scrollbar_style_t;
+
 #define CS2D_UI_MAX_KEY_EVENTS   32
 #define CS2D_UI_MAX_FOCUSABLE    32
 #define CS2D_UI_EDIT_MAX_TEXT    256 /* Longest buffer the edit state can snapshot / measure */
@@ -280,8 +303,7 @@ typedef struct {
     cs2d_ui_id_t         dropdown_id;
     bool                 dropdown_seen;     /* Built this frame; a dropdown that disappears is closed */
     int                  dropdown_hover;    /* Highlighted option (mouse or keyboard) */
-    int                  dropdown_top;      /* First visible option */
-    float                dropdown_grab_y;   /* Scrollbar thumb drag offset */
+    cs2d_ui_scroll_t     dropdown_scroll;   /* First visible option + scrollbar drag */
 
     /* Text of the focused numberbox while it is being edited */
     cs2d_ui_id_t         numbox_id;
@@ -466,6 +488,32 @@ bool cs2d_ui_numberbox(
     int max_value,
     float width
 );
+
+/*
+ * Scrolling (row units). `visible` rows fit in the view, `total` rows exist; top stays in [0, total - visible].
+ *   scroll_by:    move by `rows` (negative = up) and clamp
+ *   scroll_page:  move by one page (visible - 1 rows, one row of overlap); dir -1 = up, +1 = down
+ *   scroll_wheel: apply this frame's wheel (`step` rows per notch, up = towards row 0) when the pointer is
+ *                 inside `area` (previous frame's box), or anywhere when `area` is NULL (modal views).
+ *                 An open dropdown list under the pointer keeps the wheel for itself.
+ * Each returns true when top changed.
+ */
+int  cs2d_ui_scroll_max(int visible, int total);
+void cs2d_ui_scroll_clamp(cs2d_ui_scroll_t *s, int visible, int total);
+bool cs2d_ui_scroll_by(cs2d_ui_scroll_t *s, int rows, int visible, int total);
+bool cs2d_ui_scroll_page(cs2d_ui_scroll_t *s, int dir, int visible, int total);
+bool cs2d_ui_scroll_wheel(cs2d_ui_context_t *ctx, cs2d_ui_scroll_t *s, const cs2d_ui_rect_t *area,
+                          int step, int visible, int total);
+
+/*
+ * Vertical scrollbar, style->width x height, placed in the layout flow. Drag the thumb to scroll, press the
+ * track above / below it to page. The thumb is proportional to visible / total. Clamps s first.
+ * cs2d_ui_scrollbar_at places it at an absolute position (floating, at z_index) over custom-drawn lists.
+ */
+void cs2d_ui_scrollbar(cs2d_ui_context_t *ctx, cs2d_ui_id_t id, cs2d_ui_scroll_t *s, int visible, int total,
+                       float height, const cs2d_ui_scrollbar_style_t *style);
+void cs2d_ui_scrollbar_at(cs2d_ui_context_t *ctx, cs2d_ui_id_t id, cs2d_ui_scroll_t *s, int visible, int total,
+                          float x, float y, float height, int z_index, const cs2d_ui_scrollbar_style_t *style);
 
 /* CS2D Gradient Section Header inside lists (e.g. "DE - Bomb Defuse", "Communication") */
 void cs2d_ui_section_header(

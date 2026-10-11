@@ -1251,7 +1251,8 @@ static void draw_tile_frame(
     int tile_src, int cols,
     uint8_t frame_idx, uint8_t mod,
     float rx, float ry,
-    float alpha
+    float alpha,
+    const uint8_t *rgb    /* Tile color (modifier 0x80) or NULL for white */
 )
 {
     int col = (int)frame_idx % cols;
@@ -1273,16 +1274,13 @@ static void draw_tile_frame(
         v1 = (float)((row + 1) * tile_src) / (float)tileset_tex->height;
     }
 
-    uint8_t rot_mode = 0;
-    float shade = 1.0f;
-    if ((mod & 192) == 0) {
-        rot_mode = mod & 3;
-        uint8_t bmod = (mod >> 2) & 0x0F;
-        if (bmod > 0 && bmod <= 10) {
-            /* Brightness modifier (0x140010467): 1..5 darken, 6..10 brighten */
-            if (bmod <= 5) shade = 1.0f - (float)bmod * 0.15f;
-        }
-    }
+    /* TileProp.Get (0x140010450): rotation in bits 0-1, color (r, g, b) x brightness b * 0.1 (b = 0: 100 %) */
+    uint8_t rot_mode = mod & 3;
+    uint8_t bmod = (mod >> 2) & 0x0F;
+    float shade = (bmod > 0) ? (float)bmod * 0.1f : 1.0f;
+    float cr = rgb ? (float)rgb[0] / 255.0f : 1.0f;
+    float cg = rgb ? (float)rgb[1] / 255.0f : 1.0f;
+    float cb = rgb ? (float)rgb[2] / 255.0f : 1.0f;
 
     /* Corner UVs for [TL, TR, BR, BL] rotated clockwise by 0, 90, 180, or 270 degrees */
     float tu[4], tv[4];
@@ -1315,13 +1313,32 @@ static void draw_tile_frame(
     float x1 = rx + (float)CS2D_TILE_SIZE;
     float y1 = ry + (float)CS2D_TILE_SIZE;
 
-    glColor4f(shade, shade, shade, alpha);
+    glColor4f(cr * shade, cg * shade, cb * shade, alpha);
     glBegin(GL_QUADS);
         glTexCoord2f(tu[0], tv[0]); glVertex2f(rx, ry);
         glTexCoord2f(tu[1], tv[1]); glVertex2f(x1, ry);
         glTexCoord2f(tu[2], tv[2]); glVertex2f(x1, y1);
         glTexCoord2f(tu[3], tv[3]); glVertex2f(rx, y1);
     glEnd();
+}
+
+void cs2d_render_tile_frame(const cs2d_texture_t *tileset_tex, uint8_t frame, uint8_t mod, const uint8_t *rgb,
+                            float x, float y, float size, float tint, float alpha)
+{
+    if (!tileset_tex || tileset_tex->id == 0 || tileset_tex->width < CS2D_TILE_SIZE) return;
+    int cols = tileset_tex->width / CS2D_TILE_SIZE;
+    uint8_t color[3];
+    for (int i = 0; i < 3; i++) color[i] = (uint8_t)((float)(rgb ? rgb[i] : 255) * tint);
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, tileset_tex->id);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glPushMatrix();
+    glTranslatef(x, y, 0.0f);
+    glScalef(size / (float)CS2D_TILE_SIZE, size / (float)CS2D_TILE_SIZE, 1.0f);
+    draw_tile_frame(tileset_tex, CS2D_TILE_SIZE, cols, frame, mod, 0.0f, 0.0f, alpha, color);
+    glPopMatrix();
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDisable(GL_TEXTURE_2D);
 }
 
 /* Cached unified sun-angle & multi-layer room lighting/shadow texture (reconstructed from 0x140260330 & 0x14025e420) */
@@ -1967,14 +1984,8 @@ void cs2d_render_map_ex(
             float ry = (float)(ty * CS2D_TILE_SIZE) - cam_y;
 
             if (has_tileset) {
-                uint8_t base_mod = ((mod & 128) == 0) ? mod : 0;
-                draw_tile_frame(tileset_tex, tile_src, cols, tile_idx, base_mod, rx, ry, 1.0f);
-
-                /* Bit 7 (128) set: overlay frame (mod - 128) drawn on top */
-                if ((mod & 128) != 0) {
-                    uint8_t ov_frame = anim_remap[(uint8_t)(mod - 128)];
-                    draw_tile_frame(tileset_tex, tile_src, cols, ov_frame, 0, rx, ry, 1.0f);
-                }
+                const uint8_t *rgb = ((mod & 0xc0) == 0x80 && map->tile_data) ? &map->tile_data[idx * 4] : NULL;
+                draw_tile_frame(tileset_tex, tile_src, cols, tile_idx, mod, rx, ry, 1.0f, rgb);
             }
         }
     }
@@ -1995,7 +2006,7 @@ void cs2d_render_map_ex(
                     float alpha = 1.0f - fabsf(trans);
                     if (alpha < 0.1f) alpha = 1.0f;
                     if (alpha > 1.0f) alpha = 1.0f;
-                    draw_tile_frame(tileset_tex, tile_src, cols, anim_remap[(uint8_t)tile_f], 0, rx, ry, alpha);
+                    draw_tile_frame(tileset_tex, tile_src, cols, anim_remap[(uint8_t)tile_f], 0, rx, ry, alpha, NULL);
                 }
             }
         }

@@ -44,6 +44,11 @@ extern const cs2d_scene_t cs2d_scene_editor;
 
 const cs2d_scene_t *cs2d_scene_get(cs2d_scene_id_t id);
 
+/* Editor scene hooks called by the client: its UI widgets and windows (built every frame while the editor
+ * runs) and what it draws over them; its lists take the mouse wheel through cs2d_ui_scroll_wheel */
+void cs2d_scene_editor_build_ui(cs2d_client_t *client, int screen_w, int screen_h);
+void cs2d_scene_editor_render_overlay(cs2d_client_t *client, int screen_w, int screen_h);
+
 /* Game scene helpers used by the console ("map" while already in game) */
 bool cs2d_scene_game_change_map(cs2d_client_t *client, const char *map_name);
 

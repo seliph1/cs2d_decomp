@@ -13,14 +13,10 @@
 #include <math.h>
 #include <time.h>
 
-/* Scrolling stops when the oldest line reaches the top of the log box */
-static void console_clamp_scroll(cs2d_client_t *client)
+/* Lines that fit in the log box (1 until the console has been laid out) */
+static int console_visible(const cs2d_client_t *client)
 {
-    int visible    = (client->console_visible_lines > 0) ? client->console_visible_lines : 1;
-    int max_scroll = client->console_line_count - visible;
-    if (max_scroll < 0) max_scroll = 0;
-    if (client->console_scroll > max_scroll) client->console_scroll = max_scroll;
-    if (client->console_scroll < 0) client->console_scroll = 0;
+    return (client->console_visible_lines > 0) ? client->console_visible_lines : 1;
 }
 
 void cs2d_client_console_print(cs2d_client_t *client, uint8_t r, uint8_t g, uint8_t b, const char *fmt, ...)
@@ -41,13 +37,18 @@ void cs2d_client_console_print(cs2d_client_t *client, uint8_t r, uint8_t g, uint
         fflush(stdout);
     }
 
+    int  visible = console_visible(client);
+    bool at_end  = client->console_scroll.top >= cs2d_ui_scroll_max(visible, client->console_line_count);
+
     /* Ring buffer: when full, the new line overwrites the oldest one */
-    int slot;
+    int  slot;
+    bool dropped = false;
     if (client->console_line_count < CS2D_CONSOLE_MAX_LINES) {
         slot = (client->console_line_head + client->console_line_count++) % CS2D_CONSOLE_MAX_LINES;
     } else {
         slot = client->console_line_head;
         client->console_line_head = (client->console_line_head + 1) % CS2D_CONSOLE_MAX_LINES;
+        dropped = true;
     }
 
     cs2d_console_line_t *line = &client->console_lines[slot];
@@ -57,9 +58,10 @@ void cs2d_client_console_print(cs2d_client_t *client, uint8_t r, uint8_t g, uint
     line->b = b;
 
     /* At the bottom the view follows new output; scrolled up, it stays on the same lines */
-    if (client->console_scroll > 0) {
-        client->console_scroll++;
-        console_clamp_scroll(client);
+    if (at_end) {
+        client->console_scroll.top = cs2d_ui_scroll_max(visible, client->console_line_count);
+    } else if (dropped && client->console_scroll.top > 0) {
+        client->console_scroll.top--;
     }
 }
 
@@ -69,13 +71,16 @@ const cs2d_console_line_t *cs2d_client_console_line(const cs2d_client_t *client,
     return &client->console_lines[(client->console_line_head + i) % CS2D_CONSOLE_MAX_LINES];
 }
 
-static void server_info_clamp_scroll(cs2d_client_t *client)
+/* Up / Down by a line, PageUp / PageDown by a page (page = true; rows is then the direction) */
+static void server_info_scroll_by(cs2d_client_t *client, int rows, bool page)
 {
-    int visible    = (client->server_info_visible_lines > 0) ? client->server_info_visible_lines : 1;
-    int max_scroll = client->server_info_line_count - visible;
-    if (max_scroll < 0) max_scroll = 0;
-    if (client->server_info_scroll > max_scroll) client->server_info_scroll = max_scroll;
-    if (client->server_info_scroll < 0) client->server_info_scroll = 0;
+    int visible = (client->server_info_visible_lines > 0) ? client->server_info_visible_lines : 1;
+    int total   = client->server_info_line_count;
+    if (page) {
+        cs2d_ui_scroll_page(&client->server_info_scroll, rows, visible, total);
+    } else {
+        cs2d_ui_scroll_by(&client->server_info_scroll, rows, visible, total);
+    }
 }
 
 /*
@@ -167,7 +172,7 @@ bool cs2d_client_load_serverinfo(cs2d_client_t *client, const char *filepath)
     if (!f) return false;
 
     client->server_info_line_count = 0;
-    client->server_info_scroll     = 0;
+    client->server_info_scroll.top = 0;
 
     char raw_line[256];
     while (fgets(raw_line, sizeof(raw_line), f) && client->server_info_line_count < CS2D_SERVER_INFO_MAX_LINES) {
@@ -406,7 +411,7 @@ void cs2d_client_open_servers(cs2d_client_t *client)
 
     client->servers_filters    = count_server_filters("sys/filters.cfg");
     client->servers_open       = true;
-    client->servers_scroll     = 0;
+    client->servers_scroll.top = 0;
     client->create_server_open = false;
     client->options_open       = false;
 }
@@ -1152,11 +1157,11 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 if (mode == 50) {
                     if (char_len == 1 && wbytes[0] == '1' && wbytes[1] == 0) {
                         client->server_info_line_count = 0;
-                        client->server_info_scroll     = 0;
+                        client->server_info_scroll.top = 0;
                     } else if (char_len == 1 && wbytes[0] == '2' && wbytes[1] == 0) {
                         if (client->server_info_line_count > 0) {
                             client->server_info_open   = true;
-                            client->server_info_scroll = 0;
+                            client->server_info_scroll.top = 0;
                         }
                     }
                 } else if (mode == 51) {
@@ -1308,7 +1313,7 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
     } else if (_stricmp(cmd, "clear") == 0 || _stricmp(cmd, "cls") == 0) {
         client->console_line_head  = 0;
         client->console_line_count = 0;
-        client->console_scroll     = 0;
+        client->console_scroll.top = 0;
     } else if (_stricmp(cmd, "restart") == 0 || _stricmp(cmd, "sv_restart") == 0) {
         if (client->scene != CS2D_SCENE_GAME) {
             cs2d_client_console_print(client, 255, 45, 45, "'restart' is only available in game");
@@ -1862,7 +1867,6 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
 
     if (!client->console_open) {
         if (client->server_info_open) {
-            int page = (client->server_info_visible_lines > 1) ? client->server_info_visible_lines - 1 : 1;
             switch (sdl_key) {
                 case SDLK_ESCAPE:
                 case SDLK_RETURN:
@@ -1871,22 +1875,10 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
                 case SDLK_0:
                     client->server_info_open = false;
                     break;
-                case SDLK_UP:
-                    client->server_info_scroll--;
-                    server_info_clamp_scroll(client);
-                    break;
-                case SDLK_DOWN:
-                    client->server_info_scroll++;
-                    server_info_clamp_scroll(client);
-                    break;
-                case SDLK_PAGEUP:
-                    client->server_info_scroll -= page;
-                    server_info_clamp_scroll(client);
-                    break;
-                case SDLK_PAGEDOWN:
-                    client->server_info_scroll += page;
-                    server_info_clamp_scroll(client);
-                    break;
+                case SDLK_UP:       server_info_scroll_by(client, -1, false); break;
+                case SDLK_DOWN:     server_info_scroll_by(client, 1, false); break;
+                case SDLK_PAGEUP:   server_info_scroll_by(client, -1, true); break;
+                case SDLK_PAGEDOWN: server_info_scroll_by(client, 1, true); break;
                 default:
                     break;
             }
@@ -1948,13 +1940,11 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
             break;
 
         case SDLK_PAGEUP:
-        case SDLK_PAGEDOWN: {
+        case SDLK_PAGEDOWN:
             /* Page by one screen minus a line of overlap */
-            int page = (client->console_visible_lines > 1) ? client->console_visible_lines - 1 : 1;
-            client->console_scroll += (sdl_key == SDLK_PAGEUP) ? page : -page;
-            console_clamp_scroll(client);
+            cs2d_ui_scroll_page(&client->console_scroll, (sdl_key == SDLK_PAGEUP) ? -1 : 1,
+                                console_visible(client), client->console_line_count);
             break;
-        }
 
         default:
             cs2d_ui_feed_key(&client->ui, sdl_key);
@@ -1962,19 +1952,11 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
     }
 }
 
+/* The wheel goes to the UI: each scrollable view takes it while laid out (cs2d_ui_scroll_wheel) */
 void cs2d_client_handle_mouse_wheel(cs2d_client_t *client, int delta_y)
 {
     if (!client) return;
     client->ui_wheel_delta += delta_y;
-    if (client->console_open) {
-        client->console_scroll += delta_y * 3;
-        console_clamp_scroll(client);
-    } else if (client->server_info_open) {
-        client->server_info_scroll -= delta_y * 3;
-        server_info_clamp_scroll(client);
-    } else if (client->servers_open && !client->connect_ip_open) {
-        client->servers_scroll -= delta_y * 3;   /* Clamped when the list is laid out */
-    }
 }
 
 void cs2d_client_handle_key(cs2d_client_t *client, int key, bool pressed)
@@ -2107,45 +2089,19 @@ static void cs2d_client_build_console_ui(cs2d_client_t *client, int screen_w, in
             const float line_h = 15.0f;
             int max_vis = (int)((log_h - 8.0f) / line_h);
             if (max_vis < 1) max_vis = 1;
+            int total = client->console_line_count;
+
+            /* A view at the bottom stays there when the window changes height */
+            if (client->console_scroll.top >= cs2d_ui_scroll_max(console_visible(client), total)) {
+                client->console_scroll.top = cs2d_ui_scroll_max(max_vis, total);
+            }
             client->console_visible_lines = max_vis;
-            console_clamp_scroll(client);
+            cs2d_ui_scroll_wheel(ui, &client->console_scroll, NULL, 3, max_vis, total);
+            cs2d_ui_scroll_clamp(&client->console_scroll, max_vis, total);
 
-            int total      = client->console_line_count;
-            int max_scroll = (total > max_vis) ? total - max_vis : 0;
-
-            /* Scrollbar geometry (track inner height excludes the 2px padding on each side) */
-            float sb_inner_h = log_h - 4.0f;
-            if (sb_inner_h < 20.0f) sb_inner_h = 20.0f;
-            float thumb_h = sb_inner_h;
-            if (max_scroll > 0) {
-                thumb_h = sb_inner_h * ((float)max_vis / (float)total);
-                if (thumb_h < 20.0f) thumb_h = 20.0f;
-            }
-
-            /* Scrollbar input: drag the thumb, or click the track above / below it to page */
-            cs2d_ui_id_t   track_id = CS2D_UI_ID("ConsoleScrollbar");
-            cs2d_ui_id_t   thumb_id = CS2D_UI_ID("ConsoleScrollThumb");
-            cs2d_ui_rect_t track    = cs2d_ui_get_box(ui, track_id);
-            cs2d_ui_rect_t thumb    = cs2d_ui_get_box(ui, thumb_id);
-            if (max_scroll > 0 && track.h > 0.0f) {
-                if (ui->mouse_pressed && ui->hot_id == thumb_id) {
-                    client->console_sb_grab_y = ui->mouse_y - thumb.y;
-                } else if (ui->mouse_pressed && ui->hot_id == track_id) {
-                    int page = (max_vis > 1) ? max_vis - 1 : 1;
-                    client->console_scroll += (ui->mouse_y < thumb.y) ? page : -page;
-                    console_clamp_scroll(client);
-                }
-                if (ui->active_id == thumb_id && ui->mouse_down && sb_inner_h > thumb_h) {
-                    float frac = (ui->mouse_y - client->console_sb_grab_y - track.y - 2.0f) / (sb_inner_h - thumb_h);
-                    if (frac < 0.0f) frac = 0.0f;
-                    if (frac > 1.0f) frac = 1.0f;
-                    client->console_scroll = (int)((1.0f - frac) * (float)max_scroll + 0.5f);
-                }
-            }
-
-            int end_idx   = total - client->console_scroll;
-            int start_idx = end_idx - max_vis;
-            if (start_idx < 0) start_idx = 0;
+            int start_idx = client->console_scroll.top;
+            int end_idx   = start_idx + max_vis;
+            if (end_idx > total) end_idx = total;
 
             /* Left: Near-black clipped console output box */
             CS2D_UI_ELEMENT(ui, CS2D_UI_ID("ConsoleLogBox"), {
@@ -2165,26 +2121,8 @@ static void cs2d_client_build_console_ui(cs2d_client_t *client, int screen_w, in
                 }
             }
 
-            /* Right: Vertical scrollbar track + proportional thumb (top = oldest line) */
-            float top_pad = (max_scroll > 0)
-                          ? (1.0f - (float)client->console_scroll / (float)max_scroll) * (sb_inner_h - thumb_h)
-                          : 0.0f;
-            bool thumb_hot = (ui->hot_id == thumb_id || ui->active_id == thumb_id);
-
-            CS2D_UI_ELEMENT(ui, track_id, {
-                .layout = {
-                    .sizing  = { CS2D_UI_FIXED(9.0f), CS2D_UI_GROW(0, 0) },
-                    .padding = CS2D_UI_PAD(2.0f, 2.0f, 2.0f + top_pad, 2.0f),
-                    .dir     = CS2D_UI_TOP_TO_BOTTOM
-                },
-                .bg_color = CS2D_UI_RGBA(18, 18, 18, 246),
-                .border   = { .width = 1.0f, .color = CS2D_UI_RGBA(92, 92, 92, 245) }
-            }) {
-                CS2D_UI_ELEMENT(ui, thumb_id, {
-                    .layout   = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(thumb_h) } },
-                    .bg_color = thumb_hot ? CS2D_UI_RGBA(104, 104, 104, 250) : CS2D_UI_RGBA(74, 74, 74, 245)
-                }) {}
-            }
+            /* Right: vertical scrollbar (top = oldest line) */
+            cs2d_ui_scrollbar(ui, CS2D_UI_ID("ConsoleScrollbar"), &client->console_scroll, max_vis, total, log_h, NULL);
         }
 
         /* 2. Bottom command input textbox */
@@ -2792,42 +2730,15 @@ static void cs2d_client_build_server_info_ui(cs2d_client_t *client, int screen_w
                 int max_vis = (int)((box_h - 8.0f) / line_h);
                 if (max_vis < 1) max_vis = 1;
                 client->server_info_visible_lines = max_vis;
-                server_info_clamp_scroll(client);
 
-                int total      = client->server_info_line_count;
-                int max_scroll = (total > max_vis) ? total - max_vis : 0;
-
-                float sb_inner_h = box_h - 4.0f;
-                if (sb_inner_h < 20.0f) sb_inner_h = 20.0f;
-                float thumb_h = sb_inner_h;
-                if (max_scroll > 0 && total > 0) {
-                    thumb_h = sb_inner_h * ((float)max_vis / (float)total);
-                    if (thumb_h < 24.0f) thumb_h = 24.0f;
-                    if (thumb_h > sb_inner_h) thumb_h = sb_inner_h;
+                int total = client->server_info_line_count;
+                if (!client->console_open) {
+                    cs2d_ui_rect_t win = cs2d_ui_get_box(ui, CS2D_UI_ID("ServerInfoWin"));
+                    cs2d_ui_scroll_wheel(ui, &client->server_info_scroll, &win, 3, max_vis, total);
                 }
+                cs2d_ui_scroll_clamp(&client->server_info_scroll, max_vis, total);
 
-                cs2d_ui_id_t   track_id = CS2D_UI_ID("ServerInfoScrollbar");
-                cs2d_ui_id_t   thumb_id = CS2D_UI_ID("ServerInfoScrollThumb");
-                cs2d_ui_rect_t track    = cs2d_ui_get_box(ui, track_id);
-                cs2d_ui_rect_t thumb    = cs2d_ui_get_box(ui, thumb_id);
-                if (max_scroll > 0 && track.h > 0.0f) {
-                    if (ui->mouse_pressed && ui->hot_id == thumb_id) {
-                        client->server_info_sb_grab_y = ui->mouse_y - thumb.y;
-                    } else if (ui->mouse_pressed && ui->hot_id == track_id) {
-                        int page = (max_vis > 1) ? max_vis - 1 : 1;
-                        client->server_info_scroll += (ui->mouse_y < thumb.y) ? -page : page;
-                        server_info_clamp_scroll(client);
-                    }
-                    if (ui->active_id == thumb_id && ui->mouse_down && sb_inner_h > thumb_h) {
-                        float frac = (ui->mouse_y - client->server_info_sb_grab_y - track.y - 2.0f) / (sb_inner_h - thumb_h);
-                        if (frac < 0.0f) frac = 0.0f;
-                        if (frac > 1.0f) frac = 1.0f;
-                        client->server_info_scroll = (int)(frac * (float)max_scroll + 0.5f);
-                        server_info_clamp_scroll(client);
-                    }
-                }
-
-                int start_idx = client->server_info_scroll;
+                int start_idx = client->server_info_scroll.top;
                 int end_idx   = start_idx + max_vis;
                 if (end_idx > total) end_idx = total;
 
@@ -2855,27 +2766,15 @@ static void cs2d_client_build_server_info_ui(cs2d_client_t *client, int screen_w
                     }
                 }
 
-                /* Right 15x374 scrollbar track + proportional thumb (top = line 0) */
-                float top_pad = (max_scroll > 0)
-                              ? ((float)client->server_info_scroll / (float)max_scroll) * (sb_inner_h - thumb_h)
-                              : 0.0f;
-                bool thumb_hot = (ui->hot_id == thumb_id || ui->active_id == thumb_id);
-
-                CS2D_UI_ELEMENT(ui, track_id, {
-                    .layout = {
-                        .sizing  = { CS2D_UI_FIXED(15.0f), CS2D_UI_GROW(0, 0) },
-                        .padding = CS2D_UI_PAD(2.0f, 2.0f, 2.0f + top_pad, 2.0f),
-                        .dir     = CS2D_UI_TOP_TO_BOTTOM
-                    },
-                    .bg_color = CS2D_UI_RGBA(32, 32, 32, 246),
-                    .border   = { .width = 1.0f, .color = CS2D_UI_RGBA(140, 140, 140, 245) }
-                }) {
-                    CS2D_UI_ELEMENT(ui, thumb_id, {
-                        .layout   = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(thumb_h) } },
-                        .bg_color = thumb_hot ? CS2D_UI_RGBA(104, 104, 104, 250) : CS2D_UI_RGBA(66, 66, 66, 245),
-                        .border   = { .width = 1.0f, .color = CS2D_UI_RGBA(140, 140, 140, 245) }
-                    }) {}
-                }
+                /* Right 15x374 scrollbar (top = line 0) */
+                static const cs2d_ui_scrollbar_style_t sb_style = {
+                    .width = 15.0f, .pad = 2.0f, .min_thumb = 24.0f,
+                    .track_bg = { 32, 32, 32, 246 }, .track_border = { 140, 140, 140, 245 },
+                    .thumb = { 66, 66, 66, 245 }, .thumb_hot = { 104, 104, 104, 250 },
+                    .thumb_border = { 140, 140, 140, 245 }
+                };
+                cs2d_ui_scrollbar(ui, CS2D_UI_ID("ServerInfoScrollbar"), &client->server_info_scroll, max_vis, total,
+                                  box_h, &sb_style);
             }
 
             if (cs2d_ui_button(ui, CS2D_UI_ID("BtnServerInfoClose"), "Close", 568.0f, 20.0f)) {
@@ -2909,11 +2808,15 @@ static int servers_visible(cs2d_client_t *client, cs2d_sv_t **out, int max_out)
 
 static void servers_clamp_scroll(cs2d_client_t *client, int total)
 {
-    int vis = (client->servers_visible_rows > 0) ? client->servers_visible_rows : 1;
-    int max_scroll = (total > vis) ? total - vis : 0;
-    if (client->servers_scroll > max_scroll) client->servers_scroll = max_scroll;
-    if (client->servers_scroll < 0) client->servers_scroll = 0;
+    cs2d_ui_scroll_clamp(&client->servers_scroll, client->servers_visible_rows, total);
 }
+
+/* List scrollbar: 15 px track inside the right border (Tgui_sl.draw 0x14016b5d0) */
+static const cs2d_ui_scrollbar_style_t s_servers_scrollbar = {
+    .width = 16.0f, .pad = 2.0f, .min_thumb = 24.0f,
+    .track_bg = { 6, 6, 6, 255 }, .track_border = { 150, 150, 150, 255 },
+    .thumb = { 53, 53, 53, 255 }, .thumb_hot = { 53, 53, 53, 255 }, .thumb_border = { 100, 100, 100, 255 }
+};
 
 /* "Loading Serverlist": waiting for U.S.G.N., or no Internet server answered while requests are pending */
 static bool servers_loading(const cs2d_client_t *client, int visible)
@@ -2969,11 +2872,14 @@ static void cs2d_client_build_servers_ui(cs2d_client_t *client, int screen_w, in
     /* Row clicks: the first click selects, a click on the selected row joins (0x14016e7e6) */
     cs2d_ui_rect_t box = cs2d_ui_get_box(ui, CS2D_UI_ID("SrvListBox"));
     client->servers_visible_rows = (box.h > 2.0f) ? (int)((box.h - 2.0f) / SERVERS_ROW_H) : 23;
+    if (!client->connect_ip_open && !client->console_open) {
+        cs2d_ui_scroll_wheel(ui, &client->servers_scroll, &box, 3, client->servers_visible_rows, total);
+    }
     servers_clamp_scroll(client, total);
     if (ui->mouse_pressed && !client->connect_ip_open && box.w > 0.0f &&
         ui->mouse_x >= box.x + 1.0f && ui->mouse_x < box.x + box.w - 16.0f &&
         ui->mouse_y >= box.y + 1.0f && ui->mouse_y < box.y + box.h - 1.0f) {
-        int row = client->servers_scroll + (int)((ui->mouse_y - box.y - 1.0f) / SERVERS_ROW_H);
+        int row = client->servers_scroll.top + (int)((ui->mouse_y - box.y - 1.0f) / SERVERS_ROW_H);
         if (row < total) {
             cs2d_sv_t *sv = rows[row];
             if (sv->ip == client->servers_sel_ip && sv->port == client->servers_sel_port) {
@@ -2997,18 +2903,26 @@ static void cs2d_client_build_servers_ui(cs2d_client_t *client, int screen_w, in
         }) {
             int prev_tab = client->servers_tab;
             cs2d_ui_tab_bar(ui, CS2D_UI_ID("ServersTabs"), tab_labels, CS2D_SV_TAB_COUNT, &client->servers_tab);
-            if (client->servers_tab != prev_tab) client->servers_scroll = 0;
+            if (client->servers_tab != prev_tab) client->servers_scroll.top = 0;
 
             /* Column header row, drawn in cs2d_client_render_servers_rows */
             CS2D_UI_ELEMENT(ui, 0, {
                 .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(25.0f) } }
             }) {}
 
+            /* Rows are drawn in cs2d_client_render_servers_rows; the scrollbar is a UI element */
             CS2D_UI_ELEMENT(ui, CS2D_UI_ID("SrvListBox"), {
-                .layout   = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(359.0f) } },
+                .layout   = {
+                    .sizing  = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(359.0f) },
+                    .dir     = CS2D_UI_LEFT_TO_RIGHT,
+                    .align_x = CS2D_UI_ALIGN_X_RIGHT
+                },
                 .bg_color = CS2D_UI_RGBA(28, 28, 30, 246),
                 .border   = { .width = 1.0f, .color = CS2D_UI_RGB(150, 150, 150) }
-            }) {}
+            }) {
+                cs2d_ui_scrollbar(ui, CS2D_UI_ID("SrvListScrollbar"), &client->servers_scroll,
+                                  client->servers_visible_rows, total, 359.0f, &s_servers_scrollbar);
+            }
 
             CS2D_UI_ELEMENT(ui, 0, {
                 .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(5.0f) } }
@@ -3176,18 +3090,7 @@ static void cs2d_client_render_servers_rows(cs2d_client_t *client)
     servers_icon(3, box.x + 695.0f + pw, hy - 1.0f, 1.0f, 1.0f);
     cs2d_render_text_ex(CS2D_FONT_REGULAR, box.x + 755.0f, hy - 2.0f, "Latency", g150, g150, g150, 1.0f);
 
-    /* Scrollbar: 15 px track inside the right border */
     int vis = client->servers_visible_rows;
-    float track_x = right - 15.0f;
-    cs2d_render_rect(track_x, box.y + 1.0f, 1.0f, box.h - 2.0f, g150, g150, g150, 1.0f, true);
-    cs2d_render_rect(track_x + 1.0f, box.y + 1.0f, 14.0f, box.h - 2.0f, 6.0f / 255.0f, 6.0f / 255.0f, 6.0f / 255.0f, 1.0f, true);
-    float inner_h = box.h - 4.0f;
-    float thumb_h = (total > vis) ? inner_h * (float)vis / (float)total : inner_h;
-    if (thumb_h < 24.0f) thumb_h = 24.0f;
-    float thumb_y = box.y + 2.0f;
-    if (total > vis) thumb_y += (inner_h - thumb_h) * (float)client->servers_scroll / (float)(total - vis);
-    cs2d_render_rect(track_x + 2.0f, thumb_y, 12.0f, thumb_h, 53.0f / 255.0f, 53.0f / 255.0f, 53.0f / 255.0f, 1.0f, true);
-    cs2d_render_rect(track_x + 2.0f, thumb_y, 12.0f, thumb_h, 100.0f / 255.0f, 100.0f / 255.0f, 100.0f / 255.0f, 1.0f, false);
 
     float mx = client->mouse_screen_x;
     float my = client->mouse_screen_y;
@@ -3227,8 +3130,8 @@ static void cs2d_client_render_servers_rows(cs2d_client_t *client)
 
     cs2d_render_scissor_begin((int)box.x + 1, (int)box.y + 1, (int)(box.w - 17.0f), (int)(box.h - 2.0f));
     const cs2d_sv_t *hover_sv = NULL;
-    for (int r = 0; r < vis && client->servers_scroll + r < total; r++) {
-        const cs2d_sv_t *sv = rows[client->servers_scroll + r];
+    for (int r = 0; r < vis && client->servers_scroll.top + r < total; r++) {
+        const cs2d_sv_t *sv = rows[client->servers_scroll.top + r];
         float ry = box.y + 1.0f + SERVERS_ROW_H * (float)r;
         bool sel = (sv->ip == client->servers_sel_ip && sv->port == client->servers_sel_port);
         bool hot = mx >= box.x + 1.0f && mx < right - 15.0f && my >= ry && my < ry + SERVERS_ROW_H;
@@ -3443,13 +3346,15 @@ void cs2d_client_build_ui(cs2d_client_t *client, int screen_w, int screen_h)
     cs2d_client_build_servers_ui(client, screen_w, screen_h);
     cs2d_client_build_connect_ip_ui(client, screen_w, screen_h);
     cs2d_client_build_download_ui(client, screen_w, screen_h);
+    if (client->scene == CS2D_SCENE_EDITOR) cs2d_scene_editor_build_ui(client, screen_w, screen_h);
 
     cs2d_ui_end_layout(&client->ui);
 }
 
 static void cs2d_client_render_ui(cs2d_client_t *client, int screen_w, int screen_h)
 {
-    if (!cs2d_client_any_ui_open(client)) {
+    /* The editor's sidebar widgets and windows are UI elements too, so it builds the UI every frame */
+    if (!cs2d_client_any_ui_open(client) && client->scene != CS2D_SCENE_EDITOR) {
         client->ui_wheel_delta = 0;
         cs2d_ui_clear_input(&client->ui);
         return;
@@ -3457,6 +3362,7 @@ static void cs2d_client_render_ui(cs2d_client_t *client, int screen_w, int scree
     cs2d_client_build_ui(client, screen_w, screen_h);
     cs2d_ui_render(&client->ui);
     cs2d_client_render_servers_rows(client);
+    if (client->scene == CS2D_SCENE_EDITOR) cs2d_scene_editor_render_overlay(client, screen_w, screen_h);
     cs2d_client_render_download(client, screen_w, screen_h);
 }
 

@@ -8,6 +8,35 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-11 — Claude Code — shared scrolling in the UI library
+- **Changed:**
+  - `cs2d_ui`: `cs2d_ui_scroll_t` (first visible row + thumb grab), `cs2d_ui_scrollbar_style_t`, and
+    `cs2d_ui_scroll_{max,clamp,by,page,wheel}`, `cs2d_ui_scrollbar` (in the layout) / `cs2d_ui_scrollbar_at`
+    (floating, over custom-drawn lists). Every view now drags the thumb, pages on a track press (visible - 1),
+    takes the wheel while the pointer is over it, and clamps the same way.
+  - Moved to it: console (now counts from the top; at the bottom it follows new output), Server Info, server list
+    (it had no drag / page), dropdown, and the editor's tile / entity / map file lists (they only had the wheel).
+    Each keeps its old look through a style. The global wheel dispatch in `cs2d_client_handle_mouse_wheel` and
+    `cs2d_scene_editor_wheel` are gone: the views read the wheel from the UI context.
+- **Verified:** `test_ui_scroll` (wheel inside / outside, track page, thumb geometry and drag, clamp), the console
+  and dropdown tests (20 / 20); screenshots of the editor tile list being dragged, the console and the server list.
+- **Left:** the editor sidebar buttons (z 11) and its tooltip are drawn over the console window (it was like that before).
+
+## 2026-10-11 — Claude Code — map editor (first part)
+- **Changed:**
+  - New `cs2d_editor.c/.h` (model): brush (rotation, BR, color), set tile / rect / flood fill, tile properties,
+    `.inf` V1..V4 read and V4 write, entity tables, place / remove.
+  - `cs2d_scene_editor.c` rewritten: sidebar with the 12 icon buttons, tile list, entity list with filter, rotation /
+    BR / color, Tile Properties, Color and Load / Save windows, grid, hovered-tile frame, entity icons, status line,
+    tooltips. The editor builds the UI every frame (`cs2d_scene_editor_build_ui`, `_render_overlay`, `_wheel`).
+  - Map: per-tile color data (`tile_data`) loaded and saved; the render follows `TileProp.Get` (brightness b * 10 %,
+    colored tiles) instead of the old guesses. New `cs2d_render_tile_frame` and `cs2d_render_text_scaled_ex`.
+  - Tools: `initarrays.py`, `bbstr.py --array`.
+- **Verified:** our editor's screenshots next to the user's screenshots of the original (sidebar, Tile Properties,
+  Color); load -> save byte-identical on 7 original maps; `test_editor` (19 / 19); de_dust renders as before apart
+  from the corrected brightness.
+- **Left:** Map Properties, Display Settings, Tools mode, Entity Properties, context menu, undo (OPEN_ISSUES).
+
 ## 2026-10-11 — Claude Code — join file transfer (server downloads)
 - **Changed:**
   - New `cs2d_transfer.c/.h`: `[252,50]` list checks (`FUN_1402cb770` rules), `[252,50,2]` requests, file blocks,

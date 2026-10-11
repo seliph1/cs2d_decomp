@@ -15,6 +15,7 @@
 #include "cs2d_fx.h"
 #include "cs2d_serverlist.h"
 #include "cs2d_transfer.h"
+#include "cs2d_editor.h"
 
 #define CS2D_CONSOLE_MAX_LINES     1024 /* Ring buffer: the oldest line is dropped when full */
 #define CS2D_CONSOLE_LINE_LEN      192
@@ -56,6 +57,7 @@ struct cs2d_client {
     char            editor_map_name[64];
     float           editor_cam_x;
     float           editor_cam_y;
+    cs2d_ed_state_t editor;
 
     /* Game scene */
     cs2d_game_t     game;
@@ -125,16 +127,14 @@ struct cs2d_client {
     bool                server_info_open;
     cs2d_console_line_t server_info_lines[CS2D_SERVER_INFO_MAX_LINES];
     int                 server_info_line_count;
-    int                 server_info_scroll;        /* Top visible line index (0 = top of serverinfo) */
+    cs2d_ui_scroll_t    server_info_scroll;        /* Top visible line (0 = top of serverinfo) */
     int                 server_info_visible_lines;
-    float               server_info_sb_grab_y;
     bool                team_menu_open;
     int                 team_menu_page;            /* 0 = Select Team, 1 = Terrorists, 2 = Counter-Terrorists */
     bool                servers_open;              /* "Servers" window (Find Servers) */
     int                 servers_tab;               /* cs2d_sv_tab_t */
-    int                 servers_scroll;            /* First visible row */
+    cs2d_ui_scroll_t    servers_scroll;            /* First visible row */
     int                 servers_visible_rows;
-    float               servers_sb_grab_y;
     uint32_t            servers_sel_ip;            /* Selected row (clicking it again joins) */
     uint16_t            servers_sel_port;
     int                 servers_filters;           /* Active filters in sys/filters.cfg */
@@ -175,9 +175,8 @@ struct cs2d_client {
     cs2d_console_line_t console_lines[CS2D_CONSOLE_MAX_LINES];
     int                 console_line_head;      /* Ring index of the oldest line */
     int                 console_line_count;
-    int                 console_scroll;         /* Lines scrolled up from the bottom (0 = follow new output) */
+    cs2d_ui_scroll_t    console_scroll;         /* First visible line; at the bottom the view follows new output */
     int                 console_visible_lines;  /* Lines that fit in the log box (set by the console layout) */
-    float               console_sb_grab_y;      /* Scrollbar thumb drag offset */
     char                console_input[CS2D_CONSOLE_LINE_LEN];
     int                 console_cursor;
     char                console_pending_cmd[CS2D_CONSOLE_LINE_LEN]; /* Submitted with Enter, run on the next update */

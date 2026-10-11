@@ -23,6 +23,7 @@
 #include "cs2d_client.h"
 #include "cs2d_entities.h"
 #include "cs2d_transfer.h"
+#include "cs2d_editor.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -865,7 +866,7 @@ static bool test_ui_dropdown_numberbox(void)
     dd_frame(&sel, 60.0f, 9.0f, true, 0, 0);
     dd_frame(&sel, 60.0f, 9.0f, false, 0, 0);
     dd_frame(&sel, 40.0f, 60.0f, false, -10, 0);
-    if (s_dd_ui.dropdown_top != 4) TEST_FAIL("Dropdown wheel", "Expected list scrolled to the last page (top = 4)");
+    if (s_dd_ui.dropdown_scroll.top != 4) TEST_FAIL("Dropdown wheel", "Expected list scrolled to the last page (top = 4)");
     if (!cs2d_ui_capture_escape(&s_dd_ui) || s_dd_ui.dropdown_id != 0) TEST_FAIL("Dropdown ESC", "ESC must close the list");
     if (cs2d_ui_capture_escape(&s_dd_ui)) TEST_FAIL("Dropdown ESC", "ESC with no open list must not be captured");
     dd_frame(&sel, 400.0f, 400.0f, false, 0, SDLK_DOWN);
@@ -903,6 +904,66 @@ static bool test_ui_dropdown_numberbox(void)
     if (val != 4) TEST_FAIL("Numberbox wheel", "Wheel over the box must step the value");
     TEST_PASS("Number box: digits only, live value, clamp on Enter / focus loss, arrows and wheel");
 
+    return true;
+}
+
+/* =========================================================================
+ * Test 10b: Shared scrolling (cs2d_ui_scroll_*, cs2d_ui_scrollbar): every scrollable view uses it
+ * ========================================================================= */
+static cs2d_ui_context_t s_sc_ui;
+static cs2d_ui_scroll_t  s_sc;
+
+/* One frame: 50 rows, 10 visible, list area (0,0) 100x200 with the default scrollbar at x 100 */
+static void sc_frame(float mx, float my, bool down, int wheel)
+{
+    cs2d_ui_rect_t area = { 0.0f, 0.0f, 100.0f, 200.0f };
+    cs2d_ui_begin_layout(&s_sc_ui, 850, 480, mx, my, down, wheel);
+    cs2d_ui_scroll_wheel(&s_sc_ui, &s_sc, &area, 3, 10, 50);
+    cs2d_ui_scrollbar_at(&s_sc_ui, CS2D_UI_ID("ScTest"), &s_sc, 10, 50, 100.0f, 0.0f, 200.0f, 1, NULL);
+    cs2d_ui_end_layout(&s_sc_ui);
+}
+
+static bool test_ui_scroll(void)
+{
+    printf("\n=== Testing Shared Scrolling (cs2d_ui_scroll_*, cs2d_ui_scrollbar) ===\n");
+    cs2d_ui_init(&s_sc_ui);
+    memset(&s_sc, 0, sizeof(s_sc));
+    sc_frame(400.0f, 400.0f, false, 0);
+
+    sc_frame(50.0f, 50.0f, false, -2);
+    if (s_sc.top != 6) TEST_FAIL("Wheel", "Two notches down over the list must scroll 6 rows");
+    sc_frame(400.0f, 400.0f, false, -2);
+    if (s_sc.top != 6) TEST_FAIL("Wheel outside", "The wheel outside the list must not scroll it");
+    sc_frame(50.0f, 50.0f, false, 10);
+    if (s_sc.top != 0) TEST_FAIL("Wheel clamp", "Scrolling up must stop at the first row");
+    TEST_PASS("Wheel over the view scrolls it (3 rows per notch), outside it does not, clamped at the top");
+
+    /* Track below the thumb pages down by visible - 1; dragging the thumb past the end reaches the last row */
+    cs2d_ui_rect_t track = cs2d_ui_get_box(&s_sc_ui, CS2D_UI_ID("ScTest"));
+    if (track.x != 100.0f || track.w != 9.0f || track.h != 200.0f) TEST_FAIL("Scrollbar box", "Expected a 9x200 track at x 100");
+    sc_frame(104.0f, 150.0f, true, 0);
+    sc_frame(104.0f, 150.0f, false, 0);
+    if (s_sc.top != 9) TEST_FAIL("Track page", "A press below the thumb must page down by 9 rows");
+    cs2d_ui_rect_t thumb = cs2d_ui_get_box(&s_sc_ui, CS2D_UI_ID("ScTest") ^ 0x7001u);
+    float thumb_h = 196.0f * 10.0f / 50.0f;
+    if (fabsf(thumb.h - thumb_h) > 0.01f || fabsf(thumb.y - (2.0f + (196.0f - thumb_h) * 9.0f / 40.0f)) > 0.5f /* positions are rounded */) {
+        TEST_FAIL("Thumb geometry", "Thumb must be visible / total of the track, at top / max of the free space");
+    }
+    float grab_y = thumb.y + 5.0f;
+    sc_frame(104.0f, grab_y, true, 0);
+    sc_frame(104.0f, grab_y + (196.0f - thumb_h) * 0.5f, true, 0);
+    if (s_sc.top != 9 + 20) TEST_FAIL("Thumb drag", "Dragging the thumb by half the free space must scroll half the rows");
+    sc_frame(104.0f, 470.0f, true, 0);
+    sc_frame(104.0f, 470.0f, false, 0);
+    if (s_sc.top != 40) TEST_FAIL("Thumb drag end", "Dragging past the end must stop at the last page");
+    TEST_PASS("Track press pages by visible - 1; the thumb is proportional and follows the pointer while dragged");
+
+    if (!cs2d_ui_scroll_page(&s_sc, -1, 10, 50) || s_sc.top != 31) TEST_FAIL("Page up", "Expected 40 - 9 = 31");
+    cs2d_ui_scroll_clamp(&s_sc, 10, 20);
+    if (s_sc.top != 10) TEST_FAIL("Clamp", "A shorter list must clamp top to total - visible");
+    cs2d_ui_scroll_clamp(&s_sc, 10, 5);
+    if (s_sc.top != 0 || cs2d_ui_scroll_by(&s_sc, 3, 10, 5)) TEST_FAIL("Clamp", "A list that fits never scrolls");
+    TEST_PASS("Page and clamp helpers");
     return true;
 }
 
@@ -976,7 +1037,7 @@ static bool test_console(void)
             TEST_FAIL("Scroll up", msg);
         }
     }
-    if (s_con.console_scroll != CS2D_CONSOLE_MAX_LINES - vis) TEST_FAIL("Scroll clamp", "Scroll must stop when the oldest line is at the top");
+    if (s_con.console_scroll.top != 0) TEST_FAIL("Scroll clamp", "Scroll must stop when the oldest line is at the top");
     if (strcmp(visible_line(box, 0), cs2d_client_console_line(&s_con, 0)->text) != 0) TEST_FAIL("Scroll top", "Oldest line must be the first visible line");
     TEST_PASS("Scrolling to the top and beyond keeps every row filled; stops at the oldest line");
 
@@ -988,7 +1049,7 @@ static bool test_console(void)
     for (int i = 0; i < 10; i++) cs2d_client_console_print(&s_con, 255, 255, 255, "new output %d", i);
     box = console_layout();
     if (strcmp(visible_line(box, 0), first) != 0) TEST_FAIL("Scroll anchor", "New lines must not move a scrolled-up view");
-    s_con.console_scroll = 0;
+    s_con.console_scroll.top = CS2D_CONSOLE_MAX_LINES; /* Clamped to the bottom by the layout */
     box = console_layout();
     if (strcmp(visible_line(box, vis - 1), "new output 9") != 0) TEST_FAIL("Follow output", "At the bottom the newest line must be visible");
     TEST_PASS("Scrolled-up view stays put on new output; bottom view follows it");
@@ -997,7 +1058,7 @@ static bool test_console(void)
     const int FRAMES = 2000;
     t0 = now_ms();
     for (int f = 0; f < FRAMES; f++) {
-        s_con.console_scroll = (f * 7) % (CS2D_CONSOLE_MAX_LINES - vis);
+        s_con.console_scroll.top = (f * 7) % (CS2D_CONSOLE_MAX_LINES - vis);
         console_layout();
     }
     double layout_ms = (now_ms() - t0) / FRAMES;
@@ -1746,6 +1807,123 @@ static bool test_file_transfer(void)
     return true;
 }
 
+/* =========================================================================
+ * Map editor model (cs2d_editor.c): brush modifier byte (TileProp.Get 0x140010450), painting
+ * (FUN_1402bd6d0, FUN_1402bdcc0), .inf defaults (FUN_14019c550 / FUN_1402b7860), entity tables
+ * (init code 0x140318856) and the map writer against the original map files.
+ * ========================================================================= */
+static bool file_bytes_equal(const char *a, const char *b)
+{
+    FILE *fa = fopen(a, "rb"), *fb = fopen(b, "rb");
+    bool same = fa && fb;
+    while (same) {
+        int ca = fgetc(fa), cb = fgetc(fb);
+        if (ca != cb) same = false;
+        if (ca == EOF || cb == EOF) break;
+    }
+    if (fa) fclose(fa);
+    if (fb) fclose(fb);
+    return same;
+}
+
+static bool test_editor(void)
+{
+    printf("\n=== Testing Map Editor Model ===\n");
+
+    /* Rotation wraps after 270; BR: 100 -> 10 -> ... -> 90 -> 100; white clears the color flag */
+    cs2d_ed_brush_t br = { .tile = 3, .mod = 0, .r = 255, .g = 255, .b = 255 };
+    for (int i = 0; i < 4; i++) cs2d_ed_brush_rotate(&br);
+    if (br.mod != 0) TEST_FAIL("Editor brush", "rotation does not wrap");
+    cs2d_ed_brush_rotate(&br);
+    static const int percents[11] = { 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 10 };
+    for (int i = 0; i < 11; i++) {
+        cs2d_ed_brush_brightness(&br);
+        if (cs2d_ed_brightness_percent(br.mod) != percents[i] || (br.mod & 3) != 1) {
+            TEST_FAIL("Editor brush", "brightness sequence or rotation bits wrong");
+        }
+    }
+    cs2d_ed_brush_set_color(&br, 255, 0, 0);
+    if ((br.mod & 0xc0) != 0x80 || (br.mod & 0x3f) != 5) TEST_FAIL("Editor brush", "color flag not set");
+    cs2d_ed_brush_set_color(&br, 255, 255, 255);
+    if ((br.mod & 0x80) != 0) TEST_FAIL("Editor brush", "white did not clear the color flag");
+
+    /* Painting on a 10x10 map: rect, flood fill bounded by a different modifier, color data */
+    static cs2d_map_t m;
+    if (!cs2d_ed_new_map(&m, 10, 10, "cs2dnorm.bmp")) TEST_FAIL("Editor map", "new map failed");
+    m.tile_count = 254;
+    cs2d_ed_brush_t wall = { .tile = 5, .mod = 0, .r = 255, .g = 255, .b = 255 };
+    if (cs2d_ed_rect(&m, 4, 0, 4, 9, &wall) != 10) TEST_FAIL("Editor paint", "rect count");
+    cs2d_ed_brush_t floor = { .tile = 7, .mod = 0x80 | 0x02, .r = 10, .g = 20, .b = 30 };
+    int filled = cs2d_ed_fill(&m, 0, 0, &floor);
+    if (filled != 40 || m.tiles[9 * 10 + 3] != 7 || m.tiles[5] != 0 || m.modifiers[0] != 0x82 ||
+        m.tile_data[0] != 10 || m.tile_data[2] != 30) {
+        TEST_FAIL("Editor paint", "flood fill crossed the wall or lost the color");
+    }
+    if (cs2d_ed_fill(&m, 0, 0, &floor) != 0 || cs2d_ed_set_tile(&m, 1, 1, &floor)) {
+        TEST_FAIL("Editor paint", "repainting the same tile changed something");
+    }
+
+    /* Entities: tables from the init code, place / find / remove */
+    uint8_t rgb[3];
+    cs2d_ed_entity_color(0, rgb);
+    bool ok = rgb[0] == 255 && rgb[1] == 0 && rgb[2] == 0;
+    cs2d_ed_entity_color(22, rgb);
+    ok = ok && rgb[0] == 128 && rgb[1] == 255 && rgb[2] == 0;
+    cs2d_ed_entity_color(93, rgb);
+    ok = ok && rgb[0] == 100 && rgb[1] == 200 && rgb[2] == 255;
+    int types[128];
+    int all = cs2d_ed_entity_list(0, types, 128);
+    int info = cs2d_ed_entity_list(1, types, 128);
+    ok = ok && all == 52 && info == 22 && types[20] == 80 && types[21] == 81;
+    ok = ok && strcmp(cs2d_ed_entity_label(22), "Spr") == 0 && cs2d_ed_entity_zone(5) == 2 && cs2d_ed_entity_zone(4) == 1;
+    int e = cs2d_ed_entity_add(&m, 22, 2, 3);
+    ok = ok && e == 0 && cs2d_ed_entity_at(&m, 2, 3) == 0 && cs2d_ed_entity_add(&m, 7, 1, 1) == -1;
+    cs2d_ed_entity_remove(&m, 0);
+    ok = ok && m.entity_count == 0;
+    if (!ok) TEST_FAIL("Editor entities", "tables or placement wrong");
+
+    /* .inf: V2 file of the game, then a V4 round trip */
+    m.tile_modes[1] = 99;
+    if (!cs2d_ed_inf_load(&m, "gfx/tiles/cs2dnorm.inf") || m.tile_modes[0] != 0 || m.tile_modes[1] != 10 ||
+        m.tile_heights[1] != 0) {
+        TEST_FAIL("Editor .inf", "V2 tile modes not read");
+    }
+    m.tile_modes[3] = 52;
+    m.tile_heights[3] = 40;
+    m.tile_3d_mods[3] = 5;
+    const char *inf_tmp = "test_editor_tmp.inf";
+    bool inf_ok = cs2d_ed_inf_save(&m, inf_tmp);
+    m.tile_modes[3] = 0;
+    m.tile_heights[3] = 0;
+    m.tile_3d_mods[3] = 0;
+    inf_ok = inf_ok && cs2d_ed_inf_load(&m, inf_tmp) && m.tile_modes[3] == 52 && m.tile_heights[3] == 40 &&
+             m.tile_3d_mods[3] == 5;
+    remove(inf_tmp);
+    cs2d_map_free(&m);
+    if (!inf_ok) TEST_FAIL("Editor .inf", "V4 round trip");
+    if (cs2d_ed_prop_modes[13] != 51 || strcmp(cs2d_ed_tile_mode_name(51), "Deadly - Explosion") != 0) {
+        TEST_FAIL("Editor .inf", "tile mode table");
+    }
+
+    /* The map writer keeps original maps byte for byte, colored tiles (fy_shipment: 700) included */
+    static const char *maps[3] = { "maps/fy_shipment.map", "maps/de_dust2.map", "maps/de_aztec.map" };
+    const char *map_tmp = "test_editor_tmp.map";
+    for (int i = 0; i < 3; i++) {
+        static cs2d_map_t orig;
+        memset(&orig, 0, sizeof(orig));
+        bool same = cs2d_map_load_file(&orig, maps[i]) && cs2d_map_save_file(&orig, map_tmp) &&
+                    file_bytes_equal(maps[i], map_tmp);
+        cs2d_map_free(&orig);
+        remove(map_tmp);
+        if (!same) {
+            printf("    %s\n", maps[i]);
+            TEST_FAIL("Editor map save", "a saved map differs from the original file");
+        }
+    }
+    TEST_PASS("Map editor: brush, rect / fill, entities tables, .inf V2 / V4, byte-identical map save");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -1753,7 +1931,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 18;
+    int total = 20;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -1765,6 +1943,7 @@ int main(void)
     if (test_ui_layout()) passed++;
     if (test_ui_textbox()) passed++;
     if (test_ui_dropdown_numberbox()) passed++;
+    if (test_ui_scroll()) passed++;
     if (test_console()) passed++;
     if (test_entities_prison()) passed++;
     if (test_player_physics()) passed++;
@@ -1773,6 +1952,7 @@ int main(void)
     if (test_recoil_and_swing()) passed++;
     if (test_serverlist()) passed++;
     if (test_file_transfer()) passed++;
+    if (test_editor()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

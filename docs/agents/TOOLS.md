@@ -114,7 +114,8 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 | `drive_orig.ps1 -Steps "a;b;c"` | Input for the original window: `focus`, `tap:K`, `down:K`, `up:K`, `wait:ms`, `mouse:x:y` (client coords), `click:n:ms`, `ldown`, `lup`, `vk:hex[:up]`, `shot:C:/path.png` |
 | `dumpgrep.sh <addr \| name> / -f <Class> / -l <regex>` | Looks up functions in the Ghidra dump `docs/dump` (see above) |
 | `peptr.py <exe> <hexaddr…>` | Finds 8-byte pointers to an address inside the PE (vtables) |
-| `bbstr.py <exe> <hexaddr…>` | Prints the BlitzMax string objects at those addresses: decodes the `bbs__` literals of the dump. Feed it the `lea` targets of a range: `objdump -d -M intel --start-address=… --stop-address=… CS2D.exe \| grep -o "# 0x140a[0-9a-f]*"` |
+| `initarrays.py <objdump listing> <start> <end> <global…>` | Recovers arrays the init code fills with straight-line stores (`mov [base+off], imm` or a `lea` constant): prints `global +offset value`. Used for the editor's entity tables (KNOWLEDGE "Map editor") |
+| `bbstr.py <exe> <hexaddr…>` | Prints the BlitzMax string objects at those addresses: decodes the `bbs__` literals of the dump. Feed it the `lea` targets of a range: `objdump -d -M intel --start-address=… --stop-address=… CS2D.exe \| grep -o "# 0x140a[0-9a-f]*"`. `--array <pointer global> <i or $> <n>` reads a static BBArray (arrays filled at runtime point to `bbEmptyArray`: use `initarrays.py`) |
 | `map_grid.c` | Prints the collision or mode grid around a tile |
 | `lua/*.lua` | Dedicated Lua probes; output lines start with `BP` / `WP` / `PD` / `JL` |
 

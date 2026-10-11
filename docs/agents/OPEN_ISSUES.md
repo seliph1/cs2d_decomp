@@ -45,6 +45,21 @@ the same one.
 - **Join messages that differ from the original (proxy, not fixed):** the original sends `[252,0]` (2 bytes, ours
   adds an empty string), and in `[252,1]` it sends `01` after the U.S.G.N. fields and the spray file name
   (`unrealsoftware.bmp`) where ours sends empty strings. The dedicated accepts both.
+- **Map editor, not reconstructed yet** (KNOWLEDGE "Map editor" has the layouts):
+  - Map Properties (Map Settings window), Display Settings, and the Tools / More Options mode (Distance, Path
+    Distance, Pathfinder, Tile Blender, Decal Painter, minimap sizes, export, move map).
+  - Entity Properties window (clicking a placed entity), the tile context menu (right click), undo
+    (`Teditor_actionlist`), tile blending (`0x40`), the unsaved-map and "save as default" confirmations.
+  - New Map makes a 50x50 `cs2dnorm.bmp` map (size not measured); the 600 px/s scroll speed is a guess; the selection
+    pulse speed (`_DAT_140ddeff8`) is calibrated by eye.
+  - Entities are deleted with Delete over them (the original uses its context menu).
+  - The overlay frame of colored tiles (`Tmap_d.overlay`) is loaded and saved but not drawn.
+  - With the console open in the editor, the sidebar buttons ("Tile Properties", "BR", z 11) and the tile tooltip
+    are drawn over the console window (z 10).
+- **Scrolling, not measured:** wheel steps (3 lines for the console / Server Info / server list / map files,
+  1 row for the dropdown and the editor lists) and the thumb hover color are our choices, not taken from `CS2D.exe`.
+- **Map saver:** a map without daylight (0) is saved as 225 + 1000; maps saved with "heights 0 / 1" are re-saved with 2
+  (like the 1.0.1.8 editor, not checked).
 
 ## Verification debt
 - **Original + our client, one session:** not re-run after the latest join/leave fix (the session ended
