@@ -30,6 +30,21 @@ the same one.
   - The "Connect to IP" dialog layout.
   - The hover / selection highlight alpha (calibrated by eye).
   - Long names: the original scales them down to fit (`SetScale(225 / width)`), ours clips them.
+    `cs2d_render_text_scaled_ex` now does this (used by the download window).
+- **Join file transfer, not reconstructed** (see KNOWLEDGE "join-time file transfer"):
+  - HTTP downloads (`url > path` entries, `Thttp`): well-formed ones are skipped and we always end the request with
+    `0`, never `0xffff`.
+  - `[252,4,11]` (the local map differs from the server's): the original asks "save as temp.map / overwrite /
+    cancel" and joins again with map mode 1 or 2. We only print the status; the mode stays 0.
+  - Files cached under `sys/cache/transfer/<sha>` (`[252,50,3]`) are saved there, but nothing reads them back yet
+    (the original resolves Lua image paths through that cache). The checksum text format of `FUN_1400a1750` is assumed
+    to be 8 × `%08x`.
+  - The spinner icon (`gfx/gui_load.bmp`) next to the "Downloading" title.
+  - Our Tudp has no retransmission of our own reliable packets; the request burst (26 messages) only works because
+    nothing is lost on a LAN.
+- **Join messages that differ from the original (proxy, not fixed):** the original sends `[252,0]` (2 bytes, ours
+  adds an empty string), and in `[252,1]` it sends `01` after the U.S.G.N. fields and the spray file name
+  (`unrealsoftware.bmp`) where ours sends empty strings. The dedicated accepts both.
 
 ## Verification debt
 - **Original + our client, one session:** not re-run after the latest join/leave fix (the session ended

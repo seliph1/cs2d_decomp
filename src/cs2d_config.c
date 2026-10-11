@@ -18,6 +18,7 @@ bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
     cfg->recoil_enabled = true;
     strncpy(cfg->server_ip, "127.0.0.1", sizeof(cfg->server_ip));
     cfg->server_port = 36963;
+    cfg->download = 1;
 
     FILE *f = fopen(filepath, "r");
     if (!f) return false;
@@ -51,6 +52,8 @@ bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
                 strncpy(cfg->language, val, sizeof(cfg->language) - 1);
             } else if (strcmp(key, "recoil") == 0) {
                 cfg->recoil_enabled = (atoi(val) != 0);
+            } else if (strcmp(key, "download") == 0) {
+                cfg->download = atoi(val);
             }
         }
     }

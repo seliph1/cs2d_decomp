@@ -22,6 +22,8 @@
 #include "cs2d_ui.h"
 #include "cs2d_client.h"
 #include "cs2d_entities.h"
+#include "cs2d_transfer.h"
+#include <zlib.h>
 #include <SDL3/SDL.h>
 
 #define TEST_PASS(name) printf("  [PASS] %s\n", name)
@@ -411,8 +413,8 @@ static bool test_network_protocol(void)
     }
     cs2d_pkt_t p0, p1, p2, p3;
     cs2d_net_build_join_stage0(&p0);
-    cs2d_net_build_join_stage1(&p1, "CS2D_Decomp", "", "135421593", 850, 480);
-    cs2d_net_build_join_stage2(&p2, map_sha256, "135421593");
+    cs2d_net_build_join_stage1(&p1, "CS2D_Decomp", "", "135421593", 850, 480, 0);
+    cs2d_net_build_join_stage2(&p2, map_sha256, "135421593", 1);
     cs2d_net_build_join_stage3(&p3, "de_dust2", map_sha256);
     if (p0.pos != 3 || p1.pos == 0 || p2.pos == 0 || p3.pos == 0) {
         TEST_FAIL("Join Packet Builders (Opcode 252)", "Failed to build Join Stage 0..3 packets");
@@ -1614,6 +1616,136 @@ static bool test_serverlist(void)
     return true;
 }
 
+/* =========================================================================
+ * Join-time file transfer [252,50] (FUN_1402cd970, Ttrans_recv). The list chunk is a proxy capture of
+ * our client joining a modded dedicated (tools/agent/capture_transfer.sh, map fun_roleplay).
+ * ========================================================================= */
+static void xfer_put_str(uint8_t *m, int *l, const char *s)
+{
+    m[(*l)++] = (uint8_t)strlen(s);
+    memcpy(m + *l, s, strlen(s));
+    *l += (int)strlen(s);
+}
+
+static void xfer_put_i32(uint8_t *m, int *l, int32_t v)
+{
+    memcpy(m + *l, &v, 4);
+    *l += 4;
+}
+
+static bool test_file_transfer(void)
+{
+    printf("\n=== Testing Join File Transfer ([252,50]) ===\n");
+
+    /* FUN_1402cb770 path conditions */
+    static const struct { const char *path; int accept; int want; } paths[] = {
+        { "maps/fun_roleplay.map",       1, CS2D_XFER_OK },
+        { "maps/fun_roleplay.txt",       1, CS2D_XFER_OK },
+        { "maps/fun_roleplay.lua",       1, CS2D_XFER_BAD_MAPS_EXT },
+        { "gfx/tiles/custom.txt",        1, CS2D_XFER_BAD_TILES_EXT },
+        { "sfx/weapons/ak47_clipin.wav", 1, CS2D_XFER_RELOAD_SOUND },
+        { "sfx/weapons/ak47.bmp",        1, CS2D_XFER_WEAPONS_NOT_SND },
+        { "sfx/c4/door.ogg",             2, CS2D_XFER_NO_SOUNDS },
+        { "gfx/c4/door.png",             3, CS2D_XFER_NO_IMAGES },
+        { "gfx/c4/door.png",             6, CS2D_XFER_OK },
+        { "gfx/c4/notes.txt",            1, CS2D_XFER_INVALID_EXT },
+        { "gfx/../door.png",             1, CS2D_XFER_INVALID_PATH },
+        { "\\GFX\\C4\\Door.PNG",         1, CS2D_XFER_OK },
+    };
+    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        int got = cs2d_xfer_check_path(paths[i].path, paths[i].accept);
+        if (got != paths[i].want) {
+            printf("    %s (accept %d) -> %d\n", paths[i].path, paths[i].accept, got);
+            TEST_FAIL("Transfer path conditions", "wrong FUN_1402cb770 result");
+        }
+    }
+
+    /* The last [252,50,1] chunk of the fun_roleplay list: the 3 sfx/weapons sounds ship with the game */
+    static const char *names[6] = {
+        "gfx/c4/map/objects/c4_amaguya.PNG", "sfx/weapons/c4_disarm.wav", "sfx/weapons/nvg.ogg",
+        "sfx/weapons/c4_explode.wav", "gfx/c4/map/texture/light_map/fun_roleplay_dungeon8_1.png", "maps/fun_roleplay.map"
+    };
+    uint8_t chunk[512];
+    int cl = 0;
+    chunk[cl++] = 0xfc; chunk[cl++] = 0x32; chunk[cl++] = 0x01; chunk[cl++] = 0x06; chunk[cl++] = 0x00;
+    for (int i = 0; i < 6; i++) xfer_put_str(chunk, &cl, names[i]);
+    static const uint8_t list_end[] = { 0xfc, 0x32, 0x01, 0x00, 0x00 };
+    static cs2d_xfer_t x;
+    cs2d_xfer_init(&x);
+    int pos = 2;
+    if (cl != 5 + 34 + 26 + 20 + 27 + 57 + 22 ||
+        cs2d_xfer_on_message(&x, chunk, cl, &pos) != CS2D_XFER_EV_NONE || pos != cl || x.request_count != 3 ||
+        strcmp(x.requests[0], names[0]) != 0 || strcmp(x.requests[1], names[4]) != 0 ||
+        strcmp(x.requests[2], names[5]) != 0) {
+        TEST_FAIL("Transfer list", "the chunk was not parsed into 3 requests");
+    }
+    pos = 2;
+    if (cs2d_xfer_on_message(&x, list_end, (int)sizeof(list_end), &pos) != CS2D_XFER_EV_LIST_DONE || x.files_total != 3) {
+        TEST_FAIL("Transfer list", "[252,50,1,0,0] did not end the list");
+    }
+
+    /* Requests: [252,50,2,n u16,n x str] in chunks of 10, then [252,50,2,0,0] */
+    static cs2d_pkt_t pkts[4];
+    int n = cs2d_xfer_build_requests(&x, pkts, 4);
+    static const uint8_t req_head[] = { 0xfc, 0x32, 0x02, 0x03, 0x00, 0x21, 'g', 'f', 'x' };
+    static const uint8_t req_end[]  = { 0xfc, 0x32, 0x02, 0x00, 0x00 };
+    if (n != 2 || memcmp(pkts[0].buf, req_head, sizeof(req_head)) != 0 || pkts[0].pos != 5 + 34 + 57 + 22 ||
+        pkts[1].pos != 5 || memcmp(pkts[1].buf, req_end, sizeof(req_end)) != 0) {
+        TEST_FAIL("Transfer requests", "wrong [252,50,2] messages");
+    }
+    for (int i = 0; i < 23; i++) snprintf(x.requests[i], CS2D_XFER_PATH, "gfx/f%d.png", i);
+    x.request_count = 23;
+    n = cs2d_xfer_build_requests(&x, pkts, 4);
+    if (n != 4 || pkts[0].buf[3] != 10 || pkts[1].buf[3] != 10 || pkts[2].buf[3] != 3 || pkts[3].pos != 5) {
+        TEST_FAIL("Transfer requests", "names are not split in chunks of 10");
+    }
+
+    /* FUN_14022d2f0: [raw size i32][zlib], a negative size means stored */
+    static const char payload[] = "CS2D transfer payload CS2D transfer payload CS2D transfer payload";
+    uint8_t packed[256];
+    uLongf packed_len = sizeof(packed) - 4;
+    int32_t raw_size = (int32_t)sizeof(payload);
+    compress(packed + 4, &packed_len, (const Bytef *)payload, sizeof(payload));
+    memcpy(packed, &raw_size, 4);
+    uint8_t *out = NULL;
+    int out_len = 0;
+    bool ok = cs2d_xfer_uncompress(packed, (int)packed_len + 4, &out, &out_len) && out_len == raw_size &&
+              memcmp(out, payload, sizeof(payload)) == 0;
+    free(out);
+    uint8_t plain[8];
+    int pl = 0;
+    xfer_put_i32(plain, &pl, -4);
+    memcpy(plain + 4, "abcd", 4);
+    ok = ok && cs2d_xfer_uncompress(plain, 8, &out, &out_len) && out_len == 4 && memcmp(out, "abcd", 4) == 0;
+    free(out);
+    if (!ok) TEST_FAIL("Transfer uncompress", "wrong FUN_14022d2f0 result");
+
+    /* [252,50,5] + [252,50,7] blocks are joined; Ttrans_recv.finish refuses a .lua file (nothing is written) */
+    uint8_t m5[64], m7[64];
+    int l5 = 0, l7 = 0;
+    m5[l5++] = 0xfc; m5[l5++] = 0x32; m5[l5++] = 0x05;
+    xfer_put_str(m5, &l5, "maps/evil.lua");
+    xfer_put_i32(m5, &l5, 8);
+    xfer_put_i32(m5, &l5, 4);
+    memcpy(m5 + l5, plain, 4); l5 += 4;
+    m7[l7++] = 0xfc; m7[l7++] = 0x32; m7[l7++] = 0x07;
+    xfer_put_str(m7, &l7, "maps/evil.lua");
+    xfer_put_i32(m7, &l7, 4);
+    memcpy(m7 + l7, plain + 4, 4); l7 += 4;
+    cs2d_xfer_reset(&x);
+    pos = 2;
+    cs2d_xfer_event_t ev5 = cs2d_xfer_on_message(&x, m5, l5, &pos);
+    bool half = pos == l5 && x.data_len == 4 && x.files_received == 1 && strcmp(x.prog, "0/0 kb - 50 %") == 0;
+    pos = 2;
+    cs2d_xfer_event_t ev7 = cs2d_xfer_on_message(&x, m7, l7, &pos);
+    if (ev5 != CS2D_XFER_EV_NONE || !half || ev7 != CS2D_XFER_EV_FILE_FAILED || x.data_len != 8 || pos != l7) {
+        TEST_FAIL("Transfer blocks", "blocks not joined, or the .lua file was accepted");
+    }
+    cs2d_xfer_free(&x);
+    TEST_PASS("Join file transfer: path rules, [252,50,1] list, [252,50,2] requests, blocks, uncompress");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -1621,7 +1753,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 17;
+    int total = 18;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -1640,6 +1772,7 @@ int main(void)
     if (test_server_info_and_team_menu()) passed++;
     if (test_recoil_and_swing()) passed++;
     if (test_serverlist()) passed++;
+    if (test_file_transfer()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

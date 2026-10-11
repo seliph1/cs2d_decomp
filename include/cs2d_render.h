@@ -213,6 +213,9 @@ typedef enum {
 
 /* High-Quality TrueType UI Font Rendering & Measurement */
 void  cs2d_render_text_ex(cs2d_font_id_t font_id, float x, float y, const char *text, float r, float g, float b, float a);
+/* Text stretched horizontally by scale_x (BlitzMax SetScale(sx, 1) before DrawText) */
+void  cs2d_render_text_scaled_ex(cs2d_font_id_t font_id, float x, float y, const char *text, float scale_x,
+                                 float r, float g, float b, float a);
 void  cs2d_render_text_measure(cs2d_font_id_t font_id, const char *text, float *out_w, float *out_h);
 float cs2d_render_text_width_ex(cs2d_font_id_t font_id, const char *text);
 /* Width of the first len bytes of text, measured without rasterizing or touching the string texture cache */

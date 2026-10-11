@@ -62,6 +62,7 @@ Our client must be able to play on the original dedicated server without the ser
 | `src/cs2d_player.c` | Player state and movement with collision (port of `FUN_1401f7600`) |
 | `src/cs2d_fx.c` | Cosmetic effects: breakable debris, explosions, tracer, muzzle flash, shells |
 | `src/cs2d_serverlist.c` | Server browser (Find Servers): server list, `svl.cache`, info/ping queries, LAN scan |
+| `src/cs2d_transfer.c` | Join-time file transfer `[252,50]`: file list checks, requests, blocks, zlib, saving, `dls.cache` |
 | `src/cs2d_render.c` | OpenGL 1.x immediate mode, GDI+ image loading, shadows, HUD, text |
 | `src/cs2d_ui.c` | Immediate-mode UI library (textbox, dropdown, numberbox, console) |
 | `tests/test_cs2d.c` | Regression suite (`test_cs2d.exe`) |
@@ -82,7 +83,7 @@ test_cs2d.exe        :: must print "Tests Passed: N / N"
 ```
 
 - **New `.c` file:** add it to **both** gcc lines in `build.bat`.
-- **Compiler:** MSYS2 MinGW-w64 gcc with SDL3, opengl32, gdi32 and ws2_32. Details are in `docs/agents/TOOLS.md`.
+- **Compiler:** MSYS2 MinGW-w64 gcc with SDL3, opengl32, gdi32, ws2_32 and zlib (static). Details are in `docs/agents/TOOLS.md`.
 - **From the Bash tool:** run the build with `cmd /c ".\build.bat"` from PowerShell, or call gcc
   directly after `export PATH=/c/msys64/mingw64/bin:$PATH`.
 

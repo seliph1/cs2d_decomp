@@ -289,12 +289,14 @@ void    cs2d_net_build_join_stage1(
     const char *password,
     const char *raw_secret,
     int         screen_w,
-    int         screen_h
+    int         screen_h,
+    int         map_mode      /* DAT_140ddf3dc: 0 normal, 1 temp.map, 2 overwrite */
 );
 void    cs2d_net_build_join_stage2(
     cs2d_pkt_t *p,
     const char *map_checksum,
-    const char *raw_secret
+    const char *raw_secret,
+    int         download      /* "download" setting DAT_140a14f4c */
 );
 void    cs2d_net_build_join_stage3(
     cs2d_pkt_t *p,

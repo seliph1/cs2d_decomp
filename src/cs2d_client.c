@@ -273,6 +273,12 @@ void cs2d_client_select_team(cs2d_client_t *client, uint8_t team, uint8_t look)
     }
 }
 
+/* Console output of the file transfer module */
+static void xfer_console_log(void *user, uint8_t r, uint8_t g, uint8_t b, const char *text)
+{
+    cs2d_client_console_print((cs2d_client_t *)user, r, g, b, "%s", text);
+}
+
 bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
 {
     if (!client) return false;
@@ -311,6 +317,10 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
     /* Load user config from sys/config.cfg */
     cs2d_config_load(&client->config, "sys/config.cfg");
     client->opt_name_cursor = (int)strlen(client->config.name);
+    cs2d_xfer_init(&client->xfer);
+    client->xfer.accept   = client->config.download;
+    client->xfer.log      = xfer_console_log;
+    client->xfer.log_user = client;
 
     client->mouse_screen_x = (float)client->config.window_width * 0.5f + 110.0f;
     client->mouse_screen_y = (float)client->config.window_height * 0.5f - 10.0f;
@@ -347,6 +357,7 @@ void cs2d_client_shutdown(cs2d_client_t *client)
 
     cs2d_scene_get(client->scene)->leave(client);
     cs2d_sv_browser_close(&client->servers);
+    cs2d_xfer_free(&client->xfer);
     cs2d_gfx_bank_free(cs2d_render_get_gfx_bank());
 }
 
@@ -555,6 +566,9 @@ bool cs2d_client_connect(cs2d_client_t *client, const char *ip, int port)
     client->connected    = false;
     client->net_sent_x   = client->net_sent_y = client->net_sent_rot = -1;
     client->fire_seed    = -1;
+    client->download_open = false;
+    memset(client->net_seen_seq, 0, sizeof(client->net_seen_seq));
+    cs2d_xfer_reset(&client->xfer);
 
     /* Initiate Opcode 252 Stage 0 Join Request ([252, 0, ""]) */
     cs2d_pkt_t p0;
@@ -590,6 +604,65 @@ static void remove_ground_item(cs2d_client_t *client, uint16_t id)
     }
 }
 
+/* FUN_1402c9f40: SHA-256 of maps/<map>.map (maps/temp.map in temporary mode), "" when the file is missing */
+static void join_map_checksum(cs2d_client_t *client)
+{
+    char map_path[256];
+    if (client->xfer.map_mode == 1) {
+        snprintf(map_path, sizeof(map_path), "maps/temp.map");
+    } else {
+        snprintf(map_path, sizeof(map_path), "maps/%s.map", client->net_map_name);
+    }
+    cs2d_net_sha256_file(map_path, client->net_map_checksum);
+}
+
+/* Gives up a join that is still in the handshake: [253,reason], socket closed, back to the menu */
+static void join_abort(cs2d_client_t *client, uint8_t reason)
+{
+    if (client->net_sock != INVALID_SOCKET) {
+        uint8_t leave_pkt[2] = { (uint8_t)CS2D_NET_LEAVE, reason };
+        cs2d_client_send_udp(client, leave_pkt, sizeof(leave_pkt), true);
+        closesocket(client->net_sock);
+        client->net_sock = INVALID_SOCKET;
+    }
+    client->join_stage    = 0;
+    client->connected     = false;
+    client->download_open = false;
+    if (client->scene != CS2D_SCENE_LOBBY) cs2d_client_set_scene(client, CS2D_SCENE_LOBBY);
+}
+
+/*
+ * [252,4,0]: the original stays in the menu during the handshake and download, and enters the game only
+ * now, with the server's map. Joining from the menu switches scenes right here, so the snapshot that
+ * follows lands on the loaded map; the game scene sees the open socket and keeps it.
+ */
+static void join_load_map(cs2d_client_t *client, const char *map)
+{
+    if (client->scene != CS2D_SCENE_GAME || client->scene_switch_pending) {
+        snprintf(client->pending_map, sizeof(client->pending_map), "%s", map);
+        cs2d_client_set_scene(client, CS2D_SCENE_GAME);
+        apply_pending_scene(client);
+    } else if (_stricmp(map, client->game_map_name) != 0) {
+        cs2d_scene_game_change_map(client, map);
+    }
+    /* Keep local player in Spectator after map load so Select Team starts at (0) */
+    client->game.players[client->local_player_id].team  = CS2D_TEAM_SPEC;
+    client->game.players[client->local_player_id].alive = false;
+}
+
+/* [252,50,...]: file list, cache checksums and file blocks (FUN_1402cd970) */
+static void join_transfer(cs2d_client_t *client, const uint8_t *buf, int len, int *pos)
+{
+    cs2d_xfer_event_t ev = cs2d_xfer_on_message(&client->xfer, buf, len, pos);
+    if (ev == CS2D_XFER_EV_LIST_DONE) {
+        static cs2d_pkt_t pkts[CS2D_XFER_MAX_PKTS];
+        int n = cs2d_xfer_build_requests(&client->xfer, pkts, CS2D_XFER_MAX_PKTS);
+        for (int i = 0; i < n; i++) cs2d_client_send_udp(client, pkts[i].buf, (size_t)pkts[i].pos, true);
+    } else if (ev == CS2D_XFER_EV_MAP_FAILED) {
+        join_abort(client, 0);
+    }
+}
+
 void cs2d_client_poll_network(cs2d_client_t *client)
 {
     if (!client || client->net_sock == INVALID_SOCKET) return;
@@ -617,6 +690,18 @@ void cs2d_client_poll_network(cs2d_client_t *client)
         } else if (srv_seq != 0) {
             /* Reliable Tudp packet: immediately acknowledge srv_seq */
             cs2d_client_send_ack(client, srv_seq);
+            /*
+             * The server resends a reliable packet until it sees the ACK: handle each sequence number once
+             * (a repeated file block would corrupt the download). The bit half the sequence space ahead is
+             * cleared so the numbers can wrap around.
+             */
+            uint16_t ahead = (uint16_t)(srv_seq + 32768);
+            client->net_seen_seq[ahead >> 3] &= (uint8_t)~(1u << (ahead & 7));
+            if (client->net_seen_seq[srv_seq >> 3] & (1u << (srv_seq & 7))) {
+                recvd = recvfrom(client->net_sock, (char *)buffer, sizeof(buffer), 0, (struct sockaddr *)&from, &fromlen);
+                continue;
+            }
+            client->net_seen_seq[srv_seq >> 3] |= (uint8_t)(1u << (srv_seq & 7));
         }
 
         while (pos < recvd) {
@@ -634,10 +719,11 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     cs2d_net_build_join_stage1(
                         &p1,
                         client->config.name,
-                        "",
+                        client->net_password,
                         client->net_raw_secret,
                         client->config.window_width,
-                        client->config.window_height
+                        client->config.window_height,
+                        client->xfer.map_mode
                     );
                     cs2d_client_send_udp(client, p1.buf, (size_t)p1.pos, true);
                     client->join_stage = 1;
@@ -659,29 +745,34 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         cs2d_game_add_player(&client->game, client->local_player_id, client->config.name, CS2D_TEAM_SPEC);
                         client->game.players[client->local_player_id].alive = false;
 
-                        char map_path[256];
-                        snprintf(map_path, sizeof(map_path), "maps/%s.map", client->net_map_name);
-                        cs2d_net_sha256_file(map_path, client->net_map_checksum);
-
-                        /* Play on the server's map, not the one loaded locally before connecting */
-                        if (_stricmp(client->net_map_name, client->game_map_name) != 0) {
-                            cs2d_scene_game_change_map(client, client->net_map_name);
-                            /* Keep local player in Spectator after map load so Select Team starts at (0) */
-                            client->game.players[client->local_player_id].team  = CS2D_TEAM_SPEC;
-                            client->game.players[client->local_player_id].alive = false;
-                        }
-
+                        /* FUN_1402c9f40: checksum of the local copy ("" when missing, the server then sends it) */
+                        join_map_checksum(client);
                         cs2d_pkt_t p3;
-                        cs2d_net_build_join_stage2(&p3, client->net_map_checksum, client->net_raw_secret);
+                        cs2d_net_build_join_stage2(&p3, client->net_map_checksum, client->net_raw_secret,
+                                                   client->xfer.accept);
                         cs2d_client_send_udp(client, p3.buf, (size_t)p3.pos, true);
                         client->join_stage = 2;
+                    } else {
+                        cs2d_client_console_print(client, 255, 0, 0, "Failed to join the server (join status %u)", status);
+                        join_abort(client, 0);
                     }
                     break;
                 } else if (sub == 4) {
                     /* Stage 2 reply: [252, 4, status] -> Send [252, 5] */
                     if (pos >= recvd) break;
                     uint8_t status = buffer[pos++];
-                    if (status == 0) {
+                    if (status == 13) {
+                        /* The server has files for us: [252,50] follows (Tgui_joinmen.mapdownload) */
+                        client->download_open = true;
+                        cs2d_xfer_reset(&client->xfer);
+                    } else if (status != 0) {
+                        cs2d_client_console_print(client, 255, 0, 0, "Failed to join the server (map status %u)", status);
+                        join_abort(client, 0);
+                    } else {
+                        client->download_open = false;
+                        /* Play on the server's map (maps/temp.map in temporary mode), not the one loaded before */
+                        join_load_map(client, (client->xfer.map_mode == 1) ? "temp" : client->net_map_name);
+                        join_map_checksum(client);
                         cs2d_pkt_t p5;
                         cs2d_net_build_join_stage3(&p5, client->net_map_name, client->net_map_checksum);
                         cs2d_client_send_udp(client, p5.buf, (size_t)p5.pos, true);
@@ -702,6 +793,9 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         client->join_stage = 4;
                     }
                     break;
+                } else if (sub == 50) {
+                    /* File transfer [252,50,sub,...]: the module reads the whole message */
+                    join_transfer(client, buffer, recvd, &pos);
                 } else if (sub == 7) {
                     /* Stage 4 snapshot chunks: [252, 7, snap_type, ...] */
                     if (pos >= recvd) break;
@@ -1185,7 +1279,8 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
     char cmd[64]  = {0};
     char arg1[64] = {0};
     char arg2[64] = {0};
-    int n = sscanf(cmd_line, "%63s %63s %63s", cmd, arg1, arg2);
+    char arg3[64] = {0};
+    int n = sscanf(cmd_line, "%63s %63s %63s %63s", cmd, arg1, arg2, arg3);
     if (n <= 0) return;
 
     cs2d_player_t *pl  = &client->game.players[client->local_player_id];
@@ -1606,15 +1701,13 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         const char *ip = (n >= 2) ? arg1 : client->config.server_ip;
         int port = (n >= 3) ? atoi(arg2) : client->config.server_port;
         if (port <= 0) port = 36963;
+        snprintf(client->net_password, sizeof(client->net_password), "%s", (n >= 4) ? arg3 : "");
         cs2d_client_console_print(client, 170, 170, 170, "Connecting to %s:%d ...", ip, port);
-        if (client->scene == CS2D_SCENE_GAME) {
-            cs2d_client_connect(client, ip, port);
-        } else {
-            /* The Game scene connects to config.server_ip/port when it is entered */
-            snprintf(client->config.server_ip, sizeof(client->config.server_ip), "%s", ip);
-            client->config.server_port = port;
-            cs2d_client_start_game(client, NULL);
-        }
+        /* The handshake runs in the current scene (the menu); [252,4,0] then enters the game on the server's map */
+        snprintf(client->config.server_ip, sizeof(client->config.server_ip), "%s", ip);
+        client->config.server_port = port;
+        if (client->scene == CS2D_SCENE_EDITOR) cs2d_client_set_scene(client, CS2D_SCENE_LOBBY);
+        cs2d_client_connect(client, ip, port);
     } else if (_stricmp(cmd, "disconnect") == 0) {
         if (client->scene == CS2D_SCENE_GAME) {
             cs2d_client_set_scene(client, CS2D_SCENE_LOBBY);
@@ -1655,7 +1748,8 @@ bool cs2d_client_any_ui_open(const cs2d_client_t *client)
 {
     return client && (client->console_open || client->create_server_open ||
                       client->options_open || client->server_info_open ||
-                      client->team_menu_open || client->servers_open || client->connect_ip_open);
+                      client->team_menu_open || client->servers_open || client->connect_ip_open ||
+                      client->download_open);
 }
 
 void cs2d_client_handle_text_input(cs2d_client_t *client, const char *text)
@@ -3194,7 +3288,7 @@ static void cs2d_client_render_servers_rows(cs2d_client_t *client)
             char bt[8];
             snprintf(bt, sizeof(bt), "%d", sv->bots);
             float yc = (sel || hot) ? 1.0f : 200.0f / 255.0f;
-            cs2d_render_text_ex(CS2D_FONT_REGULAR, box.x + 714.0f, ry - 1.0f, bt, yc, yc, 0.0f, 1.0f);
+            cs2d_render_text_ex(CS2D_FONT_REGULAR, box.x + 731.0f, ry - 1.0f, bt, yc, yc, 0.0f, 1.0f);
         }
 
         /* Latency: 10 bars, 4 px apart; lit = ceil(10 * (1 - ping/500)), color r = 510 f, g = 510 (1 - f) */
@@ -3235,6 +3329,101 @@ static void cs2d_client_render_servers_rows(cs2d_client_t *client)
     }
 }
 
+/*
+ * "Downloading" window while the server sends files: Tgui_win 350x200 created next to Tgui_joinmen
+ * (0x1401a3604), centered, Cancel button at (234, 164) 100 px wide. Its contents are drawn by
+ * cs2d_client_render_download.
+ */
+#define DL_WIN_W 350.0f
+#define DL_WIN_H 200.0f
+
+static void download_window_pos(int screen_w, int screen_h, float *x, float *y)
+{
+    *x = floorf(((float)screen_w - DL_WIN_W) * 0.5f);
+    *y = floorf(((float)screen_h - DL_WIN_H) * 0.5f);
+}
+
+static void cs2d_client_build_download_ui(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    if (!client->download_open) return;
+
+    cs2d_ui_context_t *ui = &client->ui;
+    float win_x, win_y;
+    download_window_pos(screen_w, screen_h, &win_x, &win_y);
+    bool open = true;
+    bool cancel = false;
+    if (cs2d_ui_window_begin(ui, CS2D_UI_ID("DownloadWin"), "Downloading", win_x, win_y, DL_WIN_W, DL_WIN_H, &open)) {
+        /* Content starts 23 px below the window top; the button sits at y 164 */
+        CS2D_UI_ELEMENT(ui, 0, {
+            .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(137.0f) } }
+        }) {}
+        CS2D_UI_ELEMENT(ui, 0, {
+            .layout = {
+                .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(20.0f) },
+                .dir    = CS2D_UI_LEFT_TO_RIGHT
+            }
+        }) {
+            CS2D_UI_ELEMENT(ui, 0, {
+                .layout = { .sizing = { CS2D_UI_FIXED(228.0f), CS2D_UI_FIXED(1.0f) } }
+            }) {}
+            cancel = cs2d_ui_button(ui, CS2D_UI_ID("BtnDownloadCancel"), "Cancel", 100.0f, 20.0f);
+        }
+        cs2d_ui_window_end(ui);
+    }
+    if (cancel || !open) {
+        /* Cancel leaves with reason 9 ([253,9], join window buttons in cs2d_menu_screen 0x140249280) */
+        join_abort(client, 9);
+    }
+}
+
+static cs2d_texture_t s_tex_gui_shade; /* gfx/gui_shade.bmp: 10x10 vertical gradient, maskMode 3 (0x140a0de78) */
+
+/* Progress bar: 1 px frame, black inside, gui_shade stretched to the filled width (Tgui_joinmen.draw) */
+static void download_bar(float x, float y, float bar_w, float frac, float c)
+{
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac > 1.0f) frac = 1.0f;
+    cs2d_render_rect(x, y, bar_w, 16.0f, c, c, c, 1.0f, true);
+    cs2d_render_rect(x + 1.0f, y + 1.0f, bar_w - 2.0f, 14.0f, 0.0f, 0.0f, 0.0f, 1.0f, true);
+    float fill_w = (bar_w - 6.0f) * frac;
+    if (fill_w >= 1.0f) {
+        cs2d_render_sprite_frame(&s_tex_gui_shade, 10, 10, 0, x + 3.0f + fill_w * 0.5f, y + 8.0f, fill_w, 10.0f,
+                                 0.0f, c, c, c, 1.0f, 0);
+    }
+}
+
+/* Tgui_joinmen.draw, menu 10 (0x140301640): two bars (all files, current file), file name, kb, speed */
+static void cs2d_client_render_download(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    if (!client->download_open) return;
+    if (!s_tex_gui_shade.id) cs2d_texture_load_ex(&s_tex_gui_shade, "gfx/gui_shade.bmp", 3);
+
+    const cs2d_xfer_t *x = &client->xfer;
+    float win_x, win_y;
+    download_window_pos(screen_w, screen_h, &win_x, &win_y);
+    const float c = 150.0f / 255.0f; /* gui color 255 x (alpha 0 + 150) / 255, measured on a screenshot */
+    float tx = win_x + 16.0f;
+    float bar_w = DL_WIN_W - 32.0f;
+    char line[CS2D_XFER_PATH + 32];
+
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, tx, win_y + 32.0f, "Downloading data...", c, c, c, 1.0f);
+    float all = (float)(x->files_received - 1) + x->perc;
+    download_bar(tx, win_y + 55.0f, bar_w, x->files_total > 0 ? all / (float)x->files_total : 0.0f, c);
+    if (x->files_received > 0) {
+        snprintf(line, sizeof(line), "%s (%d of %d)", x->file, x->files_received, x->files_total);
+    } else {
+        snprintf(line, sizeof(line), "Waiting for transmission... (0 of %d)", x->files_total);
+    }
+    /* Squeezed to the bar width when longer (SetScale(318 / TextWidth, 1)) */
+    float line_w = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, line);
+    float sx = (line_w > bar_w) ? bar_w / line_w : 1.0f;
+    cs2d_render_text_scaled_ex(CS2D_FONT_REGULAR, tx, win_y + 79.0f, line, sx, c, c, c, 1.0f);
+    download_bar(tx, win_y + 105.0f, bar_w, x->perc, c);
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, tx, win_y + 127.0f, x->prog, c, c, c, 1.0f);
+    snprintf(line, sizeof(line), "Download Speed: %u kb/s", client->net_bps_down >> 10);
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, tx, win_y + 152.0f, line, c, c, c, 1.0f);
+}
+
 void cs2d_client_build_ui(cs2d_client_t *client, int screen_w, int screen_h)
 {
     cs2d_ui_begin_layout(
@@ -3253,6 +3442,7 @@ void cs2d_client_build_ui(cs2d_client_t *client, int screen_w, int screen_h)
     cs2d_client_build_options_ui(client, screen_w, screen_h);
     cs2d_client_build_servers_ui(client, screen_w, screen_h);
     cs2d_client_build_connect_ip_ui(client, screen_w, screen_h);
+    cs2d_client_build_download_ui(client, screen_w, screen_h);
 
     cs2d_ui_end_layout(&client->ui);
 }
@@ -3267,6 +3457,7 @@ static void cs2d_client_render_ui(cs2d_client_t *client, int screen_w, int scree
     cs2d_client_build_ui(client, screen_w, screen_h);
     cs2d_ui_render(&client->ui);
     cs2d_client_render_servers_rows(client);
+    cs2d_client_render_download(client, screen_w, screen_h);
 }
 
 /*

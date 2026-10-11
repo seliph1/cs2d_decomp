@@ -303,14 +303,23 @@ static void drain_entity_events(cs2d_client_t *client)
 
 static void game_enter(cs2d_client_t *client)
 {
+    /* Joined from the menu: the handshake already runs ([252,4,0] loads the server's map through here) */
+    bool joining = client->net_sock != INVALID_SOCKET;
+
     cs2d_game_init(&client->game, CS2D_MODE_DE);
     load_server_rules(&client->game);
 
-    /* Local player (CT, Player 1) and practice bots exist before the map spawns them */
-    client->local_player_id = 1;
-    cs2d_game_add_player(&client->game, 1, client->config.name, CS2D_TEAM_CT);
-    cs2d_game_add_player(&client->game, 2, "Bot_Bravo", CS2D_TEAM_T);
-    cs2d_game_add_player(&client->game, 3, "Bot_Charlie", CS2D_TEAM_T);
+    if (joining) {
+        /* Only the local player, with the id the server assigned in [252,2], as Spectator */
+        cs2d_game_add_player(&client->game, client->local_player_id, client->config.name, CS2D_TEAM_SPEC);
+        client->game.players[client->local_player_id].alive = false;
+    } else {
+        /* Local player (CT, Player 1) and practice bots exist before the map spawns them */
+        client->local_player_id = 1;
+        cs2d_game_add_player(&client->game, 1, client->config.name, CS2D_TEAM_CT);
+        cs2d_game_add_player(&client->game, 2, "Bot_Bravo", CS2D_TEAM_T);
+        cs2d_game_add_player(&client->game, 3, "Bot_Charlie", CS2D_TEAM_T);
+    }
 
     const char *map_name = client->pending_map[0] ? client->pending_map : "de_dust2";
     if (!game_load_map(client, map_name)) {
@@ -318,18 +327,20 @@ static void game_enter(cs2d_client_t *client)
         game_load_map(client, "cs_assault"); /* Fallback */
     }
 
-    /* Configure authentic player skins (look 0..3) and starting loadout */
-    client->game.players[1].look  = 0; /* ct1.bmp */
-    client->game.players[1].money = 16000;
-    client->game.players[1].armor = 0;
+    if (!joining) {
+        /* Configure authentic player skins (look 0..3) and starting loadout */
+        client->game.players[1].look  = 0; /* ct1.bmp */
+        client->game.players[1].money = 16000;
+        client->game.players[1].armor = 0;
 
-    client->game.players[2].look = 0; /* t1.bmp */
-    cs2d_player_give_weapon(&client->game.players[2], CS2D_WEP_KEVLARHELM);
-    cs2d_player_give_weapon(&client->game.players[2], CS2D_WEP_BOMB);
-    cs2d_player_give_weapon(&client->game.players[2], CS2D_WEP_AK47);
+        client->game.players[2].look = 0; /* t1.bmp */
+        cs2d_player_give_weapon(&client->game.players[2], CS2D_WEP_KEVLARHELM);
+        cs2d_player_give_weapon(&client->game.players[2], CS2D_WEP_BOMB);
+        cs2d_player_give_weapon(&client->game.players[2], CS2D_WEP_AK47);
 
-    client->game.players[3].look = 2; /* t3.bmp */
-    cs2d_player_give_weapon(&client->game.players[3], CS2D_WEP_DEAGLE);
+        client->game.players[3].look = 2; /* t3.bmp */
+        cs2d_player_give_weapon(&client->game.players[3], CS2D_WEP_DEAGLE);
+    }
 
     /* Load original sprite assets with exact CS2D magenta color-key maskMode = 2 and 32x32 cell padding */
     cs2d_texture_load_grid(&client->tex_ct,   "gfx/player/ct1.bmp",     2, 32, 32);
@@ -338,7 +349,7 @@ static void game_enter(cs2d_client_t *client)
     cs2d_texture_load_ex(&client->tex_m4a1,   "gfx/weapons/m4a1.bmp",   2);
     cs2d_texture_load_ex(&client->tex_deagle, "gfx/weapons/deagle.bmp", 2);
 
-    cs2d_client_connect(client, client->config.server_ip, client->config.server_port);
+    if (!joining) cs2d_client_connect(client, client->config.server_ip, client->config.server_port);
 }
 
 static void game_leave(cs2d_client_t *client)

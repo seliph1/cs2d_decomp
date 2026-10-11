@@ -3068,12 +3068,18 @@ static cs2d_text_cache_entry_t *get_or_create_text_entry(cs2d_font_id_t font_id,
 
 void cs2d_render_text_ex(cs2d_font_id_t font_id, float x, float y, const char *text, float r, float g, float b, float a)
 {
+    cs2d_render_text_scaled_ex(font_id, x, y, text, 1.0f, r, g, b, a);
+}
+
+void cs2d_render_text_scaled_ex(cs2d_font_id_t font_id, float x, float y, const char *text, float scale_x,
+                                float r, float g, float b, float a)
+{
     cs2d_text_cache_entry_t *e = get_or_create_text_entry(font_id, text);
     if (!e || e->tex_id == 0) return;
 
     float rx = floorf(x);
     float ry = floorf(y);
-    float rw = (float)e->tex_w;
+    float rw = (float)e->tex_w * scale_x;
     float rh = (float)e->tex_h;
 
     glEnable(GL_TEXTURE_2D);

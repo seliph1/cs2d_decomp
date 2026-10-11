@@ -8,6 +8,26 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-11 — Claude Code — join file transfer (server downloads)
+- **Changed:**
+  - New `cs2d_transfer.c/.h`: `[252,50]` list checks (`FUN_1402cb770` rules), `[252,50,2]` requests, file blocks,
+    zlib uncompress (`-lz` in `build.bat`), saving with the `Ttrans_recv.finish` rules, `sys/core/dls.cache`.
+  - Client: "Downloading" window (Tgui_joinmen layout, Cancel = `[253,9]`); the map now loads at `[252,4,0]`;
+    reliable packets are handled once (sequence bitmap); `connect <ip> <port> [password]` (key `j01nk3y`, the old
+    `mypassword` key was wrong); `download` read from `sys/config.cfg` and sent in `[252,3]`.
+  - `cs2d_render_text_scaled_ex`; tools `capture_transfer.sh` (dedicated in another folder, client in a copy,
+    `CLIENT=orig`, `KEEP=1`) and `bbstr.py` (decodes `bbs__` literals).
+- **Verified** against the modded C4 dedicated (`C:\C4`, fun_roleplay, password 132):
+  - our client downloads 231 files, every one byte-identical to the server's copy, then joins;
+  - our 26 `[252,50,2]` request messages are byte-identical to the original client's;
+  - the handshake after the transfer (`[252,2]` again → `[252,3]` with the new checksum) matches the original;
+  - a second join with everything present gets no list (original too);
+  - a normal join on the stock dedicated (prison_funst3r) still works; `test_file_transfer` added (18 / 18).
+- **Left:** HTTP downloads, the `[252,4,11]` map-differs dialog, the transfer cache lookups (see `OPEN_ISSUES.md`).
+- **Follow-up:** zlib is linked statically (the exe needed `zlib1.dll`). Joining from Find Servers no longer loads
+  `de_dust2` first: the handshake and download run over the menu and the game scene starts at `[252,4,0]` with the
+  server's map (checked on prison_funst3r and on C4 with a download).
+
 ## 2026-10-11 — Claude Code — Ghidra dump of CS2D.exe
 - **Changed:** documented `docs/dump/` (full Ghidra decompilation of the client, git-ignored) in `TOOLS.md`
   and `AGENTS.md`; added `tools/agent/dumpgrep.sh` (function by address/name, methods of a class, body regex).

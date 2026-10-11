@@ -132,6 +132,11 @@ static void lobby_leave(cs2d_client_t *client)
 static void lobby_update(cs2d_client_t *client, float delta_time)
 {
     (void)delta_time;
+    /* A join started from the menu: the handshake and the file transfer run here, [252,4,0] enters the game */
+    if (client->net_sock != INVALID_SOCKET) {
+        cs2d_client_poll_network(client);
+        if (client->scene != CS2D_SCENE_LOBBY) return;
+    }
     client->lobby_hover = cs2d_client_any_ui_open(client)
                         ? -1
                         : entry_at(client, client->mouse_screen_x, client->mouse_screen_y);

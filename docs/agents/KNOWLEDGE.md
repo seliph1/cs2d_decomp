@@ -48,10 +48,54 @@ When you confirm or refute something, update this file. All multi-byte integers 
   `[252,10, 0x1c,0x02, size u16 (=4+zlib len), raw size u32 (=1024), zlib(32x32 spray)]`, then `[67,1]`.
   **The server runs its `join` (Lua hook, player list, announcement to the others) only after this.**
   Our client sends a blank spray.
+- **Join fields (REA `FUN_1402ce7c0`, proxy):**
+  - `[252,1]`: the password is encrypted with key `j01nk3y` (`0x140a3bf20`); the byte after the OS string is the
+    map transfer mode `DAT_140ddf3dc` (0 normal, 1 save as `maps/temp.map`, 2 overwrite). Wrong password: `[252,2,1]`.
+  - `[252,3, sha(str), enc secret, download u8]`: `sha` is the SHA-256 of `maps/<map>.map` (`""` when missing,
+    `FUN_1402c9f40`); the last byte is the `download` setting of `sys/config.cfg` (`DAT_140a14f4c`; 6 in the shipped config).
+  - The map is loaded at `[252,4,0]` (not at `[252,2]`), and `[252,5]` carries the recomputed checksum.
+  - The original stays in the main menu during the handshake and the download (screenshot) and enters the game at
+    `[252,4,0]`. Ours does the same: `connect` keeps the current scene, the lobby polls the socket, and
+    `join_load_map` switches to the game scene on the server's map (no `de_dust2` in between).
 - **Leave:** the client sends `[253,0]`. The other clients receive `[253,pid,reason]`; the server then
   drops what the player carried (`[24]`) and prints a `[226]` message.
 - **Others joining:** `[248,pid,name(u8 len+text),18 bytes]`, followed by the spray relay
   `[28,pid,2,size u16,size bytes]`.
+
+## Network: join-time file transfer
+
+Source: REA `FUN_1402cd970` (`[252,50]` handler), `Ttrans_recv` (`ini 0x1400f43a0`, `add 0x1400f4460`,
+`finish 0x1402cc1a0`), `Tgui_joinmen.draw 0x140301640`; proxy captures of the original and of our client against the
+modded C4 dedicated (`tools/agent/capture_transfer.sh`, map fun_roleplay). Code: `src/cs2d_transfer.c`.
+
+- **When:** only when the `[252,3]` map checksum does not match (missing or different map). Then the server answers
+  `[252,4,13]` (open the "Downloading" window) and sends the list. With a matching checksum it answers `[252,4,0]`
+  directly, for the original client too.
+- **List:** `[252,50,1, n u16, n × str]` in chunks of 10, ended by `[252,50,1,0,0]`. It holds `sys/servertransfer.lst`,
+  every file the map references (entities, tileset, `maps/<map>.txt` and `.lua`) and Lua-added files; names can repeat.
+  `[252,50,3, n u16, n × {str, 8 × i32}]` lists files the server keeps in `sys/cache/transfer/<sha256>`.
+- **Per name:** an entry with `>` is an HTTP download (`url > path`; `<spritesheet:…>` entries come out "Malformed").
+  `mods/<mod>/…` is checked in `sys/cache/mods/<mod>/…`. A missing file is requested when `FUN_1402cb770` accepts it:
+  - `maps/`: `.map`, `.txt` only (the `.lua` is refused);
+  - `gfx/tiles/`, `gfx/backgrounds/`: images only;
+  - `sfx/weapons/`: sounds, except `_clipin.` / `_clipout.` / `_roundin.`;
+  - elsewhere: `bmp,jpg,jpeg,png` / `wav,ogg`; `download 2` refuses sounds, `download 3` images;
+  - any path with `:/`, `./` or `..` is refused.
+  An existing `.map` is requested again only in map mode 1 or 2.
+- **Request:** `[252,50,2, n u16, n × str]`, a new message every 10 names, then `[252,50,2, 0 u16]` (`0xffff` when HTTP
+  downloads are queued). Our 26 messages for fun_roleplay are byte-identical to the original's.
+- **Files:** `[252,50,5, file str, total i32, len i32, bytes]`, then `[252,50,6, file, len, bytes]`…,
+  `[252,50,7, file, len, bytes]`. The joined data is `[raw size i32][zlib]` (negative size = stored, `FUN_14022d2f0`).
+- **Saving (`finish`):** extensions `bmp,jpg,jpeg,png,wav,ogg,map,txt,cfg,inf,lst` only, never `.lua`; no absolute
+  path, no `./`, nothing under `sys/` except `sys/cache/transfer`. Missing folders are created ("Created directory").
+  Each saved file is appended to `sys/core/dls.cache` as `"%d %b %Y" + path` (no separator, CRLF).
+- **After the last file** the server sends `[252,2]` again; the client answers `[252,3]` with the new checksum and
+  gets `[252,4,0]`. fun_roleplay: 231 files (2 min at ~19 kb/s), all byte-identical to the server's copies.
+- **Window** (350×200, centered; Cancel 100×20 at (234,164) sends `[253,9]`): text at window +(16, 32 / 79 / 127 / 152),
+  bars at y +55 (all files) and +105 (current file), 318×16 with a 1 px frame, black inside, `gfx/gui_shade.bmp`
+  stretched over `(318 − 6) × fraction` at +3. Text and frame are (150,150,150) (measured on a screenshot).
+  Lines: "Downloading data...", "`file` (n of total)" squeezed to 318 px, "read/total kb - p %", "Download Speed: N kb/s"
+  (bytes received in the last 1000 ms, `DAT_140ddf5a8`).
 
 ## Network: client → server (proxy)
 
@@ -133,7 +177,7 @@ Source: REA (`CS2D.exe`) and proxy captures of the original against `cs2d_dedica
     Connect x 729 (100).
   - Row columns: flag icons (`gfx/gui_server.bmp`, 9 frames of 10×10) at x + 4 + 13k; mode letter at +94; Lua "s"
     at +100 (115,110,255); name at +109 (max 225 px); map at +401 (max 188 px, half brightness when the map is
-    not in `maps/`); players at +693; bots at +714 (200,200,0); 10 latency bars (`gfx/netspeed.bmp`) at +757,
+    not in `maps/`); players at +693; bots at +731 (200,200,0); 10 latency bars (`gfx/netspeed.bmp`) at +757,
     4 px apart.
   - Latency bars: f = ping / 500; lit = ceil(10 (1 − f)); color (510 f, 510 (1 − f), pingblend). pingblend is
     255 on a fresh echo and drops 25 per frame.

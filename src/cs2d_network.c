@@ -773,7 +773,8 @@ void cs2d_net_build_join_stage1(
     const char *password,
     const char *raw_secret,
     int         screen_w,
-    int         screen_h
+    int         screen_h,
+    int         map_mode
 )
 {
     if (!p) return;
@@ -789,7 +790,8 @@ void cs2d_net_build_join_stage1(
     uint8_t enc_pass[128];
     int enc_pass_len = 0;
     if (password && password[0] != '\0') {
-        cs2d_net_encrypt(password, "mypassword", enc_pass, &enc_pass_len);
+        /* Key bbs_j01nk3y (0x140a3bf20), applied in the [252,1] builder of FUN_1402ce7c0 */
+        cs2d_net_encrypt(password, "j01nk3y", enc_pass, &enc_pass_len);
     }
 
     cs2d_pkt_w_byte(p, 252);
@@ -807,7 +809,7 @@ void cs2d_net_build_join_stage1(
     cs2d_pkt_w_str(p, t_secret);                                                      /* 11. transformed_secret */
     cs2d_pkt_w_str(p, "");                                                            /* 12. security_hash */
     cs2d_pkt_w_str(p, "\xFA" "0opengl");                                              /* 13. os_info */
-    cs2d_pkt_w_byte(p, 1);                                                            /* 14. maptransfer_mode */
+    cs2d_pkt_w_byte(p, (uint8_t)map_mode);                                            /* 14. maptransfer_mode */
     cs2d_pkt_w_int(p, screen_w > 0 ? screen_w : 850);                                 /* 15. screen_w */
     cs2d_pkt_w_int(p, screen_h > 0 ? screen_h : 480);                                 /* 16. screen_h */
     cs2d_pkt_w_lstr(p, "");                                                           /* 17. spraylogo */
@@ -820,7 +822,8 @@ void cs2d_net_build_join_stage1(
 void cs2d_net_build_join_stage2(
     cs2d_pkt_t *p,
     const char *map_checksum,
-    const char *raw_secret
+    const char *raw_secret,
+    int         download
 )
 {
     if (!p) return;
@@ -839,7 +842,7 @@ void cs2d_net_build_join_stage2(
     cs2d_pkt_w_byte(p, 3);
     cs2d_pkt_w_str(p, map_checksum ? map_checksum : "");
     cs2d_pkt_w_raw_str(p, enc_sec, enc_sec_len);
-    cs2d_pkt_w_byte(p, 1);
+    cs2d_pkt_w_byte(p, (uint8_t)download); /* DAT_140a14f4c, last byte of [252,3] in FUN_1402ce7c0 */
 }
 
 void cs2d_net_build_join_stage3(

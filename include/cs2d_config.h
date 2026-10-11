@@ -15,6 +15,7 @@ typedef struct {
     bool recoil_enabled;
     char server_ip[64];
     int  server_port;
+    int  download;      /* "download": which files a server may send (DAT_140a14f4c) */
 } cs2d_config_t;
 
 /* Load config from sys/config.cfg */

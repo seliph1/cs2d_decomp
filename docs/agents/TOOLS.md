@@ -7,6 +7,7 @@
 | gcc (MinGW-w64, MSYS2) | `C:\msys64\mingw64\bin\gcc.exe`. `build.bat` prepends it to `PATH`. In Git Bash: `export PATH=/c/msys64/mingw64/bin:$PATH` |
 | objdump | Same folder. Use it for functions Ghidra cannot decompile: `objdump -d -M intel --start-address=0x… --stop-address=0x… CS2D.exe` |
 | SDL3 | Headers and libs in the MSYS2 mingw64 prefix; `SDL3.dll` sits next to the executables |
+| zlib | MSYS2 `libz.a`, linked statically (`-l:libz.a`) so the executables do not need `zlib1.dll` |
 | Python 3.14 | `python` (Pillow installed). Run scripts that read untrusted data with `python -I` |
 | Git Bash + PowerShell 5.1 | Both are available. `drive_orig.ps1` needs PowerShell |
 
@@ -105,6 +106,7 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 |---|---|
 | `capture_original.sh <lua> <tag> "<steps>" [map] [secs]` | Dedicated (offline, optional Lua probe) + UDP proxy + **original** `CS2D.exe`, driven by `drive_orig.ps1` |
 | `capture_ours.sh <lua> <tag> "<capture steps>" [map] [secs]` | Same, but **our** `cs2d_client.exe --capture:…` with `CS2D_NET_LOG=1` |
+| `capture_transfer.sh <ded dir> <tag> "<steps>" [map] [secs] [password]` | A dedicated in **another folder** (e.g. the modded server in `C:\C4`) + proxy + our client run from a fresh copy of the game data in `out/game_<tag>/`, so downloads never land in the repo. Lists the new files. `CLIENT=orig` runs the original `CS2D.exe` there (steps are `drive_orig.ps1` steps); `KEEP=1` reuses the copy (second join). Restores the dedicated's `sys/server.cfg` |
 | `udp_proxy.py <listen> <server> <log> <secs>` | Logs every datagram as `t C>S/S>C len hex` |
 | `browser_proxy.py <log> <secs> [server port]` | Server browser: listens on 127.0.0.1:36980 (put it in a test `sys/core/svl.cache`) and 0.0.0.0:36963 (LAN broadcast), forwards to the dedicated. Back up and restore `svl.cache` |
 | `dumpops.py <proxy log> [skip ops csv]` | Strips the Tudp header and ACK triples, then prints one payload per line (e.g. skip pings `229,247,249,1`) |
@@ -112,6 +114,7 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 | `drive_orig.ps1 -Steps "a;b;c"` | Input for the original window: `focus`, `tap:K`, `down:K`, `up:K`, `wait:ms`, `mouse:x:y` (client coords), `click:n:ms`, `ldown`, `lup`, `vk:hex[:up]`, `shot:C:/path.png` |
 | `dumpgrep.sh <addr \| name> / -f <Class> / -l <regex>` | Looks up functions in the Ghidra dump `docs/dump` (see above) |
 | `peptr.py <exe> <hexaddr…>` | Finds 8-byte pointers to an address inside the PE (vtables) |
+| `bbstr.py <exe> <hexaddr…>` | Prints the BlitzMax string objects at those addresses: decodes the `bbs__` literals of the dump. Feed it the `lea` targets of a range: `objdump -d -M intel --start-address=… --stop-address=… CS2D.exe \| grep -o "# 0x140a[0-9a-f]*"` |
 | `map_grid.c` | Prints the collision or mode grid around a tile |
 | `lua/*.lua` | Dedicated Lua probes; output lines start with `BP` / `WP` / `PD` / `JL` |
 
