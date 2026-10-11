@@ -65,6 +65,8 @@ typedef struct {
     cs2d_texture_t            tex_lamp2;         /* gfx/sprites/lamp2.bmp */
     cs2d_texture_t            tex_flare1;        /* gfx/sprites/flare1.bmp (maskMode=3) */
     cs2d_texture_t            tex_flare3;        /* gfx/sprites/flare3.bmp (maskMode=3) */
+    cs2d_texture_t            tex_fragments;     /* gfx/fragments.bmp (128x128 -> 16 frames of 32x32, maskMode=3) */
+    cs2d_texture_t            tex_explosion;     /* gfx/explosion.png (320x320 -> 25 frames of 64x64, maskMode=1) */
     cs2d_texture_t            tex_bspot_a;       /* gfx/sprites/bspot_a.png */
     cs2d_texture_t            tex_bspot_b;       /* gfx/sprites/bspot_b.png */
     cs2d_texture_t            tex_npc[5];        /* gfx/npc/zombie, headcrab, snark, vortigaunt, soldier */
@@ -171,6 +173,11 @@ void cs2d_render_map_overhead(
     float cam_x, float cam_y,
     int screen_w, int screen_h
 );
+
+/* Breakable effects (tile quarters, fragments, explosions) of cs2d_fx */
+struct cs2d_fx_s;
+void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
+                    float cam_x, float cam_y);
 
 /* HUD number drawing (reconstructed from FUN_140113000 in CS2D.exe using gfx/hud_nums.bmp) */
 void cs2d_render_hud_number(

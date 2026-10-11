@@ -308,6 +308,13 @@ bool cs2d_weapon_fire(cs2d_player_t *player)
     return true;
 }
 
+float cs2d_weapon_shot_reach(const cs2d_weapon_def_t *wep)
+{
+    if (!wep) return 0.0f;
+    if (wep->slot == CS2D_SLOT_MELEE) return (float)wep->range + 6.0f;
+    return (float)wep->range + 15.0f;
+}
+
 bool cs2d_weapon_reload(cs2d_player_t *player)
 {
     if (!player || !player->alive) return false;

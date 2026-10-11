@@ -12,6 +12,7 @@
 #include "cs2d_ui.h"
 #include "cs2d_scene.h"
 #include "cs2d_entities.h"
+#include "cs2d_fx.h"
 
 #define CS2D_CONSOLE_MAX_LINES 1024 /* Ring buffer: the oldest line is dropped when full */
 #define CS2D_CONSOLE_LINE_LEN  192
@@ -47,6 +48,8 @@ struct cs2d_client {
     cs2d_game_t     game;
     char            game_map_name[64]; /* Map loaded by the game scene (e.g. "prison_funst3r") */
     cs2d_entity_world_t ents;          /* Name/trigger entity logic for game.map (simulated offline) */
+    cs2d_fx_t       fx;                /* Breakable debris / explosion effects */
+    int             fire_seed;         /* Shot counter sent with every fire packet (-1: none sent yet) */
     bool            snapshot_states_reset; /* Join snapshot: entity states cleared before applying section 4 */
     uint32_t        ents_round;        /* game.round_number the entity logic was last reset for */
     int             last_tile_x;       /* Local player tile, to detect Trigger_Move / Func_Teleport entry */

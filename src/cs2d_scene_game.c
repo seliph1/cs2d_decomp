@@ -38,6 +38,7 @@ static bool game_load_map(cs2d_client_t *client, const char *map_name)
      * online the join snapshot replaces these states with the server's */
     cs2d_ents_init(&client->ents, &client->game.map);
     cs2d_ents_round_start(&client->ents);
+    cs2d_fx_clear(&client->fx);
     client->ents_round = client->game.round_number;
     client->snapshot_states_reset = false;
     client->walk_active = false;
@@ -72,6 +73,7 @@ void cs2d_scene_game_restart_round(cs2d_client_t *client)
     cs2d_game_start_round(&client->game);
     client->ents_round = client->game.round_number;
     cs2d_ents_round_start(&client->ents);
+    cs2d_fx_clear(&client->fx);
     client->walk_active = false;
     client->last_tile_x = client->last_tile_y = -1;
     center_camera_on_local_player(client);
@@ -164,13 +166,66 @@ bool cs2d_scene_game_walk_to(cs2d_client_t *client, int tx, int ty)
     return found;
 }
 
-/* Effects of offline entity logic (online the server performs them) */
+/*
+ * A shot of the local player. Online it is the fire packet [7, seed u8] (recorded from CS2D.exe:
+ * melee always sends 0, firearms count 0, 2, 3, 4, ... per shot; the server stores the byte,
+ * reading 0 as 1, before running the shot) and the server reports what broke; the impact debris
+ * is drawn locally either way. Offline the shot damages the breakable it hits with the weapon damage.
+ */
+static void fire_shot(cs2d_client_t *client, const cs2d_player_t *pl)
+{
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(pl->current_weapon);
+    if (!wep) return;
+    bool melee = (wep->slot == CS2D_SLOT_MELEE);
+
+    if (client->connected && client->join_stage == 5) {
+        uint8_t seed = 0;
+        if (!melee) {
+            seed = (uint8_t)(client->fire_seed < 0 ? 0 : client->fire_seed);
+            client->fire_seed = (seed == 0) ? 2 : (seed == 255 ? 1 : seed + 1);
+        }
+        uint8_t fire_pkt[2] = { (uint8_t)CS2D_NET_FIRE, seed };
+        cs2d_client_send_udp(client, fire_pkt, sizeof(fire_pkt), false);
+    }
+
+    float hx, hy;
+    int hit = cs2d_ents_trace_shot(&client->ents, pl->pos.x, pl->pos.y, pl->angle, cs2d_weapon_shot_reach(wep), &hx, &hy);
+    if (hit < 0) return;
+    const cs2d_entity_t *e = &client->game.map.entities[hit];
+    cs2d_fx_breakable_hit(&client->fx, hx, hy, e->int_settings[2], pl->angle);
+    if (!client->connected) cs2d_ents_damage_breakable(&client->ents, hit, wep->damage);
+}
+
+/* Explosion of an Env_Breakable (offline): players and breakables in range take power * (1 - d / range) */
+static void breakable_explode(cs2d_client_t *client, const cs2d_entity_t *e)
+{
+    float cx = (float)e->x * CS2D_TILE_SIZE + 16.0f;
+    float cy = (float)e->y * CS2D_TILE_SIZE + 16.0f;
+    float range = (float)e->int_settings[4];
+    int power = e->int_settings[5];
+    if (range <= 0.0f || power <= 0) return;
+    for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
+        cs2d_player_t *p = &client->game.players[i];
+        if (!p->alive) continue;
+        float dx = p->pos.x - cx, dy = p->pos.y - cy;
+        float dist = sqrtf(dx * dx + dy * dy);
+        if (dist <= range) cs2d_player_apply_damage(p, (int)((float)power * (1.0f - dist / range)), 0);
+    }
+    cs2d_ents_explode(&client->ents, cx, cy, range, power);
+}
+
+/* Effects of entity logic: break debris both ways; the rest only offline (online the server performs them) */
 static void drain_entity_events(cs2d_client_t *client)
 {
     cs2d_ent_event_t ev;
     while (cs2d_ents_pop_event(&client->ents, &ev)) {
         const cs2d_entity_t *e = &client->game.map.entities[ev.entity];
-        if (ev.type == CS2D_ENT_EVENT_MESSAGE && e->str_settings[0][0]) {
+        if (ev.type == CS2D_ENT_EVENT_STATE && e->type == CS2D_ENT_ENV_BREAKABLE &&
+            client->game.map.entity_state[ev.entity] == 1) {
+            cs2d_fx_breakable_break(&client->fx, e);
+        } else if (ev.type == CS2D_ENT_EVENT_BREAK && !client->connected && e->int_settings[3]) {
+            breakable_explode(client, e);
+        } else if (ev.type == CS2D_ENT_EVENT_MESSAGE && e->str_settings[0][0]) {
             cs2d_client_console_print(client, (uint8_t)e->int_settings[2], (uint8_t)e->int_settings[3],
                                       (uint8_t)e->int_settings[4], "%s", e->str_settings[0]);
         } else if (ev.type == CS2D_ENT_EVENT_ACTION && !client->connected) {
@@ -341,15 +396,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
         }
 
         /* Firing */
-        if (client->mouse_fire) {
-            if (cs2d_weapon_fire(pl)) {
-                /* Send fire event over network */
-                if (client->connected && client->join_stage == 5) {
-                    uint8_t fire_pkt[1] = { (uint8_t)CS2D_NET_FIRE };
-                    cs2d_client_send_udp(client, fire_pkt, sizeof(fire_pkt), true);
-                }
-            }
-        }
+        if (client->mouse_fire && cs2d_weapon_fire(pl)) fire_shot(client, pl);
     }
 
     /* Offline the client runs the entity logic itself; online the server does and sends the results */
@@ -357,6 +404,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
         if (client->ents_round != client->game.round_number) {
             client->ents_round = client->game.round_number;
             cs2d_ents_round_start(&client->ents);
+            cs2d_fx_clear(&client->fx);
         }
         cs2d_ents_update(&client->ents, delta_time);
         int tx = (int)(pl->pos.x / CS2D_TILE_SIZE);
@@ -375,6 +423,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
         }
     }
     drain_entity_events(client);
+    cs2d_fx_update(&client->fx, delta_time);
 
     /* Camera stays centered on the player like CS2D.exe; a lagging camera would also turn the aim
      * every frame while walking (and send a rotation packet each time) with the mouse at rest */
@@ -431,6 +480,9 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
             cs2d_render_player(p, stex, wtex, client->cam_x, client->cam_y);
         }
     }
+
+    /* Breakable debris and explosions */
+    cs2d_render_fx(&client->fx, &client->game.map, &client->tex_tileset, client->cam_x, client->cam_y);
 
     /* 3. Map Pass 2 (Overhead entities: Env_Sprite, Env_Image over players, Env_Object trees/lamps, Shadow Map) */
     cs2d_render_map_overhead(&client->game.map, client->cam_x, client->cam_y, screen_w, screen_h);

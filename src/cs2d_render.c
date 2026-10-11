@@ -1,6 +1,7 @@
 #include "cs2d_render.h"
 #include "cs2d_weapons.h"
 #include "cs2d_map.h"
+#include "cs2d_fx.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
 #include <stdio.h>
@@ -792,6 +793,8 @@ bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank)
     cs2d_texture_load_ex(&bank->tex_lamp2,     "gfx/sprites/lamp2.bmp",    2);
     cs2d_texture_load_ex(&bank->tex_flare1,    "gfx/sprites/flare1.bmp",   3);
     cs2d_texture_load_ex(&bank->tex_flare3,    "gfx/sprites/flare3.bmp",   3);
+    cs2d_texture_load_grid(&bank->tex_fragments, "gfx/fragments.bmp",     3, 32, 32);
+    cs2d_texture_load_grid(&bank->tex_explosion, "gfx/explosion.png",     1, 64, 64);
     cs2d_texture_load_ex(&bank->tex_bspot_a,   "gfx/sprites/bspot_a.png",  2);
     cs2d_texture_load_ex(&bank->tex_bspot_b,   "gfx/sprites/bspot_b.png",  2);
 
@@ -851,6 +854,8 @@ void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank)
     cs2d_texture_free(&bank->tex_lamp2);
     cs2d_texture_free(&bank->tex_flare1);
     cs2d_texture_free(&bank->tex_flare3);
+    cs2d_texture_free(&bank->tex_fragments);
+    cs2d_texture_free(&bank->tex_explosion);
     cs2d_texture_free(&bank->tex_bspot_a);
     cs2d_texture_free(&bank->tex_bspot_b);
     for (int i = 0; i < 5; i++) {
@@ -1929,7 +1934,9 @@ void cs2d_render_map_ex(
                     float rx = (float)(ent->x * CS2D_TILE_SIZE) - cam_x;
                     float ry = (float)(ent->y * CS2D_TILE_SIZE) - cam_y;
                     float trans = ent->str_settings[0][0] ? (float)atof(ent->str_settings[0]) : 0.0f;
-                    float alpha = 1.0f - trans;
+                    /* prison_funst3r's glass (strs[0] = -0.4) shows the floor through it in CS2D.exe:
+                     * the sign is ignored */
+                    float alpha = 1.0f - fabsf(trans);
                     if (alpha < 0.1f) alpha = 1.0f;
                     if (alpha > 1.0f) alpha = 1.0f;
                     draw_tile_frame(tileset_tex, tile_src, cols, (uint8_t)tile_f, 0, rx, ry, alpha);
@@ -3124,3 +3131,69 @@ void cs2d_render_scissor_end(void)
 }
 
 
+
+/* Breakable effects (cs2d_fx): tile quarters, material fragments and explosions, all fading out */
+void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2d_texture_t *tileset_tex, float cam_x, float cam_y)
+{
+    if (!fx || fx->count == 0) return;
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    cam_x = roundf(cam_x);
+    cam_y = roundf(cam_y);
+    bool has_tileset = (map && tileset_tex && tileset_tex->id != 0 && tileset_tex->width >= 32);
+    int tile_src = (map && map->use_64x64_tiles == 1) ? 64 : 32;
+    int cols = has_tileset ? (tileset_tex->width / tile_src) : 1;
+    if (cols < 1) cols = 1;
+
+    for (int i = 0; i < fx->count; i++) {
+        const cs2d_fx_particle_t *p = &fx->p[i];
+        float t = p->max_life > 0.0f ? p->life / p->max_life : 0.0f; /* 1 -> 0 */
+        float sx = p->x - cam_x, sy = p->y - cam_y;
+
+        if (p->kind == CS2D_FX_TILE_PART && has_tileset) {
+            /* UV quarter of the tile frame (same layout as draw_tile_frame) */
+            int col = p->frame % cols, row = p->frame / cols;
+            float half = (float)tile_src * 0.5f;
+            float ox = (p->quarter & 1) ? half : 0.0f, oy = (p->quarter & 2) ? half : 0.0f;
+            float bx, by, gw, gh;
+            if (tileset_tex->pad > 0 && tileset_tex->cell_w == tile_src && tileset_tex->gpu_w > 0 && tileset_tex->gpu_h > 0) {
+                bx = (float)(col * (tile_src + tileset_tex->pad * 2) + tileset_tex->pad);
+                by = (float)(row * (tile_src + tileset_tex->pad * 2) + tileset_tex->pad);
+                gw = (float)tileset_tex->gpu_w;
+                gh = (float)tileset_tex->gpu_h;
+            } else {
+                bx = (float)(col * tile_src);
+                by = (float)(row * tile_src);
+                gw = (float)tileset_tex->width;
+                gh = (float)tileset_tex->height;
+            }
+            float u0 = (bx + ox) / gw, v0 = (by + oy) / gh;
+            float u1 = (bx + ox + half) / gw, v1 = (by + oy + half) / gh;
+            float hs = (p->size + (1.0f - t) * 4.0f) * 0.5f; /* Grows while it fades */
+
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, tileset_tex->id);
+            glColor4f(1.0f, 1.0f, 1.0f, t);
+            glPushMatrix();
+            glTranslatef(sx, sy, 0.0f);
+            glRotatef(p->rot, 0.0f, 0.0f, 1.0f);
+            glBegin(GL_QUADS);
+                glTexCoord2f(u0, v0); glVertex2f(-hs, -hs);
+                glTexCoord2f(u1, v0); glVertex2f( hs, -hs);
+                glTexCoord2f(u1, v1); glVertex2f( hs,  hs);
+                glTexCoord2f(u0, v1); glVertex2f(-hs,  hs);
+            glEnd();
+            glPopMatrix();
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glDisable(GL_TEXTURE_2D);
+        } else if (p->kind == CS2D_FX_FRAGMENT && bank) {
+            cs2d_render_sprite_frame(&bank->tex_fragments, 32, 32, p->frame, sx, sy, p->size, p->size,
+                                     p->rot, p->r, p->g, p->b, t, 0);
+        } else if (p->kind == CS2D_FX_EXPLOSION && bank) {
+            int frame = (int)((1.0f - t) * 25.0f);
+            if (frame > 24) frame = 24;
+            cs2d_render_sprite_frame(&bank->tex_explosion, 64, 64, frame, sx, sy, p->size, p->size,
+                                     p->rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
+        }
+    }
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+}

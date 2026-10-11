@@ -274,6 +274,7 @@ bool cs2d_client_connect(cs2d_client_t *client, const char *ip, int port)
     client->join_stage   = 0;
     client->connected    = false;
     client->net_sent_x   = client->net_sent_y = client->net_sent_rot = -1;
+    client->fire_seed    = -1;
 
     /* Initiate Opcode 252 Stage 0 Join Request ([252, 0, ""]) */
     cs2d_pkt_t p0;
@@ -405,6 +406,8 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                                 cs2d_scene_game_apply_entity_state(client, sx, sy, buffer[pos + 4]);
                             }
                         }
+                        /* Joining shows the map as it is: no break effects for what broke earlier */
+                        client->ents.event_count = 0;
                     } else if (snap_type == 200) {
                         client->join_stage = 5;
                         client->connected  = true;
@@ -541,6 +544,8 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     }
                 }
                 cs2d_ents_round_start(&client->ents);
+                cs2d_fx_clear(&client->fx);
+                client->fire_seed   = -1;
                 client->walk_active = false;
                 pos += 3 + count * 16;
             } else if (opcode == CS2D_NET_SETPOS) {

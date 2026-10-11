@@ -29,7 +29,8 @@ typedef enum {
     CS2D_ENT_EVENT_SOUND   = 2, /* Env_Sound triggered: play str_settings[0] */
     CS2D_ENT_EVENT_ITEM    = 3, /* Env_Item triggered: spawn item ints[0] */
     CS2D_ENT_EVENT_EXPLODE = 4, /* Env_Explode triggered: explosion range ints[0], power ints[1] */
-    CS2D_ENT_EVENT_ACTION  = 5  /* Func_GameAction triggered: action ints[0] */
+    CS2D_ENT_EVENT_ACTION  = 5, /* Func_GameAction triggered: action ints[0] */
+    CS2D_ENT_EVENT_BREAK   = 6  /* Env_Breakable destroyed: explodes when ints[3] (range ints[4] px, power ints[5]) */
 } cs2d_ent_event_type_t;
 
 typedef struct {
@@ -50,6 +51,9 @@ typedef struct {
     int               name_count;
 
     uint8_t           once_fired[CS2D_MAX_ENTITIES];
+    int               health[CS2D_MAX_ENTITIES];       /* Env_Breakable health left (ints[1] at round start) */
+    int               breakables[CS2D_MAX_ENTITIES];   /* Env_Breakable indices (bullet traces) */
+    int               breakable_count;
     float             use_cooldown[CS2D_MAX_ENTITIES]; /* Trigger_Use re-use delay remaining (s) */
 
     cs2d_ent_delay_t  delays[CS2D_ENTS_MAX_DELAYS];
@@ -93,8 +97,28 @@ int  cs2d_ents_try_use(cs2d_entity_world_t *w, float px, float py, float angle_d
 /* Player entered tile (tx, ty): fires Trigger_Move there. Returns a Func_Teleport index or -1. */
 int  cs2d_ents_enter_tile(cs2d_entity_world_t *w, int tx, int ty, cs2d_team_t team);
 
-/* Env_Breakable destroyed: switches it off and fires its trigger */
+/* Env_Breakable destroyed: switches it off, queues CS2D_ENT_EVENT_BREAK and fires its trigger */
 void cs2d_ents_break(cs2d_entity_world_t *w, int index);
+
+/* Damages an active Env_Breakable; it breaks when its health drops to 0. Returns true when it broke. */
+bool cs2d_ents_damage_breakable(cs2d_entity_world_t *w, int index, int damage);
+
+/* Active Env_Breakable on tile (tx, ty) or -1 */
+int  cs2d_ents_breakable_at(const cs2d_entity_world_t *w, int tx, int ty);
+
+/*
+ * Bullet path: walks from (x, y) along angle (0 = north, clockwise) for up to reach px and stops
+ * at the first active Env_Breakable (its tile may contain the start point) or wall tile (collision 1;
+ * obstacles let bullets through). Returns the breakable index or -1; end_x / end_y get the stop point.
+ */
+int  cs2d_ents_trace_shot(const cs2d_entity_world_t *w, float x, float y, float angle_deg, float reach,
+                          float *end_x, float *end_y);
+
+/*
+ * Explosion of power at (x, y): every active Env_Breakable whose tile center lies within range px
+ * takes power * (1 - distance / range) damage (chains through CS2D_ENT_EVENT_BREAK).
+ */
+void cs2d_ents_explode(cs2d_entity_world_t *w, float x, float y, float range, int power);
 
 /* Lookup helpers */
 int  cs2d_ents_find_by_name(const cs2d_entity_world_t *w, const char *name, int *out, int max_out);

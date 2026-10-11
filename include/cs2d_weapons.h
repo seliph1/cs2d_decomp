@@ -21,6 +21,14 @@ bool cs2d_weapon_can_fire(const cs2d_player_t *player);
 /* Perform weapon fire: decrements ammo, sets fire cooldown */
 bool cs2d_weapon_fire(cs2d_player_t *player);
 
+/*
+ * Reach of a shot in px, measured against the dedicated server on prison_funst3r: the knife
+ * (range 15) breaks a breakable whose edge is 20 px ahead but not 21 px; the AK-47 (range 300)
+ * reaches 310 px but not 320 px. The ray probes 1 px steps, so reaching a tile edge d px away
+ * takes a reach of d + 1.
+ */
+float cs2d_weapon_shot_reach(const cs2d_weapon_def_t *wep);
+
 /* Perform reload: returns false if already full or no reserve */
 bool cs2d_weapon_reload(cs2d_player_t *player);
 

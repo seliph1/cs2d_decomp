@@ -88,6 +88,7 @@ static void save_gl_screenshot_bmp(const char *filepath, int w, int h)
  *   !wheel <n>                    mouse wheel (positive = up)
  *   !mouse <x> <y> [down|up]      move the pointer, optionally pressing / releasing the left button
  *   !wait <frames>                wait before the next step
+ *   !shot <file.bmp>              save the current frame (steps run every 5 frames)
  */
 static void run_capture_step(const char *cmd)
 {
@@ -369,7 +370,11 @@ static int run_client_app(const char *cmdline)
                 capture_cmd += len + (capture_cmd[len] == ';' ? 1 : 0);
                 if (strncmp(cmd, "!wait ", 6) == 0) capture_resume = frame_count + atoi(cmd + 6); /* !wait <frames> */
                 capture_frame = ((capture_resume > frame_count) ? capture_resume : frame_count) + 30;
-                run_capture_step(cmd);
+                if (strncmp(cmd, "!shot ", 6) == 0) {
+                    save_gl_screenshot_bmp(cmd + 6, g_client.config.window_width, g_client.config.window_height);
+                } else {
+                    run_capture_step(cmd);
+                }
                 if (strncmp(cmd, "!wheel", 6) != 0) { /* Scrolling steps accumulate into one measurement */
                     frame_ms_sum = frame_ms_max = 0.0;
                     frame_ms_count = 0;

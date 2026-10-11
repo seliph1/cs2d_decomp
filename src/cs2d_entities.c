@@ -274,8 +274,86 @@ void cs2d_ents_break(cs2d_entity_world_t *w, int index)
 {
     if (!w || !w->map || index < 0 || (uint32_t)index >= w->map->entity_count) return;
     if (w->map->entities[index].type != CS2D_ENT_ENV_BREAKABLE || w->map->entity_state[index] != 0) return;
+    w->health[index] = 0;
     cs2d_ents_set_state(w, index, 1);
+    push_event(w, CS2D_ENT_EVENT_BREAK, index);
     cs2d_ents_trigger(w, w->map->entities[index].trigger);
+}
+
+bool cs2d_ents_damage_breakable(cs2d_entity_world_t *w, int index, int damage)
+{
+    if (!w || !w->map || index < 0 || (uint32_t)index >= w->map->entity_count) return false;
+    if (w->map->entities[index].type != CS2D_ENT_ENV_BREAKABLE || w->map->entity_state[index] != 0) return false;
+    if (damage <= 0) return false;
+    w->health[index] -= damage;
+    if (w->health[index] > 0) return false;
+    cs2d_ents_break(w, index);
+    return true;
+}
+
+int cs2d_ents_breakable_at(const cs2d_entity_world_t *w, int tx, int ty)
+{
+    if (!w || !w->map) return -1;
+    for (int k = 0; k < w->breakable_count; k++) {
+        int i = w->breakables[k];
+        const cs2d_entity_t *e = &w->map->entities[i];
+        if (e->x == tx && e->y == ty && w->map->entity_state[i] == 0) return i;
+    }
+    return -1;
+}
+
+int cs2d_ents_trace_shot(const cs2d_entity_world_t *w, float x, float y, float angle_deg, float reach,
+                         float *end_x, float *end_y)
+{
+    if (end_x) *end_x = x;
+    if (end_y) *end_y = y;
+    if (!w || !w->map || !w->map->collision) return -1;
+    const cs2d_map_t *map = w->map;
+    float rad = angle_deg * 0.017453292519943295f;
+    float dx = sinf(rad), dy = -cosf(rad);
+    int last_tx = -1, last_ty = -1;
+
+    /* 1 px steps; tiles are only examined when the ray enters a new one */
+    for (float d = 0.0f; d <= reach; d += 1.0f) {
+        float px = x + dx * d, py = y + dy * d;
+        if (end_x) *end_x = px;
+        if (end_y) *end_y = py;
+        if (px < 0.0f || py < 0.0f) return -1;
+        int tx = (int)(px * 0.03125f), ty = (int)(py * 0.03125f);
+        if ((uint32_t)tx >= map->width || (uint32_t)ty >= map->height) return -1;
+        if (tx == last_tx && ty == last_ty) continue;
+        last_tx = tx;
+        last_ty = ty;
+        int hit = cs2d_ents_breakable_at(w, tx, ty);
+        if (hit >= 0) return hit;
+        if (map->collision[(size_t)ty * map->width + (size_t)tx] == 1) return -1;
+    }
+    return -1;
+}
+
+void cs2d_ents_explode(cs2d_entity_world_t *w, float x, float y, float range, int power)
+{
+    if (!w || !w->map || range <= 0.0f || power <= 0) return;
+    for (int k = 0; k < w->breakable_count; k++) {
+        int i = w->breakables[k];
+        const cs2d_entity_t *e = &w->map->entities[i];
+        if (w->map->entity_state[i] != 0) continue;
+        float ex = (float)e->x * CS2D_TILE_SIZE + 16.0f - x;
+        float ey = (float)e->y * CS2D_TILE_SIZE + 16.0f - y;
+        float dist = sqrtf(ex * ex + ey * ey);
+        if (dist > range) continue;
+        cs2d_ents_damage_breakable(w, i, (int)((float)power * (1.0f - dist / range)));
+    }
+}
+
+/* Every breakable back to its configured health (ints[1]) */
+static void reset_breakable_health(cs2d_entity_world_t *w)
+{
+    for (int k = 0; k < w->breakable_count; k++) {
+        int i = w->breakables[k];
+        int hp = w->map->entities[i].int_settings[1];
+        w->health[i] = hp > 0 ? hp : 1;
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -304,7 +382,9 @@ void cs2d_ents_init(cs2d_entity_world_t *w, cs2d_map_t *map)
         if (e->type == CS2D_ENT_FUNC_DYNWALL || e->type == CS2D_ENT_ENV_BREAKABLE) {
             refresh_tile_collision(map, e->x, e->y);
         }
+        if (e->type == CS2D_ENT_ENV_BREAKABLE) w->breakables[w->breakable_count++] = (int)i;
     }
+    reset_breakable_health(w);
 }
 
 void cs2d_ents_round_start(cs2d_entity_world_t *w)
@@ -314,6 +394,7 @@ void cs2d_ents_round_start(cs2d_entity_world_t *w)
     for (uint32_t i = 0; i < map->entity_count; i++) cs2d_ents_set_state(w, (int)i, 0);
     memset(w->once_fired, 0, sizeof(w->once_fired));
     memset(w->use_cooldown, 0, sizeof(w->use_cooldown));
+    reset_breakable_health(w);
     w->delay_count = 0;
     w->event_count = 0;
 

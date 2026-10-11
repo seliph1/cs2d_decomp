@@ -1203,6 +1203,103 @@ static bool test_player_physics(void)
 /* =========================================================================
  * Main Runner
  * ========================================================================= */
+/* Shots against Env_Breakable on prison_funst3r, numbers recorded from cs2d_dedicated.exe (Lua "break" hook) */
+static bool test_breakables(void)
+{
+    printf("\n=== Testing Env_Breakable vs. cs2d_dedicated (prison_funst3r) ===\n");
+    static cs2d_map_t map;
+    static cs2d_entity_world_t world;
+    if (!cs2d_map_load_file(&map, "maps/prison_funst3r.map")) TEST_FAIL("Map", "maps/prison_funst3r.map not found");
+    cs2d_ents_init(&world, &map);
+    cs2d_ents_round_start(&world);
+    const cs2d_weapon_def_t *ak = cs2d_weapon_get(CS2D_WEP_AK47);
+    const cs2d_weapon_def_t *knife = cs2d_weapon_get(CS2D_WEP_KNIFE);
+    char msg[128];
+    float hx, hy;
+
+    /* AK-47 (22 damage) from (1744,1264) east: the 280 health breakable at (56,39) broke on shot 13 */
+    int target = cs2d_ents_breakable_at(&world, 56, 39);
+    if (target < 0) { cs2d_map_free(&map); TEST_FAIL("Breakable", "no Env_Breakable at (56,39)"); }
+    int broke_at = 0;
+    for (int shot = 1; shot <= 15 && !broke_at; shot++) {
+        int hit = cs2d_ents_trace_shot(&world, 1744.0f, 1264.0f, 90.0f, cs2d_weapon_shot_reach(ak), &hx, &hy);
+        if (hit != target) break;
+        if (cs2d_ents_damage_breakable(&world, hit, ak->damage)) broke_at = shot;
+    }
+    size_t tile = (size_t)39 * map.width + 56;
+    if (broke_at != 13 || map.entity_state[target] != 1 || map.collision[tile] != map.base_collision[tile]) {
+        snprintf(msg, sizeof(msg), "broke at shot %d (expected 13), state %u", broke_at, map.entity_state[target]);
+        cs2d_map_free(&map);
+        TEST_FAIL("AK-47 vs 280 health", msg);
+    }
+    cs2d_ent_event_t ev;
+    bool break_event = false;
+    while (cs2d_ents_pop_event(&world, &ev)) break_event |= (ev.type == CS2D_ENT_EVENT_BREAK && ev.entity == target);
+    if (!break_event) { cs2d_map_free(&map); TEST_FAIL("Break event", "no CS2D_ENT_EVENT_BREAK queued"); }
+    TEST_PASS("AK-47 breaks the 280 health breakable on the 13th shot and frees its tile");
+
+    /* Closed cell doors (Func_DynWall cell6 at (53,39)) stop bullets; open, the AK-47 reaches 310 px but not 320 */
+    cs2d_ents_round_start(&world);
+    if (cs2d_ents_trace_shot(&world, 1600.0f, 1264.0f, 90.0f, cs2d_weapon_shot_reach(ak), &hx, &hy) != -1) {
+        cs2d_map_free(&map);
+        TEST_FAIL("Door", "bullet went through the closed cell door");
+    }
+    cs2d_ents_trigger(&world, "cell6");
+    cs2d_ents_trigger(&world, "cell1");
+    if (cs2d_ents_trace_shot(&world, 1792.0f - 310.0f, 1264.0f, 90.0f, cs2d_weapon_shot_reach(ak), &hx, &hy) != target ||
+        cs2d_ents_trace_shot(&world, 1792.0f - 320.0f, 1264.0f, 90.0f, cs2d_weapon_shot_reach(ak), &hx, &hy) != -1) {
+        cs2d_map_free(&map);
+        TEST_FAIL("AK-47 reach", "expected a hit at 310 px and a miss at 320 px");
+    }
+    TEST_PASS("Closed doors stop bullets; with them open the AK-47 reaches 310 px but not 320 px");
+
+    /* Knife (45 damage): the 10 health stone at (71,50) breaks from 20 px, not from 21 px */
+    int stone = cs2d_ents_breakable_at(&world, 71, 50);
+    float sx = 71.0f * 32.0f + 16.0f;
+    if (stone < 0 ||
+        cs2d_ents_trace_shot(&world, sx, 1632.0f + 21.0f, 0.0f, cs2d_weapon_shot_reach(knife), &hx, &hy) != -1 ||
+        cs2d_ents_trace_shot(&world, sx, 1632.0f + 20.0f, 0.0f, cs2d_weapon_shot_reach(knife), &hx, &hy) != stone ||
+        !cs2d_ents_damage_breakable(&world, stone, knife->damage)) {
+        cs2d_map_free(&map);
+        TEST_FAIL("Knife reach", "expected the stone to break from 20 px and be out of reach from 21 px");
+    }
+    TEST_PASS("Knife reaches 20 px (not 21) and breaks a 10 health stone in one hit");
+
+    /* A bullet fired from inside a breakable hits that breakable; explosive (113,72) explodes on break */
+    int barrel = cs2d_ents_breakable_at(&world, 113, 72);
+    while (cs2d_ents_pop_event(&world, &ev)) {}
+    int shots = 0;
+    while (barrel >= 0 && map.entity_state[barrel] == 0 && shots < 20) {
+        int hit = cs2d_ents_trace_shot(&world, 3632.0f, 2320.0f, 0.0f, cs2d_weapon_shot_reach(ak), &hx, &hy);
+        if (hit != barrel) break;
+        cs2d_ents_damage_breakable(&world, hit, ak->damage);
+        shots++;
+    }
+    break_event = false;
+    while (cs2d_ents_pop_event(&world, &ev)) {
+        if (ev.type == CS2D_ENT_EVENT_BREAK && ev.entity == barrel) {
+            const cs2d_entity_t *e = &map.entities[ev.entity];
+            break_event = e->int_settings[3] == 1 && e->int_settings[4] == 1 && e->int_settings[5] == 50;
+        }
+    }
+    if (shots != 14 || !break_event) {
+        snprintf(msg, sizeof(msg), "%d shots (expected 14), explosive break event %d", shots, break_event);
+        cs2d_map_free(&map);
+        TEST_FAIL("Explosive", msg);
+    }
+    TEST_PASS("Shooting from inside the 300 health barrel breaks it on shot 14 with an explosion (range 1, power 50)");
+
+    /* Round restart restores every breakable with full health */
+    cs2d_ents_round_start(&world);
+    if (map.entity_state[target] != 0 || world.health[target] != 280 || map.collision[tile] == map.base_collision[tile]) {
+        cs2d_map_free(&map);
+        TEST_FAIL("Restart", "breakable not restored at round start");
+    }
+    TEST_PASS("Round restart restores broken breakables (state, health and collision)");
+    cs2d_map_free(&map);
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -1210,7 +1307,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 13;
+    int total = 14;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -1225,6 +1322,7 @@ int main(void)
     if (test_console()) passed++;
     if (test_entities_prison()) passed++;
     if (test_player_physics()) passed++;
+    if (test_breakables()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);
