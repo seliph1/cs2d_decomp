@@ -93,3 +93,6 @@ ehthumbs.db
 Desktop.ini
 .DS_Store
 
+
+# Agent capture output (tools/agent/*.sh)
+tools/agent/out/
