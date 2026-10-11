@@ -68,6 +68,7 @@ Our client must be able to play on the original dedicated server without the ser
 | `tools/agent/` | Capture and reverse-engineering scripts (see `docs/agents/TOOLS.md`) |
 | `tools/entity_truth/` | Generator of the entity fixture from the dedicated's Lua |
 | `docs/` | Scraped references (`cs2d_entities_db`, `cs2d_help_db`, `cs2d_gfx_descriptors.json`) |
+| `docs/dump/` | Ghidra decompilation of `CS2D.exe`, one file per BlitzMax class (git-ignored, client only) |
 | `docs/agents/` | **Shared agent memory**: `TOOLS.md`, `KNOWLEDGE.md`, `WORKLOG.md`, `OPEN_ISSUES.md` |
 | `cs2d_netcode_codes.txt` | Opcode names from the dedicated (`recv N name`) |
 | `cs2d_spec_map_format.txt` | `.map` format notes |
@@ -88,7 +89,10 @@ test_cs2d.exe        :: must print "Tests Passed: N / N"
 ## Workflow that works
 
 1. **Read the shared memory:** `docs/agents/KNOWLEDGE.md` and `OPEN_ISSUES.md`.
-2. **Find the original code with REA.** Search the strings first (BlitzMax strings are objects with
+2. **Find the original code in the Ghidra dump, then confirm with REA.** For the client, start with
+   `docs/dump/` (class-named, git-ignored): `tools/agent/dumpgrep.sh Tpl::move`, `-f <Class>`, or
+   `-l '<regex>'` (see `docs/agents/TOOLS.md`). The dump has no `cs2d_dedicated.exe`, and its pseudo-C is a
+   lead, not evidence of numbers. With REA, search the strings first (BlitzMax strings are objects with
    UTF-16 text at +0x10, and the string object starts 0x10 bytes before what `search_strings` returns).
    Then get the xrefs and decompile.
    - Functions too large to decompile, such as the 138 KB dispatcher `FUN_14009bb30` in the dedicated,

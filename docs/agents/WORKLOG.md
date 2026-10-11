@@ -8,6 +8,12 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-11 — Claude Code — Ghidra dump of CS2D.exe
+- **Changed:** documented `docs/dump/` (full Ghidra decompilation of the client, git-ignored) in `TOOLS.md`
+  and `AGENTS.md`; added `tools/agent/dumpgrep.sh` (function by address/name, methods of a class, body regex).
+- **Verified:** dump addresses match REA on `CS2D.exe` (`Tpl::move` `0x1401f7600`, `Tgui_sl::draw`,
+  `Tgui_sl::pingServers`, `NativeFlare::Draw`).
+
 ## 2026-10-11 — Claude Code — server browser (Find Servers)
 - **Changed:**
   - New `cs2d_serverlist.c/.h`:

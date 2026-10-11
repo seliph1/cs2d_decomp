@@ -69,6 +69,34 @@ Limitations:
 - Globals loaded by the resource registry are documented in `docs/cs2d_gfx_descriptors.json`
   (`globalVa` and file).
 
+## Ghidra dump of CS2D.exe (`docs/dump/`)
+
+A full Ghidra decompilation of the **client** `CS2D.exe` (830 `.c` files, ~34k functions, 59 MB), shared by
+a friend of the user. It is git-ignored: never commit it. There is no dump of `cs2d_dedicated.exe`.
+
+- **Same binary:** addresses match REA one to one (`1401f7600 Tpl::move`, `14016b5d0 Tgui_sl::draw`,
+  `1403012d0 Tgui_sl::pingServers`), so cite them as REA evidence.
+- **Layout:** `docs/dump/cs2d/<Class>.c` holds every method of a BlitzMax class (`Tpl.c`, `Tsv.c`, `MuzzleFlash.c`;
+  subfolders `gui/`, `lighting/`, `physics/`). Free functions without a name live in `cs2d/_global/<64 KB block>.c`.
+  `docs/dump/blitzmax/` is the BlitzMax runtime and Win32 structs.
+- **Format:** each function starts with `// <address>  <Class::method>` followed by the BlitzMax signature comment
+  (`/* BlitzMax method: Tpl.move (f,f,i,i) */`). Fields and globals are named (`self->feetrot`, `g_map_cellprop`).
+- **Limits:** about 27k functions are still `FUN_…`; there is no struct header, so field offsets come from REA or
+  the assembly. Ghidra pseudo-C can be wrong on floats, calling conventions ("Unknown calling convention") and
+  BlitzMax arrays filled at runtime (they show up as `bbEmptyArray`). Numbers still need a capture or a test.
+
+Use it first to find code, then confirm with REA (`procedure_assembly`) or objdump when the pseudo-C looks odd.
+`tools/agent/dumpgrep.sh` wraps the lookups:
+
+| Command | Output |
+|---|---|
+| `dumpgrep.sh 1401f7600` (or `0x…`, `FUN_…`, `Tpl::move`) | The whole function, with its file |
+| `dumpgrep.sh -f Tpl` | Every method of a class with its address |
+| `dumpgrep.sh -l '<regex>'` | `file: address name` of every function whose body matches (e.g. `'FUN_1402563a0\('` for callers; the function itself is listed too) |
+
+An address inside a function is not found: the dump only indexes function starts. Use REA
+`resolve_containing_procedure` for that.
+
 ## Capture scripts (`tools/agent/`)
 
 All output goes to `tools/agent/out/`, which is git-ignored.
@@ -82,6 +110,7 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 | `dumpops.py <proxy log> [skip ops csv]` | Strips the Tudp header and ACK triples, then prints one payload per line (e.g. skip pings `229,247,249,1`) |
 | `replay_proxy.py <proxy log> <ded log> <fixture>` | Rebuilds a client's entity state from server traffic and compares it with the Lua dump |
 | `drive_orig.ps1 -Steps "a;b;c"` | Input for the original window: `focus`, `tap:K`, `down:K`, `up:K`, `wait:ms`, `mouse:x:y` (client coords), `click:n:ms`, `ldown`, `lup`, `vk:hex[:up]`, `shot:C:/path.png` |
+| `dumpgrep.sh <addr \| name> / -f <Class> / -l <regex>` | Looks up functions in the Ghidra dump `docs/dump` (see above) |
 | `peptr.py <exe> <hexaddr…>` | Finds 8-byte pointers to an address inside the PE (vtables) |
 | `map_grid.c` | Prints the collision or mode grid around a tile |
 | `lua/*.lua` | Dedicated Lua probes; output lines start with `BP` / `WP` / `PD` / `JL` |
