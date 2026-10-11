@@ -1148,6 +1148,59 @@ static bool test_entities_prison(void)
 }
 
 /* =========================================================================
+ * Test 13: Player Movement Collision vs. the Original Client (prison_funst3r)
+ * Reference trajectory recorded from CS2D.exe through a UDP proxy (opcode 10 positions):
+ * from (1328,781) holding W it stops at y = 748; then W+D slides east along that wall at
+ * y = 748 (reaching x = 1481 after 1.5 s), and D alone keeps going to x = 1617.
+ * ========================================================================= */
+static bool test_player_physics(void)
+{
+    printf("\n=== Testing Player Movement Collision vs. CS2D.exe (prison_funst3r) ===\n");
+    static cs2d_map_t map;
+    static cs2d_entity_world_t world;
+    if (!cs2d_map_load_file(&map, "maps/prison_funst3r.map")) TEST_FAIL("Map", "maps/prison_funst3r.map not found");
+    cs2d_ents_init(&world, &map);
+    cs2d_ents_round_start(&world);
+
+    cs2d_player_t pl;
+    memset(&pl, 0, sizeof(pl));
+    pl.alive = true;
+    pl.pos.x = 1328.0f;
+    pl.pos.y = 781.0f;
+
+    const float step = 2.4f; /* px per 60 Hz frame */
+    for (int i = 0; i < 60; i++) cs2d_player_move(&pl, &map, 0.0f, -step);
+    if ((int)pl.pos.y != 748 || (int)pl.pos.x != 1328) { /* Positions go over the wire truncated to u16 */
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Expected stop at (1328,748), got (%.2f,%.2f)", pl.pos.x, pl.pos.y);
+        cs2d_map_free(&map);
+        TEST_FAIL("Wall stop", msg);
+    }
+    TEST_PASS("Holding W stops flush against the wall at y = 748 (24x24 box, like CS2D.exe)");
+
+    const float diag = step * 0.70710678f;
+    for (int i = 0; i < 90; i++) cs2d_player_move(&pl, &map, diag, -diag);
+    if ((int)pl.pos.y != 748 || pl.pos.x < 1328.0f + diag * 89.0f) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Expected slide along y = 748, got (%.2f,%.2f)", pl.pos.x, pl.pos.y);
+        cs2d_map_free(&map);
+        TEST_FAIL("Wall slide", msg);
+    }
+    TEST_PASS("W+D against the wall slides along it at the parallel speed (X then Y resolution)");
+
+    for (int i = 0; i < 60; i++) cs2d_player_move(&pl, &map, step, 0.0f);
+    if ((int)pl.pos.y != 748 || pl.pos.x < 1617.0f) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Expected free run east past x = 1617, got (%.2f,%.2f)", pl.pos.x, pl.pos.y);
+        cs2d_map_free(&map);
+        TEST_FAIL("Free run", msg);
+    }
+    TEST_PASS("D keeps running east along the wall (original reached x = 1617)");
+    cs2d_map_free(&map);
+    return true;
+}
+
+/* =========================================================================
  * Main Runner
  * ========================================================================= */
 int main(void)
@@ -1157,7 +1210,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 12;
+    int total = 13;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -1171,6 +1224,7 @@ int main(void)
     if (test_ui_dropdown_numberbox()) passed++;
     if (test_console()) passed++;
     if (test_entities_prison()) passed++;
+    if (test_player_physics()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

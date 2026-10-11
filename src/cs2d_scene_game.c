@@ -67,6 +67,31 @@ bool cs2d_scene_game_change_map(cs2d_client_t *client, const char *map_name)
     return true;
 }
 
+void cs2d_scene_game_restart_round(cs2d_client_t *client)
+{
+    cs2d_game_start_round(&client->game);
+    client->ents_round = client->game.round_number;
+    cs2d_ents_round_start(&client->ents);
+    client->walk_active = false;
+    client->last_tile_x = client->last_tile_y = -1;
+    center_camera_on_local_player(client);
+    cs2d_client_console_print(client, 255, 220, 0, "Round Restart");
+}
+
+/* Round rules shared with the dedicated server: mp_freezetime (s) and mp_roundtime (min) from sys/server.cfg */
+static void load_server_rules(cs2d_game_t *game)
+{
+    FILE *f = fopen("sys/server.cfg", "r");
+    if (!f) return;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        float v;
+        if (sscanf(line, "mp_freezetime %f", &v) == 1 && v >= 0.0f) game->cfg_freezetime = v;
+        if (sscanf(line, "mp_roundtime %f", &v) == 1 && v > 0.0f) game->cfg_roundtime = v * 60.0f;
+    }
+    fclose(f);
+}
+
 void cs2d_scene_game_apply_entity_state(cs2d_client_t *client, int tx, int ty, uint8_t state)
 {
     const cs2d_map_t *map = &client->game.map;
@@ -178,6 +203,7 @@ static void drain_entity_events(cs2d_client_t *client)
 static void game_enter(cs2d_client_t *client)
 {
     cs2d_game_init(&client->game, CS2D_MODE_DE);
+    load_server_rules(&client->game);
 
     /* Local player (CT, Player 1) and practice bots exist before the map spawns them */
     client->local_player_id = 1;
@@ -262,20 +288,27 @@ static void game_update(cs2d_client_t *client, float delta_time)
         float dx = world_mx - pl->pos.x;
         float dy = world_my - pl->pos.y;
         pl->angle = atan2f(dx, -dy) * (180.0f / 3.14159265f);
+        client->aim_distance = sqrtf(dx * dx + dy * dy);
 
-        /* Movement */
-        float speed = client->key_walk ? 100.0f : 190.0f; /* pixels/second */
+        /* Movement (FUN_1402563a0): (2 + weapon bonus) * 1.2 px per 60 Hz frame = 144 px/s; walking halves it.
+         * Players are frozen during freeze time in round based game modes. */
+        float speed = 2.4f * 60.0f;
+        if (client->key_walk) speed *= 0.5f;
         const cs2d_weapon_def_t *cur_wep = cs2d_weapon_get(pl->current_weapon);
         if (cur_wep) speed *= cur_wep->speed_modifier;
+        bool frozen = (client->game.round_state == CS2D_ROUND_FREEZETIME &&
+                       client->game.gamemode != CS2D_MODE_DM && client->game.gamemode != CS2D_MODE_ZOMBIE);
 
         float move_x = 0.0f, move_y = 0.0f;
-        if (client->key_forward) move_y -= 1.0f;
-        if (client->key_back)    move_y += 1.0f;
-        if (client->key_left)    move_x -= 1.0f;
-        if (client->key_right)   move_x += 1.0f;
+        if (!frozen) {
+            if (client->key_forward) move_y -= 1.0f;
+            if (client->key_back)    move_y += 1.0f;
+            if (client->key_left)    move_x -= 1.0f;
+            if (client->key_right)   move_x += 1.0f;
+        }
 
         /* "walkto" test command: steer through the path waypoints like a held movement key */
-        while (client->walk_active) {
+        while (client->walk_active && !frozen) {
             cs2d_vec2_t tgt = client->walk_path[client->walk_pos];
             float wx = tgt.x - pl->pos.x;
             float wy = tgt.y - pl->pos.y;
@@ -343,23 +376,36 @@ static void game_update(cs2d_client_t *client, float delta_time)
     }
     drain_entity_events(client);
 
-    /* Camera tracks player smoothly */
-    float target_cam_x = pl->pos.x - (float)client->config.window_width * 0.5f;
-    float target_cam_y = pl->pos.y - (float)client->config.window_height * 0.5f;
-    client->cam_x += (target_cam_x - client->cam_x) * 0.15f;
-    client->cam_y += (target_cam_y - client->cam_y) * 0.15f;
+    /* Camera stays centered on the player like CS2D.exe; a lagging camera would also turn the aim
+     * every frame while walking (and send a rotation packet each time) with the mouse at rest */
+    center_camera_on_local_player(client);
 
-    /* Network synchronization (every 33ms ~ 30Hz) */
-    client->net_sync_timer += delta_time;
-    if (client->net_sync_timer >= 0.033f) {
-        client->net_sync_timer = 0.0f;
-        if (client->connected && client->join_stage == 5 && pl->alive) {
-            uint8_t sync_buf[16];
-            /* Client -> Server posrot has player_id = 0 (7 bytes payload: [13, x, y, rot]) */
-            size_t sync_len = cs2d_net_build_posrot_packet(0, pl->pos.x, pl->pos.y, pl->angle, sync_buf, sizeof(sync_buf));
-            if (sync_len > 0) {
-                cs2d_client_send_udp(client, sync_buf, sync_len, false);
-            }
+    /*
+     * Network: like CS2D.exe, every update that changes the position sends it (unreliable)
+     *   [10 run / 11 walk, x u16, y u16]
+     * and every rotation change sends
+     *   [70, angle u16 (deg * 65536 / 360), aim distance / 2 u8]
+     * (recorded from the original client through a UDP proxy).
+     */
+    if (client->connected && client->join_stage == 5 && pl->alive) {
+        int px = (int)pl->pos.x, py = (int)pl->pos.y;
+        if (px != client->net_sent_x || py != client->net_sent_y) {
+            uint8_t pkt[5] = { (uint8_t)(client->key_walk ? CS2D_NET_POS_WALK : CS2D_NET_POS_RUN),
+                               (uint8_t)(px & 0xFF), (uint8_t)((px >> 8) & 0xFF),
+                               (uint8_t)(py & 0xFF), (uint8_t)((py >> 8) & 0xFF) };
+            cs2d_client_send_udp(client, pkt, sizeof(pkt), false);
+            client->net_sent_x = px;
+            client->net_sent_y = py;
+        }
+        float a = fmodf(pl->angle, 360.0f);
+        if (a < 0.0f) a += 360.0f;
+        int rot = (int)(a * 65536.0f / 360.0f) & 0xFFFF;
+        if (rot != client->net_sent_rot) {
+            int dist = (int)(client->aim_distance * 0.5f);
+            if (dist > 255) dist = 255;
+            uint8_t pkt[4] = { (uint8_t)CS2D_NET_ROT_CLIENT, (uint8_t)(rot & 0xFF), (uint8_t)(rot >> 8), (uint8_t)dist };
+            cs2d_client_send_udp(client, pkt, sizeof(pkt), false);
+            client->net_sent_rot = rot;
         }
     }
 

@@ -1,4 +1,5 @@
 #include "cs2d_game.h"
+#include <stdlib.h>
 #include "cs2d_weapons.h"
 #include "cs2d_player.h"
 #include "cs2d_map.h"
@@ -88,29 +89,31 @@ void cs2d_game_start_round(cs2d_game_t *game)
     game->c4_time = 0.0f;
     game->bomb_planter = 0;
 
-    size_t spawn_t_idx = 0;
-    size_t spawn_ct_idx = 0;
+    /* Respawn all players on a random free Info_T / Info_CT of their team (the dedicated server
+     * picks spawn points at random as well) */
+    bool used_t[64] = { false }, used_ct[64] = { false };
+    size_t count_t  = cs2d_map_count_spawns(&game->map, CS2D_TEAM_T);
+    size_t count_ct = cs2d_map_count_spawns(&game->map, CS2D_TEAM_CT);
+    if (count_t > 64) count_t = 64;
+    if (count_ct > 64) count_ct = 64;
 
-    /* Respawn all players on T and CT */
     uint8_t first_t_id = 0;
     for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
         cs2d_player_t *pl = &game->players[i];
-        if (pl->team == CS2D_TEAM_T) {
-            cs2d_vec2_t spawn_pos;
-            if (!cs2d_map_get_spawn(&game->map, CS2D_TEAM_T, spawn_t_idx++, &spawn_pos)) {
-                spawn_pos.x = 100.0f;
-                spawn_pos.y = 100.0f;
-            }
-            cs2d_player_spawn(pl, CS2D_TEAM_T, spawn_pos);
-            if (first_t_id == 0) first_t_id = (uint8_t)i;
-        } else if (pl->team == CS2D_TEAM_CT) {
-            cs2d_vec2_t spawn_pos;
-            if (!cs2d_map_get_spawn(&game->map, CS2D_TEAM_CT, spawn_ct_idx++, &spawn_pos)) {
-                spawn_pos.x = 500.0f;
-                spawn_pos.y = 500.0f;
-            }
-            cs2d_player_spawn(pl, CS2D_TEAM_CT, spawn_pos);
+        if (pl->team != CS2D_TEAM_T && pl->team != CS2D_TEAM_CT) continue;
+        bool   is_t  = (pl->team == CS2D_TEAM_T);
+        bool  *used  = is_t ? used_t : used_ct;
+        size_t count = is_t ? count_t : count_ct;
+
+        cs2d_vec2_t spawn_pos = { is_t ? 100.0f : 500.0f, is_t ? 100.0f : 500.0f };
+        if (count > 0) {
+            size_t pick = (size_t)rand() % count;
+            for (size_t k = 0; k < count && used[pick]; k++) pick = (pick + 1) % count; /* next free one */
+            used[pick] = true;
+            cs2d_map_get_spawn(&game->map, pl->team, pick, &spawn_pos);
         }
+        cs2d_player_spawn(pl, pl->team, spawn_pos);
+        if (is_t && first_t_id == 0) first_t_id = (uint8_t)i;
     }
 
     /* In Bomb Defuse mode, give C4 to the first Terrorist */

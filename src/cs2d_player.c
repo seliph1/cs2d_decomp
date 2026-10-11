@@ -174,25 +174,84 @@ uint8_t cs2d_player_drop_weapon(cs2d_player_t *player)
     return dropped;
 }
 
+/* Tile at pixel (px, py) blocks players: wall / obstacle collision (tile modes 1..9, DynWall, Breakable) */
+static bool move_blocked(const cs2d_map_t *map, float px, float py)
+{
+    int tx = (int)(px * 0.03125f);
+    int ty = (int)(py * 0.03125f);
+    if (px < 0.0f || py < 0.0f || (uint32_t)tx >= map->width || (uint32_t)ty >= map->height) return true;
+    uint8_t c = map->collision[(size_t)ty * map->width + (size_t)tx];
+    return c == 1 || c == 2;
+}
+
+/*
+ * Reconstructed from Tpl method +0x198 (FUN_1401f7600, collision branch): the player is a 24x24 box
+ * (half-size 12). X is resolved first, then Y using the resolved X. Each axis advances 1 px at a time
+ * while both leading corners of the next pixel (offset 13) are free; the final sub-pixel step lands
+ * exactly on the target. Pushing diagonally into a wall therefore keeps the free axis moving: the
+ * player slides along the wall at the speed of the parallel component.
+ */
 bool cs2d_player_move(cs2d_player_t *player, const cs2d_map_t *map, float dx, float dy)
 {
     if (!player || !player->alive) return false;
 
-    float new_x = player->pos.x + dx;
-    float new_y = player->pos.y + dy;
+    float x  = player->pos.x;
+    float y  = player->pos.y;
+    float tx = x + dx;
+    float ty = y + dy;
 
-    /* If map collision check is provided */
-    if (map && map->tiles) {
-        int radius = 10; /* player collision radius in pixels */
-        if (cs2d_map_is_solid(map, new_x - radius, new_y) ||
-            cs2d_map_is_solid(map, new_x + radius, new_y) ||
-            cs2d_map_is_solid(map, new_x, new_y - radius) ||
-            cs2d_map_is_solid(map, new_x, new_y + radius)) {
-            return false;
-        }
+    if (!map || !map->collision) {
+        player->pos.x = tx;
+        player->pos.y = ty;
+        return dx != 0.0f || dy != 0.0f;
     }
 
-    player->pos.x = new_x;
-    player->pos.y = new_y;
-    return true;
+    if (tx > x) {
+        float cur = x;
+        for (;;) {
+            float next = cur + 1.0f;
+            if (cur < 11.0f || y < 12.0f ||
+                move_blocked(map, cur + 13.0f, y - 12.0f) || move_blocked(map, cur + 13.0f, y + 12.0f)) break;
+            if (tx < next) { cur = tx; break; }
+            cur = next;
+        }
+        x = cur;
+    } else if (tx < x) {
+        float cur = x;
+        for (;;) {
+            float next = cur - 1.0f;
+            if (cur < 13.0f || y < 12.0f ||
+                move_blocked(map, cur - 13.0f, y - 12.0f) || move_blocked(map, cur - 13.0f, y + 12.0f)) break;
+            if (next < tx) { cur = tx; break; }
+            cur = next;
+        }
+        x = cur;
+    }
+
+    if (ty > y) {
+        float cur = y;
+        for (;;) {
+            float next = cur + 1.0f;
+            if (cur < 11.0f || x < 12.0f ||
+                move_blocked(map, x + 12.0f, cur + 13.0f) || move_blocked(map, x - 12.0f, cur + 13.0f)) break;
+            if (ty < next) { cur = ty; break; }
+            cur = next;
+        }
+        y = cur;
+    } else if (ty < y) {
+        float cur = y;
+        for (;;) {
+            float next = cur - 1.0f;
+            if (cur < 13.0f || x < 12.0f ||
+                move_blocked(map, x + 12.0f, cur - 13.0f) || move_blocked(map, x - 12.0f, cur - 13.0f)) break;
+            if (next < ty) { cur = ty; break; }
+            cur = next;
+        }
+        y = cur;
+    }
+
+    bool moved = (x != player->pos.x || y != player->pos.y);
+    player->pos.x = x;
+    player->pos.y = y;
+    return moved;
 }

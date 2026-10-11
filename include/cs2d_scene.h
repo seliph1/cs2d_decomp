@@ -47,6 +47,10 @@ const cs2d_scene_t *cs2d_scene_get(cs2d_scene_id_t id);
 /* Game scene helpers used by the console ("map" while already in game) */
 bool cs2d_scene_game_change_map(cs2d_client_t *client, const char *map_name);
 
+/* Offline "restart": new round now - players respawn on Info_T / Info_CT, entity states reset and
+ * Trigger_Start fires, freeze time (mp_freezetime) starts in round based game modes */
+void cs2d_scene_game_restart_round(cs2d_client_t *client);
+
 /* Starts running along a BFS tile path to (tx, ty); false when unreachable */
 bool cs2d_scene_game_walk_to(cs2d_client_t *client, int tx, int ty);
 

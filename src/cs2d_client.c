@@ -11,6 +11,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+#include <time.h>
 
 /* Scrolling stops when the oldest line reaches the top of the log box */
 static void console_clamp_scroll(cs2d_client_t *client)
@@ -74,6 +75,7 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
     memset(client, 0, sizeof(*client));
 
     cs2d_ui_init(&client->ui);
+    srand((unsigned)time(NULL)); /* Random spawn points, like the dedicated server */
     client->show_fps    = true;
     client->fps_current = 63;
 
@@ -237,6 +239,7 @@ static void cs2d_client_send_ack(cs2d_client_t *client, uint16_t srv_seq)
     memcpy(dgram, &hdr, 2);
     dgram[2] = 0x01;
     memcpy(dgram + 3, &srv_seq, 2);
+    net_log_datagram("ack", dgram, 5);
     int sent = sendto(client->net_sock, (const char *)dgram, 5, 0,
                       (struct sockaddr *)&client->server_addr, sizeof(client->server_addr));
     if (sent > 0) {
@@ -270,6 +273,7 @@ bool cs2d_client_connect(cs2d_client_t *client, const char *ip, int port)
     client->net_send_seq = 2;
     client->join_stage   = 0;
     client->connected    = false;
+    client->net_sent_x   = client->net_sent_y = client->net_sent_rot = -1;
 
     /* Initiate Opcode 252 Stage 0 Join Request ([252, 0, ""]) */
     cs2d_pkt_t p0;
@@ -539,6 +543,28 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 cs2d_ents_round_start(&client->ents);
                 client->walk_active = false;
                 pos += 3 + count * 16;
+            } else if (opcode == CS2D_NET_SETPOS) {
+                /* Server -> Client: [15, player u8, x u16, y u16] (6 bytes): the server moves a player,
+                 * e.g. Func_Teleport. The local player takes it too, otherwise it would keep sending
+                 * its old position (rubberbanding). Recorded from CS2D.exe sessions. */
+                if (pos + 6 > recvd) break;
+                uint8_t pid = buffer[pos + 1];
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
+                    cs2d_player_t *p = &client->game.players[pid];
+                    p->pos.x = (float)(buffer[pos + 2] | (buffer[pos + 3] << 8));
+                    p->pos.y = (float)(buffer[pos + 4] | (buffer[pos + 5] << 8));
+                    if (pid == client->local_player_id) {
+                        client->walk_active = false;
+                        client->net_sent_x  = (int)p->pos.x; /* The server already knows this position */
+                        client->net_sent_y  = (int)p->pos.y;
+                    }
+                }
+                pos += 6;
+            } else if (opcode == CS2D_NET_COLLECT) {
+                /* Server -> Client: [25, player u8, item id u16, 6 bytes] (10 bytes, recorded from CS2D.exe
+                 * sessions; usually followed by the Env_Item entityevent). Skipped to keep parsing. */
+                if (pos + 10 > recvd) break;
+                pos += 10;
             } else if (opcode == CS2D_NET_SPAWNITEM) {
                 /* Server -> Client: [33, item type u8, item id u16, x u16, y u16, 4 bytes] (12 bytes).
                  * Ground items are not modelled yet; the record is skipped to keep parsing the datagram. */
@@ -651,6 +677,14 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         client->console_line_head  = 0;
         client->console_line_count = 0;
         client->console_scroll     = 0;
+    } else if (_stricmp(cmd, "restart") == 0 || _stricmp(cmd, "sv_restart") == 0) {
+        if (client->scene != CS2D_SCENE_GAME) {
+            cs2d_client_console_print(client, 255, 45, 45, "'restart' is only available in game");
+        } else if (client->connected) {
+            cs2d_client_console_print(client, 255, 45, 45, "restart: rounds are controlled by the server");
+        } else {
+            cs2d_scene_game_restart_round(client);
+        }
     } else if (_stricmp(cmd, "entdump") == 0) {
         /* Positions of every entity in state 1, in map order (compared against the server in tests) */
         if (!map) {

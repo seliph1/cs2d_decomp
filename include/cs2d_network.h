@@ -64,6 +64,7 @@ typedef enum {
     CS2D_NET_CLIENTSPEC            = 67,
     CS2D_NET_FIREDIRECTION         = 68,
     CS2D_NET_WEAPON_DATA           = 69,
+    CS2D_NET_ROT_CLIENT            = 70, /* Client -> Server rotation: [70, angle u16, aim distance / 2 u8] */
     CS2D_NET_PHYS_PLAYERS_UPDATE   = 80,
     CS2D_NET_PHYS_ITEMS_UPDATE     = 81,
     CS2D_NET_PHYS_PROJ_UPDATE      = 82,

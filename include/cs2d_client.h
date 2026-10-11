@@ -53,6 +53,10 @@ struct cs2d_client {
     int             last_tile_y;
 
     /* "walkto" test command: follow a BFS tile path at running speed */
+    float           aim_distance;      /* Pixels from the local player to the cursor (sent with rotations) */
+    int             net_sent_x;        /* Last position / rotation sent to the server (-1 = none yet) */
+    int             net_sent_y;
+    int             net_sent_rot;
     bool            walk_active;
     cs2d_vec2_t     walk_path[1024];
     int             walk_len;
