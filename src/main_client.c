@@ -288,6 +288,12 @@ static int run_client_app(const char *cmdline)
         } else if (auto_screenshot && frame_count == 70) {
             save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_options.bmp",
                                    g_client.config.window_width, g_client.config.window_height);
+            g_client.options_open = false;
+            cs2d_client_console_exec(&g_client, "map prison_funst3r");
+            cs2d_client_console_exec(&g_client, "tp 44 25");
+        } else if (auto_screenshot && frame_count == 75) {
+            save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_prison.bmp",
+                                   g_client.config.window_width, g_client.config.window_height);
             cs2d_render_end_frame(window);
             break;
         }

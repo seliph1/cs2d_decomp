@@ -65,6 +65,8 @@ sys/favorites.lst
 screens/
 *.log
 *.dmp
+mapexport.png
+serverstats.html
 
 # =============================================================================
 # IDEs, Editores e Arquivos Temporários do Sistema Operacional

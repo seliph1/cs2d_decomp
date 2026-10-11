@@ -444,7 +444,7 @@ bool cs2d_render_init(SDL_Window *window, int width, int height)
     glEnable(GL_MULTISAMPLE);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glClearColor(0.08f, 0.08f, 0.10f, 1.0f);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
     /* Automatically initialize the global CS2D graphics bank now that GL context is active */
     g_gfx_bank.initialized = false;
@@ -599,13 +599,13 @@ bool cs2d_texture_load_tileset(cs2d_texture_t *tex, const char *tileset_name)
 
     char path[256];
     snprintf(path, sizeof(path), "gfx/tiles/%s", tileset_name);
-    if (cs2d_texture_load_grid(tex, path, 0, 32, 32)) return true;
+    if (cs2d_texture_load_grid(tex, path, 2, 32, 32)) return true;
 
     snprintf(path, sizeof(path), "gfx/tiles/%s.bmp", tileset_name);
-    if (cs2d_texture_load_grid(tex, path, 0, 32, 32)) return true;
+    if (cs2d_texture_load_grid(tex, path, 2, 32, 32)) return true;
 
     snprintf(path, sizeof(path), "gfx/tiles/%s.png", tileset_name);
-    if (cs2d_texture_load_grid(tex, path, 0, 32, 32)) return true;
+    if (cs2d_texture_load_grid(tex, path, 2, 32, 32)) return true;
 
     return false;
 }
@@ -1237,12 +1237,11 @@ static void cast_shadow_rect(
 )
 {
     const float inv_scale = 2.0f; /* 32.0f / 16.0f = 2 world pixels per texel */
-    const float penumbra  = 2.2f; /* Soft penumbra width in world pixels (gfx_penumbra.png / gfx_blur.png) */
 
-    float min_x = (dx >= 0.0f ? x0 : x0 + dx) - penumbra;
-    float max_x = (dx >= 0.0f ? x1 + dx : x1) + penumbra;
-    float min_y = (dy >= 0.0f ? y0 : y0 + dy) - penumbra;
-    float max_y = (dy >= 0.0f ? y1 + dy : y1) + penumbra;
+    float min_x = (dx >= 0.0f ? x0 : x0 + dx);
+    float max_x = (dx >= 0.0f ? x1 + dx : x1);
+    float min_y = (dy >= 0.0f ? y0 : y0 + dy);
+    float max_y = (dy >= 0.0f ? y1 + dy : y1);
 
     int sx0 = (int)(min_x / inv_scale);
     int sy0 = (int)(min_y / inv_scale);
@@ -1291,35 +1290,13 @@ static void cast_shadow_rect(
             if (ty_max < t_hi) t_hi = ty_max;
 
             if (t_lo <= t_hi) {
-                /* Strictly inside swept shadow volume */
+                /*
+                 * Reconstructed from 0x14025e420 (cast_shadow_volume):
+                 * Extruded 6-vertex shadow polygons have flat uniform alpha (target_alpha).
+                 * Soft penumbra at the outer boundary is provided by GL_LINEAR filtering at 2px/texel.
+                 */
                 if (target_alpha > alpha_buf[sy * tex_w + sx]) {
                     alpha_buf[sy * tex_w + sx] = target_alpha;
-                }
-            } else {
-                /* Evaluate distance to closest swept cross-section R(t) for t in [0, 1] */
-                float t_cand = 0.5f * (t_lo + t_hi);
-                if (t_cand < 0.0f) t_cand = 0.0f;
-                if (t_cand > 1.0f) t_cand = 1.0f;
-
-                float rx0 = x0 + t_cand * dx;
-                float rx1 = x1 + t_cand * dx;
-                float ry0 = y0 + t_cand * dy;
-                float ry1 = y1 + t_cand * dy;
-
-                float ex = 0.0f;
-                if (px < rx0) ex = rx0 - px;
-                else if (px > rx1) ex = px - rx1;
-
-                float ey = 0.0f;
-                if (py < ry0) ey = ry0 - py;
-                else if (py > ry1) ey = py - ry1;
-
-                float dist = sqrtf(ex * ex + ey * ey);
-                if (dist < penumbra) {
-                    uint8_t a = (uint8_t)((float)target_alpha * (1.0f - dist / penumbra));
-                    if (a > alpha_buf[sy * tex_w + sx]) {
-                        alpha_buf[sy * tex_w + sx] = a;
-                    }
                 }
             }
         }
@@ -1350,15 +1327,17 @@ static void clear_shadow_rect(
 }
 
 /*
- * Adds omnidirectional contact ambient occlusion halo around [x0..x1, y0..y1]
- * matching lighting/gfx_oclussionmap.png (96x96 -> ~7px soft gradient around walls/crates).
+ * Reconstructed from 0x14010bb08..0x14010e37f (lighting/gfx_oclussionmap.png):
+ * Adds a soft (~10px) ambient occlusion halo on floor tiles around Obstacle and Wall tiles
+ * within shadowed regions (alpha_buf > 0), without darkening sunlit outer wall edges or crate tops.
  */
-static void add_occlusion_halo(
+static void add_shadow_masked_occlusion(
+    const cs2d_map_t *map,
     uint8_t *alpha_buf,
     int tex_w, int tex_h,
     float x0, float y0, float x1, float y1,
     float halo_px,
-    uint8_t max_add_alpha,
+    uint8_t max_add,
     uint8_t cap_alpha
 )
 {
@@ -1375,40 +1354,59 @@ static void add_occlusion_halo(
 
     for (int sy = sy0; sy < sy1; sy++) {
         float py = ((float)sy + 0.5f) * inv_scale;
-        float ey = 0.0f;
-        if (py < y0) ey = y0 - py;
-        else if (py > y1) ey = py - y1;
+        int ty = (int)(py / (float)CS2D_TILE_SIZE);
+        if (ty < 0 || (uint32_t)ty >= map->height) continue;
 
         for (int sx = sx0; sx < sx1; sx++) {
-            float px = ((float)sx + 0.5f) * inv_scale;
-            float ex = 0.0f;
-            if (px < x0) ex = x0 - px;
-            else if (px > x1) ex = px - x1;
+            uint8_t cur = alpha_buf[sy * tex_w + sx];
+            if (cur == 0) continue; /* Only darken inside existing shadow regions */
 
-            float dist = sqrtf(ex * ex + ey * ey);
+            float px = ((float)sx + 0.5f) * inv_scale;
+            int tx = (int)(px / (float)CS2D_TILE_SIZE);
+            if (tx < 0 || (uint32_t)tx >= map->width) continue;
+
+            /* 0x14010bb8c: Only apply occlusion onto floor tiles (skip Wall and Obstacle tops) */
+            uint8_t t = map->tiles[(uint32_t)ty * map->width + (uint32_t)tx];
+            uint8_t m = map->tile_modes[t];
+            if (m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW ||
+                m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW) {
+                continue;
+            }
+
+            float dx = 0.0f;
+            if (px < x0) dx = x0 - px;
+            else if (px > x1) dx = px - x1;
+
+            float dy = 0.0f;
+            if (py < y0) dy = y0 - py;
+            else if (py > y1) dy = py - y1;
+
+            float dist = sqrtf(dx * dx + dy * dy);
             if (dist > 0.0f && dist < halo_px) {
-                float t = 1.0f - (dist / halo_px);
-                int add = (int)((float)max_add_alpha * t * t);
-                int cur = (int)alpha_buf[sy * tex_w + sx];
-                int nxt = cur + add;
-                if (nxt > (int)cap_alpha) nxt = (int)cap_alpha;
-                if (nxt > cur) alpha_buf[sy * tex_w + sx] = (uint8_t)nxt;
+                float f = 1.0f - (dist / halo_px);
+                int add = (int)((float)max_add * f * f);
+                int val = (int)cur + add;
+                if (val > (int)cap_alpha) val = (int)cap_alpha;
+                if (val > (int)cur) {
+                    alpha_buf[sy * tex_w + sx] = (uint8_t)val;
+                }
             }
         }
     }
 }
 
 /*
- * Reconstructed from 0x140260330..0x1402626d0 in CS2D.exe:
+ * Reconstructed from 0x140260330..0x1402626d0 and 0x1401da4a6..0x1401da82d in CS2D.exe:
  * Builds the complete map shadow & lighting texture using:
- *   - Map sun angle: map->daylight_time (225 deg on de_dust2.map)
+ *   - Map sun angle (0x1401da4a6): if map->daylight_time > 999, (daylight_time - 1000) % 360, else 225.0f
  *   - Extrusion math (0x1402603a9..0x14026071c):
  *       s_factor = fabsf(sinf((sun_angle - 180.0f) * PI/180)) * 0.5f
  *       dz = -(h / 2) - h * s_factor
  *       dx = dz * cosf(sun_angle * PI/180), dy = dz * sinf(sun_angle * PI/180)
  *   - Step 1: Obstacle tiles (mode == CS2D_TILE_OBSTACLE) cast shadows, then self-clear
- *   - Step 2: Wall tiles (mode == CS2D_TILE_WALL) & breakables/dynwalls cast shadows
- *   - Step 3: Env_Room Layer 0 (int_settings[9] == 0) casts shadows, then Wall tiles self-clear
+ *   - Step 2: Wall tiles (mode == CS2D_TILE_WALL) & wall breakables/dynwalls cast shadows
+ *   - Step 3: Env_Room Layer 0 (int_settings[9] == 0) casts shadows, followed by floor occlusion
+ *             (lighting/gfx_oclussionmap.png) and Wall tile self-clear
  *   - Step 4: Env_Room Layers 1..5 (int_settings[9] == 1..5) cast rooftop shadows, self-clear,
  *             and apply lighting/gfx_roommap.png recessed parapet shadows when int_settings[8] == 1
  *   - Step 5: Env_Light (type 33) radial light subtraction (lighting/gfx_light.png)
@@ -1433,10 +1431,15 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
     uint8_t *alpha_buf = (uint8_t *)calloc((size_t)tex_w * (size_t)tex_h, 1);
     if (!alpha_buf) return;
 
-    const uint8_t shadow_alpha = 108; /* Base shadow darkness (~0.424) */
+    const uint8_t shadow_alpha = 126; /* Base shadow darkness matching CS2D original (255 -> 128 on sandstone) */
 
-    float sun_angle = (map->daylight_time >= 0 && map->daylight_time <= 360)
-                      ? (float)map->daylight_time : 225.0f;
+    /* Reconstructed from 0x1401da4a6..0x1401da82d: custom angle stored as 1000 + deg (or already decoded 0..359) */
+    float sun_angle = 225.0f;
+    if (map->daylight_time > 999) {
+        sun_angle = (float)((map->daylight_time - 1000) % 360);
+    } else if (map->daylight_time >= 0 && map->daylight_time < 360) {
+        sun_angle = (float)map->daylight_time;
+    }
     float rad_sun  = sun_angle * (3.14159265f / 180.0f);
     float rad_180  = (sun_angle - 180.0f) * (3.14159265f / 180.0f);
     float s_factor = fabsf(sinf(rad_180)) * 0.5f;
@@ -1456,7 +1459,6 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
                 float x0 = (float)(tx * CS2D_TILE_SIZE);
                 float y0 = (float)(ty * CS2D_TILE_SIZE);
                 cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, dx, dy, shadow_alpha);
-                add_occlusion_halo(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, 6.0f, 36, shadow_alpha + 24);
             }
         }
     }
@@ -1471,7 +1473,7 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
         }
     }
 
-    /* Step 2: Wall Tiles (CS2D_TILE_WALL = 1) and Env_Breakable / Func_DynWall cast shadows */
+    /* Step 2: Wall Tiles (CS2D_TILE_WALL = 1) and Wall-mode Env_Breakable / Func_DynWall cast shadows */
     for (uint32_t ty = 0; ty < map->height; ty++) {
         for (uint32_t tx = 0; tx < map->width; tx++) {
             uint8_t t = map->tiles[ty * map->width + tx];
@@ -1484,24 +1486,27 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
                 float x0 = (float)(tx * CS2D_TILE_SIZE);
                 float y0 = (float)(ty * CS2D_TILE_SIZE);
                 cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, dx, dy, shadow_alpha);
-                add_occlusion_halo(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, 7.0f, 40, shadow_alpha + 28);
             }
         }
     }
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *e = &map->entities[i];
         if (e->type == CS2D_ENT_ENV_BREAKABLE || e->type == CS2D_ENT_FUNC_DYNWALL) {
-            int h = 32;
-            float dz = (float)(-(h / 2)) - (float)h * s_factor;
-            float dx = dz * cos_sun;
-            float dy = dz * sin_sun;
-            float x0 = (float)(e->x * CS2D_TILE_SIZE);
-            float y0 = (float)(e->y * CS2D_TILE_SIZE);
-            cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, dx, dy, shadow_alpha);
+            int tile_f = e->int_settings[0];
+            if (tile_f > 0 && tile_f < 256 && map->tile_modes[tile_f] == CS2D_TILE_WALL) {
+                int h = (map->save_tile_heights != 0 && map->tile_heights[tile_f] > 0)
+                        ? (int)map->tile_heights[tile_f] : 32;
+                float dz = (float)(-(h / 2)) - (float)h * s_factor;
+                float dx = dz * cos_sun;
+                float dy = dz * sin_sun;
+                float x0 = (float)(e->x * CS2D_TILE_SIZE);
+                float y0 = (float)(e->y * CS2D_TILE_SIZE);
+                cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, dx, dy, shadow_alpha);
+            }
         }
     }
 
-    /* Step 3: Env_Room Layer 0 (0x140261153..0x140261438), then clear Wall tiles (0x140261451..0x140261b11) */
+    /* Step 3: Env_Room Layer 0 (0x140261153..0x140261438), then occlusion & clear Wall tiles */
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *ent = &map->entities[i];
         if (ent->type != CS2D_ENT_ENV_ROOM && ent->type != CS2D_ENT_ENV_CUBE3D && ent->type != CS2D_ENT_ENV_BUILDING) {
@@ -1527,7 +1532,21 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
         cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x1, y1, dx, dy, shadow_alpha);
     }
 
-    /* Clear Wall tiles (mode 1 and mode 3) so ground walls & crates are not darkened by Layer 0 */
+    /* Apply floor contact occlusion (lighting/gfx_oclussionmap.png) around Obstacles and Walls in shadow */
+    for (uint32_t ty = 0; ty < map->height; ty++) {
+        for (uint32_t tx = 0; tx < map->width; tx++) {
+            uint8_t t = map->tiles[ty * map->width + tx];
+            uint8_t m = map->tile_modes[t];
+            if (m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW ||
+                m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW) {
+                float x0 = (float)(tx * CS2D_TILE_SIZE);
+                float y0 = (float)(ty * CS2D_TILE_SIZE);
+                add_shadow_masked_occlusion(map, alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, 10.0f, 72, 200);
+            }
+        }
+    }
+
+    /* Clear Wall tiles (0x1402619d6..0x140261b11) so wall tops remain completely un-darkened */
     for (uint32_t ty = 0; ty < map->height; ty++) {
         for (uint32_t tx = 0; tx < map->width; tx++) {
             uint8_t t = map->tiles[ty * map->width + tx];
@@ -1539,10 +1558,26 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
             }
         }
     }
+    for (uint32_t i = 0; i < map->entity_count; i++) {
+        const cs2d_entity_t *e = &map->entities[i];
+        if (e->type == CS2D_ENT_ENV_BREAKABLE || e->type == CS2D_ENT_FUNC_DYNWALL) {
+            int tile_f = e->int_settings[0];
+            if (tile_f > 0 && tile_f < 256 &&
+                (map->tile_modes[tile_f] == CS2D_TILE_WALL || map->tile_modes[tile_f] == CS2D_TILE_WALL_NOSHADOW)) {
+                float x0 = (float)(e->x * CS2D_TILE_SIZE);
+                float y0 = (float)(e->y * CS2D_TILE_SIZE);
+                clear_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f);
+            }
+        }
+    }
 
-    /* Step 4: Env_Room Layers 1..5 (0x1402620be..0x140262631) for multi-level roofs */
+    /*
+     * Step 4: Env_Room Layers 1..5 (0x1402620be..0x140262608) for multi-level roofs.
+     * Note: CS2D.exe does NOT clear CS2D_TILE_WALL after Layers 1..5 so higher roofs
+     * cast shadows across lower ground walls and lower roofs.
+     */
     for (int layer = 1; layer <= 5; layer++) {
-        /* Pass A: Cast shadow for all Env_Room on this layer */
+        /* Pass A (0x1402620d8..0x1402623a1): Cast shadow for all Env_Room on this layer */
         for (uint32_t i = 0; i < map->entity_count; i++) {
             const cs2d_entity_t *ent = &map->entities[i];
             if (ent->type != CS2D_ENT_ENV_ROOM && ent->type != CS2D_ENT_ENV_CUBE3D) continue;
@@ -1566,42 +1601,7 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
             cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x1, y1, dx, dy, shadow_alpha);
         }
 
-        /* Pass B: Clear interior of Env_Room on this layer */
-        for (uint32_t i = 0; i < map->entity_count; i++) {
-            const cs2d_entity_t *ent = &map->entities[i];
-            if (ent->type != CS2D_ENT_ENV_ROOM && ent->type != CS2D_ENT_ENV_CUBE3D) continue;
-            if (ent->int_settings[7] == 0 || ent->int_settings[9] != layer) continue;
-
-            int w_tiles = ent->int_settings[0];
-            int h_tiles = ent->int_settings[1];
-            if (w_tiles <= 0 || h_tiles <= 0) continue;
-
-            int x_off = ent->str_settings[0][0] ? atoi(ent->str_settings[0]) : 0;
-            int y_off = ent->str_settings[1][0] ? atoi(ent->str_settings[1]) : 0;
-            float x0 = (float)(ent->x * CS2D_TILE_SIZE + x_off);
-            float y0 = (float)(ent->y * CS2D_TILE_SIZE + y_off);
-            float x1 = x0 + (float)(w_tiles * CS2D_TILE_SIZE);
-            float y1 = y0 + (float)(h_tiles * CS2D_TILE_SIZE);
-
-            clear_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x1, y1);
-        }
-
-        /* Pass C (0x140262631): Clear Wall tiles so roof shadows do not darken exposed wall rims */
-        for (uint32_t ty = 0; ty < map->height; ty++) {
-            for (uint32_t tx = 0; tx < map->width; tx++) {
-                uint8_t t = map->tiles[ty * map->width + tx];
-                uint8_t m = map->tile_modes[t];
-                if (m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW) {
-                    float x0 = (float)(tx * CS2D_TILE_SIZE);
-                    float y0 = (float)(ty * CS2D_TILE_SIZE);
-                    clear_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f);
-                }
-            }
-        }
-    }
-
-    /* Step 4b (0x1402626d0): Apply lighting/gfx_roommap.png recessed parapet shadows on roofs (ints[8] != 0) */
-    for (int layer = 1; layer <= 5; layer++) {
+        /* Pass B (0x1402623b0..0x1402625f5): Clear interior of Env_Room on this layer & apply parapet shadow */
         for (uint32_t i = 0; i < map->entity_count; i++) {
             const cs2d_entity_t *ent = &map->entities[i];
             if (ent->type != CS2D_ENT_ENV_ROOM && ent->type != CS2D_ENT_ENV_CUBE3D) continue;
@@ -1685,7 +1685,7 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
         int y_off = ent->str_settings[2][0] ? atoi(ent->str_settings[2]) : 0;
         float lx = (float)(ent->x * CS2D_TILE_SIZE + 16 + x_off);
         float ly = (float)(ent->y * CS2D_TILE_SIZE + 16 + y_off);
-        float radius = (float)(ent->int_settings[0] > 0 ? ent->int_settings[0] : 128) * 0.65f;
+        float radius = (float)(ent->int_settings[0] > 0 ? ent->int_settings[0] : 128) * 0.85f;
         float strength = (float)(ent->int_settings[1] + ent->int_settings[2] + ent->int_settings[3]) / (3.0f * 255.0f);
         if (strength <= 0.0f) strength = 0.5f;
 
@@ -1706,7 +1706,8 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
                 float dist = sqrtf((px - lx) * (px - lx) + (py - ly) * (py - ly));
                 if (dist < radius) {
                     float falloff = 1.0f - (dist / radius);
-                    int sub = (int)((float)shadow_alpha * strength * falloff * falloff * 1.35f);
+                    float smooth = falloff * (2.0f - falloff);
+                    int sub = (int)((float)shadow_alpha * strength * smooth * 1.6f);
                     int cur = (int)alpha_buf[sy * tex_w + sx];
                     alpha_buf[sy * tex_w + sx] = (uint8_t)((cur > sub) ? (cur - sub) : 0);
                 }
@@ -1833,6 +1834,15 @@ void cs2d_render_map_ex(
         }
     }
 
+    /* Fill map background color (map->bg_r, map->bg_g, map->bg_b) behind transparent tiles */
+    if (map->bg_r != 0 || map->bg_g != 0 || map->bg_b != 0) {
+        cs2d_render_rect(0.0f, 0.0f, (float)screen_w, (float)screen_h,
+                         (float)map->bg_r / 255.0f,
+                         (float)map->bg_g / 255.0f,
+                         (float)map->bg_b / 255.0f,
+                         1.0f, true);
+    }
+
     if (has_tileset) {
         glEnable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, tileset_tex->id);
@@ -1867,7 +1877,7 @@ void cs2d_render_map_ex(
             const cs2d_entity_t *ent = &map->entities[i];
             if (ent->type == CS2D_ENT_ENV_BREAKABLE || ent->type == CS2D_ENT_FUNC_DYNWALL) {
                 int tile_f = ent->int_settings[0];
-                if (tile_f >= 0 && tile_f <= (int)map->tile_count) {
+                if (tile_f > 0 && tile_f <= (int)map->tile_count) {
                     float rx = (float)(ent->x * CS2D_TILE_SIZE) - cam_x;
                     float ry = (float)(ent->y * CS2D_TILE_SIZE) - cam_y;
                     float trans = ent->str_settings[0][0] ? (float)atof(ent->str_settings[0]) : 0.0f;
@@ -1925,14 +1935,51 @@ void cs2d_render_map_ex(
                 break;
             }
             case CS2D_ENT_INFO_CTF_FLAG: {
-                /* Info_CTF_Flag (15): ints[0]=0 (T redflag) or 1 (CT blueflag) (Te.draw 0x140274e28) */
+                /*
+                 * Info_CTF_Flag (15): reconstructed from Te.draw 0x140274e28, 0x140276f56, 0x140271b60:
+                 *   1. Team glow (gfx/sprites/flare1.bmp, 32x32) drawn at (ex, ey) with blend_mode = 4 (additive),
+                 *      rotation = (tick_ms / 15 + 45) % 360, and color = (255, 0, 0) for T or (0, 0, 255) for CT.
+                 *   2. Waving flag sprite (gfx/weapons/redflag.bmp or blueflag.bmp, 20x33) drawn at
+                 *      (ent->x*32 + 26 - cam_x, ent->y*32 - cam_y) = (ex + 10.0f, ey - 16.0f) in 1px vertical strips.
+                 */
                 if (bank) {
-                    if (bank->tex_noflag.id) {
-                        cs2d_render_sprite(&bank->tex_noflag, ex, ey, 32.0f, 32.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+                    bool is_red = (ent->int_settings[0] == 0);
+                    if (bank->tex_flare1.id) {
+                        float frot = (float)((tick_ms / 15 + 45) % 360);
+                        cs2d_render_sprite_frame(&bank->tex_flare1,
+                                                 bank->tex_flare1.width, bank->tex_flare1.height, 0,
+                                                 ex, ey,
+                                                 (float)bank->tex_flare1.width, (float)bank->tex_flare1.height,
+                                                 frot,
+                                                 is_red ? 1.0f : 0.0f, 0.0f, is_red ? 0.0f : 1.0f, 0.85f, 4);
                     }
-                    const cs2d_texture_t *ftex = (ent->int_settings[0] == 0) ? &bank->tex_redflag : &bank->tex_blueflag;
-                    if (ftex->id) {
-                        cs2d_render_sprite(ftex, ex, ey, 32.0f, 32.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+                    const cs2d_texture_t *ftex = is_red ? &bank->tex_redflag : &bank->tex_blueflag;
+                    if (ftex->id && ftex->width > 0 && ftex->height > 0) {
+                        float fx0 = ex;
+                        float fy0 = ey - (float)ftex->height;
+                        glEnable(GL_TEXTURE_2D);
+                        glBindTexture(GL_TEXTURE_2D, ftex->id);
+                        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                        glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+                        glBegin(GL_QUADS);
+                        for (int col = 0; col < ftex->width; col++) {
+                            float u0 = (float)col / (float)ftex->width;
+                            float u1 = (float)(col + 1) / (float)ftex->width;
+                            float wave = (col > 2)
+                                ? sinf(((float)tick_ms * 0.008f) + (float)col * 0.35f) * ((float)(col - 2) * 0.11f)
+                                : 0.0f;
+                            float x0 = fx0 + (float)col;
+                            float x1 = x0 + 1.0f;
+                            float y0 = fy0 + wave;
+                            float y1 = y0 + (float)ftex->height;
+                            glTexCoord2f(u0, 0.0f); glVertex2f(x0, y0);
+                            glTexCoord2f(u1, 0.0f); glVertex2f(x1, y0);
+                            glTexCoord2f(u1, 1.0f); glVertex2f(x1, y1);
+                            glTexCoord2f(u0, 1.0f); glVertex2f(x0, y1);
+                        }
+                        glEnd();
+                        glBindTexture(GL_TEXTURE_2D, 0);
+                        glDisable(GL_TEXTURE_2D);
                     }
                 }
                 break;
@@ -1941,10 +1988,13 @@ void cs2d_render_map_ex(
                 /* Info_Dom_Point (17): ints[0]=0 (neutral), 1 (T), 2 (CT) (Te.draw 0x140274bb0) */
                 if (bank) {
                     const cs2d_texture_t *dtex = &bank->tex_noflag;
-                    if (ent->int_settings[0] == 1) dtex = &bank->tex_redflag;
-                    else if (ent->int_settings[0] == 2) dtex = &bank->tex_blueflag;
+                    float dx_off = 1.0f;
+                    if (ent->int_settings[0] == 1) { dtex = &bank->tex_redflag; dx_off = 10.0f; }
+                    else if (ent->int_settings[0] == 2) { dtex = &bank->tex_blueflag; dx_off = 10.0f; }
                     if (dtex->id) {
-                        cs2d_render_sprite(dtex, ex, ey, 32.0f, 32.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+                        cs2d_render_sprite(dtex, ex + dx_off, ey - 16.0f,
+                                           (float)dtex->width, (float)dtex->height,
+                                           0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
                     }
                 }
                 break;
@@ -2009,10 +2059,10 @@ void cs2d_render_map_ex(
 }
 
 /*
- * Reconstructed from Te.draw Pass 2 (0x140272938..0x140276300) & shadow overlay (0x140262fe0):
- *   1. Non-additive overhead sprites (dustroof.png, roof_edge1.png, dome.png, Env_Image, Env_Object)
+ * Reconstructed from 0x140262750..0x140262885 & Te.draw(1) (0x140272938..0x1402782a4):
+ *   1. Non-additive rooftop sprites (dustroof.png, roof_edge1.png, dome.png, Env_Image)
  *   2. Unified Sun-Angle & Multi-Layer Room Shadow/Lighting Map (s_room_shadow_tex)
- *   3. Additive light/flare sprites (blend_mode 3/4, flare.png) and Env_Light coronas (33)
+ *   3. Overhead Env_Object entities (Palm trees, Leafy trees, Lamps) & additive light flares
  */
 void cs2d_render_map_overhead(
     const cs2d_map_t *map,
@@ -2032,15 +2082,13 @@ void cs2d_render_map_overhead(
 
     uint32_t tick_ms = GetTickCount();
 
-    /* Pass 1: Overhead entities (Te.draw Pass 2: roof sprites, flares, overhead images, trees/palms/objects) */
+    /* Pass 1: Non-additive rooftop sprites & overhead images (shaded by Layer 1..5 rooftop shadows) */
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *ent = &map->entities[i];
-        float ex = (float)(ent->x * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_x;
-        float ey = (float)(ent->y * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_y;
-
         switch (ent->type) {
             case CS2D_ENT_ENV_SPRITE: {
-                if (atoi(ent->str_settings[4]) == 0) {
+                if (atoi(ent->str_settings[4]) == 0 &&
+                    ent->int_settings[9] != 3 && ent->int_settings[9] != 4) {
                     render_env_sprite_entity(bank, ent, cam_x, cam_y, tick_ms);
                 }
                 break;
@@ -2053,6 +2101,45 @@ void cs2d_render_map_overhead(
                         float iy = (float)(ent->y * CS2D_TILE_SIZE + ent->int_settings[1]) + itex->height * 0.5f - cam_y;
                         cs2d_render_sprite(itex, ix, iy, (float)itex->width, (float)itex->height, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
                     }
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    /* Pass 2: Unified Sun-Angle & Multi-Layer Room Shadow/Lighting Overlay (0x140262750..0x14026286f) */
+    if (s_shadows_enabled) {
+        ensure_room_shadow_texture(map);
+        if (s_room_shadow_tex.id != 0) {
+            float map_pw = (float)(map->width * CS2D_TILE_SIZE);
+            float map_ph = (float)(map->height * CS2D_TILE_SIZE);
+            cs2d_render_sprite(&s_room_shadow_tex,
+                               map_pw * 0.5f - cam_x,
+                               map_ph * 0.5f - cam_y,
+                               map_pw, map_ph,
+                               0.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+        }
+    }
+
+    /* Pass 3: Te.draw(1) Overhead Env_Object (trees, palms, lamps) & additive light flares (0x140262875) */
+    float sun_angle = (map->daylight_time > 999)
+                      ? (float)((map->daylight_time - 1000) % 360) : 225.0f;
+    float sun_rad   = (sun_angle - 180.0f) * (3.14159265f / 180.0f);
+    float sh_dx     = sinf(sun_rad) * 4.0f;
+    float sh_dy     = cosf(sun_rad) * 4.0f;
+
+    for (uint32_t i = 0; i < map->entity_count; i++) {
+        const cs2d_entity_t *ent = &map->entities[i];
+        float ex = (float)(ent->x * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_x;
+        float ey = (float)(ent->y * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_y;
+
+        switch (ent->type) {
+            case CS2D_ENT_ENV_SPRITE: {
+                if (atoi(ent->str_settings[4]) == 0 &&
+                    (ent->int_settings[9] == 3 || ent->int_settings[9] == 4)) {
+                    render_env_sprite_entity(bank, ent, cam_x, cam_y, tick_ms);
                 }
                 break;
             }
@@ -2069,14 +2156,21 @@ void cs2d_render_map_overhead(
                 if (scale <= 0.0f) scale = 1.0f;
                 if (alpha <= 0.0f) alpha = 1.0f;
                 float rot = (float)ent->int_settings[4];
+                float phase = (float)tick_ms * 0.002f + (float)(ent->x * 13 + ent->y * 7);
 
                 if (obj_type == 0) {
-                    /* Palm tree (0x14027779c..0x140277e8b): 8 fronds of incbindata/palmleave.png (32x80) */
+                    /*
+                     * Palm tree (0x14027779c..0x140277e8b):
+                     *   - 8 fronds of incbindata/palmleave.png (30x70, handle at (15.0, 2.0) per 0x14022ebd0)
+                     *   - Scale factor = scale * 0.8f (0x140bd6a74 = 0.8f)
+                     *   - Stem at (15, 2) is pinned to (ex, ey), so quad center is at (-sin(rad)*d, +cos(rad)*d)
+                     *     where d = (fh * 0.5f) - 2.0f * pscale = 33.0f * pscale
+                     */
                     if (bank->tex_palms.id) {
-                        float pscale = scale * 1.15f; /* 0x140bd6a74 = 1.15f */
+                        float pscale = scale * 0.8f;
                         float fw = (float)bank->tex_palms.width * pscale;
                         float fh = (float)bank->tex_palms.height * pscale;
-                        float phase = (float)tick_ms * 0.002f + (float)(ent->x * 13 + ent->y * 7);
+                        float d  = (fh * 0.5f) - 2.0f * pscale;
 
                         /* Pass 1: 8 frond drop shadows (0x140277cf8..0x140277e8b) */
                         for (int k = 1; k <= 8; k++) {
@@ -2084,44 +2178,71 @@ void cs2d_render_map_overhead(
                                                        : cosf(phase + (float)(k * 20) * 0.017453f)) * 2.5f;
                             float ang = (float)(k * 45) + rot + sway;
                             float rad = ang * (3.14159265f / 180.0f);
-                            float sx = (ex + 4.0f) + sinf(rad) * (fh * 0.5f);
-                            float sy = (ey + 4.0f) - cosf(rad) * (fh * 0.5f);
+                            float sx = (ex + sh_dx) - sinf(rad) * d;
+                            float sy = (ey + sh_dy) + cosf(rad) * d;
                             cs2d_render_sprite_frame(&bank->tex_palms, bank->tex_palms.width, bank->tex_palms.height, 0,
                                                      sx, sy, fw, fh, ang,
                                                      0.0f, 0.0f, 0.0f, 0.25f * alpha, 0);
                         }
 
-                        /* Pass 2: 8 palm fronds radiating from stem at (ex, ey) (0x14027780e..0x140277984) */
+                        /* Pass 2: 8 palm fronds radiating outward from stem at (ex, ey) (0x14027780e..0x140277984) */
                         for (int k = 1; k <= 8; k++) {
                             float sway = ((k % 3) == 0 ? sinf(phase + (float)(k * 20) * 0.017453f)
                                                        : cosf(phase + (float)(k * 20) * 0.017453f)) * 2.5f;
                             float ang = (float)(k * 45) + rot + sway;
                             float rad = ang * (3.14159265f / 180.0f);
-                            float fx = ex + sinf(rad) * (fh * 0.5f);
-                            float fy = ey - cosf(rad) * (fh * 0.5f);
+                            float fx = ex - sinf(rad) * d;
+                            float fy = ey + cosf(rad) * d;
                             cs2d_render_sprite_frame(&bank->tex_palms, bank->tex_palms.width, bank->tex_palms.height, 0,
                                                      fx, fy, fw, fh, ang,
                                                      r, g, b, alpha, 0);
                         }
                     }
                 } else if (obj_type == 1) {
-                    /* Multi-layer Tree (0x140275f35..0x140276228): 7 layers of incbindata/treeleaves.png (64x64) */
+                    /*
+                     * Leafy Tree (0x140275f35..0x140276228 & 0x140277ebb..0x1402782a4):
+                     *   - 7 outer clumps of incbindata/treeleaves.png (40x40, MidHandle) in a circle of
+                     *     radius 30.0f * scale (0x140bd6a98 = 30.0f) at angles k*51 + rot
+                     *   - Plus 1 center clump at (ex, ey) scaled by 1.2f * scale (0x140bd6f48 = 1.2f)
+                     */
                     if (bank->tex_tree.id) {
-                        float tscale = scale * 1.15f;
-                        float tw = (float)bank->tex_tree.width * tscale;
-                        float th = (float)bank->tex_tree.height * tscale;
-                        cs2d_render_sprite_frame(&bank->tex_tree, bank->tex_tree.width, bank->tex_tree.height, 0,
-                                                 ex + 4.0f, ey + 4.0f, tw, th, rot,
-                                                 0.0f, 0.0f, 0.0f, 0.28f * alpha, 0);
-                        for (int layer = 1; layer <= 7; layer++) {
-                            float sway = sinf((float)tick_ms * 0.002f + (float)layer) * 1.8f;
-                            float lscale = tscale * (1.0f - (float)(layer - 1) * 0.05f);
-                            float lw = (float)bank->tex_tree.width * lscale;
-                            float lh = (float)bank->tex_tree.height * lscale;
+                        float cw = (float)bank->tex_tree.width * scale;
+                        float ch = (float)bank->tex_tree.height * scale;
+                        float rad_dist = 30.0f * scale;
+
+                        /* Pass 1: 7 outer clump drop shadows (0x140277fae..0x140278290) */
+                        for (int k = 1; k <= 7; k++) {
+                            float sway = ((k % 3) == 0) ? sinf(phase + (float)(k * 50) * 0.017453f)
+                                                        : cosf(phase + (float)(k * 50) * 0.017453f);
+                            float ang_pos = (float)(k * 51) + rot + sway * 2.0f;
+                            float ang_rot = rot + sway * 5.0f;
+                            float rad_pos = ang_pos * (3.14159265f / 180.0f);
+                            float sx = (ex + sh_dx) + sinf(rad_pos) * rad_dist;
+                            float sy = (ey + sh_dy) - cosf(rad_pos) * rad_dist;
                             cs2d_render_sprite_frame(&bank->tex_tree, bank->tex_tree.width, bank->tex_tree.height, 0,
-                                                     ex + sway, ey + sway, lw, lh,
-                                                     rot + (float)(layer * 51), r, g, b, alpha, 0);
+                                                     sx, sy, cw, ch, ang_rot,
+                                                     0.0f, 0.0f, 0.0f, 0.25f * alpha, 0);
                         }
+
+                        /* Pass 2: 7 outer foliage clumps (0x140276037..0x140276228) */
+                        for (int k = 1; k <= 7; k++) {
+                            float sway = ((k % 3) == 0) ? sinf(phase + (float)(k * 50) * 0.017453f)
+                                                        : cosf(phase + (float)(k * 50) * 0.017453f);
+                            float ang_pos = (float)(k * 51) + rot + sway * 2.0f;
+                            float ang_rot = rot + sway * 5.0f;
+                            float rad_pos = ang_pos * (3.14159265f / 180.0f);
+                            float cx = ex + sinf(rad_pos) * rad_dist;
+                            float cy = ey - cosf(rad_pos) * rad_dist;
+                            cs2d_render_sprite_frame(&bank->tex_tree, bank->tex_tree.width, bank->tex_tree.height, 0,
+                                                     cx, cy, cw, ch, ang_rot,
+                                                     r, g, b, alpha, 0);
+                        }
+
+                        /* Pass 3: 8th center foliage clump at 1.2x scale (0x140277ebb..0x140277fa9) */
+                        float ang_center = rot + sinf(phase) * 5.0f;
+                        cs2d_render_sprite_frame(&bank->tex_tree, bank->tex_tree.width, bank->tex_tree.height, 0,
+                                                 ex, ey, cw * 1.2f, ch * 1.2f, ang_center,
+                                                 r, g, b, alpha, 0);
                     }
                 } else if (obj_type >= 2) {
                     /* Objects (0x140275f26 & 0x14027622d): incbindata/objects.bmp (32x32 cells, frame = obj_type - 2) */
@@ -2143,20 +2264,6 @@ void cs2d_render_map_overhead(
             }
             default:
                 break;
-        }
-    }
-
-    /* Pass 2: Unified Sun-Angle & Multi-Layer Room Shadow/Lighting Overlay (0x140262fe0) */
-    if (s_shadows_enabled) {
-        ensure_room_shadow_texture(map);
-        if (s_room_shadow_tex.id != 0) {
-            float map_pw = (float)(map->width * CS2D_TILE_SIZE);
-            float map_ph = (float)(map->height * CS2D_TILE_SIZE);
-            cs2d_render_sprite(&s_room_shadow_tex,
-                               map_pw * 0.5f - cam_x,
-                               map_ph * 0.5f - cam_y,
-                               map_pw, map_ph,
-                               0.0f, 0.0f, 0.0f, 0.0f, 1.0f);
         }
     }
 }
