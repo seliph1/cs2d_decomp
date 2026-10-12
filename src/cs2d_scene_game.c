@@ -760,6 +760,10 @@ static void game_leave(cs2d_client_t *client)
     cs2d_game_free(&client->game);
     memset(&client->game, 0, sizeof(client->game));
     client->pending_map[0] = '\0';
+    client->chat_open = false;
+    client->chat_just_opened = false;
+    client->chat_input[0] = '\0';
+    client->chat_cursor = 0;
 }
 
 static void update_dynobjs(cs2d_client_t *client, float delta_time);
@@ -856,7 +860,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
         /* Firing (left-click attack, or right-click attack2 for Knife/Claw per Tpl.attack2 0x1401fdd37) */
         bool melee_atk2 = client->mouse_attack2 &&
                           (pl->current_weapon == CS2D_WEP_KNIFE || pl->current_weapon == CS2D_WEP_CLAW);
-        if ((client->mouse_fire || melee_atk2) && !client->build_menu_open && cs2d_weapon_fire(pl)) {
+        if (!cs2d_client_any_ui_open(client) && (client->mouse_fire || melee_atk2) && !client->build_menu_open && cs2d_weapon_fire(pl)) {
             if (melee_atk2 && !client->mouse_fire) {
                 pl->fire_cooldown = 21.0f * 0.02f; /* 21 ticks at 50 Hz (0x1401fdc28) */
             }
@@ -1221,12 +1225,103 @@ static void render_center_msgs(cs2d_client_t *client, int screen_w, int screen_h
         float tw, th;
         cs2d_render_text_measure(CS2D_FONT_REGULAR, client->center_msg[i], &tw, &th);
         cs2d_render_rect((float)(screen_w / 2) - tw * 0.5f - 20.0f, y - 2.0f, tw + 40.0f, th + 4.0f, 0, 0, 0, 0.25f * a, true);
+        /* Drop shadow at +1, +1 (0x14024d230) */
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, (float)(screen_w / 2 - (int)tw / 2) + 1.0f, y + 1.0f, client->center_msg[i],
+                            0.0f, 0.0f, 0.0f, a);
         cs2d_render_text_ex(CS2D_FONT_REGULAR, (float)(screen_w / 2 - (int)tw / 2), y, client->center_msg[i],
                             client->center_rgb[i][0] / 255.0f, client->center_rgb[i][1] / 255.0f,
                             client->center_rgb[i][2] / 255.0f, a);
         y += th + 2.0f;
     }
 }
+
+/*
+ * In-game HUD Chat log (Thud_msg.draw_chat 0x14024d8a0, FUN_14029f7b0):
+ * Starts at screen_h - 85 - (line_h * 2), stacking upwards.
+ * Text at x = 3.0f, drop shadow at x = 4.0f, y + 1.0f.
+ * Chat input prompt at bottom when chat_open.
+ */
+static void render_chat(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    (void)screen_w;
+    uint32_t now = GetTickCount();
+    float line_h = 16.0f;
+
+    /* 1. Update line expirations (10 s display, then fade out) */
+    for (int i = 0; i < client->chat_line_count; ) {
+        cs2d_chat_line_t *ln = &client->chat_lines[i];
+        uint32_t age = now - ln->time_ms;
+        if (age > 10000u) {
+            float fade_age = (float)(age - 10000u) * 0.001f;
+            ln->fade = 1.0f - fade_age * 1.5f;
+            if (ln->fade <= 0.0f) {
+                memmove(&client->chat_lines[i], &client->chat_lines[i + 1],
+                        sizeof(cs2d_chat_line_t) * (size_t)(client->chat_line_count - 1 - i));
+                client->chat_line_count--;
+                continue;
+            }
+        }
+        i++;
+    }
+
+    float base_y = (float)screen_h - 85.0f - (line_h * 2.0f);
+
+    /* 2. Chat input prompt (FUN_14029f7b0) */
+    if (client->chat_open) {
+        const char *prompt = (client->chat_mode == 2) ? "Say (Team) : " : "Say : ";
+        char full[CS2D_CHAT_LINE_LEN + 32];
+        snprintf(full, sizeof(full), "%s%s", prompt, client->chat_input);
+
+        float tw, th;
+        cs2d_render_text_measure(CS2D_FONT_REGULAR, full, &tw, &th);
+        float pw = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, prompt);
+        float inp_w = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, client->chat_input);
+
+        /* Background rect (alpha 0.4 black) */
+        cs2d_render_rect(0.0f, base_y, tw + 10.0f, line_h, 0, 0, 0, 0.4f, true);
+
+        /* Text drop shadow at (4, base_y + 1) */
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, 4.0f, base_y + 1.0f, full, 0.0f, 0.0f, 0.0f, 1.0f);
+        /* Main text in CS2D gold (255, 220, 0) at (3, base_y) */
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, 3.0f, base_y, full, 1.0f, 220.0f / 255.0f, 0.0f, 1.0f);
+
+        /* Blinking cursor */
+        if ((now / 400u) % 2u == 0) {
+            float cur_x = 3.0f + pw + inp_w + 1.0f;
+            cs2d_render_rect(cur_x, base_y + 2.0f, 1.0f, line_h - 4.0f, 1.0f, 1.0f, 1.0f, 1.0f, true);
+        }
+
+        base_y -= line_h;
+    }
+
+    /* 3. Draw chat log lines from newest to oldest stacking upwards */
+    float y = base_y;
+    for (int i = client->chat_line_count - 1; i >= 0; i--) {
+        if (y < 180.0f) break; /* Avoid overlapping radar / top screen */
+        const cs2d_chat_line_t *ln = &client->chat_lines[i];
+        float a = ln->fade;
+
+        float x = 3.0f;
+        if (ln->name[0] != '\0') {
+            float nw = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, ln->name);
+            /* Name shadow */
+            cs2d_render_text_ex(CS2D_FONT_REGULAR, x + 1.0f, y + 1.0f, ln->name, 0.0f, 0.0f, 0.0f, a);
+            /* Name in team color */
+            cs2d_render_text_ex(CS2D_FONT_REGULAR, x, y, ln->name,
+                                ln->name_rgb[0] / 255.0f, ln->name_rgb[1] / 255.0f, ln->name_rgb[2] / 255.0f, a);
+            x += nw;
+        }
+
+        /* Message text shadow */
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, x + 1.0f, y + 1.0f, ln->text, 0.0f, 0.0f, 0.0f, a);
+        /* Message text */
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, x, y, ln->text,
+                            ln->text_rgb[0] / 255.0f, ln->text_rgb[1] / 255.0f, ln->text_rgb[2] / 255.0f, a);
+
+        y -= line_h;
+    }
+}
+
 
 /* Item 70 / 71 in the inventory: the player carries a flag (Titem.give sets Tpl.flag) */
 static bool carries_flag(const cs2d_player_t *p)
@@ -1334,6 +1429,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
                                                  screen_w, screen_h);
         else client->buy.menu = 0;
     }
+    render_chat(client, screen_w, screen_h);
     render_center_msgs(client, screen_w, screen_h);
 }
 
@@ -1391,11 +1487,24 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
         }
         return;
     }
-    /* Bindings of sys/controls.cfg: weapon selection ("1".."9", "0") and buying ("B", "C", ",", ".") */
+    /* Bindings of sys/controls.cfg: weapon selection ("1".."9", "0"), buying ("B", "C", ",", ".") and chat ("Y", "U") */
     const char *bound = pressed ? cs2d_binds_find(&client->binds, cs2d_bind_key_name(key)) : NULL;
-    if (bound && (cs2d_scene_game_inv_cmd(client, bound) || cs2d_scene_game_buy_cmd(client, bound))) return;
+    if (bound) {
+        if (_stricmp(bound, "say") == 0 || _stricmp(bound, "sayteam") == 0) {
+            cs2d_client_console_exec(client, bound);
+            return;
+        }
+        if (cs2d_scene_game_inv_cmd(client, bound) || cs2d_scene_game_buy_cmd(client, bound)) return;
+    }
 
     switch (key) {
+        case 'Y': case 'y':
+            if (pressed) { cs2d_client_console_exec(client, "say"); return; }
+            break;
+        case 'U': case 'u':
+            if (pressed) { cs2d_client_console_exec(client, "sayteam"); return; }
+            break;
+
         case 'W': case 'w': case VK_UP:
             client->key_forward = pressed;
             break;

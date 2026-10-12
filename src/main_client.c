@@ -14,38 +14,46 @@ static bool          g_running = true;
 
 static int sdl_key_to_cs2d_key(SDL_Keycode key)
 {
+    /* Letters: SDL3 defines SDLK_A..SDLK_Z as 'a'..'z' (0x61..0x7a) */
+    if (key >= SDLK_A && key <= SDLK_Z) {
+        return 'A' + (int)(key - SDLK_A);
+    }
+    if (key >= 'a' && key <= 'z') {
+        return 'A' + (int)(key - 'a');
+    }
+    if (key >= 'A' && key <= 'Z') {
+        return (int)key;
+    }
+    /* Number row */
+    if (key >= SDLK_0 && key <= SDLK_9) {
+        return '0' + (int)(key - SDLK_0);
+    }
+    /* Keypad digits */
+    if (key >= SDLK_KP_1 && key <= SDLK_KP_9) {
+        return '1' + (int)(key - SDLK_KP_1);
+    }
+    if (key == SDLK_KP_0) return '0';
+
     switch (key) {
-        case SDLK_W:      return 'W';
-        case SDLK_S:      return 'S';
-        case SDLK_A:      return 'A';
-        case SDLK_D:      return 'D';
-        case SDLK_R:      return 'R';
-        case SDLK_E:      return 'E';
-        case SDLK_B:      return 'B';
-        case SDLK_G:      return 'G';
-        case SDLK_M:      return 'M';
-        case SDLK_C:      return 'C';
-        case SDLK_COMMA:  return ',';
-        case SDLK_PERIOD: return '.';
-        case SDLK_0:      return '0';
-        case SDLK_1:      return '1';
-        case SDLK_2:      return '2';
-        case SDLK_3:      return '3';
-        case SDLK_4:      return '4';
-        case SDLK_5:      return '5';
-        case SDLK_6:      return '6';
-        case SDLK_7:      return '7';
-        case SDLK_8:      return '8';
-        case SDLK_9:      return '9';
-        case SDLK_UP:     return VK_UP;
-        case SDLK_DOWN:   return VK_DOWN;
-        case SDLK_LEFT:   return VK_LEFT;
-        case SDLK_RIGHT:  return VK_RIGHT;
+        case SDLK_COMMA:     return ',';
+        case SDLK_PERIOD:    return '.';
+        case SDLK_TAB:       return VK_TAB;
+        case SDLK_BACKSPACE: return VK_BACK;
+        case SDLK_RETURN:
+        case SDLK_KP_ENTER:  return VK_RETURN;
+        case SDLK_ESCAPE:    return VK_ESCAPE;
+        case SDLK_UP:        return VK_UP;
+        case SDLK_DOWN:      return VK_DOWN;
+        case SDLK_LEFT:      return VK_LEFT;
+        case SDLK_RIGHT:     return VK_RIGHT;
         case SDLK_LSHIFT:
-        case SDLK_RSHIFT: return VK_SHIFT;
-        case SDLK_SPACE:  return VK_SPACE;
-        case SDLK_LCTRL:  return VK_LCONTROL;
-        default:          return 0;
+        case SDLK_RSHIFT:    return VK_SHIFT;
+        case SDLK_SPACE:     return VK_SPACE;
+        case SDLK_LCTRL:
+        case SDLK_RCTRL:     return VK_LCONTROL;
+        case SDLK_LALT:
+        case SDLK_RALT:      return VK_MENU;
+        default:             return 0;
     }
 }
 

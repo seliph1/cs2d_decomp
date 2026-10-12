@@ -490,6 +490,12 @@ static void apply_pending_scene(cs2d_client_t *client)
 void cs2d_client_handle_escape(cs2d_client_t *client)
 {
     if (!client) return;
+    if (client->chat_open) {
+        client->chat_open = false;
+        client->chat_input[0] = '\0';
+        client->chat_cursor = 0;
+        return;
+    }
     cs2d_scene_get(client->scene)->handle_escape(client);
 }
 
@@ -605,11 +611,72 @@ static void add_ground_item(cs2d_client_t *client, uint16_t id, uint8_t type, in
     slot->reserve = reserve;
 }
 
+bool cs2d_strip_center_tag(char *text)
+{
+    if (!text) return false;
+    size_t len = strlen(text);
+    if (len >= 2 && text[len - 2] == '@' && (text[len - 1] == 'C' || text[len - 1] == 'c')) {
+        text[len - 2] = '\0';
+        return true;
+    }
+    return false;
+}
+
+bool cs2d_parse_color_code(const char *in, uint8_t *out_r, uint8_t *out_g, uint8_t *out_b, const char **out_text)
+{
+    if (out_r) *out_r = 255;
+    if (out_g) *out_g = 220;
+    if (out_b) *out_b = 0;
+    if (out_text) *out_text = in;
+    if (!in) return false;
+
+    /* Single byte 0xA9 (Latin-1 '©') + 9 ASCII digits RRRGGGBBB */
+    if ((unsigned char)in[0] == 0xA9) {
+        bool ok = true;
+        for (int i = 1; i <= 9; i++) {
+            if (in[i] < '0' || in[i] > '9') { ok = false; break; }
+        }
+        if (ok) {
+            int r = (in[1] - '0') * 100 + (in[2] - '0') * 10 + (in[3] - '0');
+            int g = (in[4] - '0') * 100 + (in[5] - '0') * 10 + (in[6] - '0');
+            int b = (in[7] - '0') * 100 + (in[8] - '0') * 10 + (in[9] - '0');
+            if (out_r) *out_r = (uint8_t)(r > 255 ? 255 : r);
+            if (out_g) *out_g = (uint8_t)(g > 255 ? 255 : g);
+            if (out_b) *out_b = (uint8_t)(b > 255 ? 255 : b);
+            if (out_text) *out_text = in + 10;
+            return true;
+        }
+    }
+    /* UTF-8 encoded "\xC2\xA9" ('©') + 9 ASCII digits RRRGGGBBB */
+    if ((unsigned char)in[0] == 0xC2 && (unsigned char)in[1] == 0xA9) {
+        bool ok = true;
+        for (int i = 2; i <= 10; i++) {
+            if (in[i] < '0' || in[i] > '9') { ok = false; break; }
+        }
+        if (ok) {
+            int r = (in[2] - '0') * 100 + (in[3] - '0') * 10 + (in[4] - '0');
+            int g = (in[5] - '0') * 100 + (in[6] - '0') * 10 + (in[7] - '0');
+            int b = (in[8] - '0') * 100 + (in[9] - '0') * 10 + (in[10] - '0');
+            if (out_r) *out_r = (uint8_t)(r > 255 ? 255 : r);
+            if (out_g) *out_g = (uint8_t)(g > 255 ? 255 : g);
+            if (out_b) *out_b = (uint8_t)(b > 255 ? 255 : b);
+            if (out_text) *out_text = in + 11;
+            return true;
+        }
+    }
+    return false;
+}
+
 void cs2d_client_center_msg(cs2d_client_t *client, uint8_t r, uint8_t g, uint8_t b, const char *text)
 {
+    if (!client || !text || text[0] == '\0') return;
+    char buf[96];
+    snprintf(buf, sizeof(buf), "%s", text);
+    cs2d_strip_center_tag(buf);
+
     int slot = -1;
     for (int i = 0; i < 4 && slot < 0; i++) {
-        if (client->center_ms[i] && strcmp(client->center_msg[i], text) == 0) slot = i;
+        if (client->center_ms[i] && strcmp(client->center_msg[i], buf) == 0) slot = i;
     }
     for (int i = 0; i < 4 && slot < 0; i++) {
         if (!client->center_ms[i]) slot = i;
@@ -618,12 +685,126 @@ void cs2d_client_center_msg(cs2d_client_t *client, uint8_t r, uint8_t g, uint8_t
         slot = 0;
         for (int i = 1; i < 4; i++) if (client->center_ms[i] < client->center_ms[slot]) slot = i;
     }
-    snprintf(client->center_msg[slot], sizeof(client->center_msg[slot]), "%s", text);
+    snprintf(client->center_msg[slot], sizeof(client->center_msg[slot]), "%s", buf);
     client->center_rgb[slot][0] = r;
     client->center_rgb[slot][1] = g;
     client->center_rgb[slot][2] = b;
     client->center_ms[slot] = GetTickCount() | 1;
 }
+
+/*
+ * Adds an in-game chat message to the client's HUD chat log (Thud_msg.add_chat 0x140117a90).
+ * Team colors (tintTeamColor 0x140083a40):
+ *   Spec (0) = (255, 220, 0)
+ *   T    (1) = (255, 25, 0)
+ *   CT   (2) = (50, 150, 255)
+ */
+void cs2d_client_add_chat(cs2d_client_t *client, uint8_t sender_id, uint8_t mode,
+                          uint8_t r, uint8_t g, uint8_t b, const char *text)
+{
+    if (!client || !text || text[0] == '\0') return;
+
+    cs2d_chat_line_t line;
+    memset(&line, 0, sizeof(line));
+    line.time_ms = GetTickCount() | 1;
+    line.fade = 1.0f;
+    line.text_rgb[0] = r;
+    line.text_rgb[1] = g;
+    line.text_rgb[2] = b;
+    snprintf(line.text, sizeof(line.text), "%s", text);
+
+    if (sender_id > 0 && sender_id <= CS2D_MAX_PLAYERS) {
+        const cs2d_player_t *p = &client->game.players[sender_id];
+        const char *pname = p->name[0] ? p->name : "Player";
+        uint8_t team = p->team;
+        bool dead = !p->alive || team == CS2D_TEAM_SPEC;
+
+        if (team == CS2D_TEAM_T) {
+            line.name_rgb[0] = 255; line.name_rgb[1] = 25; line.name_rgb[2] = 0;
+        } else if (team == CS2D_TEAM_CT) {
+            line.name_rgb[0] = 50; line.name_rgb[1] = 150; line.name_rgb[2] = 255;
+        } else {
+            line.name_rgb[0] = 255; line.name_rgb[1] = 220; line.name_rgb[2] = 0;
+        }
+
+        if (mode == 2) {
+            if (dead) snprintf(line.name, sizeof(line.name), "*DEAD*(TEAM) %s: ", pname);
+            else      snprintf(line.name, sizeof(line.name), "(TEAM) %s: ", pname);
+        } else {
+            if (dead) snprintf(line.name, sizeof(line.name), "*DEAD* %s: ", pname);
+            else      snprintf(line.name, sizeof(line.name), "%s: ", pname);
+        }
+        cs2d_client_console_print(client, line.name_rgb[0], line.name_rgb[1], line.name_rgb[2],
+                                  "%s%s", line.name, line.text);
+    } else {
+        line.name[0] = '\0';
+        line.name_rgb[0] = 255; line.name_rgb[1] = 220; line.name_rgb[2] = 0;
+        cs2d_client_console_print(client, r, g, b, "%s", text);
+    }
+
+    if (client->chat_line_count < CS2D_CHAT_MAX_LINES) {
+        client->chat_lines[client->chat_line_count++] = line;
+    } else {
+        memmove(&client->chat_lines[0], &client->chat_lines[1],
+                sizeof(cs2d_chat_line_t) * (CS2D_CHAT_MAX_LINES - 1));
+        client->chat_lines[CS2D_CHAT_MAX_LINES - 1] = line;
+    }
+}
+
+/*
+ * Routes incoming server/broadcast messages (opcode 226 / opcode 240 / sv_msg / msg):
+ * If message ends with "@C" or "@c" (or mode == 2 for center), strips the tag and routes
+ * to screen center (Thud_msg.add_center). Otherwise routes to HUD chat log (Thud_msg.add_chat).
+ */
+void cs2d_client_handle_server_msg(cs2d_client_t *client, uint8_t sender_id, uint8_t mode,
+                                   uint8_t r, uint8_t g, uint8_t b, const char *text)
+{
+    if (!client || !text || text[0] == '\0') return;
+
+    /* Parse any leading \xA9RRRGGGBBB color code */
+    uint8_t cr = r, cg = g, cb = b;
+    const char *cleaned = text;
+    cs2d_parse_color_code(text, &cr, &cg, &cb, &cleaned);
+
+    char buf[CS2D_CHAT_LINE_LEN];
+    snprintf(buf, sizeof(buf), "%s", cleaned);
+    bool center = cs2d_strip_center_tag(buf) || (mode == 2 && sender_id == 0);
+
+    if (center) {
+        cs2d_client_center_msg(client, cr, cg, cb, buf);
+        cs2d_client_console_print(client, cr, cg, cb, "%s", buf);
+    } else {
+        cs2d_client_add_chat(client, sender_id, mode, cr, cg, cb, buf);
+    }
+}
+
+/*
+ * Sends a chat message (mode 1 = say, mode 2 = sayteam).
+ * Online: sends opcode 240 packet [240, mode, len_u16, len*2 bytes UTF-16LE].
+ * Offline: adds directly to local chat.
+ */
+void cs2d_client_send_chat(cs2d_client_t *client, uint8_t mode, const char *text)
+{
+    if (!client || !text || text[0] == '\0') return;
+
+    if (client->connected && client->join_stage == 5) {
+        size_t slen = strlen(text);
+        if (slen > 120) slen = 120;
+        uint8_t pkt[4 + 128 * 2];
+        pkt[0] = (uint8_t)CS2D_NET_MSG2; /* 240 */
+        pkt[1] = mode;
+        pkt[2] = (uint8_t)(slen & 0xFF);
+        pkt[3] = (uint8_t)((slen >> 8) & 0xFF);
+        for (size_t i = 0; i < slen; i++) {
+            pkt[4 + i * 2]     = (uint8_t)text[i];
+            pkt[4 + i * 2 + 1] = 0;
+        }
+        cs2d_client_send_udp(client, pkt, 4 + slen * 2, true);
+    } else {
+        cs2d_client_add_chat(client, client->local_player_id, mode, 255, 220, 0, text);
+    }
+}
+
 
 static void remove_ground_item(cs2d_client_t *client, uint16_t id)
 {
@@ -1306,13 +1487,18 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 if (pos + 6 > recvd) break;
                 int tlen = buffer[pos + 4] | (buffer[pos + 5] << 8);
                 if (pos + 6 + tlen + 1 > recvd) break;
-                cs2d_client_console_print(client, 255, 220, 0, "%.*s", tlen, (const char *)&buffer[pos + 6]);
+                char msg_buf[CS2D_CHAT_LINE_LEN];
+                int cp_len = tlen < (int)sizeof(msg_buf) - 1 ? tlen : (int)sizeof(msg_buf) - 1;
+                memcpy(msg_buf, &buffer[pos + 6], (size_t)cp_len);
+                msg_buf[cp_len] = '\0';
+                cs2d_client_handle_server_msg(client, 0, 1, 255, 220, 0, msg_buf);
                 pos += 6 + tlen + 1;
             } else if (opcode == CS2D_NET_MSG2) {
                 /* Server -> Client: [240, sender u8, mode u8, char_len u16, char_len * 2 bytes UTF-16LE]
                  * mode 50: "1" starts serverinfo, "2" finishes serverinfo and opens the Welcome window;
                  * mode 51: appends one line to serverinfo; mode < 50: chat message (proxy_join_info.log) */
                 if (pos + 5 > recvd) break;
+                uint8_t sender_id = buffer[pos + 1];
                 uint8_t mode = buffer[pos + 2];
                 int char_len = buffer[pos + 3] | (buffer[pos + 4] << 8);
                 int byte_len = char_len * 2;
@@ -1335,7 +1521,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     char utf8[CS2D_CONSOLE_LINE_LEN];
                     utf16_to_colored_utf8(wbytes, char_len, &r, &g, &b, utf8, sizeof(utf8));
                     if (utf8[0] != '\0') {
-                        cs2d_client_console_print(client, r, g, b, "%s", utf8);
+                        cs2d_client_handle_server_msg(client, sender_id, mode, r, g, b, utf8);
                     }
                 }
                 pos += 5 + byte_len;
@@ -1981,6 +2167,23 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         client->create_server_open = false;
         client->console_open       = false;
         client->ui.focused_id      = CS2D_UI_ID("OptPlayerName");
+    } else if (_stricmp(cmd, "say") == 0 || _stricmp(cmd, "sayteam") == 0) {
+        bool is_team = (_stricmp(cmd, "sayteam") == 0);
+        const char *p = cmd_line + strlen(cmd);
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0') {
+            if (client->scene == CS2D_SCENE_GAME) {
+                client->chat_open = true;
+                client->chat_just_opened = true;
+                client->chat_mode = is_team ? 2 : 1;
+                client->chat_input[0] = '\0';
+                client->chat_cursor = 0;
+                client->key_forward = client->key_back = client->key_left = client->key_right = false;
+                client->mouse_fire = client->mouse_attack2 = false;
+            }
+        } else {
+            cs2d_client_send_chat(client, is_team ? 2 : 1, p);
+        }
     } else if (_stricmp(cmd, "quit") == 0 || _stricmp(cmd, "exit") == 0) {
         client->quit_requested = true;
     } else {
@@ -1993,12 +2196,25 @@ bool cs2d_client_any_ui_open(const cs2d_client_t *client)
     return client && (client->console_open || client->create_server_open ||
                       client->options_open || client->server_info_open ||
                       client->team_menu_open || client->servers_open || client->connect_ip_open ||
-                      client->download_open);
+                      client->download_open || client->chat_open);
 }
 
 void cs2d_client_handle_text_input(cs2d_client_t *client, const char *text)
 {
     if (!client || !text) return;
+    if (client->chat_open) {
+        if (client->chat_just_opened) {
+            client->chat_just_opened = false;
+            return;
+        }
+        size_t cur_len = strlen(client->chat_input);
+        size_t add_len = strlen(text);
+        if (cur_len + add_len < CS2D_CHAT_LINE_LEN - 1) {
+            strcat(client->chat_input, text);
+            client->chat_cursor = (int)strlen(client->chat_input);
+        }
+        return;
+    }
     if (cs2d_client_any_ui_open(client)) {
         cs2d_ui_feed_text(&client->ui, text);
     }
@@ -2036,6 +2252,36 @@ static void console_submit(cs2d_client_t *client)
 void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
 {
     if (!client) return;
+
+    if (client->chat_open) {
+        if (sdl_key == SDLK_RETURN || sdl_key == SDLK_KP_ENTER || sdl_key == '\r') {
+            if (client->chat_input[0] != '\0') {
+                cs2d_client_send_chat(client, (uint8_t)client->chat_mode, client->chat_input);
+            }
+            client->chat_open = false;
+            client->chat_just_opened = false;
+            client->chat_input[0] = '\0';
+            client->chat_cursor = 0;
+            return;
+        }
+        if (sdl_key == SDLK_ESCAPE || sdl_key == '\x1b') {
+            client->chat_open = false;
+            client->chat_just_opened = false;
+            client->chat_input[0] = '\0';
+            client->chat_cursor = 0;
+            return;
+        }
+        if (sdl_key == SDLK_BACKSPACE || sdl_key == '\b') {
+            size_t len = strlen(client->chat_input);
+            if (len > 0) {
+                client->chat_input[len - 1] = '\0';
+                client->chat_cursor = (int)(len - 1);
+            }
+            return;
+        }
+        return;
+    }
+
 
     if (sdl_key == SDLK_GRAVE || sdl_key == SDLK_F1) {
         client->console_open = !client->console_open;
@@ -2258,6 +2504,10 @@ void cs2d_client_update(cs2d_client_t *client, float delta_time)
         snprintf(cmd, sizeof(cmd), "%s", client->console_pending_cmd);
         client->console_pending_cmd[0] = '\0';
         cs2d_client_console_exec(client, cmd);
+    }
+
+    if (client->chat_just_opened) {
+        client->chat_just_opened = false;
     }
 
     apply_pending_scene(client);

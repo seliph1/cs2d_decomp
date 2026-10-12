@@ -2391,6 +2391,231 @@ static bool test_shadow_chunks(void)
     return true;
 }
 
+/* ---------------------------------------------------------------------------
+ * In-game Chat, Server Messages (@C) & Opcode 240
+ * --------------------------------------------------------------------------- */
+static bool test_chat_and_server_messages(void)
+{
+    printf("\n=== Testing In-Game Chat, Server Messages (@C) & Opcode 240 ===\n");
+
+    /* 1. Color code decoding */
+    uint8_t r = 0, g = 0, b = 0;
+    const char *text = NULL;
+    bool has_color = cs2d_parse_color_code("\xA9" "255025000Red message", &r, &g, &b, &text);
+    if (!has_color || r != 255 || g != 25 || b != 0 || strcmp(text, "Red message") != 0) {
+        TEST_FAIL("Color Code", "Failed to parse single-byte 0xA9 color code prefix");
+        return false;
+    }
+
+    has_color = cs2d_parse_color_code("\xC2\xA9" "050150255Blue message", &r, &g, &b, &text);
+    if (!has_color || r != 50 || g != 150 || b != 255 || strcmp(text, "Blue message") != 0) {
+        TEST_FAIL("Color Code", "Failed to parse UTF-8 0xC2 0xA9 color code prefix");
+        return false;
+    }
+
+
+    has_color = cs2d_parse_color_code("Regular text without color", &r, &g, &b, &text);
+    if (has_color || r != 255 || g != 220 || b != 0 || strcmp(text, "Regular text without color") != 0) {
+        TEST_FAIL("Color Code", "Regular text should default to CS2D yellow without prefix");
+        return false;
+    }
+    TEST_PASS("Color code prefix parsing (\\xA9RRRGGGBBB & UTF-8 \\xC2\\xA9) verified");
+
+    /* 2. Center message tag (@C / @c) stripping */
+    char tag_buf1[64] = "Bomb has been planted@C";
+    char tag_buf2[64] = "Team victory!@c";
+    char tag_buf3[64] = "Normal chat message";
+
+    if (!cs2d_strip_center_tag(tag_buf1) || strcmp(tag_buf1, "Bomb has been planted") != 0) {
+        TEST_FAIL("Center Tag", "Failed to strip uppercase @C tag");
+        return false;
+    }
+    if (!cs2d_strip_center_tag(tag_buf2) || strcmp(tag_buf2, "Team victory!") != 0) {
+        TEST_FAIL("Center Tag", "Failed to strip lowercase @c tag");
+        return false;
+    }
+    if (cs2d_strip_center_tag(tag_buf3) || strcmp(tag_buf3, "Normal chat message") != 0) {
+        TEST_FAIL("Center Tag", "Should not strip when @C tag is absent");
+        return false;
+    }
+    TEST_PASS("Center message tag (@C / @c) detection and stripping verified");
+
+    /* 3. Client message routing (Chat log vs. Center screen) */
+    cs2d_client_t *client = (cs2d_client_t *)calloc(1, sizeof(cs2d_client_t));
+    if (!client) {
+        TEST_FAIL("Message Routing", "Memory allocation for test client failed");
+        return false;
+    }
+
+    /* Route server message ending with @C -> Center */
+    cs2d_client_handle_server_msg(client, 0, 1, 255, 220, 0, "Server Announcement@C");
+    if (client->chat_line_count != 0) {
+        TEST_FAIL("Message Routing", "Center message should not be added to chat log");
+        free(client);
+        return false;
+    }
+    bool found_center = false;
+    for (int i = 0; i < 4; i++) {
+        if (client->center_ms[i] && strcmp(client->center_msg[i], "Server Announcement") == 0) {
+            found_center = true;
+            break;
+        }
+    }
+    if (!found_center) {
+        TEST_FAIL("Message Routing", "Server message ending with @C was not added to center messages");
+        free(client);
+        return false;
+    }
+
+    /* Route server message without @C -> Chat log */
+    cs2d_client_handle_server_msg(client, 0, 1, 255, 220, 0, "Welcome to the server!");
+    if (client->chat_line_count != 1 || strcmp(client->chat_lines[0].text, "Welcome to the server!") != 0) {
+        TEST_FAIL("Message Routing", "Server message was not added to chat log");
+        free(client);
+        return false;
+    }
+    if (client->chat_lines[0].name[0] != '\0') {
+        TEST_FAIL("Message Routing", "Server chat log message should have no player prefix");
+        free(client);
+        return false;
+    }
+    TEST_PASS("Server message routing: @C -> center screen, plain -> HUD chat log verified");
+
+    /* 4. Player chat formatting (Team colors, dead prefix, team prefix) */
+    client->game.players[1].alive = true;
+    client->game.players[1].team = CS2D_TEAM_T;
+    snprintf(client->game.players[1].name, sizeof(client->game.players[1].name), "TerroristGuy");
+
+    client->game.players[2].alive = false;
+    client->game.players[2].team = CS2D_TEAM_CT;
+    snprintf(client->game.players[2].name, sizeof(client->game.players[2].name), "DeadCT");
+
+    /* Alive T normal chat */
+    cs2d_client_add_chat(client, 1, 1, 255, 220, 0, "rush A");
+    const cs2d_chat_line_t *cl_t = &client->chat_lines[client->chat_line_count - 1];
+    if (strcmp(cl_t->name, "TerroristGuy: ") != 0 ||
+        cl_t->name_rgb[0] != 255 || cl_t->name_rgb[1] != 25 || cl_t->name_rgb[2] != 0) {
+        TEST_FAIL("Player Chat", "Alive Terrorist name prefix or color incorrect");
+        free(client);
+        return false;
+    }
+
+    /* Dead CT team chat */
+    cs2d_client_add_chat(client, 2, 2, 255, 220, 0, "he is at spawn");
+    const cs2d_chat_line_t *cl_ct = &client->chat_lines[client->chat_line_count - 1];
+    if (strcmp(cl_ct->name, "*DEAD*(TEAM) DeadCT: ") != 0 ||
+        cl_ct->name_rgb[0] != 50 || cl_ct->name_rgb[1] != 150 || cl_ct->name_rgb[2] != 255) {
+        TEST_FAIL("Player Chat", "Dead CT team chat prefix (*DEAD*(TEAM)) or color incorrect");
+        free(client);
+        return false;
+    }
+    TEST_PASS("Player chat formatting (T/CT team colors, *DEAD*, (TEAM)) verified");
+    free(client);
+
+
+    /* 5. Opcode 240 Serialization */
+    const char *chat_text = "test chat msg";
+    size_t slen = strlen(chat_text);
+    uint8_t pkt[4 + 128 * 2];
+    pkt[0] = (uint8_t)CS2D_NET_MSG2;
+    pkt[1] = 1; /* mode 1 */
+    pkt[2] = (uint8_t)(slen & 0xFF);
+    pkt[3] = (uint8_t)((slen >> 8) & 0xFF);
+    for (size_t i = 0; i < slen; i++) {
+        pkt[4 + i * 2]     = (uint8_t)chat_text[i];
+        pkt[4 + i * 2 + 1] = 0;
+    }
+
+    if (pkt[0] != 240 || pkt[1] != 1 || (pkt[2] | (pkt[3] << 8)) != (int)slen) {
+        TEST_FAIL("Opcode 240", "Header serialization failed");
+        return false;
+    }
+    /* Decode UTF-16LE back */
+    uint16_t c_first = pkt[4] | (pkt[5] << 8);
+    if (c_first != 't') {
+        TEST_FAIL("Opcode 240", "UTF-16LE character encoding failed");
+        return false;
+    }
+    TEST_PASS("Opcode 240 chat packet serialization & UTF-16LE encoding verified");
+
+    /* 6. Interactive Chat Prompt (Say / Sayteam, trigger keys Y/U, typing, backspace, enter, escape) */
+    cs2d_client_t *chat_cli = (cs2d_client_t *)calloc(1, sizeof(cs2d_client_t));
+    if (!chat_cli) {
+        TEST_FAIL("Chat Prompt", "Failed to allocate memory for chat client");
+        return false;
+    }
+    chat_cli->scene = CS2D_SCENE_GAME;
+
+    /* Verify key names */
+    if (strcmp(cs2d_bind_key_name('Y'), "Y") != 0 || strcmp(cs2d_bind_key_name('U'), "U") != 0 ||
+        strcmp(cs2d_bind_key_name(VK_TAB), "tab") != 0 || strcmp(cs2d_bind_key_name(VK_BACK), "backspace") != 0) {
+        TEST_FAIL("Chat Prompt", "cs2d_bind_key_name failed for Y/U/tab/backspace");
+        free(chat_cli);
+        return false;
+    }
+
+    /* Opening Say prompt via console exec 'say' */
+    cs2d_client_console_exec(chat_cli, "say");
+    if (!chat_cli->chat_open || chat_cli->chat_mode != 1 || !chat_cli->chat_just_opened || chat_cli->chat_input[0] != '\0') {
+        TEST_FAIL("Chat Prompt", "Opening chat via 'say' failed to set mode 1 or chat_open");
+        free(chat_cli);
+        return false;
+    }
+
+    /* The 'y' keypress from opening the chat prompt must be consumed cleanly */
+    cs2d_client_handle_text_input(chat_cli, "y");
+    if (chat_cli->chat_input[0] != '\0' || chat_cli->chat_just_opened) {
+        TEST_FAIL("Chat Prompt", "Initial trigger key text input was not consumed");
+        free(chat_cli);
+        return false;
+    }
+
+    /* Type message 'hello!' */
+    cs2d_client_handle_text_input(chat_cli, "hello!");
+    if (strcmp(chat_cli->chat_input, "hello!") != 0 || chat_cli->chat_cursor != 6) {
+        TEST_FAIL("Chat Prompt", "Text typing failed to populate chat_input");
+        free(chat_cli);
+        return false;
+    }
+
+    /* Backspace */
+    cs2d_client_handle_console_key(chat_cli, '\b');
+    if (strcmp(chat_cli->chat_input, "hello") != 0 || chat_cli->chat_cursor != 5) {
+        TEST_FAIL("Chat Prompt", "Backspace failed to delete trailing character");
+        free(chat_cli);
+        return false;
+    }
+
+    /* Escape cancels chat */
+    cs2d_client_handle_console_key(chat_cli, '\x1b');
+    if (chat_cli->chat_open || chat_cli->chat_input[0] != '\0') {
+        TEST_FAIL("Chat Prompt", "Escape failed to close chat prompt");
+        free(chat_cli);
+        return false;
+    }
+
+    /* Team chat (sayteam) and Enter */
+    cs2d_client_console_exec(chat_cli, "sayteam");
+    if (!chat_cli->chat_open || chat_cli->chat_mode != 2) {
+        TEST_FAIL("Chat Prompt", "sayteam failed to open team chat mode 2");
+        free(chat_cli);
+        return false;
+    }
+    cs2d_client_handle_text_input(chat_cli, "u"); /* consumed */
+    cs2d_client_handle_text_input(chat_cli, "go B");
+    cs2d_client_handle_console_key(chat_cli, '\r');
+    if (chat_cli->chat_open || chat_cli->chat_input[0] != '\0') {
+        TEST_FAIL("Chat Prompt", "Enter failed to submit and close chat prompt");
+        free(chat_cli);
+        return false;
+    }
+
+    free(chat_cli);
+    TEST_PASS("Interactive chat prompt (Y/U, text typing, backspace, enter, escape) verified");
+
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -2398,7 +2623,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 25;
+    int total = 26;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -2425,6 +2650,7 @@ int main(void)
     if (test_weapon_select()) passed++;
     if (test_buy_menu()) passed++;
     if (test_shadow_chunks()) passed++;
+    if (test_chat_and_server_messages()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);
@@ -2432,3 +2658,4 @@ int main(void)
 
     return (passed == total) ? 0 : 1;
 }
+

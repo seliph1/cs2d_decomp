@@ -8,7 +8,29 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Antigravity — In-game chat, server messages (@C) & Opcode 240
+- **Changed:**
+  - Added in-game chat log layout matching CS2D original (`Thud_msg.draw_chat` 0x14024d8a0): left aligned at `x = 3.0f`
+    with black drop shadow at `x = 4.0f, y + 1.0f` at alpha `fade`, baseline starting at `screen_h - 85 - 2*line_h` stacking
+    upwards with 10 s duration and fade-out decay. Top ceiling at `y = 180.0f` prevents overlap with top radar.
+  - Interactive chat input prompt (`FUN_14029f7b0`) on 'Y' (`Say : `) and 'U' (`Say (Team) : `) or `say`/`sayteam` commands.
+    Draws alpha 0.4 black background box, blinking vertical cursor, freezes movement/attack input while open, and sends on Enter.
+  - Fixed `sdl_key_to_cs2d_key` in `src/main_client.c`: previously only W, S, A, D, R, E, B, G, M, C were mapped. Added
+    generic letter mapping (`SDLK_A..SDLK_Z` -> `'A'..'Z'`), keypad digits, Tab (`VK_TAB`), Backspace (`VK_BACK`), Enter, Escape.
+  - Added trigger key suppression (`chat_just_opened`): consumes the initial 'y' or 'u' key event from text input so the chat prompt starts empty.
+  - Server message routing (`FUN_1401de400`): messages ending with `@C` or `@c` (or mode == 2) strip the `@C` tag and route
+    to `cs2d_client_center_msg` (screen center at `h / 2 - 10*n - 50` with black drop shadow at `+1, +1`). Other server messages
+    route to HUD chat log. All messages echo to client console.
+  - Color tag parser: `\xA9RRRGGGBBB` (single-byte 0xA9 or UTF-8 `\xC2\xA9` + 9 ASCII digits) parses RGB and strips prefix.
+  - Team colors (`tintTeamColor` 0x140083a40): Spec/Server `(255, 220, 0)`, T `(255, 25, 0)`, CT `(50, 150, 255)`. Dead
+    player formatting with `*DEAD* ` and `*DEAD*(TEAM) `.
+  - Opcode 240 (`CS2D_NET_MSG2`): client send `[240, mode, len_u16, len*2 bytes UTF-16LE]`, server recv/broadcast handler.
+- **Verified:** `test_chat_and_server_messages` in `tests/test_cs2d.c` (26 / 26 passed), verifying color code parsing,
+  `@C` tag detection & stripping, server routing to center vs. chat, player team formatting, opcode 240 serialization, and
+  interactive chat prompt operation (Y/U trigger, clean text input consumption, backspace, enter submit, escape close).
+
 ## 2026-10-12 — Antigravity — Chunk-based shadow map & incremental invalidation
+
 - **Changed:** `src/cs2d_render.c`: Replaced full-map monolithic shadow texture generation with a 16x16-tile chunk grid
   (256x256 texels per chunk). Replaced dynamic `calloc`/`free` of 34+ MB per frame with static scratch buffers and
   cached `eff_modes` / `eff_heights` tables. Fast delta tracking checks which `Func_DynWall`, `Env_Breakable` or

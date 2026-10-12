@@ -100,6 +100,8 @@ const char *cs2d_bind_key_name(int key)
         case VK_SPACE:    return "space";
         case VK_LCONTROL: return "leftctrl";
         case VK_SHIFT:    return "leftshift";
+        case VK_TAB:      return "tab";
+        case VK_BACK:     return "backspace";
         default:          return NULL;
     }
 }

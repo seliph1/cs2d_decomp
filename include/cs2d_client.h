@@ -44,6 +44,19 @@ typedef struct {
     uint8_t b;
 } cs2d_console_line_t;
 
+/* In-game chat message line (Thud_msg.add_chat / draw_chat 0x14024d8a0) */
+#define CS2D_CHAT_MAX_LINES 32
+#define CS2D_CHAT_LINE_LEN  160
+typedef struct {
+    char        name[CS2D_MAX_NAME_LEN + 32]; /* Player name with optional "*DEAD* " or "(TEAM)" prefix */
+    char        text[CS2D_CHAT_LINE_LEN];     /* Message text */
+    uint8_t     name_rgb[3];                  /* Team color */
+    uint8_t     text_rgb[3];                  /* Message color */
+    uint32_t    time_ms;                      /* When received */
+    float       fade;                         /* 1.0 down to 0.0 */
+} cs2d_chat_line_t;
+
+
 struct cs2d_client {
     cs2d_config_t   config;
 
@@ -90,6 +103,18 @@ struct cs2d_client {
     char            center_msg[4][96];
     uint8_t         center_rgb[4][3];
     uint32_t        center_ms[4];
+
+    /* In-game chat (Thud_msg.add_chat / draw_chat 0x14024d8a0, FUN_14029f7b0) */
+#define CS2D_CHAT_MAX_LINES 32
+#define CS2D_CHAT_LINE_LEN  160
+    cs2d_chat_line_t chat_lines[CS2D_CHAT_MAX_LINES];
+    int              chat_line_count;
+    bool             chat_open;               /* Chat input prompt active */
+    int              chat_mode;               /* 1 = all (Say : ), 2 = team (Say (Team) : ) */
+    char             chat_input[CS2D_CHAT_LINE_LEN];
+    int              chat_cursor;
+    bool             chat_just_opened;        /* Suppress first text input from trigger key */
+
     int             fire_seed;         /* Shot counter sent with every fire packet (-1: none sent yet) */
     bool            snapshot_states_reset; /* Join snapshot: entity states cleared before applying section 4 */
     uint32_t        ents_round;        /* game.round_number the entity logic was last reset for */
@@ -263,6 +288,13 @@ void cs2d_client_console_print(cs2d_client_t *client, uint8_t r, uint8_t g, uint
 /* Thud_msg.add_center: a message in the screen center; the same text again restarts its timer */
 void cs2d_client_center_msg(cs2d_client_t *client, uint8_t r, uint8_t g, uint8_t b, const char *text);
 void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line);
+/* In-game chat (Thud_msg.add_chat / draw_chat 0x14024d8a0, FUN_1401de400) */
+void cs2d_client_add_chat(cs2d_client_t *client, uint8_t sender_id, uint8_t mode, uint8_t r, uint8_t g, uint8_t b, const char *text);
+void cs2d_client_send_chat(cs2d_client_t *client, uint8_t mode, const char *text);
+bool cs2d_parse_color_code(const char *in, uint8_t *out_r, uint8_t *out_g, uint8_t *out_b, const char **out_text);
+bool cs2d_strip_center_tag(char *text);
+void cs2d_client_handle_server_msg(cs2d_client_t *client, uint8_t sender_id, uint8_t mode, uint8_t r, uint8_t g, uint8_t b, const char *text);
+
 /* i-th stored console line, 0 = oldest */
 const cs2d_console_line_t *cs2d_client_console_line(const cs2d_client_t *client, int i);
 void cs2d_client_handle_text_input(cs2d_client_t *client, const char *text);
