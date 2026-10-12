@@ -298,6 +298,7 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
     /* Default Server Info state (overwritten by [252, 6] and [240] when joining a server) */
     strncpy(client->net_server_name, "CS2D Server", sizeof(client->net_server_name) - 1);
     client->net_hovertext = 31; /* The dedicated's default mp_hovertext (proxy capture of [252,6]) */
+    client->net_ticks     = -1;
     cs2d_client_load_serverinfo(client, "sys/serverinfo.txt");
 
     /* Default Create Server & Options UI state matching CS2D screenshots */
@@ -949,6 +950,8 @@ static void join_players(cs2d_client_t *client, const uint8_t *buf, int len, int
         pl->look   = (r[2] <= 3) ? r[2] : 0;
         pl->score  = (r[3] | (r[4] << 8)) - 1000;
         pl->deaths = r[5] | (r[6] << 8);
+        pl->assists = r[7] | (r[8] << 8);
+        pl->mvp     = r[9] | (r[10] << 8);
         pl->pos.x  = (float)(r[12] | (r[13] << 8));
         pl->pos.y  = (float)(r[14] | (r[15] << 8));
         pl->angle  = (float)(r[16] | (r[17] << 8)) * 0.005493164f;
@@ -1055,6 +1058,8 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                             memset(&client->game.players[i], 0, sizeof(cs2d_player_t));
                         }
                         client->local_player_id = (pid > 0 && pid <= CS2D_MAX_PLAYERS) ? pid : 1;
+                        client->game.score_t = client->game.score_ct = 0;
+                        client->net_ticks = -1;
                         cs2d_game_add_player(&client->game, client->local_player_id, client->config.name, CS2D_TEAM_SPEC);
                         client->game.players[client->local_player_id].alive = false;
                         cs2d_spec_init(&client->spec, 1); /* sv_specmode default until [252,6] */
@@ -1109,6 +1114,11 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                          * freezetime, c4timer, time i32, u8, u8, then when more than 5 bytes remain maxplayers, sv_fow,
                          * sv_specmode, sv_gamemode, respawn delay, ...
                          */
+                        /* T and CT team scores (DAT_140ddf450 / DAT_140ddf44c, 0x1402d0560) */
+                        if (pos + 4 <= recvd) {
+                            client->game.score_t  = buffer[pos] | (buffer[pos + 1] << 8);
+                            client->game.score_ct = buffer[pos + 2] | (buffer[pos + 3] << 8);
+                        }
                         int s = pos + 2 + 2 + 3 + 4 + 2;
                         if (recvd - s > 5) {
                             client->net_sv_fow       = buffer[s + 1];
@@ -1340,6 +1350,10 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 if (pos + 3 > recvd) break;
                 int count = buffer[pos + 2];
                 int tail = pos + 3 + count * 12;
+                if (tail + 3 <= recvd) {
+                    /* The first byte is the round end reason (FUN_1402520b0): team wins or a score reset */
+                    cs2d_game_apply_round_reason(&client->game, buffer[pos + 1]);
+                }
                 if (tail + 3 > recvd) break;
                 int n_items = buffer[tail + 2];
                 if (tail + 3 + n_items > recvd) break;
@@ -1499,6 +1513,11 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     cs2d_player_t *p = &client->game.players[pid];
                     switch (field) {
                         case 0: p->health = value; if (value <= 0) p->alive = false; break;
+                        /* FUN_1401cc9d0: 1 score, 4 deaths, 9 assists, 10 MVPs; a change restarts the flash */
+                        case 1: if (p->score != value) p->score_inc_time = 0.0f; p->score = value; break;
+                        case 4: p->deaths = value; break;
+                        case 9: if (p->assists != value) p->assists_inc_time = 0.0f; p->assists = value; break;
+                        case 10: p->mvp = value; break;
                         case 2: p->money = value; break;
                         case 3: p->armor = value; break;
                         case 5: {
@@ -1690,17 +1709,36 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 if (!net_build_result(client, buffer, recvd, pos)) break;
                 pos += 15;
             } else if (opcode == CS2D_NET_KILL) {
-                /* Server -> Client: [19, victim, killer, weapon, u8, x u16, y u16] (9 bytes, FUN_1402d7d90 ->
-                 * FUN_1401eaf60) */
+                /* Server -> Client: [19, victim, killer, assist, weapon, x u16, y u16] (9 bytes, FUN_1402d7d90 ->
+                 * FUN_1401eaf60(victim, killer, assist, weapon, x, y): the assist byte goes to Tpl::get, the weapon
+                 * byte is compared with 0xfa / 0xfc) */
                 if (pos + 9 > recvd) break;
                 uint8_t victim = buffer[pos + 1];
                 if (victim > 0 && victim <= CS2D_MAX_PLAYERS) {
                     cs2d_player_t *v = &client->game.players[victim];
                     if (v->alive && victim == client->local_player_id) client->death_ms = GetTickCount();
-                    v->alive  = false;
-                    v->health = 0;
+                    cs2d_game_apply_kill(&client->game, victim, buffer[pos + 2], buffer[pos + 3], buffer[pos + 4],
+                                         client->net_sv_gamemode != 1);
                 }
                 pos += 9;
+            } else if (opcode == CS2D_NET_SETTEAMSCORES) {
+                /* [64, t u16, ct u16] (FUN_1402de440, "recv 64 setteamscores") */
+                if (pos + 5 > recvd) break;
+                client->game.score_t  = buffer[pos + 1] | (buffer[pos + 2] << 8);
+                client->game.score_ct = buffer[pos + 3] | (buffer[pos + 4] << 8);
+                pos += 5;
+            } else if (opcode == CS2D_NET_PINGLIST) {
+                /* [247, n, ticks u8, u16, u16, n x {pid, ping u16}] (FUN_140060f80): server ticks (DAT_140ddf3e0) and
+                 * every player's latency; the two u16 (x 8) go to DAT_140ddf3ec / DAT_140ddf3e8 */
+                if (pos + 7 > recvd) break;
+                int n = buffer[pos + 1];
+                if (pos + 7 + n * 3 > recvd) break;
+                client->net_ticks = buffer[pos + 2];
+                for (int k = 0; k < n; k++) {
+                    const uint8_t *r = &buffer[pos + 7 + k * 3];
+                    if (r[0] >= 1 && r[0] <= CS2D_MAX_PLAYERS) client->game.players[r[0]].ping = r[1] | (r[2] << 8);
+                }
+                pos += 7 + n * 3;
             } else if (opcode == CS2D_NET_CHANGESETTINGS) {
                 /* [237, setting, value] (FUN_1401e6c10 -> FUN_1401e3f10): settings 1, 11 and 12 carry a string
                  * (u8 length + text), 2..10 and 13..24 an i32; 3 is sv_specmode */
@@ -2201,6 +2239,7 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
             }
             cs2d_game_add_player(&client->game, (uint8_t)slot, bname, bteam);
             cs2d_player_t *bot = &client->game.players[slot];
+            bot->bot        = true;
             bot->alive      = true;
             bot->health     = 100;
             bot->max_health = 100;
@@ -2592,6 +2631,7 @@ void cs2d_client_handle_key(cs2d_client_t *client, int key, bool pressed)
 {
     if (!client) return;
     if (cs2d_client_any_ui_open(client)) {
+        client->show_scores = false; /* The key release goes to the window */
         if (pressed && !client->console_open && !client->create_server_open && !client->options_open) {
             cs2d_client_handle_console_key(client, tolower((unsigned char)key));
         }

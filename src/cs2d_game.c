@@ -18,10 +18,7 @@ void cs2d_game_init(cs2d_game_t *game, cs2d_gamemode_t mode)
     game->cfg_c4timer = 35.0f;
     game->cfg_startmoney = 800;
     game->cfg_maxmoney = 16000;
-
-    for (uint8_t i = 1; i <= CS2D_MAX_PLAYERS; i++) {
-        cs2d_player_init(&game->players[i], i, NULL);
-    }
+    /* Player slots stay empty (id 0) until cs2d_game_add_player, like Tpl.list */
 }
 
 bool cs2d_game_load_map(cs2d_game_t *game, const char *map_path)
@@ -75,6 +72,67 @@ int cs2d_game_count_alive(const cs2d_game_t *game, cs2d_team_t team)
         }
     }
     return count;
+}
+
+static cs2d_player_t *game_player(cs2d_game_t *game, int id)
+{
+    return (id >= 1 && id <= CS2D_MAX_PLAYERS) ? &game->players[id] : NULL;
+}
+
+/*
+ * FUN_1401eaf60 (client path, DAT_140ddf400 == 0): the victim dies and gets a death unless the weapon is 0xfc.
+ * A kill between T and CT/VIP gives the killer +1 (FUN_1401cd430; Zombies gives a zombie killer
+ * DAT_140a14d7c, not reconstructed) and restarts the assistant's flash; its assist count comes with [42, pid, 9].
+ * Otherwise FUN_1401e2d00: no self-kill, weapon not 0xff nor 72, 73, 76, 77, 87 (mask 0x8033 from 72): a team kill
+ * costs a point in a team game, a kill without teams scores +1. The client's +300 / -3300 money is not applied:
+ * the server sends the money with [42].
+ */
+void cs2d_game_apply_kill(cs2d_game_t *game, int victim, int killer, int assist, int weapon, bool teams)
+{
+    cs2d_player_t *v = game ? game_player(game, victim) : NULL;
+    if (!v) return;
+    v->health = 0;
+    v->alive  = false;
+    if (weapon != 0xfc) v->deaths++;
+
+    cs2d_player_t *k = game_player(game, killer);
+    if (!k) return;
+    bool enemies = (v->team == CS2D_TEAM_T && k->team >= CS2D_TEAM_CT) ||
+                   (v->team >= CS2D_TEAM_CT && k->team == CS2D_TEAM_T);
+    if (enemies) {
+        k->score++;
+        k->score_inc_time = 0.0f;
+        cs2d_player_t *a = (assist > 0) ? game_player(game, assist) : NULL;
+        if (a) a->assists_inc_time = 0.0f;
+        return;
+    }
+    unsigned w = (unsigned)weapon - 72u;
+    if (k == v || weapon == 0xff || (w < 16 && ((0x8033u >> w) & 1))) return;
+    k->score += teams ? -1 : 1;
+    k->score_inc_time = 0.0f;
+}
+
+/*
+ * FUN_1402520b0 (client path): the first byte of [22] is the round end reason. Bits of 1 << reason:
+ * 0x1004010040101000 (12, 20, 30, 40, 50, 60) Terrorists win; 0x804 (2, 11), 21, 22, 0x2008020080000000
+ * (31, 41, 51, 61) Counter-Terrorists win; 4 and 5 reset both team scores and every player's score, assists,
+ * deaths and MVPs; 1, 3, 10 and the rest change nothing.
+ */
+void cs2d_game_apply_round_reason(cs2d_game_t *game, int reason)
+{
+    if (!game || reason < 0 || reason > 61) return;
+    uint64_t bit = 1ULL << reason;
+    if (bit & 0x1004010040101000ULL) {
+        game->score_t++;
+    } else if ((bit & 0x2008020080000804ULL) || reason == 21 || reason == 22) {
+        game->score_ct++;
+    } else if (bit & 0x30ULL) {
+        game->score_t = game->score_ct = 0;
+        for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
+            cs2d_player_t *p = &game->players[i];
+            p->score = p->assists = p->deaths = p->mvp = 0;
+        }
+    }
 }
 
 void cs2d_game_start_round(cs2d_game_t *game)

@@ -150,6 +150,7 @@ The harness runs one step every 5 frames, then saves `screens/capture.bmp` and e
 | any console command | e.g. `map prison_funst3r`, `connect 127.0.0.1 36980`, `tp 105 57`, `equip 30` (`equip` takes an id; the name is "AK-47") |
 | `!wait N` | Wait N frames |
 | `!press K` | Press and release a game key |
+| `!hold K down\|up` | Press or release a game key and keep it (`tab` = scoreboard) |
 | `!mouse x y [down\|up\|rdown\|rup]` | Move the pointer; with `down`/`up` (`rdown`/`rup`), press or release the left (right) button |
 | `!shot file.bmp` | Save the current frame |
 | `!console`, `!text`, `!key <SDL key> [shift] [ctrl]`, `!wheel n` | UI tests |

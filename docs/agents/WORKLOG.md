@@ -8,6 +8,16 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Claude Code — Scoreboard (Tab)
+- **Changed:** `src/cs2d_scoreboard.c` (port of `Thud_scoreboard`), shown while `showscores` (Tab) is held. Network:
+  `[19]` kill scoring (byte 3 is the assist, byte 4 the weapon), `[22]` round end reason -> team scores, `[64]`, `[247]`
+  ping list (was unhandled and dropped the rest of the datagram), `[42]` fields 1 / 4 / 9 / 10, `[252,6]` team scores,
+  `[252,7,1]` assists / MVPs. `cs2d_game_init` leaves player slots empty (id 0); offline bots have `bot` set.
+  Harness step `!hold <key> down|up`.
+- **Verified:** `test_scoreboard` (layout, order, kill and round reason scoring, timers); screenshots offline and against
+  the dedicated with two bots (`[247]` = `f7 02 25 0000 0000 01 fffe 02 fffe`).
+- **Left:** see OPEN_ISSUES "Scoreboard"; not compared with a screenshot of the original.
+
 ## 2026-10-12 — Antigravity — Player and ground item shadows
 - **Changed:** implemented authentic player, hostage, ground item, and ground projectile drop shadows:
   - Added shadow cvars and config parameters: `shadows` (0..100), `playershadows` (0|1), `itemshadows` (0|1), `mapshadows` (0..4) (`include/cs2d_config.h`, `src/cs2d_config.c`).

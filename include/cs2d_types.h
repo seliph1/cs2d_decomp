@@ -281,7 +281,11 @@ typedef struct {
     int         deaths;
     int         assists;
     int         score;
-    int         ping;
+    int         mvp;                 /* Tpl +0x294 */
+    int         ping;                /* Tpl +0xd0, from [247]; 0xffff "Server", 0xfffe "Bot" */
+    float       score_inc_time;      /* 60 Hz frames since the score changed (Tpl +0x288; scoreboard flash < 97.5) */
+    float       assists_inc_time;    /* Same for the assists (Tpl +0x290) */
+    float       dead_time;           /* 60 Hz frames since death (Tpl +0x29c; scoreboard fade < 130) */
     uint32_t    usgn_id;
 } cs2d_player_t;
 

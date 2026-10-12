@@ -39,6 +39,13 @@ int cs2d_game_count_alive(const cs2d_game_t *game, cs2d_team_t team);
 /* Add a player to the server */
 bool cs2d_game_add_player(cs2d_game_t *game, uint8_t id, const char *name, cs2d_team_t team);
 
+/* [19, victim, killer, assist, weapon, ...] on a client: deaths, the killer's score and the flash timers
+ * (FUN_1401eaf60 with FUN_1401cd430 / FUN_1401e2d00). teams: 0x140a015d0[sv_gamemode] == 1 */
+void cs2d_game_apply_kill(cs2d_game_t *game, int victim, int killer, int assist, int weapon, bool teams);
+
+/* Round end reason of [22] (FUN_1402520b0): team wins (score_t / score_ct), or a full score reset */
+void cs2d_game_apply_round_reason(cs2d_game_t *game, int reason);
+
 /* Free resources allocated by game (e.g. map) */
 void cs2d_game_free(cs2d_game_t *game);
 

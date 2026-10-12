@@ -15,7 +15,13 @@ the same one.
   global timer 0x140a1b008 that knife right click also sets to 1200 ms is not reconstructed.
 - **Explosion damage fall-off:** assumed; only distance 0 was measured.
 - **Fragments:** which fragment frames and tints belong to each material is inferred from captures.
-- **Player kill and death:** opcode 19 is not handled (a death is seen through `[17]` with health 0).
+- **Scoreboard, not reconstructed** (KNOWLEDGE "Scoreboard"):
+  - Left click on a row to follow that player, the right-click context menu (`Thud_contextmenu`), the "Ticks" tooltip.
+  - Voice / chat mute icons, country flags, Steam / U.S.G.N. avatars (always `incbindata/avatar.png`), the competitive line.
+  - Small font: `PTR_bbNullObject_140a1ccb8` is assumed to be our 10 px font; not compared with a screenshot of the original.
+  - Zombies: a zombie killer scores `DAT_140a14d7c` (we add 1). The client's local +300 / -3300 kill money is not applied.
+  - Our list order is the player id; the original's `Tpl.list` is the join order (matters only for equal sortval).
+- **Kill feed:** `[19]` updates scores and deaths, but the kill messages (`Thud_msg.add_kill`) are not drawn.
 - **Opcode 40:** "kill dropped weapon"; its format is unknown.
 - **Round start and ground items:** whether dropped weapons are removed at round start is unknown.
 - **Spray:** our client sends a blank spray logo.

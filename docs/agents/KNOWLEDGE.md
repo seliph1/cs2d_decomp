@@ -137,7 +137,7 @@ modded C4 dedicated (`tools/agent/capture_transfer.sh`, map fun_roleplay). Code:
 | 17 | `[17,victim,attacker,hp,armor]` | Damage |
 | 20 | `[20,pid,team,look]` | Team and skin broadcast (`team == 0` moves player to Spectator) |
 | 21 | `[21,pid,x u16,y u16,weapon,armor,money u16,n,n×item]` | Spawn, with the whole inventory. prison_funst3r gives only the knife (50) |
-| 22 | `[22,round,n] + n×{pid,x u16,y u16,angle f32,weapon,armor,flag}` (12 bytes each) `+ {money u16, k, k×item}` | Round start. The trailer is the receiving player's inventory |
+| 22 | `[22,reason,n] + n×{pid,x u16,y u16,angle f32,weapon,armor,flag}` (12 bytes each) `+ {money u16, k, k×item}` | Round start. The trailer is the receiving player's inventory. `reason` = round end reason (see "Scoreboard") |
 | 23 | `[23,pid,type,money u16,u8]` | Buy result; type 250 = refused (prison has no buy zone) |
 | 24 | `[24,pid,type,clip u16,reserve u16,u8,item id u16,tile x u16,tile y u16,u8]` | Drop; the item lies on the player's tile |
 | 25 | `[25,pid,item id u16,type,clip u16,reserve u16,u8]` | Collect |
@@ -145,7 +145,8 @@ modded C4 dedicated (`tools/agent/capture_transfer.sh`, map fun_roleplay). Code:
 | 31 | `[31,x u16,y u16,state]` | Entity event |
 | 33 | `[33,type,item id u16,tile x u16,tile y u16,clip u16,reserve u16]` | Spawn item |
 | 41 | `[41,id,pid]` | Kill/detonate projectile (3 bytes, REA `0x1402daf80`) |
-| 42 | `[42,pid,field,value u16]` | Playerdata. Fields: 0 health, 2 money, 3 armor, 5 weapon given, 6 weapon taken, 8 max health |
+| 42 | `[42,pid,field,value u16]` | Playerdata. Fields: 0 health, 1 score, 2 money, 3 armor, 4 deaths, 5 weapon given, 6 weapon taken, 8 max health, 9 assists, 10 MVPs (REA `FUN_1401cc9d0`) |
+| 64 | `[64,t u16,ct u16]` | Team scores (`setteamscores`, REA `FUN_1402de440`) |
 | 52 | `[52,pid,type,id u16,x u16,y u16,rot u32]` | Spawn ground projectile (13 bytes, REA `0x140060ee0`) |
 | 55 | `[55,id,pid]` | Silent kill projectile (3 bytes, REA `0x1402dd7a0`) |
 | 58 | `[58,pid,type,id,x+32768 u16,y+32768 u16,flydist u16,dir u16]` | Spawn flying projectile (12 bytes, REA `0x1400a91d0`) |
@@ -153,7 +154,8 @@ modded C4 dedicated (`tools/agent/capture_transfer.sh`, map fun_roleplay). Code:
 | 63 | `[63,id,pid,x+32768 u16,y+32768 u16]` | Move projectile (7 bytes, REA `0x14007dce0`) |
 | 226 | `[226,1,u16,len u16,text,u8]` | Message |
 | 240 | `[240,pid,mode,len u8,UTF-16LE (2×len bytes)]` | Chat & Server Info (`mode == 50`: `"1"` clear serverinfo, `"2"` open `"<server_name> - Info"` window; `mode == 51`: append UTF-16LE serverinfo line with optional `U+00A9` + 9 digits `RRRGGGBBB` color tag or `U+00BB` gold link) |
-| 229 / 247 / 249 | | Pings; reply to 249 with the same 5 bytes |
+| 247 | `[247,n,ticks,u16,u16,n×{pid,ping u16}]` | Ping list (REA `FUN_140060f80`, proxy): server ticks, ping 0xfffe = bot, 0xffff = server |
+| 229 / 249 | | Pings; reply to 249 with the same 5 bytes |
 
 ## Server browser (Find Servers)
 
@@ -461,7 +463,8 @@ offline dedicated with `sv_gamemode 3` + `tools/agent/lua/construct_probe.lua`. 
 - **Respawn modes** (DM, TDM, Construction, Zombies): joining a team leaves the player dead; a left click between the HUD
   bands sends `[39]` unless a living player is within 20 px of the cursor; the server answers `[21]`. While
   `mp_respawndelay` (`[252,6]` byte after sv_gamemode) runs the HUD shows 0767 in (200, 0, 0).
-- **Kill:** `[19, victim, killer, weapon, u8, x u16, y u16]` (9 bytes).
+- **Kill:** `[19, victim, killer, assist, weapon, x u16, y u16]` (9 bytes; REA `FUN_1401eaf60` reads the 3rd byte as a
+  player id and compares the 4th with 0xfa / 0xfc).
 - **Hover text** (`FUN_1402a12d0`, called only with the cursor on the 850x480 screen): `mp_hovertext` (`0x140a14e00[1]`)
   is a bit mask, 1 | 2 players, 4 hostages, 8 buildings. It comes in `[252,6]` at maxplayers + 12 + both string
   lengths (31 with the dedicated's default config, proxy) and in `[237,16,i32]`. Bit 8: the first category 1 object
@@ -626,6 +629,36 @@ chat prompt `FUN_14029f7b0`, opcode 240 handler `FUN_1402c8100` (`recv 240 msg`)
   - Client send: `[240, mode u8 (1=say, 2=sayteam), char_len u16 LE, char_len * 2 bytes UTF-16LE]`.
   - Server recv & broadcast: `[240, sender_id u8, mode u8, char_len u16 LE, char_len * 2 bytes UTF-16LE]`.
 
+
+## Scoreboard
+
+Source: dump `Thud_scoreboard` (`draw 0x140251220`, `drawBase 0x140250170`, `drawTeamHeader 0x140124cd0`,
+`drawTeamColumns 0x140124ff0`, `drawPlayer 0x14012e4b0`, `drawWithTeams 0x140130450`, `drawWithoutTeams 0x1401309d0`,
+spectators `FUN_1401066d0`), scope `0x1409df4e0`, kill `FUN_1401eaf60`, round start `FUN_1402520b0`; screenshots of our
+client offline and against the dedicated. Code: `src/cs2d_scoreboard.c`.
+
+- **Key:** `bind "tab" "showscores"` sets `DAT_140ddf480` while held; the HUD draws `Thud_scoreboard.draw(1)` after the chat.
+- **Settings (shipped):** columns Latency, Deaths, Assists, Score + avatars, flags, MVPs on (`0x140a14fd0..0x140a14fe8` = 1);
+  money, K / D, ids, ranks, shortcuts off (.bss). Size setting `0x140ddf1e0` = 0.
+- **Window:** resolution table (widths `0x140bd7860`, heights `0x140bd78a0`: 640x480, 850x480, 800x600, 1060x600, ...);
+  a screen width at index i > 1 uses entry 1 (i = 2, 3), `0x140bc8a40[i - 4]` (4..11) or i, minus 20, centered when it
+  fits; otherwise the screen minus 10 px on every side (850x480: 830x460 at (10, 10)). Black 0.55, `gui_c.bmp` 16 px corners.
+- **Sizes** (HUD font 13 < 15): 15 px font, small 12, scale 1.1538461; value column 48 (+2 gap), team header 26, gap 2,
+  row 21, icon 17, column (rw - 32) / 2 - 4 = 395; rows per column ceil(...) = 17.
+- **Top line** (y = ry + 5): server name (255,220,0) at rx + 16, ticks (small, red < 20, yellow < 30, else 180) after it,
+  map name (150,255,0) right-aligned at rx + rw - 16. Then y += 15 + scale * 8.
+- **Team game:** CT (50,150,255) left "Counter-Terrorist Forces" (0353), T (255,25,0) right "Terrorist Forces" (0352);
+  Zombies: "Survivors" (0880) / "Zombies" (0879) in green. Header: 0.2 bar, white name (squeezed to 75 %), team score on
+  the right, "n Players" (0201, "1 Player") small at 0.7. Without teams: one green "Players" header over both columns.
+- **Rows:** sortval = score * 500000 + assists * 5000 + mvp * 500 - deaths, descending. Row bar 0.1 / 0.03 alternating,
+  the local player +50 brighter at 0.3. Dead: name gray 110 at 0.8, `hud_symbols` frame 12 fading yellow -> 200 over
+  130 frames, deaths white -> row color. Score / assists flash for 97.5 frames after a change (green, yellow without teams).
+  Latency colored like the server browser; offline the local player "Server" (0281), bots "Bot" (0229).
+- **Team scores:** `[252,6]` u16 T, u16 CT after the server name; `[64]`; client-side `+1` at `[22]` by reason:
+  1 << reason in 0x1004010040101000 T, 0x804 / 21 / 22 / 0x2008020080000000 CT, 4 and 5 reset all scores.
+- **Kill scoring (client):** victim deaths + 1 unless weapon 0xfc; T vs CT/VIP killer + 1; otherwise (not self, weapon not
+  0xff / 72 / 73 / 76 / 77 / 87) team game - 1, no teams + 1.
+- **Spectators:** "Spectators (n): " (0791) + names with ", " (80), alternating 110 / 150, anchored to the window bottom.
 
 ## Rendering notes
 

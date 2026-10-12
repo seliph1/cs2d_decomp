@@ -27,6 +27,7 @@
 #include "cs2d_spectate.h"
 #include "cs2d_dynobj.h"
 #include "cs2d_bind.h"
+#include "cs2d_scoreboard.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -2958,6 +2959,83 @@ static bool test_item_and_player_shadows(void)
     return true;
 }
 
+/* =========================================================================
+ * Scoreboard (Thud_scoreboard): layout, order, kill scoring and round end reasons (REA, dump)
+ * ========================================================================= */
+static bool test_scoreboard(void)
+{
+    printf("\n=== Testing Scoreboard (Thud_scoreboard.draw 0x140251220) ===\n");
+
+    /* 850x480 is resolution table entry 1: the window fills the screen minus 10 px; 15 px font, scale 1.1538461 */
+    cs2d_scoreboard_layout_t L;
+    cs2d_scoreboard_layout(850, 480, &L);
+    if (L.rx != 10 || L.ry != 10 || L.rw != 830 || L.rh != 460 || L.value_w != 48 || L.team_h != 26 ||
+        L.team_pad != 2 || L.slot_h != 21 || L.icon != 17.0f || L.half_w != 395 || L.slots != 17) {
+        TEST_FAIL("Layout 850x480", "window, column or row sizes differ");
+    }
+    /* 800x600 (entry 2) keeps the 850x480 size: 780 wide (screen too narrow), 460 high centered */
+    cs2d_scoreboard_layout(800, 600, &L);
+    if (L.rx != 10 || L.rw != 780 || L.rh != 460 || L.ry != 70) TEST_FAIL("Layout 800x600", "resolution table");
+    TEST_PASS("Layout: 850x480 window 830x460 at (10,10), 17 rows of 21 px, columns 48 px; 800x600 -> 830x460 centered");
+
+    /* Order: sortval = score * 500000 + assists * 5000 + mvp * 500 - deaths, ties keep the list order */
+    static cs2d_game_t g;
+    cs2d_game_init(&g, CS2D_MODE_STANDARD);
+    cs2d_game_add_player(&g, 1, "a", CS2D_TEAM_T);
+    cs2d_game_add_player(&g, 2, "b", CS2D_TEAM_CT);
+    cs2d_game_add_player(&g, 3, "c", CS2D_TEAM_SPEC);
+    cs2d_game_add_player(&g, 4, "d", CS2D_TEAM_T);
+    g.players[1].score = 1; g.players[1].deaths = 2;
+    g.players[2].score = 1; g.players[2].deaths = 1;
+    g.players[4].score = 1; g.players[4].deaths = 1;
+    int ord[CS2D_MAX_PLAYERS];
+    int n = cs2d_scoreboard_order(g.players, ord);
+    if (n != 3 || ord[0] != 2 || ord[1] != 4 || ord[2] != 1) TEST_FAIL("Order", "sortval order or spectator listed");
+    TEST_PASS("Order by sortval, spectators excluded, ties in list order");
+
+    /* [19] on a client: enemy kill +1, team kill -1 in a team game, +1 without teams; weapon 0xfc keeps deaths */
+    for (int i = 1; i <= 4; i++) { g.players[i].score = g.players[i].deaths = 0; g.players[i].alive = true; g.players[i].health = 100; }
+    cs2d_game_apply_kill(&g, 1, 2, 4, 30, true);
+    if (g.players[1].deaths != 1 || g.players[1].alive || g.players[2].score != 1 ||
+        g.players[2].score_inc_time != 0.0f || g.players[4].assists_inc_time != 0.0f) {
+        TEST_FAIL("Kill", "enemy kill scoring");
+    }
+    cs2d_game_apply_kill(&g, 4, 1, 0, 30, true);
+    if (g.players[1].score != -1 || g.players[4].deaths != 1) TEST_FAIL("Kill", "team kill costs a point");
+    cs2d_game_apply_kill(&g, 4, 1, 0, 30, false);
+    if (g.players[1].score != 0) TEST_FAIL("Kill", "kill without teams scores");
+    cs2d_game_apply_kill(&g, 4, 4, 0, 0xfc, true);
+    if (g.players[4].deaths != 2 || g.players[4].score != 0) TEST_FAIL("Kill", "weapon 0xfc or self kill");
+    TEST_PASS("Kill [19]: enemy +1 (assist flash), team kill -1, no teams +1, self kill 0, weapon 0xfc no death");
+
+    /* [22] round end reason: 12/20/30... T win, 2/11/21/22/31... CT win, 4/5 reset, 1/10 nothing */
+    g.score_t = g.score_ct = 0;
+    cs2d_game_apply_round_reason(&g, 20);
+    cs2d_game_apply_round_reason(&g, 12);
+    cs2d_game_apply_round_reason(&g, 21);
+    cs2d_game_apply_round_reason(&g, 61);
+    cs2d_game_apply_round_reason(&g, 11);
+    cs2d_game_apply_round_reason(&g, 1);
+    cs2d_game_apply_round_reason(&g, 10);
+    if (g.score_t != 2 || g.score_ct != 3) TEST_FAIL("Round reason", "team wins");
+    g.players[2].score = 5;
+    cs2d_game_apply_round_reason(&g, 4);
+    if (g.score_t != 0 || g.score_ct != 0 || g.players[2].score != 0) TEST_FAIL("Round reason", "reset");
+    TEST_PASS("Round end reasons of [22]: T 12/20, CT 11/21/61, none 1/10, reset 4");
+
+    /* Flash timers: 60 Hz units; dead_time counts only while dead */
+    g.players[2].score_inc_time = 0.0f;
+    g.players[2].alive = true; g.players[2].health = 100;
+    g.players[1].dead_time = 0.0f; /* killed above: counts from the death */
+    cs2d_scoreboard_tick(g.players, 0.5f);
+    if (fabsf(g.players[2].score_inc_time - 30.0f) > 0.01f || g.players[2].dead_time != 0.0f ||
+        fabsf(g.players[1].dead_time - 30.0f) > 0.01f) {
+        TEST_FAIL("Tick", "timers");
+    }
+    TEST_PASS("Score / assists / death flash timers in 60 Hz frames");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -2965,7 +3043,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 28;
+    int total = 29;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -2995,6 +3073,7 @@ int main(void)
     if (test_chat_and_server_messages()) passed++;
     if (test_projectiles_and_fields()) passed++;
     if (test_item_and_player_shadows()) passed++;
+    if (test_scoreboard()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

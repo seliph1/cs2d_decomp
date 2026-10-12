@@ -18,6 +18,10 @@ void cs2d_player_init(cs2d_player_t *player, uint8_t id, const char *name)
     player->team = CS2D_TEAM_SPEC;
     player->money = 800;
     player->alive = false;
+    /* Tpl::add 0x1400ad920: a new player starts with no scoreboard flash */
+    player->score_inc_time   = 100000.0f;
+    player->assists_inc_time = 100000.0f;
+    player->dead_time        = 100000.0f;
 }
 
 void cs2d_player_spawn(cs2d_player_t *player, cs2d_team_t team, cs2d_vec2_t spawn_pos)

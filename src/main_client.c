@@ -106,6 +106,7 @@ static void save_gl_screenshot_bmp(const char *filepath, int w, int h)
  *   !key <SDL key name> [shift] [ctrl]   press a key with modifiers (e.g. "!key Left shift ctrl")
  *   !wheel <n>                    mouse wheel (positive = up)
  *   !mouse <x> <y> [down|up|rdown|rup]  move the pointer, optionally pressing / releasing the left (or right) button
+ *   !hold <key> down|up           press or release a game key and keep it ("tab" for the scoreboard)
  *   !wait <frames>                wait before the next step
  *   !shot <file.bmp>              save the current frame (steps run every 5 frames)
  */
@@ -128,6 +129,12 @@ static void run_capture_step(const char *cmd)
         int k = toupper((unsigned char)cmd[7]);
         cs2d_client_handle_key(&g_client, k, true);
         cs2d_client_handle_key(&g_client, k, false);
+    } else if (strncmp(cmd, "!hold ", 6) == 0) {
+        char name[16] = {0}, state[8] = {0};
+        if (sscanf(cmd + 6, "%15s %7s", name, state) == 2) {
+            int k = (_stricmp(name, "tab") == 0) ? VK_TAB : toupper((unsigned char)name[0]);
+            cs2d_client_handle_key(&g_client, k, strcmp(state, "down") == 0);
+        }
     } else if (strncmp(cmd, "!wait ", 6) == 0) {
         /* Handled by the capture scheduler */
     } else if (strncmp(cmd, "!wheel ", 7) == 0) {

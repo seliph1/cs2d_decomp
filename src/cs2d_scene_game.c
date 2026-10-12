@@ -3,6 +3,7 @@
 #include "cs2d_player.h"
 #include "cs2d_game.h"
 #include "cs2d_network.h"
+#include "cs2d_scoreboard.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -800,6 +801,7 @@ static void game_enter(cs2d_client_t *client)
         cs2d_game_add_player(&client->game, 1, client->config.name, CS2D_TEAM_CT);
         cs2d_game_add_player(&client->game, 2, "Bot_Bravo", CS2D_TEAM_T);
         cs2d_game_add_player(&client->game, 3, "Bot_Charlie", CS2D_TEAM_T);
+        client->game.players[2].bot = client->game.players[3].bot = true;
     }
 
     const char *map_name = client->pending_map[0] ? client->pending_map : "de_dust2";
@@ -879,6 +881,8 @@ static void game_update(cs2d_client_t *client, float delta_time)
     } else {
         cs2d_game_update(&client->game, delta_time);
     }
+
+    cs2d_scoreboard_tick(client->game.players, delta_time);
 
     cs2d_player_t *pl = &client->game.players[client->local_player_id];
     /* Weapon selection HUD: closed while dead; the icons of the open slot turn 3 degrees per 60 Hz frame
@@ -1748,6 +1752,26 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     }
     render_chat(client, screen_w, screen_h);
     render_center_msgs(client, screen_w, screen_h);
+    /* Thud_scoreboard.draw(1) after the chat and the HUD menus (0x1402a0000 game HUD) */
+    if (client->show_scores) {
+        cs2d_scoreboard_view_t v = {
+            .players     = client->game.players,
+            .local_id    = client->local_player_id,
+            .teams       = team_game(client),
+            .zombies     = client->net_sv_gamemode == 4,
+            .host        = !client->connected,
+            .server_name = client->net_server_name,
+            .map_name    = client->connected ? client->net_map_name : client->game_map_name,
+            .score_t     = client->game.score_t,
+            .score_ct    = client->game.score_ct,
+            .ticks       = client->connected ? client->net_ticks : -1,
+            .spec_mode   = client->spec.mode,
+            .spec_target = client->spec.target,
+            .mouse_x     = client->mouse_screen_x,
+            .mouse_y     = client->mouse_screen_y
+        };
+        cs2d_scoreboard_render(&v, screen_w, screen_h);
+    }
 }
 
 /* Holds weapon_id (FUN_1401caca0); online the new weapon is announced as [9, type, 0] (recorded from CS2D.exe) */
@@ -1802,6 +1826,12 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
             cs2d_buy_act_t act = cs2d_buymenu_key(&client->buy, &ctx, key - '0', &item);
             buy_menu_result(client, act, item);
         }
+        return;
+    }
+    /* "showscores" (bind "tab") is held, not pressed: the command dispatcher sets DAT_140ddf480 while the key is down */
+    const char *held_cmd = cs2d_binds_find(&client->binds, cs2d_bind_key_name(key));
+    if (held_cmd && _stricmp(held_cmd, "showscores") == 0) {
+        client->show_scores = pressed;
         return;
     }
     /* Bindings of sys/controls.cfg: weapon selection ("1".."9", "0"), buying ("B", "C", ",", ".") and chat ("Y", "U") */
