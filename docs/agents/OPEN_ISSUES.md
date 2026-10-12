@@ -21,6 +21,13 @@ the same one.
   - Small font: `PTR_bbNullObject_140a1ccb8` is assumed to be our 10 px font; not compared with a screenshot of the original.
   - Zombies: a zombie killer scores `DAT_140a14d7c` (we add 1). The client's local +300 / -3300 kill money is not applied.
   - Our list order is the player id; the original's `Tpl.list` is the join order (matters only for equal sortval).
+- **Env_Object and tile blending, not reconstructed** (KNOWLEDGE "Env_Object and tile blending"):
+  - `Te.age` is per entity and only advances on screen; we use one clock for every object.
+  - Sink / Toilet are drawn on our ground pass, under the ground items (the original draws `Te.draw(1)` after items).
+  - The light engine paths (`TLightingSprite` for the alarm, `Te.update` obstacle shadows) and the 3D mode (`Tile3D`).
+  - The setting `DAT_140ddf17f` that turns tile blending off is not read; we always blend. In the editor, painting does
+    not re-run `updatetile` (we compute the neighbour every frame, so a cleared 0x40 flag never stays cleared).
+  - `test_file_transfer` "Transfer list" fails while `maps/fun_roleplay.map` / `gfx/c4/` exist locally.
 - **Kill feed:** `[19]` updates scores and deaths, but the kill messages (`Thud_msg.add_kill`) are not drawn.
 - **Opcode 40:** "kill dropped weapon"; its format is unknown.
 - **Round start and ground items:** whether dropped weapons are removed at round start is unknown.

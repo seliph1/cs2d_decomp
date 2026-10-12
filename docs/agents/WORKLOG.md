@@ -8,6 +8,28 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — DeepSeek — Lua language-server config
+- **Changed:** added `.luarc.json` (Lua 5.1, `workspace.library = meta`, the CS2D command/hook/global list in
+  `diagnostics.globals`, and a few noisier diagnostics disabled) and `meta/cs2d.lua`, EmmyLua stubs for the CS2D
+  Lua API derived from `sys/lua/info.txt`, `docs/cs2d_help_db.json` and the shipped scripts. Editor-only; not built
+  or executed. The shipped scripts under `sys/lua/`, `maps/` and `bots/` no longer report undefined globals and get
+  autocomplete for `addhook` / `player` / `entity` / `parse` / `ai_*`.
+- **Verified:** `.luarc.json` parses; the stubs cover every command in the scrape plus the `wrapper` / `sample` globals.
+- **Left:** nothing; the config lives at the workspace root and covers the whole tree.
+
+## 2026-10-12 — Claude Code — Env_Object and tile blending
+- **Changed:** Env_Object is now a port of `Te.draw`: Sink / Toilet on the ground pass (frames 0 / 1, we used type - 2),
+  Palm / Tree with the original sway and leaf shadows, Alarm (flare1 pulse), Street Lights (flare3 + lamp frame 2); size,
+  alpha and color are used as stored (we forced 0 to 1 / white, so fun_roleplay's street lights showed a flare the
+  original does not draw). Tile blending (`Ttileblend`): blended images built from the tileset pixels and
+  `gfx/blendmap.bmp` into a per-tileset atlas the first time they are drawn. The editor now draws the overhead pass too
+  (the original editor loop calls the same map draw). `tex_lamp1` renamed `tex_objects`.
+- **Verified:** `test_tile_blending` (direction table, blendmap orientation, mix, de_aztec frames); screenshots of
+  fun_roleplay at 2|24 and 119|150 next to the user's screenshots of the original, prison_funst3r sinks / toilets /
+  palms / trees. 29 / 30 tests: `Transfer list` also fails without these changes (the untracked `maps/fun_roleplay.map`
+  and `gfx/c4/` from a download make the list request different files).
+- **Left:** see OPEN_ISSUES "Env_Object and tile blending".
+
 ## 2026-10-12 — Claude Code — projected player shadow
 - **Changed:** at the user's request, `cs2d_render_player` casts the player's silhouette (legs, torso, weapon in black)
   along the map sun instead of the `shadow.bmp` blob of the original `Tpl.draw`. Second round: offset reduced (h 6 px,

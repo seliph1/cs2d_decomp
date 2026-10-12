@@ -298,6 +298,14 @@ static uint32_t *downsample_rgba_2x(const uint32_t *src, int src_w, int src_h, i
     return dst;
 }
 
+/* CPU copy of an image as uploaded (after its mask mode), kept when s_capture points to it during a load */
+typedef struct {
+    uint32_t *px;
+    int       w, h;
+} rgba_image_t;
+
+static rgba_image_t *s_capture = NULL;
+
 /*
  * Uploads processed RGBA image to OpenGL.
  * When cell_w > 0 && cell_h > 0 on a multi-cell sheet (tilesets, shadowmap, player skins,
@@ -316,6 +324,14 @@ static void upload_rgba_to_texture(
 {
     apply_cs2d_mask_mode(rgba, w * h, has_embedded_alpha, mask_mode);
     dilate_transparent_rgb(rgba, w, h, cell_w, cell_h);
+    if (s_capture && !s_capture->px) {
+        s_capture->px = (uint32_t *)malloc((size_t)w * (size_t)h * 4);
+        if (s_capture->px) {
+            memcpy(s_capture->px, rgba, (size_t)w * (size_t)h * 4);
+            s_capture->w = w;
+            s_capture->h = h;
+        }
+    }
 
     int pad = 0;
     int gpu_w = w;
@@ -693,6 +709,194 @@ bool cs2d_texture_load_bmp(cs2d_texture_t *tex, const char *filepath, bool color
 }
 
 /*
+ * Tile blending (Ttileblend). A tile whose modifier has (mod & 0xc0) == 0x40 carries a blend frame (map byte, kept in
+ * tile_data[3]). Ttileblend.updatetile (0x1400ae560) takes the neighbour in direction frame & 7 (0 up, 1 up-right,
+ * 2 right, 3 down-right, 4 down, 5 down-left, 6 left, 7 up-left; outside the map = tile 0); when it is the same tile
+ * the 0x40 flag is cleared, else FUN_14005e2e0 builds (once per frame, tile, neighbour) an image that mixes the two
+ * tileset frames: per pixel and per channel (alpha too) a * (1 - f) + b * f, f = red of gfx/blendmap.bmp frame
+ * `frame` (40 frames of 32x32, 0x140a0dcb0) at (x, y) / (tile size / 32). The tile is then drawn with that image and
+ * its own rotation and brightness (0x140270a40). The game builds them at map load when DAT_140ddf17f is 1
+ * ("Generating Tile Blending"); we build each image the first time it is drawn.
+ */
+#define TILEBLEND_SOURCES    4
+#define TILEBLEND_MAX        1024
+#define TILEBLEND_ATLAS_COLS 16
+
+typedef struct {
+    uint32_t       tileset_id;            /* GL id of the tileset these pixels were uploaded to */
+    rgba_image_t   tileset;               /* tileset pixels after its mask mode */
+    int            tile_src;              /* cell size of the atlas below */
+    uint8_t        key[TILEBLEND_MAX][3]; /* blend frame, own tile, neighbour tile */
+    int            count;
+    bool           dirty;
+    cs2d_texture_t atlas;                 /* TILEBLEND_ATLAS_COLS cells per row */
+    uint32_t      *atlas_px;
+    int            atlas_rows;
+} tileblend_source_t;
+
+static tileblend_source_t s_tileblend[TILEBLEND_SOURCES];
+static rgba_image_t       s_blendmap;
+static bool               s_blendmap_tried = false;
+
+static void tileblend_free(tileblend_source_t *src)
+{
+    free(src->tileset.px);
+    free(src->atlas_px);
+    cs2d_texture_free(&src->atlas);
+    memset(src, 0, sizeof(*src));
+}
+
+/* Called when a tileset is loaded: GL ids are reused, so a new upload with the same id replaces the old entry */
+static void tileblend_register(uint32_t tileset_id, rgba_image_t *img)
+{
+    tileblend_source_t *slot = NULL;
+    for (int i = 0; i < TILEBLEND_SOURCES && !slot; i++) {
+        if (s_tileblend[i].tileset_id == tileset_id) slot = &s_tileblend[i];
+    }
+    for (int i = 0; i < TILEBLEND_SOURCES && !slot; i++) {
+        if (s_tileblend[i].tileset_id == 0) slot = &s_tileblend[i];
+    }
+    if (!slot) slot = &s_tileblend[0];
+    tileblend_free(slot);
+    slot->tileset_id = tileset_id;
+    slot->tileset = *img;
+    img->px = NULL;
+}
+
+static tileblend_source_t *tileblend_find(uint32_t tileset_id)
+{
+    for (int i = 0; i < TILEBLEND_SOURCES; i++) {
+        if (tileset_id && s_tileblend[i].tileset_id == tileset_id && s_tileblend[i].tileset.px) return &s_tileblend[i];
+    }
+    return NULL;
+}
+
+static bool tileblend_load_blendmap(void)
+{
+    if (!s_blendmap_tried) {
+        s_blendmap_tried = true;
+        cs2d_texture_t tmp;
+        s_capture = &s_blendmap;
+        cs2d_texture_load_ex(&tmp, "gfx/blendmap.bmp", 2);
+        s_capture = NULL;
+        cs2d_texture_free(&tmp);
+    }
+    return s_blendmap.px != NULL;
+}
+
+/* Ttileblend.updatetile: the neighbour tile id in direction dir, 0 outside the map */
+uint8_t cs2d_render_tileblend_neighbour(const cs2d_map_t *map, int tx, int ty, int dir)
+{
+    static const int dx[8] = { 0, 1, 1, 1, 0, -1, -1, -1 };
+    static const int dy[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
+    int nx = tx + dx[dir], ny = ty + dy[dir];
+    if (nx < 0 || ny < 0 || nx >= (int)map->width || ny >= (int)map->height) return 0;
+    return map->tiles[(size_t)ny * map->width + (size_t)nx];
+}
+
+/* FUN_14005e2e0: per channel (alpha too) a * (1 - f) + b * f, f = mask * 0.003921569, truncated */
+uint32_t cs2d_render_tileblend_mix(uint32_t a, uint32_t b, uint8_t mask)
+{
+    float f = (float)mask * 0.003921569f;
+    uint32_t out = 0;
+    for (int c = 0; c < 32; c += 8) {
+        float v = (float)((a >> c) & 0xff) * (1.0f - f) + (float)((b >> c) & 0xff) * f;
+        out |= ((uint32_t)(int)v & 0xffu) << c;
+    }
+    return out;
+}
+
+int cs2d_render_tileblend_mask(int frame, int x, int y)
+{
+    if (frame < 0 || frame >= 40 || x < 0 || y < 0 || x >= 32 || y >= 32 || !tileblend_load_blendmap()) return -1;
+    if (s_blendmap.w < 256 || s_blendmap.h < 160) return -1;
+    return (int)(s_blendmap.px[(size_t)((frame / 8) * 32 + y) * s_blendmap.w + (frame % 8) * 32 + x] & 0xff);
+}
+
+/* FUN_14005e2e0: mixes tileset frames t1 and t2 with blendmap frame `frame` into atlas cell n */
+static void tileblend_build(tileblend_source_t *src, int n)
+{
+    int s = src->tile_src;
+    int tcols = src->tileset.w / s;
+    int need_rows = n / TILEBLEND_ATLAS_COLS + 1;
+    if (need_rows > src->atlas_rows) {
+        int rows = need_rows * 2;
+        size_t row_px = (size_t)TILEBLEND_ATLAS_COLS * (size_t)s * (size_t)s;
+        uint32_t *px = (uint32_t *)realloc(src->atlas_px, row_px * (size_t)rows * 4);
+        if (!px) return;
+        memset(px + row_px * (size_t)src->atlas_rows, 0, row_px * (size_t)(rows - src->atlas_rows) * 4);
+        src->atlas_px = px;
+        src->atlas_rows = rows;
+    }
+    int frame = src->key[n][0], t1 = src->key[n][1], t2 = src->key[n][2];
+    int aw = TILEBLEND_ATLAS_COLS * s;
+    int ox = (n % TILEBLEND_ATLAS_COLS) * s, oy = (n / TILEBLEND_ATLAS_COLS) * s;
+    int x1 = (t1 % tcols) * s, y1 = (t1 / tcols) * s;
+    int x2 = (t2 % tcols) * s, y2 = (t2 / tcols) * s;
+    int mx = (frame % 8) * 32, my = (frame / 8) * 32;
+    int div = s >> 5;
+    for (int y = 0; y < s; y++) {
+        for (int x = 0; x < s; x++) {
+            uint32_t a = (y1 + y < src->tileset.h) ? src->tileset.px[(size_t)(y1 + y) * src->tileset.w + x1 + x] : 0;
+            uint32_t b = (y2 + y < src->tileset.h) ? src->tileset.px[(size_t)(y2 + y) * src->tileset.w + x2 + x] : 0;
+            uint8_t mask = (uint8_t)(s_blendmap.px[(size_t)(my + y / div) * s_blendmap.w + mx + x / div] & 0xff);
+            src->atlas_px[(size_t)(oy + y) * aw + ox + x] = cs2d_render_tileblend_mix(a, b, mask);
+        }
+    }
+    src->dirty = true;
+}
+
+/*
+ * The atlas cell holding the blended image of tile (tx, ty), or -1 when the tile is drawn from the tileset
+ * (no 0x40 flag, the same tile next to it, a blend frame outside blendmap.bmp, or no pixels to blend).
+ */
+static int tileblend_cell(tileblend_source_t *src, const cs2d_map_t *map, int tx, int ty, int tile_src)
+{
+    size_t idx = (size_t)ty * map->width + (size_t)tx;
+    if (!src || !map->modifiers || !map->tile_data || (map->modifiers[idx] & 0xc0) != 0x40) return -1;
+    uint8_t frame = map->tile_data[idx * 4 + 3];
+    uint8_t t1 = map->tiles[idx];
+    uint8_t t2 = cs2d_render_tileblend_neighbour(map, tx, ty, frame & 7);
+    if (t1 == t2 || frame >= 40 || !tileblend_load_blendmap()) return -1;
+    if (s_blendmap.w < 256 || s_blendmap.h < 160 || src->tileset.w < tile_src || tile_src < 32) return -1;
+    if (src->tile_src != tile_src) {
+        /* The map's tile size changed: start a new atlas */
+        free(src->atlas_px);
+        cs2d_texture_free(&src->atlas);
+        src->atlas_px = NULL;
+        src->atlas_rows = 0;
+        src->count = 0;
+        src->tile_src = tile_src;
+    }
+    for (int i = 0; i < src->count; i++) {
+        if (src->key[i][0] == frame && src->key[i][1] == t1 && src->key[i][2] == t2) return i;
+    }
+    if (src->count >= TILEBLEND_MAX) return -1;
+    int n = src->count;
+    src->key[n][0] = frame;
+    src->key[n][1] = t1;
+    src->key[n][2] = t2;
+    tileblend_build(src, n);
+    if (!src->atlas_px) return -1;
+    src->count++;
+    return n;
+}
+
+/* Uploads the atlas again after new cells were built (padded like a tileset) */
+static void tileblend_upload(tileblend_source_t *src)
+{
+    if (!src->dirty || !src->atlas_px) return;
+    src->dirty = false;
+    int w = TILEBLEND_ATLAS_COLS * src->tile_src, h = src->atlas_rows * src->tile_src;
+    uint32_t *copy = (uint32_t *)malloc((size_t)w * (size_t)h * 4);
+    if (!copy) return;
+    memcpy(copy, src->atlas_px, (size_t)w * (size_t)h * 4);
+    cs2d_texture_free(&src->atlas);
+    upload_rgba_to_texture(&src->atlas, copy, w, h, true, 0, src->tile_src, src->tile_src);
+    free(copy);
+}
+
+/*
  * Reconstructed from FUN_140113d50 (lines 236-263 in cs2d_dedicated.exe):
  * Resolves gfx/tiles/<tileset_name> (trying exact name, .bmp, and .png)
  * and builds a 32x32 padded cell atlas to prevent tileset edge bleeding.
@@ -701,17 +905,22 @@ bool cs2d_texture_load_tileset(cs2d_texture_t *tex, const char *tileset_name)
 {
     if (!tex || !tileset_name || tileset_name[0] == '\0') return false;
 
-    char path[256];
-    snprintf(path, sizeof(path), "gfx/tiles/%s", tileset_name);
-    if (cs2d_texture_load_grid(tex, path, 2, 32, 32)) return true;
-
-    snprintf(path, sizeof(path), "gfx/tiles/%s.bmp", tileset_name);
-    if (cs2d_texture_load_grid(tex, path, 2, 32, 32)) return true;
-
-    snprintf(path, sizeof(path), "gfx/tiles/%s.png", tileset_name);
-    if (cs2d_texture_load_grid(tex, path, 2, 32, 32)) return true;
-
-    return false;
+    static const char *const fmt[3] = { "gfx/tiles/%s", "gfx/tiles/%s.bmp", "gfx/tiles/%s.png" };
+    rgba_image_t img = { 0 };
+    bool ok = false;
+    s_capture = &img;
+    for (int i = 0; i < 3 && !ok; i++) {
+        char path[256];
+        snprintf(path, sizeof(path), fmt[i], tileset_name);
+        ok = cs2d_texture_load_grid(tex, path, 2, 32, 32);
+    }
+    s_capture = NULL;
+    if (ok && tex->id) {
+        tileblend_register(tex->id, &img); /* takes img.px */
+    } else {
+        free(img.px);
+    }
+    return ok;
 }
 
 void cs2d_texture_free(cs2d_texture_t *tex)
@@ -836,9 +1045,9 @@ bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank)
         cs2d_texture_load_ex(&bank->tex_shadow, "gfx/shadow.bmp", 3);
     }
     bank->tex_leaf = bank->tex_shadow;
-    if (!cs2d_texture_load_grid(&bank->tex_lamp1, "incbindata/objects.bmp", 2, 32, 32)) {
-        if (!cs2d_texture_load_grid(&bank->tex_lamp1, "gfx/incbindata/objects.bmp", 2, 32, 32)) {
-            cs2d_texture_load_ex(&bank->tex_lamp1, "gfx/sprites/lamp1.bmp", 2);
+    if (!cs2d_texture_load_grid(&bank->tex_objects, "incbindata/objects.bmp", 2, 32, 32)) {
+        if (!cs2d_texture_load_grid(&bank->tex_objects, "gfx/incbindata/objects.bmp", 2, 32, 32)) {
+            cs2d_texture_load_ex(&bank->tex_objects, "gfx/sprites/lamp1.bmp", 2);
         }
     }
     cs2d_texture_load_ex(&bank->tex_lamp2,     "gfx/sprites/lamp2.bmp",    2);
@@ -927,7 +1136,7 @@ void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank)
     cs2d_texture_free(&bank->tex_tree);
     cs2d_texture_free(&bank->tex_shadow);
     bank->tex_leaf.id = 0;
-    cs2d_texture_free(&bank->tex_lamp1);
+    cs2d_texture_free(&bank->tex_objects);
     cs2d_texture_free(&bank->tex_lamp2);
     cs2d_texture_free(&bank->tex_flare1);
     cs2d_texture_free(&bank->tex_flare3);
@@ -1390,7 +1599,7 @@ void cs2d_render_player(
 static void draw_tile_frame(
     const cs2d_texture_t *tileset_tex,
     int tile_src, int cols,
-    uint8_t frame_idx, uint8_t mod,
+    int frame_idx, uint8_t mod,
     float rx, float ry,
     float alpha,
     const uint8_t *rgb    /* Tile color (modifier 0x80) or NULL for white */
@@ -2235,6 +2444,131 @@ static void render_shadow_chunks(const cs2d_map_t *map, float cam_x, float cam_y
 }
 
 /* Helper to render an Env_Sprite (type 22) entity (reconstructed from Te.draw 0x1402721f0..0x1402724ef) */
+/*
+ * Env_Object (29), Te.draw 0x140271ee0. ints[0] type (editor list at 0x1402a8707: 0 Palm, 1 Tree, 2 Alarm, 3 Sink,
+ * 4 Toilet, 5 Street Light, 6 Street Light (flicker)), ints[1..3] color, ints[4] rotation, strs[0] size,
+ * strs[1] alpha. The original reads both strings with bbStringToFloat (an empty string is 0) and passes the color
+ * through unchanged.
+ */
+static float env_object_float(const char *s)
+{
+    return s[0] ? (float)atof(s) : 0.0f;
+}
+
+/* Te.age: + 2 x time factor per 60 Hz frame (120 degrees per second) while the object is on screen */
+static float env_object_age(uint32_t tick_ms)
+{
+    return (float)fmod((double)tick_ms * 0.12, 360.0);
+}
+
+/* Palm / tree sway: k % 3 == 0 takes sin, others cos (0x140272e9e) */
+static float env_object_sway(int k, float deg)
+{
+    float rad = deg * (3.14159265f / 180.0f);
+    return (k % 3 == 0) ? sinf(rad) : cosf(rad);
+}
+
+/* Sink (3) and Toilet (4): Te.draw(1) (0x1402720f0), under the players, ALPHABLEND, objects.bmp frame 0 / 1 */
+static void render_env_object_ground(const cs2d_gfx_bank_t *bank, const cs2d_entity_t *ent, float cam_x, float cam_y)
+{
+    int type = ent->int_settings[0];
+    if ((type != 3 && type != 4) || !bank->tex_objects.id) return;
+    float ex = (float)(ent->x * CS2D_TILE_SIZE + 16) - cam_x;
+    float ey = (float)(ent->y * CS2D_TILE_SIZE + 16) - cam_y;
+    float size = env_object_float(ent->str_settings[0]);
+    cs2d_render_sprite_frame(&bank->tex_objects, 32, 32, type - 3, ex, ey, 32.0f * size, 32.0f * size,
+                             (float)((ent->int_settings[4] / 10) * 10),
+                             (float)ent->int_settings[1] / 255.0f, (float)ent->int_settings[2] / 255.0f,
+                             (float)ent->int_settings[3] / 255.0f, env_object_float(ent->str_settings[1]), 0);
+}
+
+/* Palm, Tree, Alarm and Street Lights: Te.draw(2) case 0x1d (0x140272e3a), above the players */
+static void render_env_object_overhead(const cs2d_map_t *map, const cs2d_gfx_bank_t *bank, const cs2d_entity_t *ent,
+                                       float cam_x, float cam_y, uint32_t tick_ms, float age)
+{
+    int type = ent->int_settings[0];
+    float ex = (float)(ent->x * CS2D_TILE_SIZE + 16) - cam_x;
+    float ey = (float)(ent->y * CS2D_TILE_SIZE + 16) - cam_y;
+    float r = (float)ent->int_settings[1] / 255.0f;
+    float g = (float)ent->int_settings[2] / 255.0f;
+    float b = (float)ent->int_settings[3] / 255.0f;
+    float size  = env_object_float(ent->str_settings[0]);
+    float alpha = env_object_float(ent->str_settings[1]);
+    int   rot   = ent->int_settings[4];
+
+    /* Leaf shadows (itemshadows, DAT_140ddf183): black at shadows % x alpha, moved 4 px along
+     * (cos, sin)(ShadowRotation - 180) */
+    bool shadows = s_item_shadows && s_shadow_intensity > 0;
+    float sun = (map->daylight_time > 999) ? (float)((map->daylight_time - 1000) % 360) : 225.0f;
+    float sun_rad = (sun - 180.0f) * (3.14159265f / 180.0f);
+    float sh_dx = cosf(sun_rad) * 4.0f;
+    float sh_dy = sinf(sun_rad) * 4.0f;
+    float sh_alpha = (float)s_shadow_intensity * 0.01f * alpha;
+
+    if (type == 0) {
+        /* Palm: 8 palmleave.png at scale size x 0.8, rotation k * 45 + rot + 3 sway(k * 20 + age), handle (15, 2)
+         * on the tile center, so the image center is 33 px (scaled) away along the rotation */
+        const cs2d_texture_t *tex = &bank->tex_palms;
+        if (!tex->id) return;
+        float s = size * 0.8f;
+        float w = (float)tex->width * s, h = (float)tex->height * s;
+        float d = ((float)tex->height * 0.5f - 2.0f) * s;
+        for (int pass = shadows ? 0 : 1; pass < 2; pass++) {
+            float ox = pass ? 0.0f : sh_dx, oy = pass ? 0.0f : sh_dy;
+            for (int k = 1; k <= 8; k++) {
+                float ang = (float)(k * 45 + rot) + env_object_sway(k, (float)(k * 20) + age) * 3.0f;
+                float rad = ang * (3.14159265f / 180.0f);
+                float cx = ex + ox - sinf(rad) * d;
+                float cy = ey + oy + cosf(rad) * d;
+                if (pass) cs2d_render_sprite_frame(tex, 0, 0, 0, cx, cy, w, h, ang, r, g, b, alpha, 0);
+                else      cs2d_render_sprite_frame(tex, 0, 0, 0, cx, cy, w, h, ang, 0.0f, 0.0f, 0.0f, sh_alpha, 0);
+            }
+        }
+    } else if (type == 1) {
+        /* Tree: 7 treeleaves.png at size x 30 px from the center, position angle k * 51 + rot + 2 sway(age + k * 50),
+         * rotation rot + 5 sway; then one at scale size x 1.2 on the center, rotation rot + 5 sin(age) (no shadow) */
+        const cs2d_texture_t *tex = &bank->tex_tree;
+        if (!tex->id) return;
+        float w = (float)tex->width * size, h = (float)tex->height * size;
+        for (int pass = shadows ? 0 : 1; pass < 2; pass++) {
+            float ox = pass ? 0.0f : sh_dx, oy = pass ? 0.0f : sh_dy;
+            for (int k = 1; k <= 7; k++) {
+                float sway = env_object_sway(k, age + (float)(k * 50));
+                float pos = ((float)(k * 51 + rot) + sway * 2.0f) * (3.14159265f / 180.0f);
+                float cx = ex + ox + sinf(pos) * size * 30.0f;
+                float cy = ey + oy - cosf(pos) * size * 30.0f;
+                float ang = (float)rot + sway * 5.0f;
+                if (pass) cs2d_render_sprite_frame(tex, 0, 0, 0, cx, cy, w, h, ang, r, g, b, alpha, 0);
+                else      cs2d_render_sprite_frame(tex, 0, 0, 0, cx, cy, w, h, ang, 0.0f, 0.0f, 0.0f, sh_alpha, 0);
+            }
+        }
+        cs2d_render_sprite_frame(tex, 0, 0, 0, ex, ey, w * 1.2f, h * 1.2f,
+                                 (float)rot + sinf(age * (3.14159265f / 180.0f)) * 5.0f, r, g, b, alpha, 0);
+    } else if (type == 2) {
+        /* Alarm: flare1 additive, rotation rot, alpha |sin(ms / 3 degrees)| x alpha */
+        const cs2d_texture_t *tex = &bank->tex_flare1;
+        if (!tex->id) return;
+        float pulse = fabsf(sinf((float)((tick_ms / 3) % 360) * (3.14159265f / 180.0f)));
+        cs2d_render_sprite_frame(tex, 0, 0, 0, ex, ey, (float)tex->width * size, (float)tex->height * size,
+                                 (float)rot, r, g, b, pulse * alpha, 3);
+    } else if (type == 5 || type == 6) {
+        /* Street Light: flare3 additive turning ms / 150 + rot; the flicker variant draws at alpha x Rnd(0, 0.8)
+         * one frame in five (Rand(1, 5) == 1). Then the lamp, objects.bmp frame 2, white at scale 1 and rotation
+         * rot rounded down to 10 degrees */
+        const cs2d_texture_t *tex = &bank->tex_flare3;
+        if (tex->id) {
+            float a = alpha;
+            if (type == 6 && rand() % 5 == 0) a *= (float)rand() / (float)RAND_MAX * 0.8f;
+            cs2d_render_sprite_frame(tex, 0, 0, 0, ex, ey, (float)tex->width * size, (float)tex->height * size,
+                                     (float)((int)(tick_ms / 150) + rot), r, g, b, a, 3);
+        }
+        if (bank->tex_objects.id) {
+            cs2d_render_sprite_frame(&bank->tex_objects, 32, 32, 2, ex, ey, 32.0f, 32.0f,
+                                     (float)((rot / 10) * 10), 1.0f, 1.0f, 1.0f, 1.0f, 0);
+        }
+    }
+}
+
 static void render_env_sprite_entity(
     cs2d_gfx_bank_t *bank,
     const cs2d_entity_t *ent,
@@ -2364,7 +2698,12 @@ void cs2d_render_map_ex(
         glBindTexture(GL_TEXTURE_2D, tileset_tex->id);
     }
 
-    /* Pass 1: Render base tiles and tile overlays (per cs2d_spec_map_format.txt section 4) */
+    /* Pass 1: Render base tiles and tile overlays (per cs2d_spec_map_format.txt section 4).
+     * Blended tiles (Ttileblend) are drawn afterwards from the blend atlas, with the same rotation and brightness */
+    tileblend_source_t *blend = has_tileset ? tileblend_find(tileset_tex->id) : NULL;
+    static int *blended = NULL;
+    static size_t blended_cap = 0;
+    size_t blended_n = 0;
     for (int ty = start_ty; ty < end_ty; ty++) {
         for (int tx = start_tx; tx < end_tx; tx++) {
             uint32_t idx = (uint32_t)(ty * map->width + tx);
@@ -2375,10 +2714,40 @@ void cs2d_render_map_ex(
             float ry = (float)(ty * CS2D_TILE_SIZE) - cam_y;
 
             if (has_tileset) {
+                int cell = tileblend_cell(blend, map, tx, ty, tile_src);
+                if (cell >= 0) {
+                    if (blended_n + 3 > blended_cap) {
+                        size_t cap = blended_cap ? blended_cap * 2 : 768;
+                        int *grown = (int *)realloc(blended, cap * sizeof(int));
+                        if (grown) {
+                            blended = grown;
+                            blended_cap = cap;
+                        }
+                    }
+                    if (blended_n + 3 <= blended_cap) {
+                        blended[blended_n++] = tx;
+                        blended[blended_n++] = ty;
+                        blended[blended_n++] = cell;
+                        continue;
+                    }
+                }
                 const uint8_t *rgb = ((mod & 0xc0) == 0x80 && map->tile_data) ? &map->tile_data[idx * 4] : NULL;
                 draw_tile_frame(tileset_tex, tile_src, cols, tile_idx, mod, rx, ry, 1.0f, rgb);
             }
         }
+    }
+    if (blended_n > 0) {
+        tileblend_upload(blend);
+        if (blend->atlas.id) {
+            glBindTexture(GL_TEXTURE_2D, blend->atlas.id);
+            for (size_t i = 0; i < blended_n; i += 3) {
+                int tx = blended[i], ty = blended[i + 1];
+                draw_tile_frame(&blend->atlas, tile_src, TILEBLEND_ATLAS_COLS, blended[i + 2],
+                                map->modifiers[(size_t)ty * map->width + (size_t)tx],
+                                (float)(tx * CS2D_TILE_SIZE) - cam_x, (float)(ty * CS2D_TILE_SIZE) - cam_y, 1.0f, NULL);
+            }
+        }
+        glBindTexture(GL_TEXTURE_2D, tileset_tex->id);
     }
 
     /* Pass 1b: Render Env_Breakable (type 25) and Func_DynWall (type 71) using map tileset (Te.draw 0x140272808 & 0x140273858) */
@@ -2438,6 +2807,9 @@ void cs2d_render_map_ex(
                 }
                 break;
             }
+            case CS2D_ENT_ENV_OBJECT:
+                if (bank) render_env_object_ground(bank, ent, cam_x, cam_y);
+                break;
             case CS2D_ENT_ENV_ITEM: {
                 /* Env_Item (21): ints[0]=weapon/item ID -> drawn with gfx/weapons/<wep>_d.bmp (Titem.draw 0x140147b80 / Te.draw 0x140260000) */
                 int wep_id = ent->int_settings[0];
@@ -2554,10 +2926,10 @@ void cs2d_render_map_ex(
 }
 
 /*
- * Reconstructed from 0x140262750..0x140262885 & Te.draw(1) (0x140272938..0x1402782a4):
+ * Reconstructed from 0x140262750..0x140262885 & Te.draw(2) (0x140271ee0, p3 == 2):
  *   1. Non-additive rooftop sprites (dustroof.png, roof_edge1.png, dome.png, Env_Image)
  *   2. Unified Sun-Angle & Multi-Layer Room Shadow/Lighting Map (s_room_shadow_tex)
- *   3. Overhead Env_Object entities (Palm trees, Leafy trees, Lamps) & additive light flares
+ *   3. Env_Object palms, trees, alarms and street lights (Sink / Toilet are on the ground pass) & additive flares
  */
 void cs2d_render_map_overhead(
     const cs2d_map_t *map,
@@ -2611,18 +2983,11 @@ void cs2d_render_map_overhead(
         render_shadow_chunks(map, cam_x, cam_y);
     }
 
-    /* Pass 3: Te.draw(1) Overhead Env_Object (trees, palms, lamps) & additive light flares (0x140262875) */
-    float sun_angle = (map->daylight_time > 999)
-                      ? (float)((map->daylight_time - 1000) % 360) : 225.0f;
-    float sun_rad   = (sun_angle - 180.0f) * (3.14159265f / 180.0f);
-    float sh_dx     = sinf(sun_rad) * 4.0f;
-    float sh_dy     = cosf(sun_rad) * 4.0f;
-
+    /* Pass 3: Te.draw(2) Env_Object palms, trees, alarms and street lights (0x140271ee0, p3 == 2) */
+    float age = env_object_age(tick_ms);
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *ent = &map->entities[i];
         if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
-        float ex = (float)(ent->x * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_x;
-        float ey = (float)(ent->y * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_y;
 
         switch (ent->type) {
             case CS2D_ENT_ENV_SPRITE: {
@@ -2632,125 +2997,9 @@ void cs2d_render_map_overhead(
                 }
                 break;
             }
-            case CS2D_ENT_ENV_OBJECT: {
-                int obj_type = ent->int_settings[0];
-                float r = (float)ent->int_settings[1] / 255.0f;
-                float g = (float)ent->int_settings[2] / 255.0f;
-                float b = (float)ent->int_settings[3] / 255.0f;
-                if (ent->int_settings[1] == 0 && ent->int_settings[2] == 0 && ent->int_settings[3] == 0) {
-                    r = 1.0f; g = 1.0f; b = 1.0f;
-                }
-                float scale = ent->str_settings[0][0] ? (float)atof(ent->str_settings[0]) : 1.0f;
-                float alpha = ent->str_settings[1][0] ? (float)atof(ent->str_settings[1]) : 1.0f;
-                if (scale <= 0.0f) scale = 1.0f;
-                if (alpha <= 0.0f) alpha = 1.0f;
-                float rot = (float)ent->int_settings[4];
-                float phase = (float)tick_ms * 0.002f + (float)(ent->x * 13 + ent->y * 7);
-
-                if (obj_type == 0) {
-                    /*
-                     * Palm tree (0x14027779c..0x140277e8b):
-                     *   - 8 fronds of incbindata/palmleave.png (30x70, handle at (15.0, 2.0) per 0x14022ebd0)
-                     *   - Scale factor = scale * 0.8f (0x140bd6a74 = 0.8f)
-                     *   - Stem at (15, 2) is pinned to (ex, ey), so quad center is at (-sin(rad)*d, +cos(rad)*d)
-                     *     where d = (fh * 0.5f) - 2.0f * pscale = 33.0f * pscale
-                     */
-                    if (bank->tex_palms.id) {
-                        float pscale = scale * 0.8f;
-                        float fw = (float)bank->tex_palms.width * pscale;
-                        float fh = (float)bank->tex_palms.height * pscale;
-                        float d  = (fh * 0.5f) - 2.0f * pscale;
-
-                        /* Pass 1: 8 frond drop shadows (0x140277cf8..0x140277e8b) */
-                        for (int k = 1; k <= 8; k++) {
-                            float sway = ((k % 3) == 0 ? sinf(phase + (float)(k * 20) * 0.017453f)
-                                                       : cosf(phase + (float)(k * 20) * 0.017453f)) * 2.5f;
-                            float ang = (float)(k * 45) + rot + sway;
-                            float rad = ang * (3.14159265f / 180.0f);
-                            float sx = (ex + sh_dx) - sinf(rad) * d;
-                            float sy = (ey + sh_dy) + cosf(rad) * d;
-                            cs2d_render_sprite_frame(&bank->tex_palms, bank->tex_palms.width, bank->tex_palms.height, 0,
-                                                     sx, sy, fw, fh, ang,
-                                                     0.0f, 0.0f, 0.0f, 0.25f * alpha, 0);
-                        }
-
-                        /* Pass 2: 8 palm fronds radiating outward from stem at (ex, ey) (0x14027780e..0x140277984) */
-                        for (int k = 1; k <= 8; k++) {
-                            float sway = ((k % 3) == 0 ? sinf(phase + (float)(k * 20) * 0.017453f)
-                                                       : cosf(phase + (float)(k * 20) * 0.017453f)) * 2.5f;
-                            float ang = (float)(k * 45) + rot + sway;
-                            float rad = ang * (3.14159265f / 180.0f);
-                            float fx = ex - sinf(rad) * d;
-                            float fy = ey + cosf(rad) * d;
-                            cs2d_render_sprite_frame(&bank->tex_palms, bank->tex_palms.width, bank->tex_palms.height, 0,
-                                                     fx, fy, fw, fh, ang,
-                                                     r, g, b, alpha, 0);
-                        }
-                    }
-                } else if (obj_type == 1) {
-                    /*
-                     * Leafy Tree (0x140275f35..0x140276228 & 0x140277ebb..0x1402782a4):
-                     *   - 7 outer clumps of incbindata/treeleaves.png (40x40, MidHandle) in a circle of
-                     *     radius 30.0f * scale (0x140bd6a98 = 30.0f) at angles k*51 + rot
-                     *   - Plus 1 center clump at (ex, ey) scaled by 1.2f * scale (0x140bd6f48 = 1.2f)
-                     */
-                    if (bank->tex_tree.id) {
-                        float cw = (float)bank->tex_tree.width * scale;
-                        float ch = (float)bank->tex_tree.height * scale;
-                        float rad_dist = 30.0f * scale;
-
-                        /* Pass 1: 7 outer clump drop shadows (0x140277fae..0x140278290) */
-                        for (int k = 1; k <= 7; k++) {
-                            float sway = ((k % 3) == 0) ? sinf(phase + (float)(k * 50) * 0.017453f)
-                                                        : cosf(phase + (float)(k * 50) * 0.017453f);
-                            float ang_pos = (float)(k * 51) + rot + sway * 2.0f;
-                            float ang_rot = rot + sway * 5.0f;
-                            float rad_pos = ang_pos * (3.14159265f / 180.0f);
-                            float sx = (ex + sh_dx) + sinf(rad_pos) * rad_dist;
-                            float sy = (ey + sh_dy) - cosf(rad_pos) * rad_dist;
-                            cs2d_render_sprite_frame(&bank->tex_tree, bank->tex_tree.width, bank->tex_tree.height, 0,
-                                                     sx, sy, cw, ch, ang_rot,
-                                                     0.0f, 0.0f, 0.0f, 0.25f * alpha, 0);
-                        }
-
-                        /* Pass 2: 7 outer foliage clumps (0x140276037..0x140276228) */
-                        for (int k = 1; k <= 7; k++) {
-                            float sway = ((k % 3) == 0) ? sinf(phase + (float)(k * 50) * 0.017453f)
-                                                        : cosf(phase + (float)(k * 50) * 0.017453f);
-                            float ang_pos = (float)(k * 51) + rot + sway * 2.0f;
-                            float ang_rot = rot + sway * 5.0f;
-                            float rad_pos = ang_pos * (3.14159265f / 180.0f);
-                            float cx = ex + sinf(rad_pos) * rad_dist;
-                            float cy = ey - cosf(rad_pos) * rad_dist;
-                            cs2d_render_sprite_frame(&bank->tex_tree, bank->tex_tree.width, bank->tex_tree.height, 0,
-                                                     cx, cy, cw, ch, ang_rot,
-                                                     r, g, b, alpha, 0);
-                        }
-
-                        /* Pass 3: 8th center foliage clump at 1.2x scale (0x140277ebb..0x140277fa9) */
-                        float ang_center = rot + sinf(phase) * 5.0f;
-                        cs2d_render_sprite_frame(&bank->tex_tree, bank->tex_tree.width, bank->tex_tree.height, 0,
-                                                 ex, ey, cw * 1.2f, ch * 1.2f, ang_center,
-                                                 r, g, b, alpha, 0);
-                    }
-                } else if (obj_type >= 2) {
-                    /* Objects (0x140275f26 & 0x14027622d): incbindata/objects.bmp (32x32 cells, frame = obj_type - 2) */
-                    if (bank->tex_lamp1.id) {
-                        int frame = obj_type - 2;
-                        int cell_w = (bank->tex_lamp1.width >= 64) ? 32 : bank->tex_lamp1.width;
-                        int cell_h = (bank->tex_lamp1.height >= 32) ? 32 : bank->tex_lamp1.height;
-                        cs2d_render_sprite_frame(&bank->tex_lamp1, cell_w, cell_h, frame,
-                                                 ex, ey, 32.0f * scale, 32.0f * scale,
-                                                 rot, 1.0f, 1.0f, 1.0f, alpha, 0);
-                    }
-                    if (obj_type == 4 && bank->tex_flare1.id) {
-                        cs2d_render_sprite_frame(&bank->tex_flare1, bank->tex_flare1.width, bank->tex_flare1.height, 0,
-                                                 ex, ey, 96.0f * scale, 96.0f * scale,
-                                                 0.0f, r, g, b, alpha * 0.45f, 3);
-                    }
-                }
+            case CS2D_ENT_ENV_OBJECT:
+                render_env_object_overhead(map, bank, ent, cam_x, cam_y, tick_ms, age);
                 break;
-            }
             default:
                 break;
         }

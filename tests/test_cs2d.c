@@ -3036,6 +3036,70 @@ static bool test_scoreboard(void)
     return true;
 }
 
+/* =========================================================================
+ * Tile blending (Ttileblend.updatetile 0x1400ae560, FUN_14005e2e0, gfx/blendmap.bmp)
+ * ========================================================================= */
+static bool test_tile_blending(void)
+{
+    printf("\n=== Testing Tile Blending ===\n");
+
+    /* Neighbour by frame & 7: up, then clockwise; tile 0 outside the map */
+    uint8_t tiles[9] = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    static cs2d_map_t grid;
+    memset(&grid, 0, sizeof(grid));
+    grid.width = 3;
+    grid.height = 3;
+    grid.tiles = tiles;
+    static const uint8_t expect[8] = { 2, 3, 6, 9, 8, 7, 4, 1 };
+    for (int dir = 0; dir < 8; dir++) {
+        if (cs2d_render_tileblend_neighbour(&grid, 1, 1, dir) != expect[dir]) TEST_FAIL("Neighbour", "wrong direction table");
+    }
+    if (cs2d_render_tileblend_neighbour(&grid, 0, 0, 7) != 0 || cs2d_render_tileblend_neighbour(&grid, 2, 2, 3) != 0) {
+        TEST_FAIL("Neighbour", "outside the map must be tile 0");
+    }
+    TEST_PASS("Neighbour per direction (0 up .. 7 up-left), 0 outside the map");
+
+    /* The blendmap is white (neighbour) on the side the direction points to, black (own tile) on the other */
+    static const int side[8][4] = {
+        { 16, 0, 16, 31 }, { 31, 0, 0, 31 }, { 31, 16, 0, 16 }, { 31, 31, 0, 0 },
+        { 16, 31, 16, 0 }, { 0, 31, 31, 0 }, { 0, 16, 31, 16 }, { 0, 0, 31, 31 },
+    };
+    for (int frame = 0; frame < 16; frame++) {
+        const int *p = side[frame & 7];
+        int lit = cs2d_render_tileblend_mask(frame, p[0], p[1]);
+        int dark = cs2d_render_tileblend_mask(frame, p[2], p[3]);
+        if (lit != 255 || dark != 0) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "frame %d: %d at the neighbour side, %d opposite", frame, lit, dark);
+            TEST_FAIL("gfx/blendmap.bmp", msg);
+        }
+    }
+    if (cs2d_render_tileblend_mask(40, 0, 0) != -1) TEST_FAIL("gfx/blendmap.bmp", "only 40 frames");
+    TEST_PASS("gfx/blendmap.bmp frames 0..15 face their direction");
+
+    /* Per channel, alpha included */
+    if (cs2d_render_tileblend_mix(0x80c86432u, 0x10204080u, 0) != 0x80c86432u ||
+        cs2d_render_tileblend_mix(0x80c86432u, 0x10204080u, 255) != 0x10204080u) {
+        TEST_FAIL("Mix", "a * (1 - f) + b * f per channel");
+    }
+    TEST_PASS("Mix per channel: mask 0 keeps the tile, 255 takes the neighbour");
+
+    /* de_aztec keeps the blend frame of every 0x40 tile, all inside blendmap.bmp */
+    static cs2d_map_t map;
+    memset(&map, 0, sizeof(map));
+    if (!cs2d_map_load_file(&map, "maps/de_aztec.map")) TEST_FAIL("Map", "maps/de_aztec.map not found");
+    int blended = 0, bad = 0;
+    for (uint32_t i = 0; i < map.width * map.height; i++) {
+        if ((map.modifiers[i] & 0xc0) != 0x40) continue;
+        blended++;
+        if (map.tile_data[i * 4 + 3] >= 40) bad++;
+    }
+    cs2d_map_free(&map);
+    if (blended != 198 || bad != 0) TEST_FAIL("de_aztec", "expected 198 blended tiles with frames < 40");
+    TEST_PASS("de_aztec: 198 blended tiles, frames 0..39");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -3043,7 +3107,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 29;
+    int total = 30;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -3074,6 +3138,7 @@ int main(void)
     if (test_projectiles_and_fields()) passed++;
     if (test_item_and_player_shadows()) passed++;
     if (test_scoreboard()) passed++;
+    if (test_tile_blending()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

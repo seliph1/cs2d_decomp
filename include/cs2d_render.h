@@ -73,11 +73,11 @@ typedef struct {
     cs2d_texture_t            tex_buildings;     /* gfx/buildings.png (128x128 -> 16 frames of 32x32) */
     cs2d_texture_t            tex_turret[3];     /* gfx/weapons/turret.bmp, turret2.bmp, turret3.bmp (0x140a0ddb0 / da8 / da0) */
     cs2d_texture_t            tex_buildhelper;   /* gfx/hud_buildhelper.png (82x82, maskMode 1, 0x140a0dd38) */
-    cs2d_texture_t            tex_palms;         /* gfx/sprites/palms.bmp (64x96 -> 3 frames of 64x32) */
-    cs2d_texture_t            tex_tree;          /* gfx/sprites/tree.bmp */
+    cs2d_texture_t            tex_palms;         /* incbindata/palmleave.png (30x70, handle (15, 2), g_img_palmleave) */
+    cs2d_texture_t            tex_tree;          /* incbindata/treeleaves.png (40x40, midhandle, g_img_treeleaves) */
     cs2d_texture_t            tex_leaf;          /* gfx/sprites/leaf.bmp */
     cs2d_texture_t            tex_shadow;        /* incbindata/shadow.bmp (32x32, maskMode=3, 0x140a0e038) */
-    cs2d_texture_t            tex_lamp1;         /* gfx/sprites/lamp1.bmp */
+    cs2d_texture_t            tex_objects;       /* incbindata/objects.bmp (10 frames of 32x32, midhandle, g_img_objects) */
     cs2d_texture_t            tex_lamp2;         /* gfx/sprites/lamp2.bmp */
     cs2d_texture_t            tex_flare1;        /* gfx/sprites/flare1.bmp (maskMode=3) */
     cs2d_texture_t            tex_flare3;        /* gfx/sprites/flare3.bmp (maskMode=3) */
@@ -151,6 +151,12 @@ bool cs2d_texture_load_grid(cs2d_texture_t *tex, const char *filepath, int mask_
 bool cs2d_texture_load_ex(cs2d_texture_t *tex, const char *filepath, int mask_mode);
 bool cs2d_texture_load_bmp(cs2d_texture_t *tex, const char *filepath, bool color_key_black);
 bool cs2d_texture_load_tileset(cs2d_texture_t *tex, const char *tileset_name);
+
+/* Tile blending (Ttileblend, FUN_14005e2e0): the neighbour tile in direction 0..7 (up, then clockwise; 0 outside
+ * the map), the per-channel mix with a blendmap value, and the red of gfx/blendmap.bmp frame 0..39 (-1 if missing) */
+uint8_t  cs2d_render_tileblend_neighbour(const cs2d_map_t *map, int tx, int ty, int dir);
+uint32_t cs2d_render_tileblend_mix(uint32_t a, uint32_t b, uint8_t mask);
+int      cs2d_render_tileblend_mask(int frame, int x, int y);
 void cs2d_texture_free(cs2d_texture_t *tex);
 
 /* 2D Primitives */
