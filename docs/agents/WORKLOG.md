@@ -8,6 +8,51 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — DeepSeek — Web/Emscripten feasibility report (read-only, no code changed)
+- **Changed:** nothing. Read-only feasibility review at the user's request, deliberately without editing any source
+  or doc file to avoid conflicting with the parallel session (Claude Code). Report only.
+  Note on authorship: this entry is by the same agent (DeepSeek) as the "Lua language-server config" entry below;
+  the agent names in this log are session/tool labels, not separate identities.
+- **Question:** is an Emscripten/WebAssembly port of this reimplementation viable?
+- **Evidence scanned:** `build.bat`, `main_client.c`, `cs2d_render.c`, `cs2d_network.c`, `cs2d_transfer.c`,
+  `include/cs2d_client.h`, `include/cs2d_serverlist.h`, `include/cs2d_render.h`, `.github/workflows/build.yml`,
+  `src/` + `include/` size (46 files, ~22.8k lines), targeted grep for Win32 / GDI+ / OpenGL-fixed-function symbols.
+- **Findings (facts):**
+  - **Render:** 100% legacy fixed-function OpenGL 1.x throughout `cs2d_render.c` / `cs2d_scene_*` (`glBegin/glEnd`,
+    `glOrtho`, `glPushMatrix/glRotatef/glTranslatef/glScalef`, `glColor4f`, `glAlphaFunc`, `glReadPixels(GL_BGR_EXT)`,
+    manual mipmaps, `glEnable(GL_MULTISAMPLE)`). WebGL has no fixed-function pipeline -> either a fixed-function->WebGL
+        shim or a shader/VBO rewrite is required. Highest-effort item.
+  - **GDI+ is the only image decoder AND the only text/font engine** (`GdipCreateBitmapFromFile`,
+    `GdipCreateBitmapFromStream` for `.ico`, `GdipCreateBitmapFromScan0`, `GdipNewPrivateFontCollection` +
+    `GdipPrivateAddFontFile` for `gfx/fonts/liberationsans.ttf` / `sourcesans.ttf`, `GdipDrawString` /
+    `GdipMeasureString` feeding a 512-entry GPU string-texture cache). No non-Windows fallback; the system-font
+    fallback (`Segoe UI` / `Arial`) is Windows-only. Second-highest effort.
+  - **Winsock / windows.h are in public headers:** `cs2d_client.h` (`#ifdef _WIN32`, `SOCKET`, `sockaddr_in`) and
+    `cs2d_serverlist.h` (`#include <winsock2.h>` **without a guard**). Runtime uses `WSAStartup`, `ioctlsocket`,
+    `sendto`, `recvfrom`, `closesocket`, `SO_BROADCAST`. CS2D is UDP-only; browsers have no raw UDP, so a
+    WebTransport/WebRTC-to-UDP gateway on the **server** is required for online play. Major architectural cost.
+  - **Win32 I/O and system:** `FindFirstFileA` (map listing in `cs2d_editor.c`, `cs2d_client.c`),
+    `CreateDirectoryA` (`main_client.c`), `GetTickCount()` (UI, serverlist, render), `MultiByteToWideChar`,
+    `LoadLibrary` / `GetProcAddress`.
+- **Findings (portable):** the C99 core (`cs2d_types`, map, entities, player, weapons, UI) and the whole
+  protocol/crypto layer (`cs2d_network.c`: MD5, SHA-256, shift cipher, Tudp builders) are Win32-free; zlib
+  (transfer) works in wasm; SDL3 (window/input) has first-class Emscripten support.
+- **Assessment:** technically viable but NOT a recompile. It needs a platform-abstraction layer (HAL) that does not
+  exist today, plus a render/font backend and, for online, a server-side UDP gateway. Suggested phases: (A) HAL for
+  time/dir/file (low/med), (B) render + text/image backend (high, project-deciding), (C) socket abstraction + UDP
+  gateway (high, client+server, required only for online), (D) asset preload via `--preload-file`. Lowest-risk first
+  step: an Emscripten build of only the Win32-free logic (network/map/entities/player/weapons) to measure portability
+  without touching render/network.
+- **Risks:** visual/byte fidelity is a project invariant (the `--capture` harness compares frames/screenshots and the
+  proxy compares packets byte-for-byte); a render/network rewrite risks violating it, so keep the desktop path intact
+  and add a web backend beside it. Also: any structural refactor has high merge-conflict risk with the parallel agent,
+  so do it on an isolated branch (`feat/emscripten-poc`), not on `master`.
+- **Left (requested):** the user asked for a second opinion, but it must come from a *distinct* session/tool
+  (e.g. the parallel Claude Code session, or an independent review), not from this agent re-labelling itself as a
+  third party. Open items to size: exact per-file inventory of Win32/GDI+ symbols; asset weights (`gfx/`, `sfx/`,
+  `maps/`); whether the GL extensions used (`GL_BGR_EXT`, `GL_MULTISAMPLE`) survive on WebGL; fixed-function
+  emulation fidelity against the screenshot tests.
+
 ## 2026-10-12 — Antigravity — In-game Action Progress Bar (Reloading, Planting, Defusing)
 - **Changed:** reconstructed the in-game action progress bar from CS2D.exe `FUN_140295190` (`0x1402958f0..0x140295b70`).
   Displays centered at `y = screen_h / 2 + 80px` with width 102px and height 20px, 1px outer frame, 2px padding,
