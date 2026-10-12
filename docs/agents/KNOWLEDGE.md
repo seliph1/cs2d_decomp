@@ -443,6 +443,8 @@ offline dedicated with `sv_gamemode 3` + `tools/agent/lua/construct_probe.lua`. 
   supply scale 0.6 rot ms/15 alpha |sin|). Team colors (`Tdo.setteamcolor`): team game T red, CT blue, neutral yellow;
   otherwise own yellow, others green. `buildings.png` frames: 0 barricade .. 4 Wall III, 5 gate, 6 base plate, 7 site,
   8 / 9 teleporters.
+- **Shadows (our choice, not from REA):** solid buildings except the Construction Site cast a 32 px wall shadow
+  (`map->object_shadow`); the build helper alpha is floored at 0.35; explosions draw additive.
 - **Turret** (`FUN_14028c630`): idle `rot = rrot + 60 sin(rotvar)`, rotvar += 1 per frame; while `countdown` runs it aims
   at the target (`atan2(tx - 16 - x, y + 16 - ty)`, within 445 x 260 px) and fires while countdown > 10.
 - **Respawn modes** (DM, TDM, Construction, Zombies): joining a team leaves the player dead; a left click between the HUD

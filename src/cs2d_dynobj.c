@@ -64,20 +64,32 @@ uint8_t cs2d_dynobj_collision(int typ)
     }
 }
 
+/*
+ * Solid buildings (walls, Dispenser, turrets, supplies) cast a wall shadow like a wall tile. Not checked
+ * against the original's shadow code (requested to match the look of solid walls); the Construction Site is
+ * left out because it is flat.
+ */
+bool cs2d_dynobj_casts_shadow(int typ)
+{
+    return cs2d_dynobj_collision(typ) == 1 && typ != CS2D_DO_SITE;
+}
+
 /* Rewrites the object overlay of one tile and recomputes its collision (tiles < entities < objects) */
 static void refresh_tile(cs2d_dynobj_world_t *w, int tx, int ty)
 {
     cs2d_map_t *map = w->map;
     if (!map || !map->object_collision) return;
     if (tx < 0 || ty < 0 || (uint32_t)tx >= map->width || (uint32_t)ty >= map->height) return;
-    uint8_t col = 0;
+    uint8_t col = 0, shadow = 0;
     for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
         const cs2d_dynobj_t *o = &w->objs[i];
         if (!o->active || (int)(o->x * 0.03125f) != tx || (int)(o->y * 0.03125f) != ty) continue;
         uint8_t c = cs2d_dynobj_collision(o->typ);
         if (c) col = c;
+        if (cs2d_dynobj_casts_shadow(o->typ)) shadow = 1;
     }
     map->object_collision[(size_t)ty * map->width + (size_t)tx] = col;
+    if (map->object_shadow) map->object_shadow[(size_t)ty * map->width + (size_t)tx] = shadow;
     cs2d_ents_refresh_tile(map, tx, ty);
     map->entity_solid_version++;
 }
@@ -102,6 +114,8 @@ void cs2d_dynobj_init(cs2d_dynobj_world_t *w, cs2d_map_t *map)
     size_t total = (size_t)map->width * map->height;
     free(map->object_collision);
     map->object_collision = (uint8_t *)calloc(total, 1);
+    free(map->object_shadow);
+    map->object_shadow = (uint8_t *)calloc(total, 1);
 }
 
 void cs2d_dynobj_clear(cs2d_dynobj_world_t *w)

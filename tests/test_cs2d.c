@@ -2047,6 +2047,10 @@ static bool test_construction(void)
     if (!o || o->typ != CS2D_DO_TURRET || o->x != 832.0f || o->y != 1024.0f || o->team != 2 || o->player != 3 ||
         fabsf(o->rot - 90.0f) > 0.01f || o->health != 100) TEST_FAIL("[49]", "turret fields");
     if (map.collision[32 * map.width + 26] != 1) TEST_FAIL("[49]", "turret does not block");
+    if (!map.object_shadow || !map.object_shadow[32 * map.width + 26] || !map.object_shadow[17 * map.width + 19])
+        TEST_FAIL("Shadow", "turret / Wall III cast no shadow");
+    if (cs2d_dynobj_casts_shadow(CS2D_DO_SITE) || cs2d_dynobj_casts_shadow(CS2D_DO_BARRICADE) ||
+        cs2d_dynobj_casts_shadow(CS2D_DO_GATE_FIELD)) TEST_FAIL("Shadow", "flat building casts a shadow");
     if (cs2d_dynobj_net_message(&w, spawn_turret, 12, 0, NULL) != -1) TEST_FAIL("[49]", "truncated message accepted");
 
     /* [36,id,0,target]: aim at player 5 (east of the turret) for 15 frames, 5 of them firing */

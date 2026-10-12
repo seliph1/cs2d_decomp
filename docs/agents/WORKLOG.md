@@ -8,6 +8,12 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Claude Code — building shadows, build helper alpha, additive explosion
+- **Changed (user requests, not checked against the original):** solid buildings (walls, Dispenser, turrets, supplies;
+  `cs2d_dynobj_casts_shadow`) mark `map->object_shadow` and cast a 32 px wall shadow in the shadow map; the build helper
+  alpha is floored at 0.35 (`0.35 + 0.65 x sin`); the `gfx/explosion.png` effect draws additive (LIGHTBLEND).
+- **Verified:** `test_construction` checks the shadow overlay for the turret and Wall III (22 / 22).
+
 ## 2026-10-12 — Claude Code — Construction mode, dynamic objects, CTF flags
 - **Changed:** new `src/cs2d_dynobj.c` (Tdo list, type table, `[35]` `[36]` `[37]` `[49]`, snapshot sections 3 and 5,
   collision overlay `map->object_collision`, `FUN_14014ef60` build rules); client `[34]` build result + red center

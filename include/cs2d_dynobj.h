@@ -138,5 +138,6 @@ int cs2d_dynobj_can_build(const cs2d_dynobj_world_t *w, const cs2d_player_t *pla
 
 /* Collision a building puts on its tile (cs2d_update_mapdata): 1 wall, 2 obstacle, 0 none */
 uint8_t cs2d_dynobj_collision(int typ);
+bool cs2d_dynobj_casts_shadow(int typ);
 
 #endif /* CS2D_DYNOBJ_H */

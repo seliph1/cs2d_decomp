@@ -429,6 +429,8 @@ void cs2d_map_free(cs2d_map_t *map)
     }
     free(map->object_collision);
     map->object_collision = NULL;
+    free(map->object_shadow);
+    map->object_shadow = NULL;
     map->width = 0;
     map->height = 0;
     map->entity_count = 0;

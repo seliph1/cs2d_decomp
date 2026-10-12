@@ -1641,6 +1641,15 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
         }
     }
 
+    /* Solid buildings (cs2d_dynobj_casts_shadow) shadow like a 32 px wall tile */
+    if (map->object_shadow) {
+        for (size_t idx = 0; idx < map_tiles; idx++) {
+            if (!map->object_shadow[idx]) continue;
+            eff_modes[idx] = CS2D_TILE_WALL;
+            eff_heights[idx] = 0;
+        }
+    }
+
     const uint8_t shadow_alpha = 126; /* Base shadow darkness matching CS2D original (255 -> 128 on sandstone) */
 
     /* Reconstructed from 0x1401da4a6..0x1401da82d: custom angle stored as 1000 + deg (or already decoded 0..359) */
@@ -3346,9 +3355,10 @@ void cs2d_render_build_helper(int ptx, int pty, int tx, int ty, bool ok, float c
     cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
     if (!bank || !bank->tex_buildhelper.id) return;
     const cs2d_texture_t *t = &bank->tex_buildhelper;
-    /* Additive, alpha sin((ms >> 3) deg) (SetAlpha with a raw sine), top-left at tile * 32 - 25 */
+    /* Additive, alpha sin((ms >> 3) deg) (SetAlpha with a raw sine), top-left at tile * 32 - 25.
+     * Floored at 0.35 (our choice) so the marker never disappears while the raw sine is <= 0. */
     int ms = (int)GetTickCount();
-    float a = clamp01((float)sin((double)(ms >> 3) * 0.017453292519943295));
+    float a = 0.35f + 0.65f * clamp01((float)sin((double)(ms >> 3) * 0.017453292519943295));
     float w = (float)t->width, h = (float)t->height;
     float px = (float)(ptx * 32 - (int)cam_x - 25), py = (float)(pty * 32 - (int)cam_y - 25);
     cs2d_render_sprite_frame(t, t->width, t->height, 0, px + w * 0.5f, py + h * 0.5f, w, h, 0.0f, 1, 1, 0, a, 4);
@@ -3436,8 +3446,9 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
         } else if (p->kind == CS2D_FX_EXPLOSION && bank) {
             int frame = (int)((1.0f - t) * 25.0f);
             if (frame > 24) frame = 24;
+            /* Additive (LIGHTBLEND) */
             cs2d_render_sprite_frame(&bank->tex_explosion, 64, 64, frame, sx, sy, p->size, p->size,
-                                     p->rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
+                                     p->rot, 1.0f, 1.0f, 1.0f, 1.0f, 4);
         } else if (p->kind == CS2D_FX_KNIFESLASH && bank && bank->tex_knifeslash.id) {
             /* Tp type 13 (0x140265220..0x140265361): gfx/knifeslash.bmp, LIGHTBLEND (4), rotated by angle */
             float w = (float)bank->tex_knifeslash.width;
