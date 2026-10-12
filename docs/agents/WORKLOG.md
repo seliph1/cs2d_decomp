@@ -8,6 +8,16 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Claude Code — weapon selection HUD and bindings
+- **Changed:** invnext / invprev / slotN logic and the selection HUD ported from `CS2D.exe` (KNOWLEDGE "Weapon selection
+  HUD"); attack / attack2 with the HUD open holds the item. New `src/cs2d_bind.c` reads `sys/controls.cfg` (defaults
+  mwheelup invprev, mwheeldown invnext, 0..9 slots); console `bind`, `invnext`, `invprev`, `slotN`. The mouse wheel now
+  always reaches the client (in game it runs the bound command). Config reads `hud_fastswitch`, `drawradar`, `radarsize`.
+- **Verified:** screenshots of the original (`wsel_probe.lua`, new `wheel:n` step in `drive_orig.ps1`) against ours:
+  same positions, colors and texts; the proxy shows `[9, type, 0]` on the confirming click and nothing on the wheel.
+  `test_weapon_select` (23 / 23).
+- **Left:** see OPEN_ISSUES (one item per inventory slot, INF / Remote texts, sounds, other bindings).
+
 ## 2026-10-12 — Claude Code — building shadows, build helper alpha, additive explosion
 - **Changed (user requests, not checked against the original):** solid buildings (walls, Dispenser, turrets, supplies;
   `cs2d_dynobj_casts_shadow`) mark `map->object_shadow` and cast a 32 px wall shadow in the shadow map; the build helper

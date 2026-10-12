@@ -275,6 +275,88 @@ static bool move_blocked(const cs2d_map_t *map, float px, float py)
     return c == 1 || c == 2;
 }
 
+/* HUD slots wrap 0..9 (FUN_140166fb0) */
+static int invsel_wrap(int slot)
+{
+    if (slot < 0) return 9;
+    if (slot > 9) return 0;
+    return slot;
+}
+
+int cs2d_invsel_count(const cs2d_player_t *player, int slot)
+{
+    int n = 0;
+    for (int s = 0; s < CS2D_SLOT_COUNT; s++) {
+        uint8_t w = player->inventory[s];
+        if (w != CS2D_WEP_NONE && cs2d_weapon_hud_slot(w) == slot && cs2d_weapon_hud_order(w) < 10) n++;
+    }
+    return n;
+}
+
+uint8_t cs2d_invsel_item(const cs2d_player_t *player, int slot, int index)
+{
+    int i = 0;
+    for (int order = 0; order < 10; order++) {
+        for (int s = 0; s < CS2D_SLOT_COUNT; s++) {
+            uint8_t w = player->inventory[s];
+            if (w == CS2D_WEP_NONE || cs2d_weapon_hud_slot(w) != slot || cs2d_weapon_hud_order(w) != order) continue;
+            if (i == index) return w;
+            i++;
+        }
+    }
+    return CS2D_WEP_NONE;
+}
+
+void cs2d_invsel_cycle(cs2d_invsel_t *sel, const cs2d_player_t *player, int dir)
+{
+    /* Closed: start on the held weapon's slot and position */
+    if (sel->slot == 0 && player->current_weapon != CS2D_WEP_NONE) {
+        sel->slot = cs2d_weapon_hud_slot(player->current_weapon);
+        int n = cs2d_invsel_count(player, sel->slot);
+        for (int i = 0; i < n; i++) {
+            if (cs2d_invsel_item(player, sel->slot, i) == player->current_weapon) { sel->index = i; break; }
+        }
+    }
+    /* At most 101 steps (0x65), so an empty inventory cannot loop forever */
+    for (int tries = 0x65; tries > 0; tries--) {
+        int n = cs2d_invsel_count(player, sel->slot);
+        if (dir == 1) {
+            if (sel->index + 1 < n) { sel->index++; return; }
+            sel->slot  = invsel_wrap(sel->slot + 1);
+            sel->index = -1;
+        } else {
+            if (sel->index - 1 >= 0 && n != 0) { sel->index--; return; }
+            sel->slot  = invsel_wrap(sel->slot - 1);
+            sel->index = cs2d_invsel_count(player, sel->slot); /* one past the last: the next step takes the last */
+        }
+    }
+}
+
+uint8_t cs2d_invsel_slot(cs2d_invsel_t *sel, const cs2d_player_t *player, int slot, bool fastswitch)
+{
+    if (slot < 0 || slot > 9) slot = 0;
+    if (fastswitch && cs2d_invsel_count(player, slot) == 1) {
+        sel->slot = 0;
+        return cs2d_invsel_item(player, slot, 0);
+    }
+    if (sel->slot == slot) {
+        int next = sel->index + 1;
+        sel->index = (next < cs2d_invsel_count(player, slot)) ? next : 0;
+    } else {
+        sel->index = 0;
+        sel->slot  = slot;
+    }
+    return CS2D_WEP_NONE;
+}
+
+uint8_t cs2d_invsel_confirm(cs2d_invsel_t *sel, const cs2d_player_t *player)
+{
+    uint8_t w = cs2d_invsel_item(player, sel->slot, sel->index);
+    sel->slot  = 0;
+    sel->index = 0;
+    return w;
+}
+
 /*
  * Reconstructed from Tpl method +0x198 (FUN_1401f7600, collision branch): the player is a 24x24 box
  * (half-size 12). X is resolved first, then Y using the resolved X. Each axis advances 1 px at a time

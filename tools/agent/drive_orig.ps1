@@ -33,6 +33,7 @@ foreach ($s in $Steps.Split(';')) {
     'shot' { Add-Type -AssemblyName System.Drawing; $w = Get-Process CS2D | Select-Object -First 1; $r = New-Object K+RECT; [K]::GetWindowRect($w.MainWindowHandle, [ref]$r) | Out-Null; $bmp = New-Object System.Drawing.Bitmap ($r.R-$r.L), ($r.B-$r.T); $g=[System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($r.L,$r.T,0,0,$bmp.Size); $bmp.Save($p[1] + ':' + $p[2]); $g.Dispose(); $bmp.Dispose() }
     'ldown' { [K]::mouse_event(2,0,0,0,[UIntPtr]::Zero) }
     'lup' { [K]::mouse_event(4,0,0,0,[UIntPtr]::Zero) }
+    'wheel' { $d = [int64]([int]$p[1] * 120); if ($d -lt 0) { $d += 4294967296 }; [K]::mouse_event(0x800,0,0,[uint32]$d,[UIntPtr]::Zero) }
     'vk'    { $vk = [byte]([Convert]::ToInt32($p[1], 16)); $scan = [byte][K]::MapVirtualKey($vk, 0); $fl = 0; if ($p[2] -eq 'up') { $fl = 2 }; [K]::keybd_event($vk, $scan, $fl, [UIntPtr]::Zero) }
   }
   Write-Output ("{0:N3} {1}" -f ((Get-Date) - $script:t0).TotalSeconds, $s)

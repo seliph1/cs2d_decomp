@@ -36,6 +36,28 @@ bool cs2d_player_strip_weapon(cs2d_player_t *player, uint8_t weapon_id);
 /* Holds weapon_id if the player owns it */
 bool cs2d_player_select_weapon(cs2d_player_t *player, uint8_t weapon_id);
 
+/*
+ * Weapon selection HUD (invnext / invprev / slot1..slot10, CS2D.exe). The HUD lists the owned items of one slot
+ * (cs2d_weapon_hud_slot), ordered by cs2d_weapon_hud_order then inventory order (FUN_14018c580).
+ */
+typedef struct cs2d_invsel_s {
+    int   slot;                     /* Open slot 1..9, 0 = closed (DAT_140ddf338) */
+    int   index;                    /* Highlighted item in the slot (DAT_140ddf334) */
+    float rot[CS2D_MAX_WEAPONS];    /* Icon rotation of each item while its slot is open (Titem +0x28) */
+} cs2d_invsel_t;
+
+/* Owned items in HUD slot `slot` (Titem.countatplayer) */
+int cs2d_invsel_count(const cs2d_player_t *player, int slot);
+/* index-th item of the slot in HUD order, CS2D_WEP_NONE past the end (FUN_14018c580) */
+uint8_t cs2d_invsel_item(const cs2d_player_t *player, int slot, int index);
+/* invnext (dir 1) / invprev (dir -1): opens the HUD on the held weapon, then steps (FUN_140166fb0) */
+void cs2d_invsel_cycle(cs2d_invsel_t *sel, const cs2d_player_t *player, int dir);
+/* slotN: with hud_fastswitch (or force) and one item in the slot, returns it to hold and closes the HUD; else opens
+ * the slot or steps to its next item and returns CS2D_WEP_NONE (FUN_1401cc180). slot10 is slot 0. */
+uint8_t cs2d_invsel_slot(cs2d_invsel_t *sel, const cs2d_player_t *player, int slot, bool fastswitch);
+/* attack / attack2 while the HUD is open: the highlighted item (or CS2D_WEP_NONE), and the HUD closes (FUN_140219820) */
+uint8_t cs2d_invsel_confirm(cs2d_invsel_t *sel, const cs2d_player_t *player);
+
 /* Check map collision and move player */
 bool cs2d_player_move(cs2d_player_t *player, const cs2d_map_t *map, float dx, float dy);
 

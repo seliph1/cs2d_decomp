@@ -31,6 +31,9 @@ static int sdl_key_to_cs2d_key(SDL_Keycode key)
         case SDLK_4:      return '4';
         case SDLK_5:      return '5';
         case SDLK_6:      return '6';
+        case SDLK_7:      return '7';
+        case SDLK_8:      return '8';
+        case SDLK_9:      return '9';
         case SDLK_UP:     return VK_UP;
         case SDLK_DOWN:   return VK_DOWN;
         case SDLK_LEFT:   return VK_LEFT;
@@ -248,9 +251,7 @@ static int run_client_app(const char *cmdline)
                     break;
 
                 case SDL_EVENT_MOUSE_WHEEL:
-                    if (cs2d_client_any_ui_open(&g_client)) {
-                        cs2d_client_handle_mouse_wheel(&g_client, (int)event.wheel.y);
-                    }
+                    cs2d_client_handle_mouse_wheel(&g_client, (int)event.wheel.y);
                     break;
 
                 case SDL_EVENT_KEY_DOWN:

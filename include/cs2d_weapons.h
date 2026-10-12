@@ -12,6 +12,12 @@ bool cs2d_weapons_load_cfg(const char *filepath);
 /* Get weapon definition by ID (1..91) */
 const cs2d_weapon_def_t *cs2d_weapon_get(uint8_t weapon_id);
 
+/* Weapon selection HUD (CS2D.exe init_weapons tables): slot 1..6 (0 = not listed, 0x140a017b8), order inside the
+ * slot 0..9 (0x1409f3ce0), and whether slots 1 / 2 show "clip | reserve" (0x140a017b0 >= 0) */
+int  cs2d_weapon_hud_slot(uint8_t weapon_id);
+int  cs2d_weapon_hud_order(uint8_t weapon_id);
+bool cs2d_weapon_hud_ammo(uint8_t weapon_id);
+
 /* Query integer weapon property by name (reconstructed from Lua itemtype() FUN_14009b4c0) */
 int cs2d_itemtype_int(uint8_t weapon_id, const char *prop);
 

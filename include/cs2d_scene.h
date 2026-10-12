@@ -67,6 +67,9 @@ void cs2d_scene_game_apply_entity_state(cs2d_client_t *client, int tx, int ty, u
 void cs2d_scene_game_specplayer(cs2d_client_t *client);
 void cs2d_scene_game_specmode(cs2d_client_t *client);
 
+/* Weapon selection commands (bound in sys/controls.cfg): invnext, invprev, slot0..slot10. False for other commands */
+bool cs2d_scene_game_inv_cmd(cs2d_client_t *client, const char *cmd);
+
 /* Draws a shot or melee swing of another player (server fire record [7, player, seed]) */
 void cs2d_scene_game_remote_shot(cs2d_client_t *client, cs2d_player_t *pl);
 

@@ -26,6 +26,7 @@
 #include "cs2d_editor.h"
 #include "cs2d_spectate.h"
 #include "cs2d_dynobj.h"
+#include "cs2d_bind.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -2126,6 +2127,106 @@ static bool test_construction(void)
     return true;
 }
 
+/* =========================================================================
+ * Weapon selection HUD: invnext / invprev (FUN_140166fb0), slotN (FUN_1401cc180), attack confirms (FUN_140219820),
+ * the HUD tables of init_weapons and the sys/controls.cfg bindings
+ * ========================================================================= */
+static cs2d_client_t s_ws;
+
+static bool test_weapon_select(void)
+{
+    printf("\n=== Testing Weapon Selection HUD & Bindings (FUN_140166fb0 / FUN_1401cc180) ===\n");
+
+    /* init_weapons tables (0x140a017b8 slot, 0x1409f3ce0 order, 0x140a017b0 ammo) */
+    if (cs2d_weapon_hud_slot(CS2D_WEP_AK47) != 1 || cs2d_weapon_hud_slot(CS2D_WEP_USP) != 2 ||
+        cs2d_weapon_hud_slot(CS2D_WEP_KNIFE) != 3 || cs2d_weapon_hud_slot(CS2D_WEP_HE) != 4 ||
+        cs2d_weapon_hud_slot(CS2D_WEP_BOMB) != 5 || cs2d_weapon_hud_slot(CS2D_WEP_KEVLAR) != 0 ||
+        cs2d_weapon_hud_order(CS2D_WEP_FLASHBANG) != 1 || cs2d_weapon_hud_order(CS2D_WEP_LASERMINE) != 9 ||
+        cs2d_weapon_hud_ammo(CS2D_WEP_PORTALGUN) || !cs2d_weapon_hud_ammo(CS2D_WEP_AK47)) {
+        TEST_FAIL("HUD tables", "slot / order / ammo differ from init_weapons");
+    }
+
+    cs2d_player_t pl;
+    cs2d_player_init(&pl, 1, "P");
+    pl.alive = true;
+    cs2d_player_give_weapon(&pl, CS2D_WEP_KNIFE);
+    cs2d_player_give_weapon(&pl, CS2D_WEP_USP);
+    cs2d_player_give_weapon(&pl, CS2D_WEP_HE);
+    cs2d_player_give_weapon(&pl, CS2D_WEP_AK47);   /* held */
+
+    /* invnext from a closed HUD starts on the held AK-47 (slot 1), then steps to the next owned slot */
+    cs2d_invsel_t sel;
+    memset(&sel, 0, sizeof(sel));
+    static const struct { int slot; uint8_t wep; } next_seq[] = {
+        {2, CS2D_WEP_USP}, {3, CS2D_WEP_KNIFE}, {4, CS2D_WEP_HE}, {1, CS2D_WEP_AK47}, {2, CS2D_WEP_USP}
+    };
+    for (size_t i = 0; i < sizeof(next_seq) / sizeof(next_seq[0]); i++) {
+        cs2d_invsel_cycle(&sel, &pl, 1);
+        if (sel.slot != next_seq[i].slot || cs2d_invsel_item(&pl, sel.slot, sel.index) != next_seq[i].wep) {
+            TEST_FAIL("invnext", "Expected AK-47 -> USP -> Knife -> HE -> AK-47 (slots wrap 9 -> 0 -> 1)");
+        }
+    }
+    /* invprev from a closed HUD on the AK-47 wraps backwards to the HE grenade */
+    memset(&sel, 0, sizeof(sel));
+    cs2d_invsel_cycle(&sel, &pl, -1);
+    if (sel.slot != 4 || cs2d_invsel_item(&pl, 4, sel.index) != CS2D_WEP_HE) {
+        TEST_FAIL("invprev", "Expected slot 4 (HE) before slot 1");
+    }
+    /* attack holds the highlighted item and closes the HUD */
+    if (cs2d_invsel_confirm(&sel, &pl) != CS2D_WEP_HE || sel.slot != 0 || sel.index != 0) {
+        TEST_FAIL("confirm", "Expected the HE grenade and a closed HUD");
+    }
+
+    /* slotN: hud_fastswitch with one item holds it at once; without it the slot opens, then cycles */
+    if (cs2d_invsel_slot(&sel, &pl, 2, true) != CS2D_WEP_USP || sel.slot != 0) {
+        TEST_FAIL("slot fastswitch", "slot2 with one item and hud_fastswitch must hold the USP");
+    }
+    if (cs2d_invsel_slot(&sel, &pl, 2, false) != CS2D_WEP_NONE || sel.slot != 2 || sel.index != 0 ||
+        cs2d_invsel_slot(&sel, &pl, 2, false) != CS2D_WEP_NONE || sel.index != 0) {
+        TEST_FAIL("slot", "slot2 without fastswitch opens slot 2 and wraps on its single item");
+    }
+    if (cs2d_invsel_slot(&sel, &pl, 10, true) != CS2D_WEP_NONE || sel.slot != 0) {
+        TEST_FAIL("slot10", "slot10 is slot 0 (no items): the HUD stays closed");
+    }
+
+    /* Bindings: defaults, then sys/controls.cfg */
+    cs2d_binds_t b;
+    cs2d_binds_defaults(&b);
+    const char *up = cs2d_binds_find(&b, "mwheelup"), *down = cs2d_binds_find(&b, "MWheelDown");
+    if (!up || strcmp(up, "invprev") != 0 || !down || strcmp(down, "invnext") != 0 ||
+        strcmp(cs2d_binds_find(&b, "0"), "slot10") != 0) {
+        TEST_FAIL("bind defaults", "Expected mwheelup invprev, mwheeldown invnext, 0 slot10");
+    }
+    if (!cs2d_binds_load(&b, "sys/controls.cfg") || !cs2d_binds_find(&b, "Q") ||
+        strcmp(cs2d_binds_find(&b, "Q"), "lastinv") != 0 || strcmp(cs2d_binds_find(&b, "space"), "specplayer") != 0) {
+        TEST_FAIL("controls.cfg", "Expected the shipped bindings (Q lastinv, space specplayer)");
+    }
+    cs2d_binds_set(&b, "mwheelup", "invnext");
+    if (strcmp(cs2d_binds_find(&b, "mwheelup"), "invnext") != 0 || strcmp(cs2d_bind_key_name('5'), "5") != 0) {
+        TEST_FAIL("bind set", "Rebinding a key must replace its command");
+    }
+
+    /* The wheel in game runs the bound command; a click with the HUD open holds the item instead of firing */
+    memset(&s_ws, 0, sizeof(s_ws));
+    s_ws.scene = CS2D_SCENE_GAME;
+    s_ws.local_player_id = 1;
+    s_ws.game.players[1] = pl;
+    s_ws.game.players[1].current_weapon = CS2D_WEP_AK47;
+    cs2d_binds_defaults(&s_ws.binds);
+    cs2d_client_handle_mouse_wheel(&s_ws, -1);              /* mwheeldown: invnext */
+    if (s_ws.invsel.slot != 2 || s_ws.ui_wheel_delta != 0) {
+        TEST_FAIL("wheel", "mwheeldown in game must open the HUD on the next slot (USP)");
+    }
+    cs2d_client_handle_mouse(&s_ws, 400.0f, 240.0f, 1, true);
+    if (s_ws.game.players[1].current_weapon != CS2D_WEP_USP || s_ws.invsel.slot != 0 || s_ws.mouse_fire ||
+        fabsf(s_ws.game.players[1].fire_cooldown - 0.4f) > 1e-6f) {
+        TEST_FAIL("wheel confirm", "The click must hold the USP, close the HUD, not fire, and wait 400 ms");
+    }
+
+    TEST_PASS("Weapon selection HUD: slot tables, invnext / invprev / slotN / attack confirm, controls.cfg binds");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -2133,7 +2234,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 22;
+    int total = 23;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -2157,6 +2258,7 @@ int main(void)
     if (test_editor()) passed++;
     if (test_spectator()) passed++;
     if (test_construction()) passed++;
+    if (test_weapon_select()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

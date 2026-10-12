@@ -18,6 +18,14 @@ the same one.
 - **Spray:** our client sends a blank spray logo.
 - **Dedicated broadcast quirk:** after some round restarts the dedicated stops broadcasting entity
   changes; the original client shows the same, so it is server behaviour.
+- **Weapon selection HUD, not reconstructed** (KNOWLEDGE "Weapon selection HUD"):
+  - Our inventory holds one weapon per `cs2d_weapon_slot_t`, so slot 4 lists one grenade (the original lists HE,
+    Flashbang and Smoke with their counts, e.g. "2 x").
+  - "clip | INF" under infinite ammo (`0x140a14e38[1]`, language 0762) and "0 x - Remote" (0763, slot 6).
+  - The HUD sounds (`0x140a0d628` / `d630` / `d640`), `lastinv`, and the gamepad path (`FUN_140239bd0`).
+  - Bindings: only the weapon selection commands go through `sys/controls.cfg`; movement, reload, use, buy, drop and
+    the spectator keys are still hardcoded in `game_handle_key`. `cs2d_bind_key_name` knows only digits, letters,
+    space, leftctrl and leftshift. The HUD font scale is fixed at 1 (13 px).
 - **Buy menu:** there is no UI; `B` buys a rifle and kevlar + helmet as a shortcut.
 - **Server browser, not reconstructed:**
   - U.S.G.N. serverlist download: the Internet tab always uses `sys/core/svl.cache`.

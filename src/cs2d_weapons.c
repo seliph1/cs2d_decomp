@@ -278,6 +278,51 @@ bool cs2d_weapons_load_cfg(const char *filepath)
     return true;
 }
 
+/*
+ * Weapon selection HUD tables of CS2D.exe, filled per weapon by init_weapons (0x14022fc00..0x140234200, the id in
+ * DAT_140ddf57c): HUD slot 0x140a017b8 (1..6; 0 = never listed, e.g. armors and flags), order inside the slot
+ * 0x1409f3ce0 (0..9) and the ammo flag 0x140a017b0 (-1 = no ammo text: Portal Gun). Unlisted entries stay 0.
+ */
+typedef struct { uint8_t id, slot, order; int8_t ammo; } hud_slot_entry_t;
+static const hud_slot_entry_t g_hud_slots[] = {
+    {1, 2, 0, 0}, {2, 2, 0, 0}, {3, 2, 0, 0}, {4, 2, 0, 0}, {5, 2, 0, 0}, {6, 2, 0, 0},
+    {10, 1, 0, 0}, {11, 1, 0, 0}, {20, 1, 0, 0}, {21, 1, 0, 0}, {22, 1, 0, 0}, {23, 1, 0, 0}, {24, 1, 0, 0},
+    {30, 1, 0, 0}, {31, 1, 0, 0}, {32, 1, 0, 0}, {33, 1, 0, 0}, {34, 1, 0, 0}, {35, 1, 0, 0}, {36, 1, 0, 0},
+    {37, 1, 0, 0}, {38, 1, 0, 0}, {39, 1, 0, 0}, {40, 1, 0, 0}, {41, 1, 0, 0}, {45, 1, 0, 0}, {46, 1, 0, 0},
+    {47, 1, 0, 0}, {48, 1, 0, 0}, {49, 1, 0, 0}, {88, 1, 0, -1}, {90, 1, 0, 0}, {91, 1, 0, 0}, {92, 1, 0, 0},
+    {50, 3, 0, 0}, {69, 3, 0, 0}, {74, 3, 0, 0}, {78, 3, 0, 0}, {85, 3, 0, 0},
+    {51, 4, 0, 0}, {52, 4, 1, 0}, {53, 4, 2, 0}, {54, 4, 3, 0}, {72, 4, 4, 0}, {73, 4, 5, 0}, {75, 4, 6, 0},
+    {76, 4, 7, 0}, {86, 4, 0, 0},
+    {55, 5, 0, 0}, {77, 5, 8, 0}, {87, 5, 9, 0},
+    {89, 6, 0, 0},
+};
+
+static const hud_slot_entry_t *hud_slot_entry(uint8_t weapon_id)
+{
+    for (size_t i = 0; i < sizeof(g_hud_slots) / sizeof(g_hud_slots[0]); i++) {
+        if (g_hud_slots[i].id == weapon_id) return &g_hud_slots[i];
+    }
+    return NULL;
+}
+
+int cs2d_weapon_hud_slot(uint8_t weapon_id)
+{
+    const hud_slot_entry_t *e = hud_slot_entry(weapon_id);
+    return e ? e->slot : 0;
+}
+
+int cs2d_weapon_hud_order(uint8_t weapon_id)
+{
+    const hud_slot_entry_t *e = hud_slot_entry(weapon_id);
+    return e ? e->order : 0;
+}
+
+bool cs2d_weapon_hud_ammo(uint8_t weapon_id)
+{
+    const hud_slot_entry_t *e = hud_slot_entry(weapon_id);
+    return !e || e->ammo >= 0;
+}
+
 const cs2d_weapon_def_t *cs2d_weapon_get(uint8_t weapon_id)
 {
     if (!g_weapons_initialized) {

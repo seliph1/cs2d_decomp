@@ -16,6 +16,9 @@ typedef struct {
     char server_ip[64];
     int  server_port;
     int  download;      /* "download": which files a server may send (DAT_140a14f4c) */
+    bool hud_fastswitch; /* "hud_fastswitch": a slot key with one item holds it at once (DAT_140ddf19e) */
+    int  drawradar;      /* "drawradar" 0..4 (DAT_140ddf19b) */
+    int  radarsize;      /* "radarsize" (DAT_140ddf19a) */
 } cs2d_config_t;
 
 /* Load config from sys/config.cfg */

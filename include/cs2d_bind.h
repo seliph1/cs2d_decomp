@@ -1,0 +1,36 @@
+#ifndef CS2D_BIND_H
+#define CS2D_BIND_H
+
+#include <stdbool.h>
+
+/*
+ * Key bindings of sys/controls.cfg (`bind "<key>" "<command>"`, Tbind in CS2D.exe). Keys use the controls.cfg
+ * names: "1", "W", "space", "leftctrl", "mouse1", "mwheelup", ...
+ */
+#define CS2D_BIND_MAX      128
+#define CS2D_BIND_KEY_LEN  24
+#define CS2D_BIND_CMD_LEN  64
+
+typedef struct {
+    char key[CS2D_BIND_KEY_LEN];
+    char cmd[CS2D_BIND_CMD_LEN];
+} cs2d_bind_t;
+
+typedef struct {
+    cs2d_bind_t binds[CS2D_BIND_MAX];
+    int         count;
+} cs2d_binds_t;
+
+/* Weapon selection defaults of the shipped sys/controls.cfg: "1".."9" slot1..slot9, "0" slot10,
+ * mwheelup invprev, mwheeldown invnext */
+void cs2d_binds_defaults(cs2d_binds_t *b);
+/* Adds the `bind` lines of a controls file over the current table; false if the file is missing */
+bool cs2d_binds_load(cs2d_binds_t *b, const char *filepath);
+/* Binds key (case-insensitive) to cmd; an empty cmd removes the binding */
+void cs2d_binds_set(cs2d_binds_t *b, const char *key, const char *cmd);
+/* Command bound to key, or NULL */
+const char *cs2d_binds_find(const cs2d_binds_t *b, const char *key);
+/* controls.cfg name of one of our key codes (cs2d_client_handle_key), or NULL */
+const char *cs2d_bind_key_name(int key);
+
+#endif /* CS2D_BIND_H */

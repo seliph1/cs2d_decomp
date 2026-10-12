@@ -3,6 +3,7 @@
 #include "cs2d_weapons.h"
 #include "cs2d_map.h"
 #include "cs2d_fx.h"
+#include "cs2d_player.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
 #include <stdio.h>
@@ -827,6 +828,7 @@ bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank)
     cs2d_texture_load_ex(&bank->tex_hud_radar_ring,    "gfx/hud_radar_ring.png",     2);
     cs2d_texture_load_grid(&bank->tex_hud_radar_icons, "gfx/hud_radar_icons.png",    2, 32, 32);
     cs2d_texture_load_ex(&bank->tex_hud_slot,          "gfx/hud_slot.bmp",           0);
+    cs2d_texture_load_grid(&bank->tex_hud_slotheads,   "gfx/hud_slotheads.bmp",      1, 10, 10);
     cs2d_texture_load_grid(&bank->tex_pointer,         "gfx/pointer.bmp",            2, 46, 46);
 
     bank->initialized = (g_gl_ctx != NULL);
@@ -890,6 +892,7 @@ void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank)
     cs2d_texture_free(&bank->tex_hud_radar_ring);
     cs2d_texture_free(&bank->tex_hud_radar_icons);
     cs2d_texture_free(&bank->tex_hud_slot);
+    cs2d_texture_free(&bank->tex_hud_slotheads);
     cs2d_texture_free(&bank->tex_pointer);
     cs2d_texture_free(&bank->tex_minimap);
 
@@ -2740,6 +2743,102 @@ void cs2d_render_hud(
     if (player->inventory[CS2D_SLOT_BOMB] == CS2D_WEP_BOMB) {
         cs2d_render_sprite_frame(&bank->tex_hud_symbols, sym_cell, sym_cell, 6,
                                  24.0f, icon_y, 32.0f, 32.0f, 0.0f, 0.2f, 0.95f, 0.2f, 0.65f, 3);
+    }
+}
+
+/* Item image of a weapon selection row, midhandled at (x, y): a black shadow at alpha 0.4 2 s lower right, then the
+ * image; images wider than 64 px are drawn at half size */
+static void weapon_select_icon(const cs2d_texture_t *tex, float x, float y, float s, float rot)
+{
+    if (!tex->id) return;
+    float sc = (tex->width > 64) ? s * 0.5f : s;
+    float w = (float)tex->width * sc, h = (float)tex->height * sc;
+    cs2d_render_sprite_frame(tex, 0, 0, 0, x + 2.0f * s, y + 2.0f * s, w, h, rot, 0.0f, 0.0f, 0.0f, 0.4f, 0);
+    cs2d_render_sprite_frame(tex, 0, 0, 0, x, y, w, h, rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
+}
+
+/* Text with a black shadow at alpha 0.8 1 px lower right; (255,255,0) when highlighted, else (220,180,0) */
+static void weapon_select_text(float x, float y, const char *text, float scale_x, bool hl)
+{
+    cs2d_render_text_scaled_ex(CS2D_FONT_REGULAR, x + 1.0f, y + 1.0f, text, scale_x, 0.0f, 0.0f, 0.0f, 0.8f);
+    cs2d_render_text_scaled_ex(CS2D_FONT_REGULAR, x, y, text, scale_x,
+                               hl ? 1.0f : 220.0f / 255.0f, hl ? 1.0f : 180.0f / 255.0f, 0.0f, 1.0f);
+}
+
+/*
+ * Reconstructed from the end of FUN_140295190 (the HUD), drawn while DAT_140ddf338 (slot) > 0. s is the HUD font
+ * height / 13 (DAT_140a1ccc8 * 0.07692308): 13 px at 850x480, so 1. Slots 1..9 go left to right from x0 at y 3 s:
+ *  - open slot: its number (gfx/hud_slotheads.bmp frame slot - 1) additive (200,200,0), then one gfx/hud_slot.bmp
+ *    row per item from y 15 s every 46 s, additive (200,200,0) highlighted / (100,50,0). A row has the turning item
+ *    image (_d.bmp) at +21 s, its name at +45 s (+43 s in slots 4 and 6) squeezed to 95 s, and at +18 s
+ *    "clip | reserve" (slots 1, 2; not the Tactical Shield nor weapons without ammo) or "count x" (slots 4, 6).
+ *    The melee icon turns the other way around a 5 s circle. Slots 7..9 rows have no content. The column is 155 s.
+ *  - other slots: a 10 s square per owned item every 12 s under the number, additive (100,50,0); the number turns
+ *    (100,0,0) when the slot is empty. The column is 15 s.
+ * Not done: "clip | INF" (sys/language 0762) under infinite ammo (0x140a14e38[1]) and "0 x - Remote" (0763, slot 6).
+ */
+void cs2d_render_weapon_select(const cs2d_player_t *player, const struct cs2d_invsel_s *sel, float x0)
+{
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    if (!player || !sel || sel->slot <= 0 || !bank) return;
+
+    const float s = 1.0f;
+    float x = x0, head_y = (float)(int)(s * 3.0f);
+    for (int slot = 1; slot < 10; slot++) {
+        if (slot == sel->slot) {
+            cs2d_render_sprite_frame(&bank->tex_hud_slotheads, 10, 10, slot - 1, x + 5.0f * s, head_y + 5.0f * s,
+                                     10.0f * s, 10.0f * s, 0.0f, 200.0f / 255.0f, 200.0f / 255.0f, 0.0f, 1.0f, 4);
+            float y = (float)(int)(s * 15.0f);
+            int n = cs2d_invsel_count(player, slot);
+            for (int i = 0; i < n; i++, y += (float)(int)(s * 46.0f)) {
+                uint8_t w = cs2d_invsel_item(player, slot, i);
+                bool hl = (i == sel->index);
+                float c = (hl ? 200.0f : 100.0f) / 255.0f;
+                cs2d_render_sprite_frame(&bank->tex_hud_slot, 0, 0, 0, x + 75.0f * s, y + 20.0f * s, 150.0f * s,
+                                         40.0f * s, 0.0f, c, hl ? c : 50.0f / 255.0f, 0.0f, 1.0f, 4);
+                if (slot > 6) continue;
+
+                const cs2d_texture_t *img = &bank->tex_weapons_d[w];
+                float rot = sel->rot[w];
+                if (slot == 3) {
+                    float r = -rot * 0.017453292f;
+                    weapon_select_icon(img, x + (21.0f + sinf(r) * 5.0f) * s, y + (21.0f - cosf(r) * 5.0f) * s, s, -rot);
+                } else {
+                    weapon_select_icon(img, x + (float)(int)(s * 21.0f), y + (float)(int)(s * 21.0f), s, rot);
+                }
+
+                const cs2d_weapon_def_t *def = cs2d_weapon_get(w);
+                const char *name = (def && def->name) ? def->name : "";
+                float tw = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, name);
+                float sx = (tw > s * 95.0f) ? (s * 95.0f) / tw : 1.0f;
+                float tx = x + (float)(int)(s * ((slot == 4 || slot == 6) ? 43.0f : 45.0f));
+                weapon_select_text(tx, y + head_y, name, sx, hl);
+
+                char line[32] = "";
+                if ((slot == 1 || slot == 2) && w != CS2D_WEP_SHIELD && cs2d_weapon_hud_ammo(w)) {
+                    snprintf(line, sizeof(line), "%d | %d", player->clip_ammo[w], player->reserve_ammo[w]);
+                } else if (slot == 4 || (slot == 6 && player->clip_ammo[w] > 0)) {
+                    snprintf(line, sizeof(line), "%d x", player->clip_ammo[w]);
+                }
+                if (line[0]) weapon_select_text(tx, y + (float)(int)(s * 18.0f), line, 1.0f, hl);
+            }
+            x += (float)(int)(s * 155.0f);
+        } else {
+            float y = head_y;
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+            for (int k = 0; k < CS2D_SLOT_COUNT; k++) {
+                uint8_t w = player->inventory[k];
+                if (w == CS2D_WEP_NONE || cs2d_weapon_hud_slot(w) != slot) continue;
+                y += (float)(int)(s * 12.0f);
+                cs2d_render_rect(x, y, (float)(int)(s * 10.0f), (float)(int)(s * 10.0f),
+                                 100.0f / 255.0f, 50.0f / 255.0f, 0.0f, 1.0f, true);
+            }
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            float g = (y == head_y) ? 0.0f : 50.0f / 255.0f;
+            cs2d_render_sprite_frame(&bank->tex_hud_slotheads, 10, 10, slot - 1, x + 5.0f * s, head_y + 5.0f * s,
+                                     10.0f * s, 10.0f * s, 0.0f, 100.0f / 255.0f, g, 0.0f, 1.0f, 4);
+            x += (float)(int)(s * 15.0f);
+        }
     }
 }
 

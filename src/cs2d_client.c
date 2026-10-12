@@ -322,6 +322,8 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
 
     /* Load user config from sys/config.cfg */
     cs2d_config_load(&client->config, "sys/config.cfg");
+    cs2d_binds_defaults(&client->binds);
+    cs2d_binds_load(&client->binds, "sys/controls.cfg");
     client->opt_name_cursor = (int)strlen(client->config.name);
     cs2d_xfer_init(&client->xfer);
     client->xfer.accept   = client->config.download;
@@ -1527,6 +1529,23 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         } else {
             cs2d_scene_game_restart_round(client);
         }
+    } else if (cs2d_scene_game_inv_cmd(client, cmd)) {
+        /* invnext / invprev / slot0..slot10 (weapon selection HUD) */
+    } else if (_stricmp(cmd, "bind") == 0) {
+        /* bind "<key>" "<command>" like sys/controls.cfg; without a command it shows the binding */
+        char key[64], bcmd[CS2D_BIND_CMD_LEN];
+        snprintf(key, sizeof(key), "%s", arg1[0] == '"' ? arg1 + 1 : arg1);
+        snprintf(bcmd, sizeof(bcmd), "%s", arg2[0] == '"' ? arg2 + 1 : arg2);
+        key[strcspn(key, "\"")] = '\0';
+        bcmd[strcspn(bcmd, "\"")] = '\0';
+        if (!key[0]) {
+            cs2d_client_console_print(client, 255, 45, 45, "bind <key> <command>");
+        } else if (bcmd[0]) {
+            cs2d_binds_set(&client->binds, key, bcmd);
+        } else {
+            const char *b = cs2d_binds_find(&client->binds, key);
+            cs2d_client_console_print(client, 220, 220, 220, "%s = %s", key, b ? b : "-");
+        }
     } else if (_stricmp(cmd, "specmode") == 0 || _stricmp(cmd, "specplayer") == 0) {
         /* Spectator bindings of sys/controls.cfg (leftctrl / space); only in game (DAT_140ddf418 1..2) */
         if (client->scene == CS2D_SCENE_GAME) {
@@ -2173,10 +2192,16 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
     }
 }
 
-/* The wheel goes to the UI: each scrollable view takes it while laid out (cs2d_ui_scroll_wheel) */
+/* The wheel goes to the UI: each scrollable view takes it while laid out (cs2d_ui_scroll_wheel). In game with no
+ * window open each notch runs the command bound to "mwheelup" / "mwheeldown" (sys/controls.cfg: invprev / invnext) */
 void cs2d_client_handle_mouse_wheel(cs2d_client_t *client, int delta_y)
 {
     if (!client) return;
+    if (client->scene == CS2D_SCENE_GAME && !cs2d_client_any_ui_open(client)) {
+        const char *cmd = cs2d_binds_find(&client->binds, delta_y > 0 ? "mwheelup" : "mwheeldown");
+        for (int i = 0; cmd && i < abs(delta_y); i++) cs2d_scene_game_inv_cmd(client, cmd);
+        return;
+    }
     client->ui_wheel_delta += delta_y;
 }
 

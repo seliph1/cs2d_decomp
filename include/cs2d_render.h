@@ -84,7 +84,8 @@ typedef struct {
     cs2d_texture_t            tex_hud_radar_adv;  /* gfx/hud_radar_advanced.png (128x128, maskMode=2) */
     cs2d_texture_t            tex_hud_radar_ring; /* gfx/hud_radar_ring.png (128x128, maskMode=2) */
     cs2d_texture_t            tex_hud_radar_icons;/* gfx/hud_radar_icons.png (32x32 -> 24 frames, maskMode=2) */
-    cs2d_texture_t            tex_hud_slot;       /* gfx/hud_slot.bmp (54x27) */
+    cs2d_texture_t            tex_hud_slot;       /* gfx/hud_slot.bmp (150x40, maskMode 0, 0x140a0dd68) */
+    cs2d_texture_t            tex_hud_slotheads;  /* gfx/hud_slotheads.bmp (90x10 -> 9 frames of 10x10, maskMode 1, 0x140a0dd60) */
     cs2d_texture_t            tex_pointer;        /* gfx/pointer.bmp (92x92 -> 4 frames of 46x46, maskMode=2) */
 
     /* Cached circular minimap texture for the active map */
@@ -217,6 +218,10 @@ void cs2d_render_hud(
     const cs2d_game_t   *game,
     int screen_w, int screen_h
 );
+
+/* Weapon selection HUD (invnext / invprev / slotN) at the top of the screen, from x0 (FUN_140295190) */
+struct cs2d_invsel_s;
+void cs2d_render_weapon_select(const cs2d_player_t *player, const struct cs2d_invsel_s *sel, float x0);
 
 /* Crosshair at mouse pointer (gfx/pointer.bmp cell 0) */
 void cs2d_render_crosshair(float mx, float my);

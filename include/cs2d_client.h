@@ -18,6 +18,8 @@
 #include "cs2d_editor.h"
 #include "cs2d_spectate.h"
 #include "cs2d_dynobj.h"
+#include "cs2d_player.h"
+#include "cs2d_bind.h"
 
 #define CS2D_CONSOLE_MAX_LINES     1024 /* Ring buffer: the oldest line is dropped when full */
 #define CS2D_CONSOLE_LINE_LEN      192
@@ -106,6 +108,8 @@ struct cs2d_client {
     float           cam_y;
     cs2d_spec_t     spec;              /* Spectator camera while the local player is not alive */
     float           spec_tick;         /* Seconds since the last 1 s tick (DAT_140ddf540): [32] and showcase */
+    cs2d_invsel_t   invsel;            /* Weapon selection HUD (invnext / invprev / slotN) */
+    cs2d_binds_t    binds;             /* sys/controls.cfg */
 
     /* Input State */
     bool            key_forward;

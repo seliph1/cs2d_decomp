@@ -686,6 +686,7 @@ static void game_enter(cs2d_client_t *client)
 
     cs2d_game_init(&client->game, CS2D_MODE_DE);
     load_server_rules(&client->game);
+    memset(&client->invsel, 0, sizeof(client->invsel));
 
     if (joining) {
         /* Only the local player, with the id the server assigned in [252,2], as Spectator */
@@ -772,6 +773,17 @@ static void game_update(cs2d_client_t *client, float delta_time)
     }
 
     cs2d_player_t *pl = &client->game.players[client->local_player_id];
+    /* Weapon selection HUD: closed while dead; the icons of the open slot turn 3 degrees per 60 Hz frame
+     * (FUN_140295190: Titem +0x28 += time factor * 3) */
+    if (!pl->alive) {
+        client->invsel.slot = 0;
+    } else if (client->invsel.slot != 0) {
+        int n = cs2d_invsel_count(pl, client->invsel.slot);
+        for (int i = 0; i < n; i++) {
+            uint8_t w = cs2d_invsel_item(pl, client->invsel.slot, i);
+            client->invsel.rot[w] = fmodf(client->invsel.rot[w] + 3.0f * delta_time * 60.0f, 360.0f);
+        }
+    }
     if (pl->alive && !cs2d_client_any_ui_open(client)) {
         /*
          * Aiming: calculate world mouse position and rotation angle.
@@ -1268,6 +1280,9 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     }
     if (local_pl->alive) {
         cs2d_render_hud(local_pl, &client->game, screen_w, screen_h);
+        /* Right of the radar (drawradar != 0: radarsize + 100 + 8), else at 8 (FUN_140295190) */
+        float sel_x = client->config.drawradar ? (float)(client->config.radarsize + 108) : 8.0f;
+        cs2d_render_weapon_select(local_pl, &client->invsel, sel_x);
     } else {
         render_spectator_hud(client, screen_w, screen_h);
     }
@@ -1278,15 +1293,39 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     render_center_msgs(client, screen_w, screen_h);
 }
 
-/* Weapon slot keys; online the new weapon is announced as [9, type, 0] (recorded from CS2D.exe) */
-static void switch_slot(cs2d_client_t *client, cs2d_player_t *pl, cs2d_weapon_slot_t slot)
+/* Holds weapon_id (FUN_1401caca0); online the new weapon is announced as [9, type, 0] (recorded from CS2D.exe) */
+static void hold_weapon(cs2d_client_t *client, cs2d_player_t *pl, uint8_t weapon_id)
 {
     uint8_t before = pl->current_weapon;
-    if (!cs2d_player_switch_weapon(pl, slot) || pl->current_weapon == before) return;
+    if (weapon_id == CS2D_WEP_NONE || !cs2d_player_select_weapon(pl, weapon_id) || pl->current_weapon == before) return;
     if (client->connected && client->join_stage == 5) {
         uint8_t pkt[3] = { (uint8_t)CS2D_NET_SELECT_WEAPON, pl->current_weapon, 0 };
         cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
     }
+}
+
+/*
+ * Command dispatcher at 0x1401b3e30: invprev -> FUN_140166fb0(-1), invnext -> FUN_140166fb0(1), slotN ->
+ * FUN_1401cc180(N, 0), only in game (DAT_140ddf418 1..2). The HUD sounds (0x140a0d628 / d630 / d640) are not played:
+ * there is no audio yet.
+ */
+bool cs2d_scene_game_inv_cmd(cs2d_client_t *client, const char *cmd)
+{
+    int dir = 0, slot = -1;
+    if (_stricmp(cmd, "invnext") == 0) dir = 1;
+    else if (_stricmp(cmd, "invprev") == 0) dir = -1;
+    else if (_strnicmp(cmd, "slot", 4) == 0 && cmd[4] >= '0' && cmd[4] <= '9') slot = atoi(cmd + 4);
+    else return false;
+
+    if (client->scene != CS2D_SCENE_GAME) return true;
+    cs2d_player_t *pl = &client->game.players[client->local_player_id];
+    if (!pl->alive) return true;
+    if (dir != 0) {
+        cs2d_invsel_cycle(&client->invsel, pl, dir);
+    } else {
+        hold_weapon(client, pl, cs2d_invsel_slot(&client->invsel, pl, slot, client->config.hud_fastswitch));
+    }
+    return true;
 }
 
 static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
@@ -1298,6 +1337,9 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
         if (pressed) build_menu_key(client, key - '0');
         return;
     }
+    /* Weapon selection bindings of sys/controls.cfg ("1".."9", "0") */
+    const char *bound = pressed ? cs2d_binds_find(&client->binds, cs2d_bind_key_name(key)) : NULL;
+    if (bound && cs2d_scene_game_inv_cmd(client, bound)) return;
 
     switch (key) {
         case 'W': case 'w': case VK_UP:
@@ -1373,21 +1415,6 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
                 }
             }
             break;
-        case '1':
-            if (pressed) switch_slot(client, pl, CS2D_SLOT_PRIMARY);
-            break;
-        case '2':
-            if (pressed) switch_slot(client, pl, CS2D_SLOT_SECONDARY);
-            break;
-        case '3':
-            if (pressed) switch_slot(client, pl, CS2D_SLOT_MELEE);
-            break;
-        case '4':
-            if (pressed) switch_slot(client, pl, CS2D_SLOT_GRENADE);
-            break;
-        case '5':
-            if (pressed) switch_slot(client, pl, CS2D_SLOT_BOMB);
-            break;
         case VK_SPACE:    /* sys/controls.cfg: bind "space" "specplayer" */
             if (pressed) cs2d_scene_game_specplayer(client);
             break;
@@ -1405,6 +1432,16 @@ static void game_handle_mouse(cs2d_client_t *client, float mx, float my, int but
     if (client->build_menu_open) {
         if (pressed && button == 1) build_menu_click(client, mx, my);
         if (!pressed) { client->mouse_fire = false; client->mouse_attack2 = false; }
+        return;
+    }
+    /* attack / attack2 with the weapon selection HUD open hold the highlighted item instead of firing, and the
+     * fire timer waits 400 ms (FUN_140219820 / FUN_14021b910) */
+    if (pressed && (button == 1 || button == 2) && me->alive && client->invsel.slot != 0) {
+        uint8_t w = cs2d_invsel_confirm(&client->invsel, me);
+        if (w != CS2D_WEP_NONE) {
+            hold_weapon(client, me, w);
+            me->fire_cooldown = 0.4f;
+        }
         return;
     }
     if (pressed && !me->alive && spectator_hud_click(client, mx, my, button)) {
