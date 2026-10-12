@@ -75,6 +75,8 @@ serverstats.html
 .vscode/
 .vs/
 .idea/
+.agent/
+.continue/
 *.suo
 *.user
 *.userosscache
@@ -93,7 +95,7 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 .DS_Store
-
+.mcp.json
 
 # Agent capture output (tools/agent/*.sh)
 tools/agent/out/
