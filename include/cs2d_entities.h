@@ -78,6 +78,9 @@ void cs2d_ents_trigger(cs2d_entity_world_t *w, const char *name_list);
 /* Activates one entity (toggle or forward, depending on its type) */
 void cs2d_ents_activate(cs2d_entity_world_t *w, int index);
 
+/* Recomputes one tile's collision (tiles, then DynWall / Breakable, then the building overlay) */
+void cs2d_ents_refresh_tile(cs2d_map_t *map, int tx, int ty);
+
 /* Sets an entity state directly (server snapshot / events), updating collision */
 void cs2d_ents_set_state(cs2d_entity_world_t *w, int index, uint8_t state);
 

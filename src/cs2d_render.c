@@ -1,4 +1,5 @@
 #include "cs2d_render.h"
+#include "cs2d_dynobj.h"
 #include "cs2d_weapons.h"
 #include "cs2d_map.h"
 #include "cs2d_fx.h"
@@ -772,6 +773,10 @@ bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank)
     cs2d_texture_load_grid(&bank->tex_shadowmap, "gfx/shadowmap.bmp",       3, 32, 32);
     cs2d_texture_load_grid(&bank->tex_decals,    "gfx/decals.bmp",          3, 32, 32);
     cs2d_texture_load_grid(&bank->tex_buildings, "gfx/buildings.png",       2, 32, 32);
+    cs2d_texture_load_ex(&bank->tex_turret[0], "gfx/weapons/turret.bmp",  2);
+    cs2d_texture_load_ex(&bank->tex_turret[1], "gfx/weapons/turret2.bmp", 2);
+    cs2d_texture_load_ex(&bank->tex_turret[2], "gfx/weapons/turret3.bmp", 2);
+    cs2d_texture_load_ex(&bank->tex_buildhelper, "gfx/hud_buildhelper.png", 1);
     if (!cs2d_texture_load_ex(&bank->tex_palms, "incbindata/palmleave.png", 2)) {
         if (!cs2d_texture_load_ex(&bank->tex_palms, "gfx/incbindata/palmleave.png", 2)) {
             cs2d_texture_load_ex(&bank->tex_palms, "gfx/sprites/palm.png", 2);
@@ -857,6 +862,8 @@ void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank)
     cs2d_texture_free(&bank->tex_shadowmap);
     cs2d_texture_free(&bank->tex_decals);
     cs2d_texture_free(&bank->tex_buildings);
+    for (int i = 0; i < 3; i++) cs2d_texture_free(&bank->tex_turret[i]);
+    cs2d_texture_free(&bank->tex_buildhelper);
     cs2d_texture_free(&bank->tex_palms);
     cs2d_texture_free(&bank->tex_tree);
     cs2d_texture_free(&bank->tex_leaf);
@@ -1912,6 +1919,29 @@ static void render_env_sprite_entity(
     cs2d_render_sprite_frame(tex, tex->width, tex->height, 0, sx, sy, w, h, rot, r, g, b, alpha, blend_mode);
 }
 
+/*
+ * FUN_140271b60: a flag image (midhandle) waving at (x, y). The pole (3 px viewport) is drawn still, then nine
+ * 4 px wide viewports every 2 px redraw the image shifted by 2 sin((ms >> 2) + 30 i) - 2 sin((ms >> 2) + 30)
+ * in gray |sin(...)| * 55 + 200 at alpha 0.8.
+ */
+static void render_waving_flag(const cs2d_texture_t *t, float x, float y, uint32_t tick_ms)
+{
+    float hx = (float)t->width * 0.5f, hy = (float)t->height * 0.5f;
+    int x0 = (int)(x - hx), y0 = (int)(y - hy);
+    int ms = (int)tick_ms;
+    cs2d_render_scissor_begin(x0, y0, 3, 100);
+    cs2d_render_sprite_frame(t, t->width, t->height, 0, x, y, (float)t->width, (float)t->height, 0.0f, 1, 1, 1, 1, 0);
+    double base = sin((double)((ms >> 2) + 30) * 0.017453292519943295);
+    for (int i = 1; i < 10; i++) {
+        double w = sin((double)((ms >> 2) + i * 30) * 0.017453292519943295);
+        float c = (float)(fabs(w) * 55.0 + 200.0) / 255.0f;
+        cs2d_render_scissor_begin(x0 - 1 + i * 2, y0, 4, 100);
+        cs2d_render_sprite_frame(t, t->width, t->height, 0, x, (float)(w + w + (float)(base * -2.0) + y),
+                                 (float)t->width, (float)t->height, 0.0f, c, c, c, 0.8f, 0);
+    }
+    cs2d_render_scissor_end();
+}
+
 void cs2d_render_map_ex(
     const cs2d_map_t     *map,
     const cs2d_texture_t *tileset_tex,
@@ -2018,7 +2048,8 @@ void cs2d_render_map_ex(
     int bombspot_idx = 0;
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *ent = &map->entities[i];
-        if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
+        /* Hidden / open / broken by a trigger; a CTF flag base keeps its glow while the flag is away */
+        if (map->entity_state[i] && ent->type != CS2D_ENT_INFO_CTF_FLAG) continue;
         float ex = (float)(ent->x * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_x;
         float ey = (float)(ent->y * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_y;
 
@@ -2059,50 +2090,20 @@ void cs2d_render_map_ex(
             }
             case CS2D_ENT_INFO_CTF_FLAG: {
                 /*
-                 * Info_CTF_Flag (15): reconstructed from Te.draw 0x140274e28, 0x140276f56, 0x140271b60:
-                 *   1. Team glow (gfx/sprites/flare1.bmp, 32x32) drawn at (ex, ey) with blend_mode = 4 (additive),
-                 *      rotation = (tick_ms / 15 + 45) % 360, and color = (255, 0, 0) for T or (0, 0, 255) for CT.
-                 *   2. Waving flag sprite (gfx/weapons/redflag.bmp or blueflag.bmp, 20x33) drawn at
-                 *      (ent->x*32 + 26 - cam_x, ent->y*32 - cam_y) = (ex + 10.0f, ey - 16.0f) in 1px vertical strips.
+                 * Info_CTF_Flag (15), Te.draw case 0xf: while the flag is home (state 0) the waving flag
+                 * (item 70 red for ints[0] = 0, 71 blue for 1) stands at (x * 32 + 26, y * 32); then the team
+                 * glow (flare1, additive, rotation ms / 15) at the tile center, at the alpha the flag left
+                 * (0.8) or 1 without it.
                  */
                 if (bank) {
                     bool is_red = (ent->int_settings[0] == 0);
-                    if (bank->tex_flare1.id) {
-                        float frot = (float)((tick_ms / 15 + 45) % 360);
-                        cs2d_render_sprite_frame(&bank->tex_flare1,
-                                                 bank->tex_flare1.width, bank->tex_flare1.height, 0,
-                                                 ex, ey,
-                                                 (float)bank->tex_flare1.width, (float)bank->tex_flare1.height,
-                                                 frot,
-                                                 is_red ? 1.0f : 0.0f, 0.0f, is_red ? 0.0f : 1.0f, 0.85f, 4);
-                    }
+                    bool home = (map->entity_state[i] == 0);
                     const cs2d_texture_t *ftex = is_red ? &bank->tex_redflag : &bank->tex_blueflag;
-                    if (ftex->id && ftex->width > 0 && ftex->height > 0) {
-                        float fx0 = ex;
-                        float fy0 = ey - (float)ftex->height;
-                        glEnable(GL_TEXTURE_2D);
-                        glBindTexture(GL_TEXTURE_2D, ftex->id);
-                        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                        glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-                        glBegin(GL_QUADS);
-                        for (int col = 0; col < ftex->width; col++) {
-                            float u0 = (float)col / (float)ftex->width;
-                            float u1 = (float)(col + 1) / (float)ftex->width;
-                            float wave = (col > 2)
-                                ? sinf(((float)tick_ms * 0.008f) + (float)col * 0.35f) * ((float)(col - 2) * 0.11f)
-                                : 0.0f;
-                            float x0 = fx0 + (float)col;
-                            float x1 = x0 + 1.0f;
-                            float y0 = fy0 + wave;
-                            float y1 = y0 + (float)ftex->height;
-                            glTexCoord2f(u0, 0.0f); glVertex2f(x0, y0);
-                            glTexCoord2f(u1, 0.0f); glVertex2f(x1, y0);
-                            glTexCoord2f(u1, 1.0f); glVertex2f(x1, y1);
-                            glTexCoord2f(u0, 1.0f); glVertex2f(x0, y1);
-                        }
-                        glEnd();
-                        glBindTexture(GL_TEXTURE_2D, 0);
-                        glDisable(GL_TEXTURE_2D);
+                    if (home && ftex->id) render_waving_flag(ftex, ex + 10.0f, ey - 16.0f, tick_ms);
+                    if (bank->tex_flare1.id) {
+                        cs2d_render_sprite_frame(&bank->tex_flare1, 32, 32, 0, ex, ey, 32.0f, 32.0f,
+                                                 (float)(tick_ms / 15), is_red ? 1.0f : 0.0f, 0.0f,
+                                                 is_red ? 0.0f : 1.0f, home ? 0.8f : 1.0f, 4);
                     }
                 }
                 break;
@@ -2131,16 +2132,6 @@ void cs2d_render_map_ex(
                         cs2d_render_sprite_frame(&bank->tex_legs, 32, 32, 0, ex, ey, 32.0f, 32.0f, rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
                     }
                     cs2d_render_sprite_frame(&bank->tex_hostages, 32, 32, look, ex, ey, 32.0f, 32.0f, rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
-                }
-                break;
-            }
-            case CS2D_ENT_ENV_BUILDING: {
-                /* Only draw gfx/buildings.png if this is an actual buildable object (ints[1] == 0 && ints[2] == 0), NOT an Env_Room/Cube3D shadow block */
-                if (ent->int_settings[1] == 0 && ent->int_settings[2] == 0 && bank && bank->tex_buildings.id) {
-                    int btype = ent->int_settings[0];
-                    if (btype >= 0 && btype < 16) {
-                        cs2d_render_sprite_frame(&bank->tex_buildings, 32, 32, btype, ex, ey, 32.0f, 32.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0);
-                    }
                 }
                 break;
             }
@@ -3206,6 +3197,166 @@ void cs2d_render_scissor_end(void)
 
 
 /* Breakable effects (cs2d_fx): tile quarters, material fragments and explosions, all fading out */
+/* ---------------------------------------------------------------------------
+ * Dynamic objects (Tdo.draw_ground 0x140284a40, draw_obstacle 0x14010e5b0, draw_wall 0x14028f520)
+ * --------------------------------------------------------------------------- */
+
+/*
+ * Tdo.setteamcolor (0x14005ec20): in team game modes T red, CT blue, neutral yellow; otherwise the local
+ * player's own objects yellow and everybody else's green.
+ */
+static void dynobj_team_color(const cs2d_dynobj_t *o, bool team_game, int local_id, float rgb[3])
+{
+    if (team_game) {
+        if (o->team == 1) { rgb[0] = 1.0f; rgb[1] = 0.0f; rgb[2] = 0.0f; return; }
+        if (o->team == 2) { rgb[0] = 0.0f; rgb[1] = 0.0f; rgb[2] = 1.0f; return; }
+        if (o->team != 0) { rgb[0] = rgb[1] = rgb[2] = 1.0f; return; } /* Color left unchanged */
+    } else if (o->player == 0 || o->player != local_id) {
+        rgb[0] = 0.0f; rgb[1] = 1.0f; rgb[2] = 0.0f;
+        return;
+    }
+    rgb[0] = 1.0f; rgb[1] = 1.0f; rgb[2] = 0.0f;
+}
+
+static float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+
+/* gfx/buildings.png frame (midhandle) at the tile center */
+static void dynobj_frame(const cs2d_gfx_bank_t *bank, float cx, float cy, int frame, float rot,
+                         float r, float g, float b, float a, int blend)
+{
+    cs2d_render_sprite_frame(&bank->tex_buildings, 32, 32, frame, cx, cy, 32.0f, 32.0f, rot, r, g, b, a, blend);
+}
+
+/* gfx/sprites/flare1.bmp (32x32, midhandle) */
+static void dynobj_flare(const cs2d_gfx_bank_t *bank, float cx, float cy, float rot, float scale,
+                         const float rgb[3], float a)
+{
+    cs2d_render_sprite_frame(&bank->tex_flare1, 32, 32, 0, cx, cy, 32.0f * scale, 32.0f * scale, rot,
+                             rgb[0], rgb[1], rgb[2], a, 4);
+}
+
+/* incbindata/shadow.bmp in black (Max2D alpha blend) */
+static void dynobj_shadow(const cs2d_gfx_bank_t *bank, float cx, float cy, float scale, float a)
+{
+    cs2d_render_sprite_frame(&bank->tex_leaf, 32, 32, 0, cx, cy, 32.0f * scale, 32.0f * scale, 0.0f,
+                             0.0f, 0.0f, 0.0f, a, 0);
+}
+
+void cs2d_render_dynobjs(const cs2d_dynobj_world_t *w, cs2d_dynobj_layer_t layer, float cam_x, float cam_y,
+                         int screen_w, int screen_h, bool team_game, int local_id)
+{
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    if (!w || !bank || !bank->tex_buildings.id) return;
+    int ms = (int)GetTickCount();
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *o = &w->objs[i];
+        if (!o->active) continue;
+        /* Culling: (int)(x - camx) + 31 < 850 + 32, same for y (0x372 / 0x200 on the 850x480 screen) */
+        int sx = (int)(o->x - cam_x), sy = (int)(o->y - cam_y);
+        if ((unsigned)(sx + 31) >= (unsigned)(screen_w + 32) || (unsigned)(sy + 31) >= (unsigned)(screen_h + 32)) continue;
+        float cx = o->x + 16.0f - cam_x, cy = o->y + 16.0f - cam_y;
+        float tc[3];
+        dynobj_team_color(o, team_game, local_id, tc);
+        /* Pulse used by the gate field, teleporters and mines: sin((ms >> 3) + x + y) */
+        double pulse = sin(((double)(ms >> 3) + o->x + o->y) * 0.017453292519943295);
+
+        if (layer == CS2D_DO_LAYER_OBSTACLE) {
+            if (o->typ == CS2D_DO_BARRICADE) dynobj_frame(bank, cx, cy, 0, 0.0f, 1, 1, 1, 1, 0);
+            continue;
+        }
+        if (layer == CS2D_DO_LAYER_GROUND) {
+            switch (o->typ) {
+                case CS2D_DO_BARBED_WIRE: {
+                    /* Rotated by rot + 90; a hit ([36,id,5]) wobbles it for 60 frames */
+                    float r = o->rot + 90.0f;
+                    if (o->mode > 0) r += (float)((double)o->mode * 0.3333333333333333 * sin((double)(o->mode * 40) * 0.017453292519943295));
+                    dynobj_frame(bank, cx, cy, 1, r, 1, 1, 1, 1, 0);
+                    break;
+                }
+                case CS2D_DO_GATE_FIELD:
+                    dynobj_shadow(bank, cx, cy, 2.0f, 0.4f);
+                    dynobj_frame(bank, cx, cy, 5, 0.0f, tc[0], tc[1], tc[2], (float)(fabs(pulse * 0.7) + 0.3), 4);
+                    break;
+                case CS2D_DO_SITE:
+                    dynobj_frame(bank, cx, cy, 7, 0.0f, 1, 1, 1, 1, 0);
+                    break;
+                case CS2D_DO_TELE_ENTRANCE:
+                    dynobj_shadow(bank, cx, cy, 2.3f, 0.5f);
+                    dynobj_frame(bank, cx, cy, 8, 0.0f, tc[0], tc[1], tc[2], 1.0f, 4);
+                    dynobj_frame(bank, cx, cy, 8, 0.0f, tc[0], tc[1], tc[2], clamp01((float)pulse), 4);
+                    if (o->mode == 1 && bank->tex_flare1.id) {
+                        /* Charged: four flares circling at 20 px */
+                        float sc = (float)((fabs(sin((double)(ms / 30) * 0.017453292519943295)) + 1.0) * 0.5);
+                        for (int k = 90; k != 450; k += 90) {
+                            double a = (double)(ms / 10 + k) * 0.017453292519943295;
+                            dynobj_flare(bank, cx + (float)(sin(a) * 20.0), cy - (float)(cos(a) * 20.0), 0.0f, sc, tc, 1.0f);
+                        }
+                    }
+                    break;
+                case CS2D_DO_TELE_EXIT:
+                    dynobj_shadow(bank, cx, cy, 2.3f, 0.5f);
+                    dynobj_frame(bank, cx, cy, 9, 0.0f, tc[0], tc[1], tc[2], (float)(fabs(pulse * 0.3) + 0.7), 4);
+                    break;
+                case CS2D_DO_MINE:
+                    if (!bank->tex_flare1.id) break;
+                    dynobj_shadow(bank, cx, cy, 0.5f, 0.4f);
+                    dynobj_flare(bank, cx, cy, (float)ms * 0.1f, 0.3f, tc,
+                                 clamp01((float)sin(((double)ms * 0.1 + o->x + o->y) * 0.017453292519943295)));
+                    break;
+                default:
+                    break;
+            }
+            continue;
+        }
+
+        /* Wall layer */
+        switch (o->typ) {
+            case CS2D_DO_WALL_1: case CS2D_DO_WALL_2: case CS2D_DO_WALL_3:
+                dynobj_frame(bank, cx, cy, o->typ - 1, 0.0f, 1, 1, 1, 1, 0);
+                break;
+            case CS2D_DO_DISPENSER: /* FUN_14028b980 */
+                dynobj_frame(bank, cx, cy, 6, 0.0f, 1, 1, 1, 1, 0);
+                if (bank->tex_flare1.id) dynobj_flare(bank, cx, cy, (float)(ms / 10), 2.0f, tc, 1.0f);
+                break;
+            case CS2D_DO_TURRET: case CS2D_DO_DUAL_TURRET: case CS2D_DO_TRIPLE_TURRET: { /* FUN_14028c630 */
+                dynobj_frame(bank, cx, cy, 6, 0.0f, 1, 1, 1, 1, 0);
+                if (bank->tex_flare1.id) dynobj_flare(bank, cx, cy, (float)(ms / 10), 1.0f, tc, 1.0f);
+                const cs2d_texture_t *head = &bank->tex_turret[o->typ == CS2D_DO_TURRET ? 0 : (o->typ == CS2D_DO_DUAL_TURRET ? 1 : 2)];
+                if (head->id) {
+                    cs2d_render_sprite_frame(head, head->width, head->height, 0, cx, cy, (float)head->width,
+                                             (float)head->height, o->rot, 1, 1, 1, 1, 0);
+                }
+                break;
+            }
+            case CS2D_DO_SUPPLY: case CS2D_DO_SUPER_SUPPLY: /* FUN_14028dba0 */
+                dynobj_frame(bank, cx, cy, 6, 0.0f, 1, 1, 1, 1, 0);
+                if (bank->tex_flare1.id) {
+                    float a = (float)fabs(sin(((double)ms * 0.1 + o->x + o->y) * 0.017453292519943295));
+                    dynobj_flare(bank, cx, cy, (float)ms * 0.06666667f, 0.6f, tc, a);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+void cs2d_render_build_helper(int ptx, int pty, int tx, int ty, bool ok, float cam_x, float cam_y)
+{
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    if (!bank || !bank->tex_buildhelper.id) return;
+    const cs2d_texture_t *t = &bank->tex_buildhelper;
+    /* Additive, alpha sin((ms >> 3) deg) (SetAlpha with a raw sine), top-left at tile * 32 - 25 */
+    int ms = (int)GetTickCount();
+    float a = clamp01((float)sin((double)(ms >> 3) * 0.017453292519943295));
+    float w = (float)t->width, h = (float)t->height;
+    float px = (float)(ptx * 32 - (int)cam_x - 25), py = (float)(pty * 32 - (int)cam_y - 25);
+    cs2d_render_sprite_frame(t, t->width, t->height, 0, px + w * 0.5f, py + h * 0.5f, w, h, 0.0f, 1, 1, 0, a, 4);
+    float bx = (float)(tx * 32 - (int)cam_x - 25), by = (float)(ty * 32 - (int)cam_y - 25);
+    cs2d_render_sprite_frame(t, t->width, t->height, 0, bx + w * 0.5f, by + h * 0.5f, w, h, 0.0f,
+                             ok ? 0.0f : 1.0f, ok ? 1.0f : 0.0f, 0.0f, a, 4);
+}
+
 void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2d_texture_t *tileset_tex, float cam_x, float cam_y)
 {
     if (!fx) return;

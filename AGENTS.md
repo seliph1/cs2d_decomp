@@ -61,6 +61,7 @@ Our client must be able to play on the original dedicated server without the ser
 | `src/cs2d_entities.c` | Entity logic (triggers, DynWall, Breakable, Use, Delay, …) |
 | `src/cs2d_player.c` | Player state and movement with collision (port of `FUN_1401f7600`) |
 | `src/cs2d_fx.c` | Cosmetic effects: breakable debris, explosions, tracer, muzzle flash, shells |
+| `src/cs2d_dynobj.c` | Dynamic objects (`Tdo`): buildings, their messages and snapshot, collision overlay, build rules |
 | `src/cs2d_serverlist.c` | Server browser (Find Servers): server list, `svl.cache`, info/ping queries, LAN scan |
 | `src/cs2d_editor.c` | Map editor model: brush / modifier byte, painting, tile properties and `.inf`, entity tables |
 | `src/cs2d_transfer.c` | Join-time file transfer `[252,50]`: file list checks, requests, blocks, zlib, saving, `dls.cache` |

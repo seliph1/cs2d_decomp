@@ -348,6 +348,7 @@ typedef struct {
     uint32_t      entity_state_version;  /* Bumped on every state change (render caches) */
     uint32_t      entity_solid_version;  /* Bumped when a DynWall / Breakable changes (shadow map) */
     uint8_t      *base_collision;        /* Tile-only collision; entity overlays are applied on top */
+    uint8_t      *object_collision;      /* Building overlay (cs2d_dynobj.c), applied over the entities; 0 = none */
 } cs2d_map_t;
 
 /* Game Simulation State */

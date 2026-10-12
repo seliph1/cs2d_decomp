@@ -17,6 +17,7 @@
 #include "cs2d_transfer.h"
 #include "cs2d_editor.h"
 #include "cs2d_spectate.h"
+#include "cs2d_dynobj.h"
 
 #define CS2D_CONSOLE_MAX_LINES     1024 /* Ring buffer: the oldest line is dropped when full */
 #define CS2D_CONSOLE_LINE_LEN      192
@@ -66,6 +67,25 @@ struct cs2d_client {
     cs2d_entity_world_t ents;          /* Name/trigger entity logic for game.map (simulated offline) */
     cs2d_fx_t       fx;                /* Breakable debris / explosion effects */
     cs2d_ground_item_t ground_items[CS2D_MAX_GROUND_ITEMS];
+    cs2d_dynobj_world_t dynobj;        /* Dynamic objects (buildings): Env_Building offline, the server's online */
+
+    /* Construction (Tpl.attack2 with the Wrench, 0x1401fd6c0): the first right click shows the build helper,
+     * the second opens the "Construct" menu (Tgui_hudmen menu 60) for the tile under the cursor */
+    bool            build_mode;        /* DAT_140ddf474 */
+    bool            build_menu_open;
+    int             build_tx;          /* DAT_140ddf470 / DAT_140ddf46c: tile under the cursor */
+    int             build_ty;
+    float           build_rot;         /* DAT_140ddf468: player rotation when the menu opened */
+
+    /* Respawn game modes: mp_respawndelay ([252,6], 0x140a14e40[1]) and the local player's death time
+     * (Tpl +0x350 timer) for "Respawn possible in $1 sec" */
+    int             net_respawn_delay;
+    uint32_t        death_ms;
+
+    /* Thud_msg.add_center: red messages in the screen center (5 s, DAT_140a14c74) */
+    char            center_msg[4][96];
+    uint8_t         center_rgb[4][3];
+    uint32_t        center_ms[4];
     int             fire_seed;         /* Shot counter sent with every fire packet (-1: none sent yet) */
     bool            snapshot_states_reset; /* Join snapshot: entity states cleared before applying section 4 */
     uint32_t        ents_round;        /* game.round_number the entity logic was last reset for */
@@ -234,6 +254,8 @@ void cs2d_client_handle_mouse(cs2d_client_t *client, float mx, float my, int but
 
 /* Console UI & Command Interpreter */
 void cs2d_client_console_print(cs2d_client_t *client, uint8_t r, uint8_t g, uint8_t b, const char *fmt, ...);
+/* Thud_msg.add_center: a message in the screen center; the same text again restarts its timer */
+void cs2d_client_center_msg(cs2d_client_t *client, uint8_t r, uint8_t g, uint8_t b, const char *text);
 void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line);
 /* i-th stored console line, 0 = oldest */
 const cs2d_console_line_t *cs2d_client_console_line(const cs2d_client_t *client, int i);

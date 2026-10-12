@@ -71,6 +71,22 @@ the same one.
 - **Map saver:** a map without daylight (0) is saved as 225 + 1000; maps saved with "heights 0 / 1" are re-saved with 2
   (like the 1.0.1.8 editor, not checked).
 
+- **Construction / dynamic objects, not reconstructed or not measured** (KNOWLEDGE "Construction mode"):
+  - No screenshot of the original's buildings / "Construct" menu yet: the menu window colors reuse our Tgui window,
+    the "X" button (`Tgui_hudmen.fbutton`) is drawn like a small button, and the center message shade bar and fade
+    (1 s) are calibrated. The team menu buttons sit at window + 80 in our UI while every `Tgui_hudmen.button` call
+    passes x = 16: one of the two is wrong (check on a screenshot).
+  - Not drawn: portals (22 / 23), NPCs (30), Lua images (40, `Tdo` image fields and `[252,7,7]` image data),
+    laser mine beams, Construction Site smoke particles, dynamic lights; turret tracers use a calibrated 300 px reach.
+  - Not handled: the hover info / health of buildings, the `[37]` upgrade progress display, teleporter use
+    ("Select Teleporter Destination" 0528), Supply (`FUN_14028dba0` item menu, menu 61/62), Gate Field team blocking
+    for movement, kill rewards and `mp_building_limit` / `mp_building_price` overrides.
+  - `g_prop_class[cellprop] == 1` is approximated by our collision 0; the team-game table `0x140a015d0` is assumed
+    (every mode but Deathmatch) and the respawn-mode table `0x1409f57b8` as modes 1..4.
+  - `[252,7,3]` items are read, but `[252,7,6]` projectiles, `[252,7,7]` images and `[252,7,8]` tweens are not.
+- **CTF:** captures, returns and scores (`[64]` setteamscores, `[226]` messages) are not shown on the HUD; the flag
+  drawing follows the code but was not compared with a screenshot of the original.
+
 ## Verification debt
 - **Original + our client, one session:** not re-run after the latest join/leave fix (the session ended
   in a BSOD). Run `twoplayer_probe.lua` with the original firing next to our client and check the remote

@@ -8,6 +8,17 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Claude Code — Construction mode, dynamic objects, CTF flags
+- **Changed:** new `src/cs2d_dynobj.c` (Tdo list, type table, `[35]` `[36]` `[37]` `[49]`, snapshot sections 3 and 5,
+  collision overlay `map->object_collision`, `FUN_14014ef60` build rules); client `[34]` build result + red center
+  messages, `[19]` kill, `[22]` frees objects; render of every building layer, build helper, "Construct" menu (Wrench
+  right click twice), respawn click `[39]` + countdown, waving CTF flag and carried flag; Env_Building is now spawned as
+  dynamic objects offline. New `tools/agent/bbscope.py`, `lua/construct_probe.lua`, harness `rdown`/`rup`.
+- **Verified:** `test_construction` (22 / 22) with the 56-object snapshot recorded on 140.238.183.194:36969; our client
+  against the offline dedicated (`sv_gamemode 3`, ctf_cs2dfortress): respawn by click, objects from `[49]` drawn, build
+  request byte-identical in format, server built Barricade -> Wall I -> Wall II with Wrench hits (screenshots).
+- **Left:** see OPEN_ISSUES "Construction".
+
 ## 2026-10-11 — Claude Code — spectator mode
 - **Changed:** spectator camera and HUD (`src/cs2d_spectate.c`, `cs2d_scene_game.c`): free look and follow, the
   target picker, `[67]` and `[32]`, `space` / `leftctrl` (`specplayer` / `specmode` commands), the join

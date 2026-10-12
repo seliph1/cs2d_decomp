@@ -115,6 +115,7 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 | `dumpgrep.sh <addr \| name> / -f <Class> / -l <regex>` | Looks up functions in the Ghidra dump `docs/dump` (see above) |
 | `peptr.py <exe> <hexaddr…>` | Finds 8-byte pointers to an address inside the PE (vtables) |
 | `initarrays.py <objdump listing> <start> <end> <global…>` | Recovers arrays the init code fills with straight-line stores (`mov [base+off], imm` or a `lea` constant): prints `global +offset value`. Used for the editor's entity tables (KNOWLEDGE "Map editor") |
+| `bbscope.py <exe> <Class>` | Prints a BlitzMax class's fields (name, type tag, offset), globals and methods from its debug scope (e.g. `Tdo`, `Tpl`, `Te`) |
 | `bbstr.py <exe> <hexaddr…>` | Prints the BlitzMax string objects at those addresses: decodes the `bbs__` literals of the dump. Feed it the `lea` targets of a range: `objdump -d -M intel --start-address=… --stop-address=… CS2D.exe \| grep -o "# 0x140a[0-9a-f]*"`. `--array <pointer global> <i or $> <n>` reads a static BBArray (arrays filled at runtime point to `bbEmptyArray`: use `initarrays.py`) |
 | `map_grid.c` | Prints the collision or mode grid around a tile |
 | `lua/*.lua` | Dedicated Lua probes; output lines start with `BP` / `WP` / `PD` / `JL` |
@@ -128,6 +129,7 @@ Lua probes:
 | `playerdata_probe.lua` | setmoney, sethealth, setarmor, equip, strip, setmaxhealth (to read opcode 42) |
 | `joinleave_probe.lua` | join, leave and team hooks plus a player count every 2 s |
 | `twoplayer_probe.lua` | Places players 1 and 2 side by side, AK for player 2 |
+| `construct_probe.lua` | Run with `sv_gamemode 3` in `sys/server.cfg` (back it up): logs `build` / `objectkill` / `spawn` / `die` (`CP` lines), spawns several objects around the first spawned player, sets $16000 and kills the player after 25 s |
 | `spec_probe.lua` | Adds a T and a CT bot; logs `specswitch` (whom each spectator follows, `SP` lines) and team changes |
 
 Notes:
@@ -147,7 +149,7 @@ The harness runs one step every 5 frames, then saves `screens/capture.bmp` and e
 | any console command | e.g. `map prison_funst3r`, `connect 127.0.0.1 36980`, `tp 105 57`, `equip 30` (`equip` takes an id; the name is "AK-47") |
 | `!wait N` | Wait N frames |
 | `!press K` | Press and release a game key |
-| `!mouse x y [down\|up]` | Move the pointer; with `down`/`up`, press or release the button |
+| `!mouse x y [down\|up\|rdown\|rup]` | Move the pointer; with `down`/`up` (`rdown`/`rup`), press or release the left (right) button |
 | `!shot file.bmp` | Save the current frame |
 | `!console`, `!text`, `!key <SDL key> [shift] [ctrl]`, `!wheel n` | UI tests |
 

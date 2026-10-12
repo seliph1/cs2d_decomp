@@ -603,6 +603,26 @@ static void add_ground_item(cs2d_client_t *client, uint16_t id, uint8_t type, in
     slot->reserve = reserve;
 }
 
+void cs2d_client_center_msg(cs2d_client_t *client, uint8_t r, uint8_t g, uint8_t b, const char *text)
+{
+    int slot = -1;
+    for (int i = 0; i < 4 && slot < 0; i++) {
+        if (client->center_ms[i] && strcmp(client->center_msg[i], text) == 0) slot = i;
+    }
+    for (int i = 0; i < 4 && slot < 0; i++) {
+        if (!client->center_ms[i]) slot = i;
+    }
+    if (slot < 0) { /* All four in use: replace the oldest */
+        slot = 0;
+        for (int i = 1; i < 4; i++) if (client->center_ms[i] < client->center_ms[slot]) slot = i;
+    }
+    snprintf(client->center_msg[slot], sizeof(client->center_msg[slot]), "%s", text);
+    client->center_rgb[slot][0] = r;
+    client->center_rgb[slot][1] = g;
+    client->center_rgb[slot][2] = b;
+    client->center_ms[slot] = GetTickCount() | 1;
+}
+
 static void remove_ground_item(cs2d_client_t *client, uint16_t id)
 {
     for (int i = 0; i < CS2D_MAX_GROUND_ITEMS; i++) {
@@ -654,6 +674,51 @@ static void join_load_map(cs2d_client_t *client, const char *map)
     /* Keep local player in Spectator after map load so Select Team starts at (0) */
     client->game.players[client->local_player_id].team  = CS2D_TEAM_SPEC;
     client->game.players[client->local_player_id].alive = false;
+}
+
+/*
+ * [34] from the server (FUN_1402da280 -> FUN_1401fab30 with param_10 = 0), 15 bytes:
+ *   [34, player, team, type, tile x u16, tile y u16, mode, rot + 1000 u16, money u16, object id u16]
+ * A type of 1..239 is a new object (normally a Construction Site whose mode is the building it becomes); the
+ * builder's money is set. 0xf8..0xff refuse the local player's build with a red center message
+ * (0716, 0715, 0714, 0713, 0712, 0711, 0562, 0710: the g_lang offsets at 0x1401fbece).
+ */
+static bool net_build_result(cs2d_client_t *client, const uint8_t *buf, int len, int pos)
+{
+    if (pos + 15 > len) return false;
+    const uint8_t *b = &buf[pos + 1];
+    int pid = b[0], typ = b[2];
+    if (pid < 1 || pid > CS2D_MAX_PLAYERS || client->game.players[pid].id == 0) return true;
+    cs2d_player_t *pl = &client->game.players[pid];
+    if (typ >= 1 && typ < 0xf0) {
+        if (pid == client->local_player_id) pl->money = b[10] | (b[11] << 8);
+        cs2d_dynobj_t *o = cs2d_dynobj_add(&client->dynobj, b[12] | (b[13] << 8), typ,
+                                           (b[3] | (b[4] << 8)) * 32, (b[5] | (b[6] << 8)) * 32);
+        if (o) {
+            o->player = pid;
+            o->mode   = b[7];
+            o->health = 100;
+            o->team   = b[1];
+            o->rot    = (float)((b[8] | (b[9] << 8)) - 1000);
+            if (typ == CS2D_DO_TURRET) {
+                o->rot  = (float)(1 + rand() % 360);
+                o->rrot = o->rot;
+            }
+        }
+    } else if (pid == client->local_player_id && typ >= 0xf8) {
+        static const char *const msgs[8] = {
+            "Your last building has not been finished yet",                /* 0xf8: 0716 */
+            "It's not allowed to build that on this server",               /* 0xf9: 0715 */
+            "You can't build here - buildings of same type are too close", /* 0xfa: 0714 */
+            "You can't build more buildings of this type",                 /* 0xfb: 0713 */
+            "You can't build here - other players are too close",          /* 0xfc: 0712 */
+            "You are not allowed to build this",                           /* 0xfd: 0711 */
+            "You have insufficient funds",                                 /* 0xfe: 0562 */
+            "You can't build here"                                         /* 0xff: 0710 */
+        };
+        cs2d_client_center_msg(client, 255, 0, 0, msgs[typ - 0xf8]);
+    }
+    return true;
 }
 
 /*
@@ -861,6 +926,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                             client->net_sv_fow       = buffer[s + 1];
                             client->spec.server_mode = buffer[s + 2];
                             client->net_sv_gamemode  = buffer[s + 3];
+                            client->net_respawn_delay = buffer[s + 4];
                         }
                         client->join_stage = 4;
                     }
@@ -874,6 +940,21 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     uint8_t snap_type = buffer[pos++];
                     if (snap_type == 1) {
                         join_players(client, buffer, recvd, &pos);
+                    } else if (snap_type == 3) {
+                        /* Items on the ground (FUN_1402ce7c0 case 3): count u8, then {id u16, type, tile x u16,
+                         * tile y u16, clip u16, reserve u16} (11 bytes) */
+                        if (pos < recvd) {
+                            int count = buffer[pos++];
+                            for (int k = 0; k < count && pos + 11 <= recvd; k++, pos += 11) {
+                                const uint8_t *r = &buffer[pos];
+                                add_ground_item(client, (uint16_t)(r[0] | (r[1] << 8)), r[2], r[3] | (r[4] << 8),
+                                                r[5] | (r[6] << 8), (int16_t)(r[7] | (r[8] << 8)),
+                                                (int16_t)(r[9] | (r[10] << 8)));
+                            }
+                        }
+                    } else if (snap_type == 5) {
+                        /* Dynamic objects (FUN_1402ce7c0 case 5, "receiving dynamic object data") */
+                        cs2d_dynobj_read_snapshot(&client->dynobj, buffer, recvd, &pos);
                     } else if (snap_type == 4) {
                         /* Entity states: [count u8] then {x u16, y u16, state u8}; only non-zero states are sent */
                         if (!client->snapshot_states_reset) {
@@ -1028,6 +1109,9 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         client->game.players[victim].health = new_hp;
                         client->game.players[victim].armor  = new_arm;
                         if (new_hp == 0) {
+                            if (client->game.players[victim].alive && victim == client->local_player_id) {
+                                client->death_ms = GetTickCount();
+                            }
                             client->game.players[victim].alive = false;
                         }
                     }
@@ -1075,6 +1159,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
 
                 cs2d_ents_round_start(&client->ents);
                 cs2d_fx_clear(&client->fx);
+                cs2d_dynobj_clear(&client->dynobj); /* FUN_1402520b0: Tdo.freeall; the server respawns them ([49]) */
                 client->fire_seed   = -1;
                 client->walk_active = false;
                 pos = tail + 3 + n_items;
@@ -1297,6 +1382,29 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     cs2d_scene_game_remote_shot(client, &client->game.players[pid]);
                 }
                 pos += 3;
+            } else if (opcode == CS2D_NET_DYNOBJ_REMOVE || opcode == CS2D_NET_DYNOBJ_MODE ||
+                       opcode == CS2D_NET_DYNOBJ_HEALTH || opcode == CS2D_NET_DO_SPAWN) {
+                /* Dynamic objects: [35] remove, [36] mode, [37] health, [49] spawn (cs2d_dynobj.c) */
+                cs2d_dynobj_fx_t dfx = { 0 };
+                int n = cs2d_dynobj_net_message(&client->dynobj, buffer, recvd, pos, &dfx);
+                if (n < 0) break;
+                if (dfx.kind == 1) cs2d_fx_explosion(&client->fx, dfx.x, dfx.y, 32.0f);
+                pos += n;
+            } else if (opcode == CS2D_NET_BUILD) {
+                if (!net_build_result(client, buffer, recvd, pos)) break;
+                pos += 15;
+            } else if (opcode == CS2D_NET_KILL) {
+                /* Server -> Client: [19, victim, killer, weapon, u8, x u16, y u16] (9 bytes, FUN_1402d7d90 ->
+                 * FUN_1401eaf60) */
+                if (pos + 9 > recvd) break;
+                uint8_t victim = buffer[pos + 1];
+                if (victim > 0 && victim <= CS2D_MAX_PLAYERS) {
+                    cs2d_player_t *v = &client->game.players[victim];
+                    if (v->alive && victim == client->local_player_id) client->death_ms = GetTickCount();
+                    v->alive  = false;
+                    v->health = 0;
+                }
+                pos += 9;
             } else if (opcode == CS2D_NET_CHANGESETTINGS) {
                 /* [237, setting, value] (FUN_1401e6c10 -> FUN_1401e3f10): settings 1, 11 and 12 carry a string
                  * (u8 length + text), 2..10 and 13..24 an i32; 3 is sv_specmode */

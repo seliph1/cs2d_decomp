@@ -37,7 +37,8 @@ static uint8_t entity_collision(const cs2d_map_t *map, const cs2d_entity_t *e)
     return 0;
 }
 
-/* Recomputes the collision of one tile: base tile collision overridden by active DynWall/Breakable */
+/* Recomputes the collision of one tile: base tile collision overridden by active DynWall/Breakable, then by
+ * a building (cs2d_update_mapdata writes the Tdo cell props last) */
 static void refresh_tile_collision(cs2d_map_t *map, int tx, int ty)
 {
     if (!map->collision || !map->base_collision) return;
@@ -51,7 +52,13 @@ static void refresh_tile_collision(cs2d_map_t *map, int tx, int ty)
             col = entity_collision(map, e);
         }
     }
+    if (map->object_collision && map->object_collision[idx]) col = map->object_collision[idx];
     map->collision[idx] = col;
+}
+
+void cs2d_ents_refresh_tile(cs2d_map_t *map, int tx, int ty)
+{
+    if (map) refresh_tile_collision(map, tx, ty);
 }
 
 /* ---------------------------------------------------------------------------

@@ -91,7 +91,7 @@ static void save_gl_screenshot_bmp(const char *filepath, int w, int h)
  *   !text <text>                  type text into the focused textbox
  *   !key <SDL key name> [shift] [ctrl]   press a key with modifiers (e.g. "!key Left shift ctrl")
  *   !wheel <n>                    mouse wheel (positive = up)
- *   !mouse <x> <y> [down|up]      move the pointer, optionally pressing / releasing the left button
+ *   !mouse <x> <y> [down|up|rdown|rup]  move the pointer, optionally pressing / releasing the left (or right) button
  *   !wait <frames>                wait before the next step
  *   !shot <file.bmp>              save the current frame (steps run every 5 frames)
  */
@@ -105,8 +105,8 @@ static void run_capture_step(const char *cmd)
         float mx = 0.0f, my = 0.0f;
         char state[8] = {0};
         if (sscanf(cmd + 7, "%f %f %7s", &mx, &my, state) >= 2) {
-            int  button  = state[0] ? 1 : 0;
-            bool pressed = (strcmp(state, "down") == 0);
+            int  button  = state[0] == 'r' ? 2 : (state[0] ? 1 : 0);
+            bool pressed = (strcmp(state, "down") == 0 || strcmp(state, "rdown") == 0);
             cs2d_client_handle_mouse(&g_client, mx, my, button, pressed);
         }
     } else if (strncmp(cmd, "!press ", 7) == 0) {

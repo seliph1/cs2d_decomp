@@ -143,6 +143,9 @@ static void update_spectator_camera(cs2d_client_t *client, float delta_time, boo
     client->cam_y = (float)cy;
 }
 
+static bool respawn_mode(const cs2d_client_t *client);
+static int  respawn_wait(const cs2d_client_t *client);
+
 static bool point_in_rect(float px, float py, float x, float y, float w, float h)
 {
     return px >= x && py >= y && px <= x + w && py <= y + h;
@@ -301,12 +304,20 @@ static void render_spectator_hud(cs2d_client_t *client, int screen_w, int screen
     cs2d_render_rect(0.0f, sh - SPEC_BAR_H, sw, SPEC_BAR_H, 0.0f, 0.0f, 0.0f, 0.55f, true);
 
     /* A dead team member: "You are dead!" at the top. Respawn game modes (DM, TDM, Construction, Zombies)
-     * pulse yellow-red and offer a respawn (not implemented: the click sends nothing yet) */
+     * pulse yellow-red and respawn on a click ([39]), after "Respawn possible in $1 sec" in (200, 0, 0) while
+     * mp_respawndelay runs (FUN_14029ac10 at 0x14029c3xx) */
     if (me->team != CS2D_TEAM_SPEC) {
         double t = (double)GetTickCount();
         const char *msg;
+        char wait_msg[64];
         float r, g;
-        if (client->net_sv_gamemode >= 1 && client->net_sv_gamemode <= 4) {
+        int wait = respawn_mode(client) ? respawn_wait(client) : 0;
+        if (respawn_mode(client) && wait > 0) {
+            snprintf(wait_msg, sizeof(wait_msg), "You are dead! - Respawn possible in %d sec", wait); /* 0767 */
+            msg = wait_msg;
+            r = 200.0f / 255.0f;
+            g = 0.0f;
+        } else if (respawn_mode(client)) {
             msg = "You are dead! - Click to respawn!"; /* sys/language 0764 */
             r = 1.0f;
             g = (float)fabs(sin((double)((int)t / 5) * 0.017453292519943295));
@@ -399,6 +410,12 @@ static bool game_load_map(cs2d_client_t *client, const char *map_name)
     cs2d_ents_round_start(&client->ents);
     cs2d_fx_clear(&client->fx);
     memset(client->ground_items, 0, sizeof(client->ground_items));
+
+    /* Dynamic objects: offline the map's Env_Building entities (the server spawns them at round start);
+     * online the join snapshot [252,7,5] and [49] bring the server's */
+    cs2d_dynobj_init(&client->dynobj, &client->game.map);
+    if (client->net_sock == INVALID_SOCKET) cs2d_dynobj_spawn_map_buildings(&client->dynobj);
+    client->build_mode = client->build_menu_open = false;
     client->ents_round = client->game.round_number;
     client->snapshot_states_reset = false;
     client->walk_active = false;
@@ -434,6 +451,8 @@ void cs2d_scene_game_restart_round(cs2d_client_t *client)
     client->ents_round = client->game.round_number;
     cs2d_ents_round_start(&client->ents);
     cs2d_fx_clear(&client->fx);
+    cs2d_dynobj_clear(&client->dynobj);
+    cs2d_dynobj_spawn_map_buildings(&client->dynobj);
     client->walk_active = false;
     client->last_tile_x = client->last_tile_y = -1;
     center_camera_on_local_player(client);
@@ -739,6 +758,8 @@ static void game_leave(cs2d_client_t *client)
     client->pending_map[0] = '\0';
 }
 
+static void update_dynobjs(cs2d_client_t *client, float delta_time);
+
 static void game_update(cs2d_client_t *client, float delta_time)
 {
     /* Update game simulation; online the server runs the round rules and only players are advanced */
@@ -818,7 +839,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
         /* Firing (left-click attack, or right-click attack2 for Knife/Claw per Tpl.attack2 0x1401fdd37) */
         bool melee_atk2 = client->mouse_attack2 &&
                           (pl->current_weapon == CS2D_WEP_KNIFE || pl->current_weapon == CS2D_WEP_CLAW);
-        if ((client->mouse_fire || melee_atk2) && cs2d_weapon_fire(pl)) {
+        if ((client->mouse_fire || melee_atk2) && !client->build_menu_open && cs2d_weapon_fire(pl)) {
             if (melee_atk2 && !client->mouse_fire) {
                 pl->fire_cooldown = 21.0f * 0.02f; /* 21 ticks at 50 Hz (0x1401fdc28) */
             }
@@ -832,6 +853,8 @@ static void game_update(cs2d_client_t *client, float delta_time)
             client->ents_round = client->game.round_number;
             cs2d_ents_round_start(&client->ents);
             cs2d_fx_clear(&client->fx);
+            cs2d_dynobj_clear(&client->dynobj);
+            cs2d_dynobj_spawn_map_buildings(&client->dynobj);
         }
         cs2d_ents_update(&client->ents, delta_time);
         int tx = (int)(pl->pos.x / CS2D_TILE_SIZE);
@@ -850,6 +873,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
         }
     }
     drain_entity_events(client);
+    update_dynobjs(client, delta_time);
     cs2d_fx_update(&client->fx, delta_time);
 
     /* Camera stays centered on the player like CS2D.exe; a lagging camera would also turn the aim
@@ -907,6 +931,278 @@ static void game_update(cs2d_client_t *client, float delta_time)
     cs2d_client_poll_network(client);
 }
 
+/* ---------------------------------------------------------------------------
+ * Construction game mode: dynamic objects, build helper, "Construct" menu, respawn
+ * --------------------------------------------------------------------------- */
+
+/* Respawn game modes (0x1409f57b8[sv_gamemode]): Deathmatch, Team Deathmatch, Construction, Zombies */
+static bool respawn_mode(const cs2d_client_t *client)
+{
+    return client->net_sv_gamemode >= 1 && client->net_sv_gamemode <= 4;
+}
+
+/* Team colors for buildings (0x140a015d0[sv_gamemode]): every mode but Deathmatch is a team game (assumed) */
+static bool team_game(const cs2d_client_t *client)
+{
+    return client->net_sv_gamemode != 1;
+}
+
+/* Turret animation; each burst frame shows a tracer from every barrel (Tdo.shoot, method +0x120) */
+static void update_dynobjs(cs2d_client_t *client, float delta_time)
+{
+    cs2d_dynobj_update(&client->dynobj, client->game.players, delta_time * 60.0f);
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        cs2d_dynobj_t *o = &client->dynobj.objs[i];
+        if (!o->active || o->shots <= 0) continue;
+        int barrels = (o->typ == CS2D_DO_TRIPLE_TURRET) ? 3 : (o->typ == CS2D_DO_DUAL_TURRET ? 2 : 1);
+        float cx = o->x + 16.0f, cy = o->y + 16.0f;
+        for (; o->shots > 0; o->shots--) {
+            for (int b = 0; b < barrels; b++) {
+                /* Dual: +-6 px beside the center; Triple: center and +-8 px (FUN_14028c630) */
+                float side = (barrels == 2) ? (b ? -6.0f : 6.0f) : (barrels == 3 ? (b == 0 ? 0.0f : (b == 1 ? 8.0f : -8.0f)) : 0.0f);
+                double a = (double)(o->rot + 90.0f) * 0.017453292519943295;
+                float bx = cx + (float)sin(a) * side, by = cy - (float)cos(a) * side;
+                /* Reach of the turret weapon (0xfd) not recovered: 300 px (calibrated like the rifles) */
+                float hx, hy;
+                int hit = cs2d_ents_trace_shot(&client->ents, bx, by, o->rot, 300.0f, &hx, &hy);
+                float ddx = hx - bx, ddy = hy - by;
+                cs2d_fx_shot(&client->fx, bx, by, o->rot, 16.0f, hx, hy, hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < 299.0f, 1);
+            }
+        }
+    }
+}
+
+/* Tile under the cursor */
+static void cursor_tile(const cs2d_client_t *client, int *tx, int *ty)
+{
+    *tx = (int)((client->cam_x + client->mouse_screen_x) * 0.03125f);
+    *ty = (int)((client->cam_y + client->mouse_screen_y) * 0.03125f);
+}
+
+static bool local_can_build_mode(const cs2d_client_t *client)
+{
+    const cs2d_player_t *pl = &client->game.players[client->local_player_id];
+    return pl->alive && pl->current_weapon == CS2D_WEP_WRENCH;
+}
+
+/*
+ * Tpl.attack2 with the Wrench (0x1401fd6c0): the first right click shows the build helper; the second one
+ * checks the tile (FUN_14014ef60) and opens the "Construct" menu, or shows 0694 / 0695 in red.
+ */
+static void wrench_attack2(cs2d_client_t *client)
+{
+    cs2d_player_t *pl = &client->game.players[client->local_player_id];
+    if (!client->build_mode) {
+        client->build_mode = true;
+        return;
+    }
+    client->build_mode = false;
+    client->build_rot  = pl->angle;
+    cursor_tile(client, &client->build_tx, &client->build_ty);
+    int ok = cs2d_dynobj_can_build(&client->dynobj, client->game.players, client->local_player_id,
+                                   (int)(pl->pos.x * 0.03125f), (int)(pl->pos.y * 0.03125f),
+                                   client->build_tx, client->build_ty, false);
+    if (ok == 1) {
+        client->build_menu_open = true;
+    } else {
+        cs2d_client_center_msg(client, 255, 0, 0, ok == 0 ? "you can't build here"                                /* 0694 */
+                                                          : "you can't build here - other players are too close"); /* 0695 */
+    }
+}
+
+/*
+ * Build request (FUN_1401fab30 with param_10 = 1): [34, type, tile x u16, tile y u16, mode, rot + 1000 u16],
+ * reliable. Only Barbed Wire passes the player's rotation; the "X" buttons send tile 0xffff / 0xffff to
+ * remove the player's building of that type.
+ */
+static void send_build(cs2d_client_t *client, int typ, int tx, int ty, float rot)
+{
+    client->build_menu_open = false;
+    if (!client->connected || client->join_stage != 5) return;
+    int r = (int)(rot + 1000.0f) & 0xFFFF;
+    uint8_t pkt[9] = { (uint8_t)CS2D_NET_BUILD, (uint8_t)typ, (uint8_t)(tx & 0xFF), (uint8_t)((tx >> 8) & 0xFF),
+                       (uint8_t)(ty & 0xFF), (uint8_t)((ty >> 8) & 0xFF), 0, (uint8_t)(r & 0xFF), (uint8_t)(r >> 8) };
+    cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+}
+
+/*
+ * "Construct" menu (Tgui_hudmen menu 60, 0x140228xxx): the hud menu window (125, 20) 600x440 on 850x480
+ * (0x1401aba29), 240 px buttons at window + (16, y); "X" buttons 25 px wide at x 261 / 559.
+ */
+typedef struct { int typ, key, x, y; bool remove_btn; } build_btn_t;
+static const build_btn_t s_build_btns[] = {
+    { CS2D_DO_BARRICADE,     1,  16,  30, false }, { CS2D_DO_BARBED_WIRE,  2,  16,  60, false },
+    { CS2D_DO_WALL_1,        3,  16, 110, false }, { CS2D_DO_WALL_2,       4,  16, 140, false },
+    { CS2D_DO_WALL_3,        5,  16, 170, false }, { CS2D_DO_GATE_FIELD,   6,  16, 220, true  },
+    { CS2D_DO_TURRET,        7,  16, 250, true  }, { CS2D_DO_DISPENSER,    8,  16, 280, true  },
+    { CS2D_DO_TELE_ENTRANCE, -1, 314, 280, true  }, { CS2D_DO_SUPPLY,       9,  16, 310, true  },
+    { CS2D_DO_TELE_EXIT,     -1, 314, 310, true  },
+};
+
+static void build_menu_origin(const cs2d_client_t *client, float *wx, float *wy)
+{
+    *wx = (float)(client->config.window_width / 2 - 300);
+    *wy = (float)(client->config.window_height / 2 - 220);
+}
+
+/* Tgui_hudmen.button (0x140129620): black inside at 0.3, frame 200 hovered / 150 / 50 disabled, additive
+ * gui_shade 0.3 / 0.1 over the top 10 px, key number at +5 (alpha 0.4), label at +20, right text at w - 5 */
+static void hudmen_button(const cs2d_client_t *client, float x, float y, float w, const char *key,
+                          const char *label, const char *right, bool center_label)
+{
+    bool hover = point_in_rect(client->mouse_screen_x, client->mouse_screen_y, x, y, w, 25.0f);
+    float fc = hover ? 200.0f / 255.0f : 150.0f / 255.0f;
+    cs2d_render_rect(x + 1.0f, y + 1.0f, w - 2.0f, 23.0f, 0.0f, 0.0f, 0.0f, 0.3f, true);
+    cs2d_render_rect(x + 1.0f, y, w - 2.0f, 1.0f, fc, fc, fc, 1.0f, true);
+    cs2d_render_rect(x, y + 1.0f, 1.0f, 23.0f, fc, fc, fc, 1.0f, true);
+    cs2d_render_rect(x + 1.0f, y + 24.0f, w - 2.0f, 1.0f, fc, fc, fc, 1.0f, true);
+    cs2d_render_rect(x + w - 1.0f, y + 1.0f, 1.0f, 23.0f, fc, fc, fc, 1.0f, true);
+    if (s_tex_shade.id) {
+        cs2d_render_sprite_frame(&s_tex_shade, 10, 10, 0, x + 1.0f + (w - 2.0f) * 0.5f, y + 6.0f, w - 2.0f, 10.0f,
+                                 0.0f, 1.0f, 1.0f, 1.0f, hover ? 0.3f : 0.1f, 4);
+    }
+    float tc = hover ? 1.0f : 200.0f / 255.0f;
+    float tw, th;
+    cs2d_render_text_measure(CS2D_FONT_REGULAR, label, &tw, &th);
+    float ty = y + 12.0f - (float)((int)th / 2);
+    if (key && key[0]) cs2d_render_text_ex(CS2D_FONT_REGULAR, x + 5.0f, ty, key, tc, tc, tc, 0.4f);
+    float lx = center_label ? (float)((int)(x + w * 0.5f) - (int)(tw * 0.5f)) : x + 20.0f;
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, lx, ty, label, tc, tc, tc, 1.0f);
+    if (right && right[0]) {
+        float rw, rh;
+        cs2d_render_text_measure(CS2D_FONT_REGULAR, right, &rw, &rh);
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, x + w - 5.0f - rw, ty, right, tc, tc, tc, 0.4f);
+    }
+}
+
+static void render_build_menu(cs2d_client_t *client)
+{
+    float wx, wy;
+    build_menu_origin(client, &wx, &wy);
+    /* Window frame and title like the other Tgui windows (cs2d_ui_window_begin colors) */
+    cs2d_render_rect(wx, wy, 600.0f, 440.0f, 58.0f / 255.0f, 58.0f / 255.0f, 58.0f / 255.0f, 228.0f / 255.0f, true);
+    cs2d_render_rect(wx, wy, 600.0f, 440.0f, 96.0f / 255.0f, 96.0f / 255.0f, 96.0f / 255.0f, 245.0f / 255.0f, false);
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, wx + 11.0f, wy + 4.0f, "Construct", 1.0f, 1.0f, 1.0f, 1.0f); /* 0372 */
+    for (size_t i = 0; i < sizeof(s_build_btns) / sizeof(s_build_btns[0]); i++) {
+        const build_btn_t *b = &s_build_btns[i];
+        const cs2d_dynobj_def_t *d = cs2d_dynobj_def(b->typ);
+        char key[4] = "", price[16];
+        if (b->key > 0) snprintf(key, sizeof(key), "%d", b->key);
+        snprintf(price, sizeof(price), "%d$", d->price);
+        hudmen_button(client, wx + b->x, wy + b->y, 240.0f, key, d->name, price, false);
+        if (b->remove_btn) hudmen_button(client, wx + b->x + 245.0f, wy + b->y, 25.0f, "", "X", "", true);
+    }
+    hudmen_button(client, wx + 16.0f, wy + 440.0f - 46.0f, 240.0f, "0", "Cancel", "", false); /* 0027 */
+}
+
+/* Clicks in the "Construct" menu; returns true when the click belongs to the menu */
+static bool build_menu_click(cs2d_client_t *client, float mx, float my)
+{
+    float wx, wy;
+    build_menu_origin(client, &wx, &wy);
+    for (size_t i = 0; i < sizeof(s_build_btns) / sizeof(s_build_btns[0]); i++) {
+        const build_btn_t *b = &s_build_btns[i];
+        if (point_in_rect(mx, my, wx + b->x, wy + b->y, 240.0f, 25.0f)) {
+            send_build(client, b->typ, client->build_tx, client->build_ty,
+                       b->typ == CS2D_DO_BARBED_WIRE ? client->build_rot : 0.0f);
+            return true;
+        }
+        if (b->remove_btn && point_in_rect(mx, my, wx + b->x + 245.0f, wy + b->y, 25.0f, 25.0f)) {
+            send_build(client, b->typ, 0xFFFF, 0xFFFF, 0.0f);
+            return true;
+        }
+    }
+    if (point_in_rect(mx, my, wx + 16.0f, wy + 394.0f, 240.0f, 25.0f)) client->build_menu_open = false;
+    return true; /* The menu is modal: clicks never reach the game */
+}
+
+/* Number keys in the "Construct" menu (Tgui_hudmen.button: DAT_140ddf340 == key) */
+static void build_menu_key(cs2d_client_t *client, int digit)
+{
+    if (digit == 0) { client->build_menu_open = false; return; }
+    for (size_t i = 0; i < sizeof(s_build_btns) / sizeof(s_build_btns[0]); i++) {
+        const build_btn_t *b = &s_build_btns[i];
+        if (b->key == digit) {
+            send_build(client, b->typ, client->build_tx, client->build_ty,
+                       b->typ == CS2D_DO_BARBED_WIRE ? client->build_rot : 0.0f);
+            return;
+        }
+    }
+}
+
+/* [39]: respawn request (FUN_140298b30 -> FUN_14020c120), sent unless a living player is under the cursor */
+static void request_respawn(cs2d_client_t *client)
+{
+    const cs2d_player_t *me = &client->game.players[client->local_player_id];
+    if (!client->connected || client->join_stage != 5 || me->team == CS2D_TEAM_SPEC || me->alive) return;
+    float wx = client->cam_x + client->mouse_screen_x, wy = client->cam_y + client->mouse_screen_y;
+    for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
+        const cs2d_player_t *p = &client->game.players[i];
+        if (p->alive && p->team != CS2D_TEAM_SPEC && fabsf(wx - p->pos.x) < 20.0f && fabsf(wy - p->pos.y) < 20.0f) return;
+    }
+    uint8_t pkt[1] = { (uint8_t)CS2D_NET_RESPAWN_REQ };
+    cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+}
+
+/* Seconds until a respawn is allowed (mp_respawndelay - time since death), 0 when it is */
+static int respawn_wait(const cs2d_client_t *client)
+{
+    int delay = client->net_respawn_delay;
+    if (delay <= 0) return 0;
+    int left = delay - (int)((GetTickCount() - client->death_ms) / 1000u);
+    if (left > delay) left = delay;
+    return left < 1 ? 0 : left;
+}
+
+/* Thud_msg.draw_center (0x14024d230): from screen_h / 2 - 10 n - 50 down, 5 s each (fade calibrated: 1 s) */
+static void render_center_msgs(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    uint32_t now = GetTickCount();
+    int n = 0;
+    for (int i = 0; i < 4; i++) {
+        if (client->center_ms[i] && now - client->center_ms[i] >= 6000u) client->center_ms[i] = 0;
+        if (client->center_ms[i]) n++;
+    }
+    float y = (float)(screen_h / 2 - 10 * n - 50);
+    for (int i = 0; i < 4; i++) {
+        if (!client->center_ms[i]) continue;
+        uint32_t age = now - client->center_ms[i];
+        float a = age < 5000u ? 1.0f : 1.0f - (float)(age - 5000u) / 1000.0f;
+        float tw, th;
+        cs2d_render_text_measure(CS2D_FONT_REGULAR, client->center_msg[i], &tw, &th);
+        cs2d_render_rect((float)(screen_w / 2) - tw * 0.5f - 20.0f, y - 2.0f, tw + 40.0f, th + 4.0f, 0, 0, 0, 0.25f * a, true);
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, (float)(screen_w / 2 - (int)tw / 2), y, client->center_msg[i],
+                            client->center_rgb[i][0] / 255.0f, client->center_rgb[i][1] / 255.0f,
+                            client->center_rgb[i][2] / 255.0f, a);
+        y += th + 2.0f;
+    }
+}
+
+/* Item 70 / 71 in the inventory: the player carries a flag (Titem.give sets Tpl.flag) */
+static bool carries_flag(const cs2d_player_t *p)
+{
+    for (int i = 0; i < CS2D_SLOT_COUNT; i++) {
+        if (p->inventory[i] == CS2D_WEP_REDFLAG || p->inventory[i] == CS2D_WEP_BLUEFLAG) return true;
+    }
+    return false;
+}
+
+/*
+ * Tpl.draw (0x140121xxx, self->flag == 1): the flag on the carrier's back, 7 px behind along the aim, rotated
+ * by the weapon angle + 160 at scale 0.8. A Terrorist carries the blue flag, everybody else the red one.
+ */
+static void render_carried_flag(const cs2d_player_t *p, float cam_x, float cam_y)
+{
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    if (!bank || !carries_flag(p)) return;
+    const cs2d_texture_t *t = (p->team == CS2D_TEAM_T) ? &bank->tex_blueflag : &bank->tex_redflag;
+    if (!t->id) return;
+    double a = (double)p->angle * 0.017453292519943295;
+    float x = p->pos.x - cam_x - (float)(sin(a) * 7.0), y = p->pos.y - cam_y + (float)(cos(a) * 7.0);
+    cs2d_render_sprite_frame(t, t->width, t->height, 0, x, y, t->width * 0.8f, t->height * 0.8f,
+                             p->draw_angle + 160.0f, 1, 1, 1, 1, 0);
+}
+
 /* Weapons lying on the ground (gfx/weapons/<name>_d.bmp, like Env_Item) */
 static void render_ground_items(const cs2d_client_t *client)
 {
@@ -928,7 +1224,11 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
 {
     /* 1. Map Pass 0 & 1 (background, tileset, tile modifiers, ground entities, items, hostages) */
     cs2d_render_map_ex(&client->game.map, &client->tex_tileset, client->cam_x, client->cam_y, screen_w, screen_h);
+    bool tg = team_game(client);
+    int  me = client->local_player_id;
+    cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_GROUND, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
     render_ground_items(client);
+    cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_OBSTACLE, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
 
     /* 2. Players (Tpl.draw: shadow, legs, torso frame, armor/helmet, held weapon, objective icon) */
     for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
@@ -944,8 +1244,10 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
             else if (p->current_weapon == CS2D_WEP_DEAGLE) wtex = &client->tex_deagle;
 
             cs2d_render_player(p, stex, wtex, client->cam_x, client->cam_y);
+            render_carried_flag(p, client->cam_x, client->cam_y);
         }
     }
+    cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_WALL, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
 
     /* Breakable debris and explosions */
     cs2d_render_fx(&client->fx, &client->game.map, &client->tex_tileset, client->cam_x, client->cam_y);
@@ -955,11 +1257,25 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
 
     /* 4. In-Game HUD (hud_nums.bmp, hud_symbols.bmp, hud_radar_advanced.png) */
     const cs2d_player_t *local_pl = &client->game.players[client->local_player_id];
+    /* FUN_140295190: the build helper follows the cursor while the Wrench is held (DAT_140ddf474) */
+    if (client->build_mode && !local_can_build_mode(client)) client->build_mode = false;
+    if (client->build_mode && !client->build_menu_open) {
+        int tx, ty;
+        cursor_tile(client, &tx, &ty);
+        int ptx = (int)(local_pl->pos.x * 0.03125f), pty = (int)(local_pl->pos.y * 0.03125f);
+        bool ok = cs2d_dynobj_can_build(&client->dynobj, client->game.players, me, ptx, pty, tx, ty, false) == 1;
+        cs2d_render_build_helper(ptx, pty, tx, ty, ok, client->cam_x, client->cam_y);
+    }
     if (local_pl->alive) {
         cs2d_render_hud(local_pl, &client->game, screen_w, screen_h);
     } else {
         render_spectator_hud(client, screen_w, screen_h);
     }
+    if (client->build_menu_open) {
+        if (local_pl->alive) render_build_menu(client);
+        else client->build_menu_open = false;
+    }
+    render_center_msgs(client, screen_w, screen_h);
 }
 
 /* Weapon slot keys; online the new weapon is announced as [9, type, 0] (recorded from CS2D.exe) */
@@ -977,6 +1293,11 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
 {
     cs2d_player_t *pl = &client->game.players[client->local_player_id];
     bool online = client->connected && client->join_stage == 5;
+
+    if (client->build_menu_open && key >= '0' && key <= '9') {
+        if (pressed) build_menu_key(client, key - '0');
+        return;
+    }
 
     switch (key) {
         case 'W': case 'w': case VK_UP:
@@ -1080,7 +1401,23 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
 
 static void game_handle_mouse(cs2d_client_t *client, float mx, float my, int button, bool pressed)
 {
-    if (pressed && !client->game.players[client->local_player_id].alive && spectator_hud_click(client, mx, my, button)) {
+    cs2d_player_t *me = &client->game.players[client->local_player_id];
+    if (client->build_menu_open) {
+        if (pressed && button == 1) build_menu_click(client, mx, my);
+        if (!pressed) { client->mouse_fire = false; client->mouse_attack2 = false; }
+        return;
+    }
+    if (pressed && !me->alive && spectator_hud_click(client, mx, my, button)) {
+        return;
+    }
+    /* Dead in a respawn mode: a left click between the HUD bands asks to respawn (FUN_14029ac10) */
+    if (pressed && button == 1 && !me->alive && respawn_mode(client) && respawn_wait(client) == 0 &&
+        my > SPEC_BAR_H && my < (float)client->config.window_height - SPEC_BAR_H) {
+        request_respawn(client);
+        return;
+    }
+    if (pressed && button == 2 && local_can_build_mode(client)) {
+        wrench_attack2(client);
         return;
     }
     if (button == 1) {        /* Left click: attack */
@@ -1092,6 +1429,10 @@ static void game_handle_mouse(cs2d_client_t *client, float mx, float my, int but
 
 static void game_handle_escape(cs2d_client_t *client)
 {
+    if (client->build_menu_open || client->build_mode) {
+        client->build_menu_open = client->build_mode = false;
+        return;
+    }
     /* Leaving the game disconnects and returns to the main menu */
     cs2d_client_set_scene(client, CS2D_SCENE_LOBBY);
     cs2d_client_console_print(client, 255, 220, 0, "Disconnected from server.");

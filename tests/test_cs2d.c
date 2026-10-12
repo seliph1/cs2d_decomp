@@ -25,6 +25,7 @@
 #include "cs2d_transfer.h"
 #include "cs2d_editor.h"
 #include "cs2d_spectate.h"
+#include "cs2d_dynobj.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -2004,6 +2005,123 @@ static bool test_spectator(void)
     return true;
 }
 
+/* =========================================================================
+ * Construction: dynamic objects (Tdo), join snapshot, [35] [36] [37] [49], build rules
+ * ========================================================================= */
+static bool test_construction(void)
+{
+    printf("\n=== Testing Construction / Dynamic Objects (Tdo) ===\n");
+
+    static cs2d_map_t map;
+    static cs2d_entity_world_t ents;
+    static cs2d_dynobj_world_t w;
+    static cs2d_player_t players[CS2D_MAX_PLAYERS + 1];
+    memset(&map, 0, sizeof(map));
+    if (!cs2d_map_load_file(&map, "maps/ctf_cs2dfortress.map")) TEST_FAIL("Construction", "ctf_cs2dfortress.map not loaded");
+    cs2d_ents_init(&ents, &map);
+    cs2d_dynobj_init(&w, &map);
+
+    /* Join snapshot [252,7,5] recorded on 140.238.183.194:36969 (UNLIMITED Construction): 56 Wall III */
+    FILE *f = fopen("tests/data/dynobj_snapshot_ctf_cs2dfortress.hex", "r");
+    if (!f) TEST_FAIL("Snapshot", "fixture missing");
+    static uint8_t buf[1024];
+    int len = 0;
+    unsigned v;
+    while (len < (int)sizeof(buf) && fscanf(f, "%x", &v) == 1) buf[len++] = (uint8_t)v;
+    fclose(f);
+    if (len != 844 || buf[0] != 0xfc || buf[1] != 7 || buf[2] != 5) TEST_FAIL("Snapshot", "fixture is not [252,7,5]");
+    int pos = 3;
+    if (!cs2d_dynobj_read_snapshot(&w, buf, len, &pos) || pos != len) TEST_FAIL("Snapshot", "15-byte records not consumed exactly");
+    if (cs2d_dynobj_count(&w) != 56) TEST_FAIL("Snapshot", "56 objects expected");
+    cs2d_dynobj_t *o = cs2d_dynobj_at_tile(&w, 19, 17);
+    if (!o || o->id != 3 || o->typ != CS2D_DO_WALL_3 || o->health != 100 || o->team != 0) TEST_FAIL("Snapshot", "object 3: Wall III at (608, 544)");
+    if (map.collision[17 * map.width + 19] != 1) TEST_FAIL("Snapshot", "Wall III does not block its tile");
+    int low = 100;
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) if (w.objs[i].active && w.objs[i].health < low) low = w.objs[i].health;
+    if (low != 83) TEST_FAIL("Snapshot", "health is the percent byte (lowest 83)");
+
+    /* [49] spawn: Turret 100 on tile (26, 32) for CT player 3, rot u16 0x4000 = 90 degrees */
+    static const uint8_t spawn_turret[] = { 49, 100, 0, 8, 0x40, 0x03, 0x00, 0x04, 0x00, 0x40, 0, 2, 3 };
+    if (cs2d_dynobj_net_message(&w, spawn_turret, sizeof(spawn_turret), 0, NULL) != 13) TEST_FAIL("[49]", "13 bytes");
+    o = cs2d_dynobj_get(&w, 100);
+    if (!o || o->typ != CS2D_DO_TURRET || o->x != 832.0f || o->y != 1024.0f || o->team != 2 || o->player != 3 ||
+        fabsf(o->rot - 90.0f) > 0.01f || o->health != 100) TEST_FAIL("[49]", "turret fields");
+    if (map.collision[32 * map.width + 26] != 1) TEST_FAIL("[49]", "turret does not block");
+    if (cs2d_dynobj_net_message(&w, spawn_turret, 12, 0, NULL) != -1) TEST_FAIL("[49]", "truncated message accepted");
+
+    /* [36,id,0,target]: aim at player 5 (east of the turret) for 15 frames, 5 of them firing */
+    players[5].alive = true; players[5].team = CS2D_TEAM_T; players[5].health = 100;
+    players[5].pos.x = 848.0f + 200.0f; players[5].pos.y = 1040.0f;
+    static const uint8_t target[] = { 36, 100, 0, 0, 5 };
+    if (cs2d_dynobj_net_message(&w, target, sizeof(target), 0, NULL) != 5) TEST_FAIL("[36,0]", "5 bytes");
+    if (o->target != 5 || o->countdown != 15) TEST_FAIL("[36,0]", "target / countdown");
+    cs2d_dynobj_update(&w, players, 15.0f);
+    if (fabsf(o->rot - 90.0f) > 0.5f) TEST_FAIL("[36,0]", "turret does not aim east (atan2(dx - 16, -dy))");
+    if (o->shots != 5 || o->countdown != 0) TEST_FAIL("[36,0]", "burst: frames 15..11 fire");
+
+    /* [37] health percent, above 200 ignored but consumed */
+    static const uint8_t hp50[] = { 37, 100, 0, 50 }, hp201[] = { 37, 100, 0, 201 };
+    if (cs2d_dynobj_net_message(&w, hp50, 4, 0, NULL) != 4 || o->health != 50) TEST_FAIL("[37]", "health 50");
+    if (cs2d_dynobj_net_message(&w, hp201, 4, 0, NULL) != 4 || o->health != 50) TEST_FAIL("[37]", "201 must be ignored");
+
+    /* [36,id,4,type]: upgrade to Dual Turret at 100 % */
+    static const uint8_t upgrade[] = { 36, 100, 0, 4, 11 };
+    if (cs2d_dynobj_net_message(&w, upgrade, sizeof(upgrade), 0, NULL) != 5 || o->typ != CS2D_DO_DUAL_TURRET ||
+        o->health != 100) TEST_FAIL("[36,4]", "upgrade");
+
+    /* Construction Site 101 (mode 7 = Dispenser) on (28, 32); [36,id,1] finishes it */
+    static const uint8_t site[] = { 49, 101, 0, 10, 0x80, 0x03, 0x00, 0x04, 0, 0, 7, 1, 4 };
+    cs2d_dynobj_net_message(&w, site, sizeof(site), 0, NULL);
+    o = cs2d_dynobj_get(&w, 101);
+    if (!o || o->typ != CS2D_DO_SITE || o->mode != 7) TEST_FAIL("Site", "construction site");
+    static const uint8_t finish[] = { 36, 101, 0, 1 };
+    cs2d_dynobj_fx_t fx = { 0 };
+    if (cs2d_dynobj_net_message(&w, finish, sizeof(finish), 0, &fx) != 4) TEST_FAIL("[36,1]", "4 bytes");
+    o = cs2d_dynobj_get(&w, 101);
+    if (!o || o->typ != CS2D_DO_DISPENSER || o->team != 1 || o->player != 4 || o->mode != 0 || fx.kind != 2)
+        TEST_FAIL("[36,1]", "site did not become a Dispenser");
+
+    /* Barbed wire hit: [36,id,5] wobbles 60 frames; Barbed Wire leaves the tile walkable */
+    static const uint8_t wire[] = { 49, 102, 0, 2, 0x60, 0x03, 0x00, 0x04, 0, 0, 0, 1, 4 };
+    static const uint8_t hit[] = { 36, 102, 0, 5 };
+    cs2d_dynobj_net_message(&w, wire, sizeof(wire), 0, NULL);
+    cs2d_dynobj_net_message(&w, hit, sizeof(hit), 0, NULL);
+    o = cs2d_dynobj_get(&w, 102);
+    if (!o || o->mode != 60 || map.collision[32 * map.width + 27] != 0) TEST_FAIL("Barbed Wire", "hit / walkable");
+    cs2d_dynobj_update(&w, players, 60.0f);
+    if (o->mode != 0) TEST_FAIL("Barbed Wire", "wobble does not decay to 0");
+
+    /* [36] for an unknown object reads nothing after the sub-command (Tdo.getdata returns early) */
+    static const uint8_t unknown[] = { 36, 0x34, 0x12, 0, 9 };
+    if (cs2d_dynobj_net_message(&w, unknown, sizeof(unknown), 0, NULL) != 4) TEST_FAIL("[36]", "unknown object");
+
+    /* [35] remove: the Dual Turret explodes and its tile is free again */
+    static const uint8_t rm[] = { 35, 100, 0 };
+    memset(&fx, 0, sizeof(fx));
+    if (cs2d_dynobj_net_message(&w, rm, sizeof(rm), 0, &fx) != 3 || cs2d_dynobj_get(&w, 100)) TEST_FAIL("[35]", "remove");
+    if (fx.kind != 1 || fx.x != 848.0f || map.collision[32 * map.width + 26] != 0) TEST_FAIL("[35]", "explosion / collision");
+
+    /* FUN_14014ef60: player 1 on tile (26, 33); Barbed Wire 102 lies on (27, 32) */
+    players[1].alive = true; players[1].team = CS2D_TEAM_CT; players[1].health = 100;
+    players[1].pos.x = 26 * 32 + 16; players[1].pos.y = 33 * 32 + 16;
+    players[5].alive = false;
+    if (cs2d_dynobj_can_build(&w, players, 1, 26, 33, 27, 33, false) != 1) TEST_FAIL("Build rules", "free floor next to the player");
+    if (cs2d_dynobj_can_build(&w, players, 1, 26, 33, 26, 33, false) != 0) TEST_FAIL("Build rules", "own tile");
+    if (cs2d_dynobj_can_build(&w, players, 1, 26, 33, 28, 33, false) != 0) TEST_FAIL("Build rules", "two tiles away");
+    if (cs2d_dynobj_can_build(&w, players, 1, 26, 33, 27, 32, false) != 0) TEST_FAIL("Build rules", "tile with an object");
+    if (cs2d_dynobj_can_build(&w, players, 1, 19, 14, 19, 15, false) != 0) TEST_FAIL("Build rules", "tile with a Wall III");
+    players[2].alive = true; players[2].team = CS2D_TEAM_T; players[2].health = 100;
+    players[2].pos.x = 27 * 32 + 16 + 20; players[2].pos.y = 33 * 32 + 16;
+    if (cs2d_dynobj_can_build(&w, players, 1, 26, 33, 27, 33, false) != -1) TEST_FAIL("Build rules", "player within 32 px");
+
+    cs2d_dynobj_clear(&w);
+    if (cs2d_dynobj_count(&w) != 0 || map.collision[17 * map.width + 19] != 0) TEST_FAIL("Clear", "Tdo.freeall");
+    cs2d_map_free(&map);
+
+    TEST_PASS("Construction: snapshot (56 Wall III), [49] [36] [37] [35], site -> building, turret aim, build rules");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -2011,7 +2129,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 21;
+    int total = 22;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -2034,6 +2152,7 @@ int main(void)
     if (test_file_transfer()) passed++;
     if (test_editor()) passed++;
     if (test_spectator()) passed++;
+    if (test_construction()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

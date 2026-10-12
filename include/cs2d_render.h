@@ -58,6 +58,8 @@ typedef struct {
     cs2d_texture_t            tex_shadowmap;     /* gfx/shadowmap.bmp (64x288 -> 18 frames of 32x32, maskMode=3) */
     cs2d_texture_t            tex_decals;        /* gfx/decals.bmp (576x128 -> 72 frames of 32x32, maskMode=3) */
     cs2d_texture_t            tex_buildings;     /* gfx/buildings.png (128x128 -> 16 frames of 32x32) */
+    cs2d_texture_t            tex_turret[3];     /* gfx/weapons/turret.bmp, turret2.bmp, turret3.bmp (0x140a0ddb0 / da8 / da0) */
+    cs2d_texture_t            tex_buildhelper;   /* gfx/hud_buildhelper.png (82x82, maskMode 1, 0x140a0dd38) */
     cs2d_texture_t            tex_palms;         /* gfx/sprites/palms.bmp (64x96 -> 3 frames of 64x32) */
     cs2d_texture_t            tex_tree;          /* gfx/sprites/tree.bmp */
     cs2d_texture_t            tex_leaf;          /* gfx/sprites/leaf.bmp */
@@ -107,6 +109,20 @@ void cs2d_render_resize(int width, int height);
 /* Frame control */
 void cs2d_render_begin_frame(void);
 void cs2d_render_end_frame(SDL_Window *window);
+
+/* Dynamic object layers, in the order of the world pass FUN_14028f890 */
+typedef enum {
+    CS2D_DO_LAYER_GROUND   = 0, /* Tdo.draw_ground: after the floor, before items and players */
+    CS2D_DO_LAYER_OBSTACLE = 1, /* Tdo.draw_obstacle: after the items (Barricade) */
+    CS2D_DO_LAYER_WALL     = 2  /* Tdo.draw_wall: after the players (walls, Dispenser, turrets, supplies) */
+} cs2d_dynobj_layer_t;
+
+struct cs2d_dynobj_world_s;
+/* team_game: the game mode colors buildings by team (0x140a015d0[sv_gamemode]); local_id for own buildings */
+void cs2d_render_dynobjs(const struct cs2d_dynobj_world_s *w, cs2d_dynobj_layer_t layer, float cam_x, float cam_y,
+                         int screen_w, int screen_h, bool team_game, int local_id);
+/* FUN_14014f1f0: build helper on the player's tile (yellow) and on the target tile (green ok / red refused) */
+void cs2d_render_build_helper(int ptx, int pty, int tx, int ty, bool ok, float cam_x, float cam_y);
 
 /* Load and manage global/client CS2D graphics bank */
 bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank);
