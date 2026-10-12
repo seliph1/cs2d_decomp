@@ -555,4 +555,7 @@ a repeated text restarts its timer.
 - Roof parapet shadow: none (checked in `FUN_140260330`).
 - Shadow occlusion halos merge with max.
 - Entities in state ≠ 0 are not drawn.
-- The shadow cache is rebuilt when `map->entity_solid_version` changes.
+- The shadow map is partitioned into 16x16-tile chunks (256x256 texels each). When `map->entity_solid_version`
+  changes (DynWall toggles or player buildings change), fast delta tracking marks only the affected localized chunks dirty,
+  avoiding full-map software rasterization freezes and dynamic heap reallocations. Visible dirty chunks are lazily generated
+  and updated into GPU textures.

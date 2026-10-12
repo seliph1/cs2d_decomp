@@ -1351,12 +1351,35 @@ void cs2d_render_tile_frame(const cs2d_texture_t *tileset_tex, uint8_t frame, ui
     glDisable(GL_TEXTURE_2D);
 }
 
-/* Cached unified sun-angle & multi-layer room lighting/shadow texture (reconstructed from 0x140260330 & 0x14025e420) */
-static cs2d_texture_t s_room_shadow_tex = {0};
-static uint32_t       s_room_shadow_map_w = 0;
-static uint32_t       s_room_shadow_map_h = 0;
-static uint32_t       s_room_shadow_solid_version = 0; /* Rebuild when a DynWall / Breakable toggles */
-static bool           s_shadows_enabled = true;
+#define CS2D_SHADOW_CHUNK_TILES     16
+#define CS2D_SHADOW_TEXELS_PER_TILE 16 /* 2 world pixels per texel (scale = 16 texels per 32px tile) */
+
+typedef struct {
+    GLuint tex_id;
+    bool   dirty;
+    bool   initialized;
+} cs2d_shadow_chunk_t;
+
+typedef struct {
+    cs2d_shadow_chunk_t *chunks;
+    int                  chunks_x;
+    int                  chunks_y;
+    uint32_t             map_w;
+    uint32_t             map_h;
+    uint32_t             solid_version;
+    int                  daylight_time;
+
+    uint8_t             *eff_modes;
+    uint16_t            *eff_heights;
+
+    uint8_t             *last_entity_state;
+    uint32_t             last_entity_count;
+    uint8_t             *last_object_shadow;
+    size_t               last_map_tiles;
+} cs2d_shadow_system_t;
+
+static cs2d_shadow_system_t s_shadow_sys = {0};
+static bool                 s_shadows_enabled = true;
 
 /*
  * Reconstructed from 0x14025e420 (cast_shadow_volume) + lighting/gfx_penumbra.png & lighting/gfx_blur.png:
@@ -1387,6 +1410,7 @@ static void cast_shadow_rect(
     if (sy0 < 0) sy0 = 0;
     if (sx1 > tex_w) sx1 = tex_w;
     if (sy1 > tex_h) sy1 = tex_h;
+    if (sx0 >= sx1 || sy0 >= sy1) return;
 
     for (int sy = sy0; sy < sy1; sy++) {
         float py = ((float)sy + 0.5f) * inv_scale;
@@ -1438,7 +1462,7 @@ static void cast_shadow_rect(
     }
 }
 
-/* Clears shadow alpha to 0 inside world rectangle [x0..x1, y0..y1] */
+/* Clears shadow alpha to 0 inside local rectangle [x0..x1, y0..y1] */
 static void clear_shadow_rect(
     uint8_t *alpha_buf,
     int tex_w, int tex_h,
@@ -1455,6 +1479,7 @@ static void clear_shadow_rect(
     if (sy0 < 0) sy0 = 0;
     if (sx1 > tex_w) sx1 = tex_w;
     if (sy1 > tex_h) sy1 = tex_h;
+    if (sx0 >= sx1 || sy0 >= sy1) return;
 
     for (int sy = sy0; sy < sy1; sy++) {
         memset(&alpha_buf[sy * tex_w + sx0], 0, (size_t)(sx1 - sx0));
@@ -1485,6 +1510,7 @@ static void accumulate_tile_occlusion(
     if (sy0 < 0) sy0 = 0;
     if (sx1 > tex_w) sx1 = tex_w;
     if (sy1 > tex_h) sy1 = tex_h;
+    if (sx0 >= sx1 || sy0 >= sy1) return;
 
     for (int sy = sy0; sy < sy1; sy++) {
         float py = ((float)sy + 0.5f) * inv_scale;
@@ -1510,152 +1536,244 @@ static void accumulate_tile_occlusion(
     }
 }
 
-/*
- * Applies the merged occlusion halo (0x14010bb08..0x14010e37f) onto alpha_buf:
- * only inside existing shadow regions (alpha_buf > 0) and only onto floor tiles,
- * so sunlit outer wall edges and Wall/Obstacle tops stay un-darkened.
- */
-static void apply_shadow_masked_occlusion(
-    const cs2d_map_t *map,
-    const uint8_t *eff_modes,
-    uint8_t *alpha_buf,
-    const uint8_t *occl_buf,
-    int tex_w, int tex_h,
-    uint8_t cap_alpha
-)
+/* Marks chunks overlapping tile bounds [min_tx..max_tx, min_ty..max_ty] as dirty */
+static void mark_shadow_region_dirty(int min_tx, int min_ty, int max_tx, int max_ty)
 {
-    const float inv_scale = 2.0f;
-    for (int sy = 0; sy < tex_h; sy++) {
-        int ty = (int)(((float)sy + 0.5f) * inv_scale / (float)CS2D_TILE_SIZE);
-        if ((uint32_t)ty >= map->height) continue;
+    if (!s_shadow_sys.chunks || s_shadow_sys.chunks_x <= 0 || s_shadow_sys.chunks_y <= 0) return;
 
-        for (int sx = 0; sx < tex_w; sx++) {
-            size_t idx = (size_t)sy * (size_t)tex_w + (size_t)sx;
-            uint8_t add = occl_buf[idx];
-            uint8_t cur = alpha_buf[idx];
-            if (add == 0 || cur == 0) continue; /* Only darken inside existing shadow regions */
+    int min_cx = min_tx / CS2D_SHADOW_CHUNK_TILES;
+    int min_cy = min_ty / CS2D_SHADOW_CHUNK_TILES;
+    int max_cx = max_tx / CS2D_SHADOW_CHUNK_TILES;
+    int max_cy = max_ty / CS2D_SHADOW_CHUNK_TILES;
 
-            int tx = (int)(((float)sx + 0.5f) * inv_scale / (float)CS2D_TILE_SIZE);
-            if ((uint32_t)tx >= map->width) continue;
+    if (min_cx < 0) min_cx = 0;
+    if (min_cy < 0) min_cy = 0;
+    if (max_cx >= s_shadow_sys.chunks_x) max_cx = s_shadow_sys.chunks_x - 1;
+    if (max_cy >= s_shadow_sys.chunks_y) max_cy = s_shadow_sys.chunks_y - 1;
 
-            /* 0x14010bb8c: Only apply occlusion onto floor tiles (skip Wall and Obstacle tops) */
-            uint8_t m = eff_modes[(uint32_t)ty * map->width + (uint32_t)tx];
-            if (m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW ||
-                m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW) {
-                continue;
-            }
-
-            int val = (int)cur + (int)add;
-            if (val > (int)cap_alpha) val = (int)cap_alpha;
-            if (val > (int)cur) alpha_buf[idx] = (uint8_t)val;
+    for (int cy = min_cy; cy <= max_cy; cy++) {
+        for (int cx = min_cx; cx <= max_cx; cx++) {
+            s_shadow_sys.chunks[cy * s_shadow_sys.chunks_x + cx].dirty = true;
         }
     }
 }
 
 /*
  * Reconstructed from 0x1401413b0..0x14014276d, 0x140260330..0x1402626d0, and 0x1401da4a6..0x1401da82d in CS2D.exe:
- * Builds the complete map shadow & lighting texture using:
- *   - Effective tile mode table (0x140a100a0): base tile mode overridden by active Func_DynWall
- *     (ints[1]: 0=Wall, 1=Obstacle, 2=Wall w/o Shdw, 3=Obstacle w/o Shdw, 4=Floor+Tile Behavior)
- *     and Env_Breakable (ints[6]: 0/1=Wall, 2=No shadow, 3=Obstacle)
- *   - Map sun angle (0x1401da4a6): if map->daylight_time > 999, (daylight_time - 1000) % 360, else 225.0f
- *   - Extrusion math (0x1402603a9..0x14026071c):
- *       s_factor = fabsf(sinf((sun_angle - 180.0f) * PI/180)) * 0.5f
- *       dz = -(h / 2) - h * s_factor
- *       dx = dz * cosf(sun_angle * PI/180), dy = dz * sinf(sun_angle * PI/180)
- *   - Step 1: Effective Obstacle tiles (CS2D_TILE_OBSTACLE) cast shadows, then Obstacle/Obstacle-NoShadow self-clear
- *   - Step 2: Effective Wall tiles (CS2D_TILE_WALL) cast shadows
- *   - Step 3: Env_Room Layer 0 (int_settings[9] == 0) casts shadows, followed by floor occlusion
- *             (lighting/gfx_oclussionmap.png) and effective Wall/Wall-NoShadow self-clear
- *   - Step 4: Env_Room Layers 1..5 (int_settings[9] == 1..5) cast rooftop shadows, then self-clear
- *   - Step 5: Env_Light (type 33) radial light subtraction (lighting/gfx_light.png)
+ * Manages the chunk grid (16x16 tiles each). When solid_version changes (e.g. Func_DynWall toggled or
+ * construction built), only the affected chunks are invalidated instead of freezing the game with a full map rebuild.
  */
-static void ensure_room_shadow_texture(const cs2d_map_t *map)
+static void ensure_shadow_chunks(const cs2d_map_t *map)
 {
-    if (!map || !map->tiles || map->width == 0 || map->height == 0 || !g_gl_ctx) return;
-    if (s_room_shadow_tex.id != 0 &&
-        s_room_shadow_map_w == map->width &&
-        s_room_shadow_map_h == map->height &&
-        s_room_shadow_solid_version == map->entity_solid_version) {
-        return;
-    }
-    s_room_shadow_solid_version = map->entity_solid_version;
-
-    if (s_room_shadow_tex.id != 0) {
-        cs2d_texture_free(&s_room_shadow_tex);
-    }
-
-    /* 16 texels per 32x32 tile (2 world pixels per texel) */
-    const int scale = 16;
-    int tex_w = (int)map->width * scale;
-    int tex_h = (int)map->height * scale;
-    uint8_t *alpha_buf = (uint8_t *)calloc((size_t)tex_w * (size_t)tex_h, 1);
-    if (!alpha_buf) return;
+    if (!map || !map->tiles || map->width == 0 || map->height == 0) return;
 
     size_t map_tiles = (size_t)map->width * (size_t)map->height;
-    uint8_t  *eff_modes   = (uint8_t *)malloc(map_tiles);
-    uint16_t *eff_heights = (uint16_t *)calloc(map_tiles, sizeof(uint16_t));
-    if (!eff_modes || !eff_heights) {
-        free(eff_modes);
-        free(eff_heights);
-        free(alpha_buf);
+
+    /* Reallocate system if map dimensions changed or not yet initialized */
+    if (s_shadow_sys.map_w != map->width ||
+        s_shadow_sys.map_h != map->height ||
+        s_shadow_sys.chunks == NULL) {
+
+        cs2d_render_invalidate_shadows();
+
+        s_shadow_sys.chunks_x = (int)(map->width + CS2D_SHADOW_CHUNK_TILES - 1) / CS2D_SHADOW_CHUNK_TILES;
+        s_shadow_sys.chunks_y = (int)(map->height + CS2D_SHADOW_CHUNK_TILES - 1) / CS2D_SHADOW_CHUNK_TILES;
+        int total_chunks = s_shadow_sys.chunks_x * s_shadow_sys.chunks_y;
+        s_shadow_sys.chunks = (cs2d_shadow_chunk_t *)calloc((size_t)total_chunks, sizeof(cs2d_shadow_chunk_t));
+        if (!s_shadow_sys.chunks) return;
+
+        for (int i = 0; i < total_chunks; i++) {
+            s_shadow_sys.chunks[i].dirty = true;
+        }
+
+        s_shadow_sys.eff_modes   = (uint8_t *)malloc(map_tiles);
+        s_shadow_sys.eff_heights = (uint16_t *)calloc(map_tiles, sizeof(uint16_t));
+        if (!s_shadow_sys.eff_modes || !s_shadow_sys.eff_heights) {
+            cs2d_render_invalidate_shadows();
+            return;
+        }
+
+        /* Base tile modes and custom heights (0x1401414b4..0x1401415c0) */
+        for (size_t idx = 0; idx < map_tiles; idx++) {
+            uint8_t t = map->tiles[idx];
+            s_shadow_sys.eff_modes[idx] = map->tile_modes[t];
+            if (map->save_tile_heights != 0 && map->tile_heights[t] > 0) {
+                s_shadow_sys.eff_heights[idx] = map->tile_heights[t];
+            }
+        }
+
+        /* Override effective tile modes with active Func_DynWall and Env_Breakable */
+        for (uint32_t i = 0; i < map->entity_count; i++) {
+            const cs2d_entity_t *e = &map->entities[i];
+            if (map->entity_state[i]) continue;
+            if (e->x < 0 || e->y < 0 || (uint32_t)e->x >= map->width || (uint32_t)e->y >= map->height) continue;
+            size_t idx = (size_t)e->y * (size_t)map->width + (size_t)e->x;
+            int tile_f = e->int_settings[0];
+            if (e->type == CS2D_ENT_FUNC_DYNWALL) {
+                switch (e->int_settings[1]) {
+                    case 0:  s_shadow_sys.eff_modes[idx] = CS2D_TILE_WALL; break;
+                    case 1:  s_shadow_sys.eff_modes[idx] = CS2D_TILE_OBSTACLE; break;
+                    case 2:  s_shadow_sys.eff_modes[idx] = CS2D_TILE_WALL_NOSHADOW; break;
+                    case 3:  s_shadow_sys.eff_modes[idx] = CS2D_TILE_OBSTACLE_NOSHADOW; break;
+                    default:
+                        s_shadow_sys.eff_modes[idx] = (tile_f >= 0 && tile_f <= (int)map->tile_count)
+                                                      ? map->tile_modes[tile_f] : CS2D_TILE_FLOOR_NOSOUND;
+                        break;
+                }
+                s_shadow_sys.eff_heights[idx] = (map->save_tile_heights != 0 && tile_f >= 0 && tile_f < 256 && map->tile_heights[tile_f] > 0)
+                                                 ? map->tile_heights[tile_f] : 0;
+            } else if (e->type == CS2D_ENT_ENV_BREAKABLE) {
+                if (e->int_settings[6] == 2)      s_shadow_sys.eff_modes[idx] = CS2D_TILE_FLOOR_NOSOUND;
+                else if (e->int_settings[6] == 3) s_shadow_sys.eff_modes[idx] = CS2D_TILE_OBSTACLE;
+                else                              s_shadow_sys.eff_modes[idx] = CS2D_TILE_WALL;
+                s_shadow_sys.eff_heights[idx] = (map->save_tile_heights != 0 && tile_f >= 0 && tile_f < 256 && map->tile_heights[tile_f] > 0)
+                                                 ? map->tile_heights[tile_f] : 0;
+            }
+        }
+
+        /* Solid buildings (cs2d_dynobj_casts_shadow) shadow like a 32 px wall tile */
+        if (map->object_shadow) {
+            for (size_t idx = 0; idx < map_tiles; idx++) {
+                if (!map->object_shadow[idx]) continue;
+                s_shadow_sys.eff_modes[idx] = CS2D_TILE_WALL;
+                s_shadow_sys.eff_heights[idx] = 0;
+            }
+        }
+
+        /* Snapshot initial state for fast delta tracking */
+        s_shadow_sys.last_entity_count = map->entity_count;
+        if (map->entity_count > 0) {
+            s_shadow_sys.last_entity_state = (uint8_t *)malloc(map->entity_count);
+            if (s_shadow_sys.last_entity_state) {
+                memcpy(s_shadow_sys.last_entity_state, map->entity_state, map->entity_count);
+            }
+        }
+        s_shadow_sys.last_map_tiles = map_tiles;
+        s_shadow_sys.last_object_shadow = (uint8_t *)calloc(map_tiles, 1);
+        if (s_shadow_sys.last_object_shadow && map->object_shadow) {
+            memcpy(s_shadow_sys.last_object_shadow, map->object_shadow, map_tiles);
+        }
+
+        s_shadow_sys.solid_version = map->entity_solid_version;
+        s_shadow_sys.daylight_time = map->daylight_time;
+        s_shadow_sys.map_w         = map->width;
+        s_shadow_sys.map_h         = map->height;
         return;
     }
 
-    /* Base tile modes and custom heights (0x1401414b4..0x1401415c0) */
-    for (size_t idx = 0; idx < map_tiles; idx++) {
-        uint8_t t = map->tiles[idx];
-        eff_modes[idx] = map->tile_modes[t];
-        if (map->save_tile_heights != 0 && map->tile_heights[t] > 0) {
-            eff_heights[idx] = map->tile_heights[t];
+    /* Check for sun-angle daylight changes (invalidates all chunks) */
+    if (s_shadow_sys.daylight_time != map->daylight_time) {
+        s_shadow_sys.daylight_time = map->daylight_time;
+        int total = s_shadow_sys.chunks_x * s_shadow_sys.chunks_y;
+        for (int i = 0; i < total; i++) {
+            s_shadow_sys.chunks[i].dirty = true;
         }
     }
 
-    /* Override effective tile modes with active Func_DynWall and Env_Breakable (0x140141cb4..0x14014276d) */
-    for (uint32_t i = 0; i < map->entity_count; i++) {
-        const cs2d_entity_t *e = &map->entities[i];
-        if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
-        if (e->x < 0 || e->y < 0 || (uint32_t)e->x >= map->width || (uint32_t)e->y >= map->height) continue;
-        size_t idx = (size_t)e->y * (size_t)map->width + (size_t)e->x;
-        int tile_f = e->int_settings[0];
-        if (e->type == CS2D_ENT_FUNC_DYNWALL) {
-            switch (e->int_settings[1]) {
-                case 0:  eff_modes[idx] = CS2D_TILE_WALL; break;
-                case 1:  eff_modes[idx] = CS2D_TILE_OBSTACLE; break;
-                case 2:  eff_modes[idx] = CS2D_TILE_WALL_NOSHADOW; break;
-                case 3:  eff_modes[idx] = CS2D_TILE_OBSTACLE_NOSHADOW; break;
-                default:
-                    eff_modes[idx] = (tile_f >= 0 && tile_f <= (int)map->tile_count)
-                                     ? map->tile_modes[tile_f] : CS2D_TILE_FLOOR_NOSOUND;
-                    break;
+    /* Fast delta update when solid version changed */
+    if (s_shadow_sys.solid_version != map->entity_solid_version) {
+        s_shadow_sys.solid_version = map->entity_solid_version;
+
+        /* 1. Track entity state changes (Func_DynWall, Env_Breakable) */
+        if (s_shadow_sys.last_entity_state) {
+            uint32_t count = map->entity_count < s_shadow_sys.last_entity_count ? map->entity_count : s_shadow_sys.last_entity_count;
+            for (uint32_t i = 0; i < count; i++) {
+                if (map->entity_state[i] != s_shadow_sys.last_entity_state[i]) {
+                    s_shadow_sys.last_entity_state[i] = map->entity_state[i];
+                    const cs2d_entity_t *e = &map->entities[i];
+                    if (e->x >= 0 && e->y >= 0 && (uint32_t)e->x < map->width && (uint32_t)e->y < map->height) {
+                        size_t idx = (size_t)e->y * (size_t)map->width + (size_t)e->x;
+                        uint8_t t = map->tiles[idx];
+                        uint8_t m = map->tile_modes[t];
+                        uint16_t h = (map->save_tile_heights != 0 && map->tile_heights[t] > 0) ? map->tile_heights[t] : 0;
+                        if (!map->entity_state[i]) {
+                            int tile_f = e->int_settings[0];
+                            if (e->type == CS2D_ENT_FUNC_DYNWALL) {
+                                switch (e->int_settings[1]) {
+                                    case 0:  m = CS2D_TILE_WALL; break;
+                                    case 1:  m = CS2D_TILE_OBSTACLE; break;
+                                    case 2:  m = CS2D_TILE_WALL_NOSHADOW; break;
+                                    case 3:  m = CS2D_TILE_OBSTACLE_NOSHADOW; break;
+                                    default:
+                                        m = (tile_f >= 0 && tile_f <= (int)map->tile_count)
+                                            ? map->tile_modes[tile_f] : CS2D_TILE_FLOOR_NOSOUND;
+                                        break;
+                                }
+                                h = (map->save_tile_heights != 0 && tile_f >= 0 && tile_f < 256 && map->tile_heights[tile_f] > 0)
+                                    ? map->tile_heights[tile_f] : 0;
+                            } else if (e->type == CS2D_ENT_ENV_BREAKABLE) {
+                                if (e->int_settings[6] == 2)      m = CS2D_TILE_FLOOR_NOSOUND;
+                                else if (e->int_settings[6] == 3) m = CS2D_TILE_OBSTACLE;
+                                else                              m = CS2D_TILE_WALL;
+                                h = (map->save_tile_heights != 0 && tile_f >= 0 && tile_f < 256 && map->tile_heights[tile_f] > 0)
+                                    ? map->tile_heights[tile_f] : 0;
+                            }
+                        }
+                        if (map->object_shadow && map->object_shadow[idx]) {
+                            m = CS2D_TILE_WALL;
+                            h = 0;
+                        }
+                        s_shadow_sys.eff_modes[idx] = m;
+                        s_shadow_sys.eff_heights[idx] = h;
+                        mark_shadow_region_dirty(e->x - 4, e->y - 4, e->x + 4, e->y + 4);
+                    }
+                }
             }
-            eff_heights[idx] = (map->save_tile_heights != 0 && tile_f >= 0 && tile_f < 256 && map->tile_heights[tile_f] > 0)
-                               ? map->tile_heights[tile_f] : 0;
-        } else if (e->type == CS2D_ENT_ENV_BREAKABLE) {
-            if (e->int_settings[6] == 2) {
-                eff_modes[idx] = CS2D_TILE_FLOOR_NOSOUND;
-            } else if (e->int_settings[6] == 3) {
-                eff_modes[idx] = CS2D_TILE_OBSTACLE;
-            } else {
-                eff_modes[idx] = CS2D_TILE_WALL;
+        }
+
+        /* 2. Track object_shadow changes (buildings constructed / destroyed) */
+        if (map->object_shadow && s_shadow_sys.last_object_shadow) {
+            for (size_t idx = 0; idx < map_tiles; idx++) {
+                if (map->object_shadow[idx] != s_shadow_sys.last_object_shadow[idx]) {
+                    s_shadow_sys.last_object_shadow[idx] = map->object_shadow[idx];
+                    int tx = (int)(idx % map->width);
+                    int ty = (int)(idx / map->width);
+                    if (map->object_shadow[idx]) {
+                        s_shadow_sys.eff_modes[idx] = CS2D_TILE_WALL;
+                        s_shadow_sys.eff_heights[idx] = 0;
+                    } else {
+                        uint8_t t = map->tiles[idx];
+                        s_shadow_sys.eff_modes[idx] = map->tile_modes[t];
+                        s_shadow_sys.eff_heights[idx] = (map->save_tile_heights != 0 && map->tile_heights[t] > 0) ? map->tile_heights[t] : 0;
+                    }
+                    mark_shadow_region_dirty(tx - 4, ty - 4, tx + 4, ty + 4);
+                }
             }
-            eff_heights[idx] = (map->save_tile_heights != 0 && tile_f >= 0 && tile_f < 256 && map->tile_heights[tile_f] > 0)
-                               ? map->tile_heights[tile_f] : 0;
         }
     }
+}
 
-    /* Solid buildings (cs2d_dynobj_casts_shadow) shadow like a 32 px wall tile */
-    if (map->object_shadow) {
-        for (size_t idx = 0; idx < map_tiles; idx++) {
-            if (!map->object_shadow[idx]) continue;
-            eff_modes[idx] = CS2D_TILE_WALL;
-            eff_heights[idx] = 0;
-        }
-    }
+/* Rasterizes and uploads one 16x16-tile chunk into its GL texture (zero dynamic memory allocation) */
+static void generate_shadow_chunk(const cs2d_map_t *map, int cx, int cy)
+{
+    if (!map || !s_shadow_sys.chunks || !g_gl_ctx) return;
 
-    const uint8_t shadow_alpha = 126; /* Base shadow darkness matching CS2D original (255 -> 128 on sandstone) */
+    int tx0 = cx * CS2D_SHADOW_CHUNK_TILES;
+    int ty0 = cy * CS2D_SHADOW_CHUNK_TILES;
+    int tx1 = (cx + 1) * CS2D_SHADOW_CHUNK_TILES;
+    if (tx1 > (int)map->width)  tx1 = (int)map->width;
+    int ty1 = (cy + 1) * CS2D_SHADOW_CHUNK_TILES;
+    if (ty1 > (int)map->height) ty1 = (int)map->height;
 
-    /* Reconstructed from 0x1401da4a6..0x1401da82d: custom angle stored as 1000 + deg (or already decoded 0..359) */
+    int chunk_w_tiles = tx1 - tx0;
+    int chunk_h_tiles = ty1 - ty0;
+    if (chunk_w_tiles <= 0 || chunk_h_tiles <= 0) return;
+
+    int tex_w = chunk_w_tiles * CS2D_SHADOW_TEXELS_PER_TILE;
+    int tex_h = chunk_h_tiles * CS2D_SHADOW_TEXELS_PER_TILE;
+
+    float c_wx0 = (float)(tx0 * CS2D_TILE_SIZE);
+    float c_wy0 = (float)(ty0 * CS2D_TILE_SIZE);
+
+    /* Zero-allocation static scratch buffers (max chunk is 256x256 texels) */
+    static uint8_t s_c_alpha[256 * 256];
+    static uint8_t s_c_occl[256 * 256];
+    static uint8_t s_c_rgba[256 * 256 * 4];
+
+    memset(s_c_alpha, 0, (size_t)tex_w * (size_t)tex_h);
+
+    const uint8_t shadow_alpha = 126;
+
     float sun_angle = 225.0f;
     if (map->daylight_time > 999) {
         sun_angle = (float)((map->daylight_time - 1000) % 360);
@@ -1668,49 +1786,55 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
     float cos_sun  = cosf(rad_sun);
     float sin_sun  = sinf(rad_sun);
 
-    /* Step 1: Effective Obstacle Tiles (CS2D_TILE_OBSTACLE = 2) cast shadows, then clear own 32x32 tops */
-    for (uint32_t ty = 0; ty < map->height; ty++) {
-        for (uint32_t tx = 0; tx < map->width; tx++) {
-            size_t idx = (size_t)ty * (size_t)map->width + (size_t)tx;
-            if (eff_modes[idx] == CS2D_TILE_OBSTACLE) {
-                int h = (eff_heights[idx] > 0) ? (int)eff_heights[idx] : 16;
+    /* Expanded source search region: shadows can cast up to 6 tiles away */
+    int stx0 = (tx0 > 6) ? (tx0 - 6) : 0;
+    int sty0 = (ty0 > 6) ? (ty0 - 6) : 0;
+    int stx1 = (tx1 + 6 < (int)map->width)  ? (tx1 + 6) : (int)map->width;
+    int sty1 = (ty1 + 6 < (int)map->height) ? (ty1 + 6) : (int)map->height;
+
+    /* Step 1: Effective Obstacle Tiles cast shadows, then clear tops within chunk */
+    for (int ty = sty0; ty < sty1; ty++) {
+        for (int tx = stx0; tx < stx1; tx++) {
+            size_t idx = (size_t)ty * map->width + (size_t)tx;
+            if (s_shadow_sys.eff_modes[idx] == CS2D_TILE_OBSTACLE) {
+                int h = (s_shadow_sys.eff_heights[idx] > 0) ? (int)s_shadow_sys.eff_heights[idx] : 16;
                 float dz = (float)(-(h / 2)) - (float)h * s_factor;
                 float dx = dz * cos_sun;
                 float dy = dz * sin_sun;
-                float x0 = (float)(tx * CS2D_TILE_SIZE);
-                float y0 = (float)(ty * CS2D_TILE_SIZE);
-                cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, dx, dy, shadow_alpha);
+                float x0 = (float)(tx * CS2D_TILE_SIZE) - c_wx0;
+                float y0 = (float)(ty * CS2D_TILE_SIZE) - c_wy0;
+                cast_shadow_rect(s_c_alpha, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, dx, dy, shadow_alpha);
             }
         }
     }
-    for (uint32_t ty = 0; ty < map->height; ty++) {
-        for (uint32_t tx = 0; tx < map->width; tx++) {
-            uint8_t m = eff_modes[(size_t)ty * (size_t)map->width + (size_t)tx];
+    for (int ty = ty0; ty < ty1; ty++) {
+        for (int tx = tx0; tx < tx1; tx++) {
+            uint8_t m = s_shadow_sys.eff_modes[(size_t)ty * map->width + (size_t)tx];
             if (m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW) {
-                float x0 = (float)(tx * CS2D_TILE_SIZE);
-                float y0 = (float)(ty * CS2D_TILE_SIZE);
-                clear_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f);
+                float x0 = (float)(tx * CS2D_TILE_SIZE) - c_wx0;
+                float y0 = (float)(ty * CS2D_TILE_SIZE) - c_wy0;
+                clear_shadow_rect(s_c_alpha, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f);
             }
         }
     }
 
-    /* Step 2: Effective Wall Tiles (CS2D_TILE_WALL = 1, including Wall-mode Func_DynWall & Env_Breakable) cast shadows */
-    for (uint32_t ty = 0; ty < map->height; ty++) {
-        for (uint32_t tx = 0; tx < map->width; tx++) {
-            size_t idx = (size_t)ty * (size_t)map->width + (size_t)tx;
-            if (eff_modes[idx] == CS2D_TILE_WALL) {
-                int h = (eff_heights[idx] > 0) ? (int)eff_heights[idx] : 32;
+    /* Step 2: Effective Wall Tiles cast shadows */
+    for (int ty = sty0; ty < sty1; ty++) {
+        for (int tx = stx0; tx < stx1; tx++) {
+            size_t idx = (size_t)ty * map->width + (size_t)tx;
+            if (s_shadow_sys.eff_modes[idx] == CS2D_TILE_WALL) {
+                int h = (s_shadow_sys.eff_heights[idx] > 0) ? (int)s_shadow_sys.eff_heights[idx] : 32;
                 float dz = (float)(-(h / 2)) - (float)h * s_factor;
                 float dx = dz * cos_sun;
                 float dy = dz * sin_sun;
-                float x0 = (float)(tx * CS2D_TILE_SIZE);
-                float y0 = (float)(ty * CS2D_TILE_SIZE);
-                cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, dx, dy, shadow_alpha);
+                float x0 = (float)(tx * CS2D_TILE_SIZE) - c_wx0;
+                float y0 = (float)(ty * CS2D_TILE_SIZE) - c_wy0;
+                cast_shadow_rect(s_c_alpha, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, dx, dy, shadow_alpha);
             }
         }
     }
 
-    /* Step 3: Env_Room Layer 0 (0x140261153..0x140261438), then occlusion & clear Wall tiles */
+    /* Step 3: Env_Room Layer 0 */
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *ent = &map->entities[i];
         if (ent->type != CS2D_ENT_ENV_ROOM && ent->type != CS2D_ENT_ENV_CUBE3D && ent->type != CS2D_ENT_ENV_BUILDING) {
@@ -1733,49 +1857,74 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
         float dz = (float)(-(z_px / 2)) - (float)z_px * s_factor;
         float dx = dz * cos_sun;
         float dy = dz * sin_sun;
-        cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x1, y1, dx, dy, shadow_alpha);
+
+        float b_min_x = (dx >= 0.0f ? x0 : x0 + dx);
+        float b_max_x = (dx >= 0.0f ? x1 + dx : x1);
+        float b_min_y = (dy >= 0.0f ? y0 : y0 + dy);
+        float b_max_y = (dy >= 0.0f ? y1 + dy : y1);
+
+        if (b_max_x < c_wx0 || b_min_x > (float)(tx1 * CS2D_TILE_SIZE) ||
+            b_max_y < c_wy0 || b_min_y > (float)(ty1 * CS2D_TILE_SIZE)) {
+            continue;
+        }
+
+        cast_shadow_rect(s_c_alpha, tex_w, tex_h, x0 - c_wx0, y0 - c_wy0, x1 - c_wx0, y1 - c_wy0, dx, dy, shadow_alpha);
     }
 
-    /* Apply floor contact occlusion (lighting/gfx_oclussionmap.png) around Obstacles and Walls in shadow */
-    uint8_t *occl_buf = (uint8_t *)calloc((size_t)tex_w * (size_t)tex_h, 1);
-    if (occl_buf) {
-        for (uint32_t ty = 0; ty < map->height; ty++) {
-            for (uint32_t tx = 0; tx < map->width; tx++) {
-                uint8_t m = eff_modes[(size_t)ty * (size_t)map->width + (size_t)tx];
-                if (m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW ||
-                    m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW) {
-                    float x0 = (float)(tx * CS2D_TILE_SIZE);
-                    float y0 = (float)(ty * CS2D_TILE_SIZE);
-                    accumulate_tile_occlusion(occl_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, 10.0f, 72);
-                }
+    /* Step 3b: Floor contact occlusion */
+    memset(s_c_occl, 0, (size_t)tex_w * (size_t)tex_h);
+    int otx0 = (tx0 > 1) ? (tx0 - 1) : 0;
+    int oty0 = (ty0 > 1) ? (ty0 - 1) : 0;
+    int otx1 = (tx1 + 1 < (int)map->width)  ? (tx1 + 1) : (int)map->width;
+    int oty1 = (ty1 + 1 < (int)map->height) ? (ty1 + 1) : (int)map->height;
+    for (int ty = oty0; ty < oty1; ty++) {
+        for (int tx = otx0; tx < otx1; tx++) {
+            uint8_t m = s_shadow_sys.eff_modes[(size_t)ty * map->width + (size_t)tx];
+            if (m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW ||
+                m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW) {
+                float x0 = (float)(tx * CS2D_TILE_SIZE) - c_wx0;
+                float y0 = (float)(ty * CS2D_TILE_SIZE) - c_wy0;
+                accumulate_tile_occlusion(s_c_occl, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f, 10.0f, 72);
             }
         }
-        apply_shadow_masked_occlusion(map, eff_modes, alpha_buf, occl_buf, tex_w, tex_h, 200);
-        free(occl_buf);
     }
 
-    /* Clear Wall tiles (0x1402619d6..0x140261b11) so wall tops remain completely un-darkened */
-    for (uint32_t ty = 0; ty < map->height; ty++) {
-        for (uint32_t tx = 0; tx < map->width; tx++) {
-            uint8_t m = eff_modes[(size_t)ty * (size_t)map->width + (size_t)tx];
+    const float inv_scale = 2.0f;
+    for (int sy = 0; sy < tex_h; sy++) {
+        int local_ty = (int)(((float)sy + 0.5f) * inv_scale / (float)CS2D_TILE_SIZE);
+        int world_ty = ty0 + local_ty;
+        if ((uint32_t)world_ty >= map->height) continue;
+        for (int sx = 0; sx < tex_w; sx++) {
+            size_t c_idx = (size_t)sy * (size_t)tex_w + (size_t)sx;
+            uint8_t add = s_c_occl[c_idx];
+            uint8_t cur = s_c_alpha[c_idx];
+            if (add == 0 || cur == 0) continue;
+            int local_tx = (int)(((float)sx + 0.5f) * inv_scale / (float)CS2D_TILE_SIZE);
+            int world_tx = tx0 + local_tx;
+            if ((uint32_t)world_tx >= map->width) continue;
+            uint8_t m = s_shadow_sys.eff_modes[(size_t)world_ty * map->width + (size_t)world_tx];
+            if (m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW ||
+                m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW) continue;
+            int val = (int)cur + (int)add;
+            if (val > 200) val = 200;
+            if (val > (int)cur) s_c_alpha[c_idx] = (uint8_t)val;
+        }
+    }
+
+    /* Clear Wall tiles within chunk */
+    for (int ty = ty0; ty < ty1; ty++) {
+        for (int tx = tx0; tx < tx1; tx++) {
+            uint8_t m = s_shadow_sys.eff_modes[(size_t)ty * map->width + (size_t)tx];
             if (m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW) {
-                float x0 = (float)(tx * CS2D_TILE_SIZE);
-                float y0 = (float)(ty * CS2D_TILE_SIZE);
-                clear_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f);
+                float x0 = (float)(tx * CS2D_TILE_SIZE) - c_wx0;
+                float y0 = (float)(ty * CS2D_TILE_SIZE) - c_wy0;
+                clear_shadow_rect(s_c_alpha, tex_w, tex_h, x0, y0, x0 + 32.0f, y0 + 32.0f);
             }
         }
     }
 
-    free(eff_modes);
-    free(eff_heights);
-
-    /*
-     * Step 4: Env_Room Layers 1..5 (0x1402620be..0x140262608) for multi-level roofs.
-     * Note: CS2D.exe does NOT clear CS2D_TILE_WALL after Layers 1..5 so higher roofs
-     * cast shadows across lower ground walls and lower roofs.
-     */
+    /* Step 4: Env_Room Layers 1..5 */
     for (int layer = 1; layer <= 5; layer++) {
-        /* Pass A (0x1402620d8..0x1402623a1): Cast shadow for all Env_Room on this layer */
         for (uint32_t i = 0; i < map->entity_count; i++) {
             const cs2d_entity_t *ent = &map->entities[i];
             if (ent->type != CS2D_ENT_ENV_ROOM && ent->type != CS2D_ENT_ENV_CUBE3D) continue;
@@ -1796,10 +1945,18 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
             float dz = (float)(-(z_px / 2)) - (float)z_px * s_factor;
             float dx = dz * cos_sun;
             float dy = dz * sin_sun;
-            cast_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x1, y1, dx, dy, shadow_alpha);
+
+            float b_min_x = (dx >= 0.0f ? x0 : x0 + dx);
+            float b_max_x = (dx >= 0.0f ? x1 + dx : x1);
+            float b_min_y = (dy >= 0.0f ? y0 : y0 + dy);
+            float b_max_y = (dy >= 0.0f ? y1 + dy : y1);
+
+            if (b_max_x >= c_wx0 && b_min_x <= (float)(tx1 * CS2D_TILE_SIZE) &&
+                b_max_y >= c_wy0 && b_min_y <= (float)(ty1 * CS2D_TILE_SIZE)) {
+                cast_shadow_rect(s_c_alpha, tex_w, tex_h, x0 - c_wx0, y0 - c_wy0, x1 - c_wx0, y1 - c_wy0, dx, dy, shadow_alpha);
+            }
         }
 
-        /* Pass B (0x1402623b0..0x1402625f5): White-fill (clear) interior of Env_Room on this layer */
         for (uint32_t i = 0; i < map->entity_count; i++) {
             const cs2d_entity_t *ent = &map->entities[i];
             if (ent->type != CS2D_ENT_ENV_ROOM && ent->type != CS2D_ENT_ENV_CUBE3D) continue;
@@ -1816,24 +1973,26 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
             float x1 = x0 + (float)(w_tiles * CS2D_TILE_SIZE);
             float y1 = y0 + (float)(h_tiles * CS2D_TILE_SIZE);
 
-            clear_shadow_rect(alpha_buf, tex_w, tex_h, x0, y0, x1, y1);
+            if (x1 >= c_wx0 && x0 <= (float)(tx1 * CS2D_TILE_SIZE) &&
+                y1 >= c_wy0 && y0 <= (float)(ty1 * CS2D_TILE_SIZE)) {
+                clear_shadow_rect(s_c_alpha, tex_w, tex_h, x0 - c_wx0, y0 - c_wy0, x1 - c_wx0, y1 - c_wy0);
+            }
         }
     }
 
-    /* Step 5: Env_Light (type 33, 0x1401d71e0 & 0x140047f50) radial light subtraction (lighting/gfx_light.png) */
+    /* Step 5: Env_Light radial light subtraction */
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *ent = &map->entities[i];
         if (ent->type != CS2D_ENT_ENV_LIGHT) continue;
 
         int x_off = ent->str_settings[1][0] ? atoi(ent->str_settings[1]) : 0;
         int y_off = ent->str_settings[2][0] ? atoi(ent->str_settings[2]) : 0;
-        float lx = (float)(ent->x * CS2D_TILE_SIZE + 16 + x_off);
-        float ly = (float)(ent->y * CS2D_TILE_SIZE + 16 + y_off);
+        float lx = (float)(ent->x * CS2D_TILE_SIZE + 16 + x_off) - c_wx0;
+        float ly = (float)(ent->y * CS2D_TILE_SIZE + 16 + y_off) - c_wy0;
         float radius = (float)(ent->int_settings[0] > 0 ? ent->int_settings[0] : 128) * 0.85f;
         float strength = (float)(ent->int_settings[1] + ent->int_settings[2] + ent->int_settings[3]) / (3.0f * 255.0f);
         if (strength <= 0.0f) strength = 0.5f;
 
-        const float inv_scale = 2.0f;
         int sx0 = (int)((lx - radius) / inv_scale);
         int sy0 = (int)((ly - radius) / inv_scale);
         int sx1 = (int)((lx + radius) / inv_scale) + 1;
@@ -1842,6 +2001,7 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
         if (sy0 < 0) sy0 = 0;
         if (sx1 > tex_w) sx1 = tex_w;
         if (sy1 > tex_h) sy1 = tex_h;
+        if (sx0 >= sx1 || sy0 >= sy1) continue;
 
         for (int sy = sy0; sy < sy1; sy++) {
             float py = ((float)sy + 0.5f) * inv_scale;
@@ -1852,39 +2012,96 @@ static void ensure_room_shadow_texture(const cs2d_map_t *map)
                     float falloff = 1.0f - (dist / radius);
                     float smooth = falloff * (2.0f - falloff);
                     int sub = (int)((float)shadow_alpha * strength * smooth * 1.6f);
-                    int cur = (int)alpha_buf[sy * tex_w + sx];
-                    alpha_buf[sy * tex_w + sx] = (uint8_t)((cur > sub) ? (cur - sub) : 0);
+                    int cur = (int)s_c_alpha[sy * tex_w + sx];
+                    s_c_alpha[sy * tex_w + sx] = (uint8_t)((cur > sub) ? (cur - sub) : 0);
                 }
             }
         }
     }
 
-    uint8_t *rgba = (uint8_t *)calloc((size_t)tex_w * (size_t)tex_h * 4, 1);
-    if (!rgba) {
-        free(alpha_buf);
-        return;
+    /* Convert alpha to RGBA */
+    for (size_t i = 0; i < (size_t)tex_w * (size_t)tex_h; i++) {
+        s_c_rgba[i * 4 + 0] = 0;
+        s_c_rgba[i * 4 + 1] = 0;
+        s_c_rgba[i * 4 + 2] = 0;
+        s_c_rgba[i * 4 + 3] = s_c_alpha[i];
     }
-    for (size_t idx = 0; idx < (size_t)tex_w * (size_t)tex_h; idx++) {
-        rgba[idx * 4 + 3] = alpha_buf[idx];
-    }
-    free(alpha_buf);
 
-    GLuint gl_id = 0;
-    glGenTextures(1, &gl_id);
-    glBindTexture(GL_TEXTURE_2D, gl_id);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tex_w, tex_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    int c_idx = cy * s_shadow_sys.chunks_x + cx;
+    cs2d_shadow_chunk_t *chunk = &s_shadow_sys.chunks[c_idx];
+    if (chunk->tex_id == 0) {
+        glGenTextures(1, &chunk->tex_id);
+        glBindTexture(GL_TEXTURE_2D, chunk->tex_id);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tex_w, tex_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_c_rgba);
+    } else {
+        glBindTexture(GL_TEXTURE_2D, chunk->tex_id);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tex_w, tex_h, GL_RGBA, GL_UNSIGNED_BYTE, s_c_rgba);
+    }
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    free(rgba);
-    s_room_shadow_tex.id     = gl_id;
-    s_room_shadow_tex.width  = tex_w;
-    s_room_shadow_tex.height = tex_h;
-    s_room_shadow_map_w      = map->width;
-    s_room_shadow_map_h      = map->height;
+    chunk->dirty = false;
+    chunk->initialized = true;
+}
+
+/* Draws visible shadow chunks on screen */
+static void render_shadow_chunks(const cs2d_map_t *map, float cam_x, float cam_y)
+{
+    if (!s_shadows_enabled || !s_shadow_sys.chunks || !g_gl_ctx) return;
+
+    float vw = (g_viewport_w > 0) ? (float)g_viewport_w : 854.0f;
+    float vh = (g_viewport_h > 0) ? (float)g_viewport_h : 480.0f;
+
+    float view_x0 = cam_x;
+    float view_y0 = cam_y;
+    float view_x1 = cam_x + vw;
+    float view_y1 = cam_y + vh;
+
+    const float chunk_world_size = (float)(CS2D_SHADOW_CHUNK_TILES * CS2D_TILE_SIZE); /* 512 px */
+
+    int min_cx = (int)(view_x0 / chunk_world_size);
+    int min_cy = (int)(view_y0 / chunk_world_size);
+    int max_cx = (int)(view_x1 / chunk_world_size);
+    int max_cy = (int)(view_y1 / chunk_world_size);
+
+    if (min_cx < 0) min_cx = 0;
+    if (min_cy < 0) min_cy = 0;
+    if (max_cx >= s_shadow_sys.chunks_x) max_cx = s_shadow_sys.chunks_x - 1;
+    if (max_cy >= s_shadow_sys.chunks_y) max_cy = s_shadow_sys.chunks_y - 1;
+
+    for (int cy = min_cy; cy <= max_cy; cy++) {
+        for (int cx = min_cx; cx <= max_cx; cx++) {
+            int c_idx = cy * s_shadow_sys.chunks_x + cx;
+            cs2d_shadow_chunk_t *chunk = &s_shadow_sys.chunks[c_idx];
+            if (chunk->dirty || !chunk->initialized) {
+                generate_shadow_chunk(map, cx, cy);
+            }
+            if (chunk->tex_id != 0) {
+                int tx0 = cx * CS2D_SHADOW_CHUNK_TILES;
+                int ty0 = cy * CS2D_SHADOW_CHUNK_TILES;
+                int tx1 = (cx + 1) * CS2D_SHADOW_CHUNK_TILES;
+                if (tx1 > (int)map->width)  tx1 = (int)map->width;
+                int ty1 = (cy + 1) * CS2D_SHADOW_CHUNK_TILES;
+                if (ty1 > (int)map->height) ty1 = (int)map->height;
+
+                float cw = (float)((tx1 - tx0) * CS2D_TILE_SIZE);
+                float ch = (float)((ty1 - ty0) * CS2D_TILE_SIZE);
+                float center_x = (float)(tx0 * CS2D_TILE_SIZE) + cw * 0.5f - cam_x;
+                float center_y = (float)(ty0 * CS2D_TILE_SIZE) + ch * 0.5f - cam_y;
+
+                cs2d_texture_t tex = {
+                    .id     = chunk->tex_id,
+                    .width  = (tx1 - tx0) * CS2D_SHADOW_TEXELS_PER_TILE,
+                    .height = (ty1 - ty0) * CS2D_SHADOW_TEXELS_PER_TILE,
+                };
+                cs2d_render_sprite(&tex, center_x, center_y, cw, ch,
+                                   0.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+            }
+        }
+    }
 }
 
 /* Helper to render an Env_Sprite (type 22) entity (reconstructed from Te.draw 0x1402721f0..0x1402724ef) */
@@ -2238,16 +2455,8 @@ void cs2d_render_map_overhead(
 
     /* Pass 2: Unified Sun-Angle & Multi-Layer Room Shadow/Lighting Overlay (0x140262750..0x14026286f) */
     if (s_shadows_enabled) {
-        ensure_room_shadow_texture(map);
-        if (s_room_shadow_tex.id != 0) {
-            float map_pw = (float)(map->width * CS2D_TILE_SIZE);
-            float map_ph = (float)(map->height * CS2D_TILE_SIZE);
-            cs2d_render_sprite(&s_room_shadow_tex,
-                               map_pw * 0.5f - cam_x,
-                               map_ph * 0.5f - cam_y,
-                               map_pw, map_ph,
-                               0.0f, 0.0f, 0.0f, 0.0f, 1.0f);
-        }
+        ensure_shadow_chunks(map);
+        render_shadow_chunks(map, cam_x, cam_y);
     }
 
     /* Pass 3: Te.draw(1) Overhead Env_Object (trees, palms, lamps) & additive light flares (0x140262875) */
@@ -2414,13 +2623,61 @@ static int s_minimap_last_pty = -9999;
 
 void cs2d_render_invalidate_shadows(void)
 {
-    if (s_room_shadow_tex.id != 0) {
-        cs2d_texture_free(&s_room_shadow_tex);
+    if (s_shadow_sys.chunks) {
+        int total = s_shadow_sys.chunks_x * s_shadow_sys.chunks_y;
+        for (int i = 0; i < total; i++) {
+            if (g_gl_ctx && s_shadow_sys.chunks[i].tex_id != 0) {
+                glDeleteTextures(1, &s_shadow_sys.chunks[i].tex_id);
+            }
+        }
+        free(s_shadow_sys.chunks);
+        s_shadow_sys.chunks = NULL;
     }
-    s_room_shadow_map_w = 0;
-    s_room_shadow_map_h = 0;
+    free(s_shadow_sys.eff_modes);
+    s_shadow_sys.eff_modes = NULL;
+    free(s_shadow_sys.eff_heights);
+    s_shadow_sys.eff_heights = NULL;
+    free(s_shadow_sys.last_entity_state);
+    s_shadow_sys.last_entity_state = NULL;
+    free(s_shadow_sys.last_object_shadow);
+    s_shadow_sys.last_object_shadow = NULL;
+
+    s_shadow_sys.chunks_x = 0;
+    s_shadow_sys.chunks_y = 0;
+    s_shadow_sys.map_w = 0;
+    s_shadow_sys.map_h = 0;
+    s_shadow_sys.solid_version = 0;
+    s_shadow_sys.daylight_time = -1;
+
     s_minimap_last_ptx  = -9999;
     s_minimap_last_pty  = -9999;
+}
+
+void cs2d_render_ensure_shadow_chunks(const cs2d_map_t *map)
+{
+    ensure_shadow_chunks(map);
+}
+
+void cs2d_render_get_shadow_chunk_info(int *out_chunks_x, int *out_chunks_y, int *out_dirty_count)
+{
+    if (out_chunks_x) *out_chunks_x = s_shadow_sys.chunks_x;
+    if (out_chunks_y) *out_chunks_y = s_shadow_sys.chunks_y;
+    if (out_dirty_count) {
+        int dirty = 0;
+        int total = s_shadow_sys.chunks_x * s_shadow_sys.chunks_y;
+        for (int i = 0; i < total; i++) {
+            if (s_shadow_sys.chunks[i].dirty) dirty++;
+        }
+        *out_dirty_count = dirty;
+    }
+}
+
+void cs2d_render_clear_shadow_dirty_test(void)
+{
+    int total = s_shadow_sys.chunks_x * s_shadow_sys.chunks_y;
+    for (int i = 0; i < total; i++) {
+        s_shadow_sys.chunks[i].dirty = false;
+    }
 }
 
 void cs2d_render_set_shadows_enabled(bool enabled)

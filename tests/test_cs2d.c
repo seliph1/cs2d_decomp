@@ -2327,6 +2327,70 @@ static bool test_buy_menu(void)
     return true;
 }
 
+/* ---------------------------------------------------------------------------
+ * Chunk-Based Shadow Map & Fast Incremental Invalidation
+ * --------------------------------------------------------------------------- */
+static bool test_shadow_chunks(void)
+{
+    printf("\n=== Testing Chunk-based Map Shadows & Incremental Invalidation ===\n");
+
+    cs2d_map_t map;
+    memset(&map, 0, sizeof(map));
+    if (!cs2d_map_load_file(&map, "maps/de_dust2.map")) {
+        TEST_FAIL("Shadow Chunks", "Failed to load de_dust2.map");
+        return false;
+    }
+
+    map.object_shadow = (uint8_t *)calloc((size_t)map.width * map.height, 1);
+
+    cs2d_render_ensure_shadow_chunks(&map);
+
+    int cx = 0, cy = 0, dirty = 0;
+    cs2d_render_get_shadow_chunk_info(&cx, &cy, &dirty);
+
+    /* de_dust2 is 101x88 tiles -> (101+15)/16 = 7 chunks X, (88+15)/16 = 6 chunks Y (42 chunks total) */
+    if (cx != 7 || cy != 6) {
+        TEST_FAIL("Shadow Chunks", "Grid dimensions expected 7x6 for 101x88 map");
+        cs2d_map_free(&map);
+        return false;
+    }
+    if (dirty != 42) {
+        TEST_FAIL("Shadow Chunks", "Expected all 42 chunks initially marked dirty");
+        cs2d_map_free(&map);
+        return false;
+    }
+    TEST_PASS("Shadow chunk grid (16x16 tiles each, 7x6 for de_dust2) initialized");
+
+    /* Mark all chunks clean as if they were generated into textures */
+    cs2d_render_clear_shadow_dirty_test();
+    cs2d_render_get_shadow_chunk_info(NULL, NULL, &dirty);
+    if (dirty != 0) {
+        TEST_FAIL("Shadow Chunks", "Failed to clear dirty chunk flags");
+        cs2d_map_free(&map);
+        return false;
+    }
+
+    /* Change a solid object at tile (20, 20) and bump entity_solid_version */
+    map.object_shadow[20 * map.width + 20] = 1;
+    map.entity_solid_version++;
+
+    /* Incremental update */
+    cs2d_render_ensure_shadow_chunks(&map);
+    cs2d_render_get_shadow_chunk_info(NULL, NULL, &dirty);
+
+    /* Only local chunks in region [20-4..20+4, 20-4..20+4] should be marked dirty (1 to 4 chunks, never all 42!) */
+    if (dirty <= 0 || dirty > 4) {
+        TEST_FAIL("Shadow Chunks", "Expected only localized chunks (1..4) dirty on single tile change");
+        cs2d_map_free(&map);
+        return false;
+    }
+    TEST_PASS("Incremental shadow invalidation touches only localized chunks (1..4 of 42) on solid object change");
+
+    cs2d_render_invalidate_shadows();
+    cs2d_map_free(&map);
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -2334,7 +2398,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 24;
+    int total = 25;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -2360,6 +2424,7 @@ int main(void)
     if (test_construction()) passed++;
     if (test_weapon_select()) passed++;
     if (test_buy_menu()) passed++;
+    if (test_shadow_chunks()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

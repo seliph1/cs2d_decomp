@@ -260,9 +260,12 @@ void  cs2d_render_gradient_rect(
 void  cs2d_render_scissor_begin(int x, int y, int w, int h);
 void  cs2d_render_scissor_end(void);
 
-/* Shadow/Lighting map control for interactive console commands */
+/* Shadow/Lighting map control for interactive console commands & regression testing */
 void  cs2d_render_invalidate_shadows(void);
 void  cs2d_render_set_shadows_enabled(bool enabled);
 bool  cs2d_render_get_shadows_enabled(void);
+void  cs2d_render_ensure_shadow_chunks(const cs2d_map_t *map);
+void  cs2d_render_get_shadow_chunk_info(int *out_chunks_x, int *out_chunks_y, int *out_dirty_count);
+void  cs2d_render_clear_shadow_dirty_test(void);
 
 #endif /* CS2D_RENDER_H */

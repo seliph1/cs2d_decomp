@@ -8,6 +8,15 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Antigravity — Chunk-based shadow map & incremental invalidation
+- **Changed:** `src/cs2d_render.c`: Replaced full-map monolithic shadow texture generation with a 16x16-tile chunk grid
+  (256x256 texels per chunk). Replaced dynamic `calloc`/`free` of 34+ MB per frame with static scratch buffers and
+  cached `eff_modes` / `eff_heights` tables. Fast delta tracking checks which `Func_DynWall`, `Env_Breakable` or
+  `object_shadow` tile changed and marks only localized chunks dirty (typically 1..4 chunks of 42+). Lazy texture
+  generation and viewport frustum culling ensures only visible dirty chunks generate OpenGL textures with `glTexSubImage2D`.
+- **Verified:** `test_shadow_chunks` added to `tests/test_cs2d.c` (25 / 25 passed), confirming 101x88 de_dust2 grid
+  geometry (7x6 chunks) and that a solid tile modification marks only localized chunks (1..4) dirty instead of 42.
+
 ## 2026-10-12 — Claude Code — Buy menu
 - **Buy menu** (`src/cs2d_hudmen.c`): `Tgui_hudmen` menus 20..26 from the dump: sections, T / CT items, disabled
   Defuse Kit / shield, `_k` images on buttons, rotating `_m` section previews, `weaponinfo` description with the client's
