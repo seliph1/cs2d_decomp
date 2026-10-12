@@ -8,6 +8,21 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Claude Code — chat send/receive verified on the remote server
+- **Changed:** no code change. Live end-to-end check of the `[240]` (`CS2D_NET_MSG2`) chat path against
+  `140.238.183.194:36969` (user-authorized), driven by `tools/agent/udp_proxy.py` + `cs2d_client.exe`
+  with `CS2D_NET_LOG=1` and the console `say` / `sayteam` commands (the `!press Y` harness uppercases the
+  key and does not open the prompt, so it is not usable for this).
+- **Verified:** the two chat datagrams are byte-correct and round-trip:
+  - send `[240, mode 1, len 0x17, UTF-16LE]` and `[240, mode 2, len 0x0c, UTF-16LE]`;
+  - server echo `[240, 01 (sender_id), mode, len, ...]` decoded to `*DEAD* real: ...` and
+    `*DEAD*(TEAM) real: ...` in the chat log.
+  `sys/recentlyjoined.lst` was backed up and restored (rule 5). The user reported the original
+  "missing messages" were the server's anti-flood during parallel-client testing, not a client bug.
+- **Left:** confirm/set aside the pre-existing `sys/core/svl.cache` modification (not from this session);
+  the two latent dispatcher risks (`break` on an unknown opcode discarding the rest of the datagram, and
+  the `[226]` trailing-byte length assumption) stay unverified in `OPEN_ISSUES.md`.
+
 ## 2026-10-12 — Antigravity — In-game chat, server messages (@C) & Opcode 240
 - **Changed:**
   - Added in-game chat log layout matching CS2D original (`Thud_msg.draw_chat` 0x14024d8a0): left aligned at `x = 3.0f`

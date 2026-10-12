@@ -1,0 +1,15 @@
+name: REA mcpServer
+version: 0.0.1
+schema: v1
+mcpServers:
+  # Reverse-engineering assistant (Ghidra + REA). Mirrors the "rea" entry in
+  # the workspace .mcp.json so Continue picks it up from .continue/mcpServers/.
+  - name: REA
+    type: stdio
+    command: C:\Program Files\nodejs\node.exe
+    args:
+      - C:\Users\Gabriel\AppData\Local\npm-cache\_npx\af752b90495482d7\node_modules\rea-agents\scripts\rea.mjs
+      - mcp
+    env:
+      GHIDRA_INSTALL_DIR: C:\Users\Gabriel\Documents\Aplicativos\ghidra
+      JAVA_HOME: C:\Users\Gabriel\Documents\Aplicativos\ghidra\jdk-21.0.12.1
