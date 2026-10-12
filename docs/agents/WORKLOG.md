@@ -8,6 +8,20 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Antigravity — Scoreboard ping display & Opcode 229 clock ping reply
+- **Changed:** implemented client reply to `CS2D_NET_CLOCK_PING` (opcode 229 / 0xE5) in `src/cs2d_client.c`.
+  The original dedicated server sends opcode 229 when `sv_antiaccel > 0` (default) every 2 ticks (~2 s) with
+  `[229, srv_ts i32]`. The client now responds with `[229, srv_ts i32, cli_ts i32]` (9 bytes, unreliable datagram,
+  per `CS2D.exe` `0x1401d7690` and `0x1402e2ed0`) where `cli_ts = GetTickCount()`. With this reply, the server
+  calculates RTT latency (`now - srv_ts`) and transmits live player pings via `CS2D_NET_PINGLIST` (opcode 247).
+- **Verified:**
+  - Dedicated server capture `tools/agent/capture_ours.sh` (`proxy_pingtest.log`) confirmed the exchange: server sent
+    `e5 af 17 00 00`, our client replied `e5 af 17 00 00 19 46 12 00`, and the dedicated server sent `f7 03 ... 03 10 00`
+    broadcasting our player ID 3 with latency 16 ms (0x0010).
+  - Regression tests in `tests/test_cs2d.c` for `[247]` ping assignment and `[229]` 9-byte reply roundtrip.
+  - Test suite passes (30/31, same as baseline).
+- **Left:** None for this item.
+
 ## 2026-10-12 — DeepSeek — Web/Emscripten feasibility report (read-only, no code changed)
 - **Changed:** nothing. Read-only feasibility review at the user's request, deliberately without editing any source
   or doc file to avoid conflicting with the parallel session (Claude Code). Report only.

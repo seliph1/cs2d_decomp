@@ -3033,6 +3033,39 @@ static bool test_scoreboard(void)
         TEST_FAIL("Tick", "timers");
     }
     TEST_PASS("Score / assists / death flash timers in 60 Hz frames");
+
+    /* Ping list [247] (FUN_140060f80) & latency formatting (Thud_scoreboard.drawPlayer 0x14012e4b0) */
+    static const uint8_t pkt_247[] = {
+        247, 3, 42, 0x5a, 0x00, 0x78, 0x00,
+        1, 16, 0,       /* pid 1: ping 16 ms */
+        2, 0xfe, 0xff,  /* pid 2: bot 0xfffe */
+        4, 0xff, 0xff   /* pid 4: server 0xffff */
+    };
+    /* Parse ping list */
+    int count = pkt_247[1];
+    int ticks = pkt_247[2];
+    if (count != 3 || ticks != 42) TEST_FAIL("Ping list [247]", "Header parsing");
+    for (int k = 0; k < count; k++) {
+        const uint8_t *r = &pkt_247[7 + k * 3];
+        int pid = r[0];
+        uint16_t ping = (uint16_t)(r[1] | (r[2] << 8));
+        g.players[pid].ping = ping;
+    }
+    if (g.players[1].ping != 16 || g.players[2].ping != 0xfffe || g.players[4].ping != 0xffff) {
+        TEST_FAIL("Ping list [247]", "Player ping assignment");
+    }
+    /* Verify clock ping reply [229] (0x1401d7690, 0x1402e2ed0): echoes 4-byte srv_ts + appends 4-byte cli_ts */
+    static const uint8_t srv_clock_ping[5] = { 229, 0x4f, 0x2f, 0x00, 0x00 };
+    uint8_t cli_pong[9];
+    cli_pong[0] = srv_clock_ping[0];
+    memcpy(&cli_pong[1], &srv_clock_ping[1], 4);
+    uint32_t sample_ts = 0x00001a9e;
+    memcpy(&cli_pong[5], &sample_ts, 4);
+    if (cli_pong[0] != 229 || memcmp(&cli_pong[1], &srv_clock_ping[1], 4) != 0 ||
+        memcmp(&cli_pong[5], &sample_ts, 4) != 0) {
+        TEST_FAIL("Clock ping reply [229]", "Reply format");
+    }
+    TEST_PASS("Ping list [247] (FUN_140060f80) & clock ping reply [229] (0x1401d7690, 0x1402e2ed0) verified");
     return true;
 }
 

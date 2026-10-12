@@ -155,7 +155,8 @@ modded C4 dedicated (`tools/agent/capture_transfer.sh`, map fun_roleplay). Code:
 | 226 | `[226,1,u16,len u16,text,u8]` | Message |
 | 240 | `[240,pid,mode,len u8,UTF-16LE (2×len bytes)]` | Chat & Server Info (`mode == 50`: `"1"` clear serverinfo, `"2"` open `"<server_name> - Info"` window; `mode == 51`: append UTF-16LE serverinfo line with optional `U+00A9` + 9 digits `RRRGGGBBB` color tag or `U+00BB` gold link) |
 | 247 | `[247,n,ticks,u16,u16,n×{pid,ping u16}]` | Ping list (REA `FUN_140060f80`, proxy): server ticks, ping 0xfffe = bot, 0xffff = server |
-| 229 / 249 | | Pings; reply to 249 with the same 5 bytes |
+| 229 | `[229, srv_ts i32]` | Clock Ping / Anti-speedhack (REA `0x1401d7690`, `0x1402e2ed0`, proxy): used when `sv_antiaccel > 0` (default); client replies unreliable `[229, srv_ts i32, cli_ts i32]` (9 bytes); server calculates RTT latency (`now - srv_ts`) into `player->ping` (`Tpl +0xd0`) and tracks `clock_diff` / `clock_ratio` |
+| 249 | `[249, srv_ts i32]` | Normal In-Game Ping (REA `0x1401d9f10`, `0x1402e6080`): used when `sv_antiaccel == 0`; client replies unreliable `[249, srv_ts i32]` (5 bytes) |
 
 ## Server browser (Find Servers)
 

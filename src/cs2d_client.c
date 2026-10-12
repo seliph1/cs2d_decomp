@@ -1768,7 +1768,14 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 cs2d_client_send_udp(client, pong, 5, false);
                 pos += 5;
             } else if (opcode == CS2D_NET_CLOCK_PING) {
+                /* Server -> Client: [229, int32_t srv_ts] -> Reply [229, int32_t srv_ts, int32_t cli_ts] (0x1401d7690, 0x1402e2ed0) */
                 if (pos + 5 > recvd) break;
+                uint8_t pong[9];
+                pong[0] = CS2D_NET_CLOCK_PING;
+                memcpy(&pong[1], buffer + pos + 1, 4);
+                uint32_t now_ms = (uint32_t)GetTickCount();
+                memcpy(&pong[5], &now_ms, 4);
+                cs2d_client_send_udp(client, pong, sizeof(pong), false);
                 pos += 5;
             } else {
                 break;
