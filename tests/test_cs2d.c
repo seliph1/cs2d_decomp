@@ -2227,6 +2227,106 @@ static bool test_weapon_select(void)
     return true;
 }
 
+static bool test_buy_menu(void)
+{
+    printf("\n=== Testing Buy Menu (Tgui_hudmen menus 20..26, weaponinfo, buy commands) ===\n");
+
+    /* Tgui_hudmen.draw 0x14021f6d0: section keys and the T / CT items */
+    cs2d_buyctx_t t = { 1, 800, true }, ct = { 2, 800, false };
+    cs2d_hudmen_btn_t b[16];
+    int n = cs2d_buymenu_layout(CS2D_BUYMENU_MAIN, &t, b, 16);
+    if (n != 11 || b[0].menu != CS2D_BUYMENU_HANDGUN || b[0].img != CS2D_WEP_GLOCK || b[0].y != 30 ||
+        b[3].img != CS2D_WEP_AK47 || b[5].item != CS2D_WEP_PRIMARYAMMO || b[5].y != 210 || b[7].menu != 26 ||
+        b[7].y != 270 || b[8].key != 0 || b[8].y != 394 || b[9].act != CS2D_BUY_ACT_AUTOBUY || b[9].x != 344 ||
+        b[9].y != 364 || b[10].act != CS2D_BUY_ACT_REBUY || b[10].key != -1) {
+        TEST_FAIL("main layout", "Expected 5 sections, ammo 6/7, Equipment 8, Close 0, Auto-Buy / Re-Buy at x 344");
+    }
+    n = cs2d_buymenu_layout(CS2D_BUYMENU_MAIN, &ct, b, 16);
+    if (b[0].img != CS2D_WEP_USP || b[3].img != CS2D_WEP_M4A1) TEST_FAIL("main CT", "CT sections show USP / M4A1");
+    n = cs2d_buymenu_layout(CS2D_BUYMENU_SMG, &t, b, 16);
+    if (n != 6 || b[0].item != CS2D_WEP_MAC10 || b[1].item != CS2D_WEP_TMP || b[4].key != -1 || b[4].y != 364 ||
+        b[4].menu != CS2D_BUYMENU_MAIN) {
+        TEST_FAIL("SMG", "T: Mac 10 on key 1, TMP on key 2, then Back at y 364");
+    }
+    n = cs2d_buymenu_layout(CS2D_BUYMENU_RIFLE, &ct, b, 16);
+    if (b[0].item != CS2D_WEP_FAMAS || b[2].item != CS2D_WEP_AUG || b[3].item != CS2D_WEP_SCOUT || b[3].y != 150) {
+        TEST_FAIL("Rifle", "CT: Famas, M4A1, Aug, then Scout at y 150");
+    }
+    /* Defuse Kit: bomb maps and CT only; Tactical Shield: CT only */
+    n = cs2d_buymenu_layout(CS2D_BUYMENU_EQUIPMENT, &t, b, 16);
+    if (b[5].item != CS2D_WEP_DEFUSEKIT || b[5].enabled || b[7].item != CS2D_WEP_SHIELD || b[7].enabled) {
+        TEST_FAIL("Equipment T", "Defuse Kit and Tactical Shield are disabled for Terrorists");
+    }
+    ct.bomb_spots = true;
+    n = cs2d_buymenu_layout(CS2D_BUYMENU_EQUIPMENT, &ct, b, 16);
+    if (!b[5].enabled || !b[7].enabled || b[8].item != CS2D_WEP_FLARE || b[8].key != 9) {
+        TEST_FAIL("Equipment CT", "CT on a bomb map can buy the Defuse Kit and the shield; Flare on key 9");
+    }
+    char title[48];
+    cs2d_buymenu_title(CS2D_BUYMENU_SMG, title, sizeof(title));
+    if (strcmp(title, "Buy - Sub Machine Gun") != 0) TEST_FAIL("title", "Expected \"Buy - Sub Machine Gun\"");
+
+    /* drawBuySectionPreview lists: rifles T, radius 55 */
+    int items[16], radius = 0;
+    if (cs2d_buymenu_preview(4, 1, items, 16, &radius) != 7 || radius != 55 || items[0] != CS2D_WEP_GALIL ||
+        items[6] != CS2D_WEP_SG550 || cs2d_buymenu_preview(3, 2, items, 16, &radius) != 4 || items[1] != CS2D_WEP_TMP) {
+        TEST_FAIL("preview", "Rifle preview T starts with the Galil (r 55); SMG CT is MP5, TMP, P90, UMP45");
+    }
+
+    /* weaponinfo with the client's init_weapons tables (range / accuracy / weight differ from the dedicated) */
+    cs2d_buyinfo_line_t l[12];
+    n = cs2d_buymenu_info(CS2D_WEP_AWP, 800, l, 12);
+    if (n != 9 || strcmp(l[1].value, "4750 $") != 0 || !l[1].red || strcmp(l[3].value, "10|30") != 0 ||
+        strcmp(l[4].value, "23 rounds/min") != 0 || strcmp(l[5].value, "Far (400)") != 0 ||
+        strcmp(l[6].value, "Heavy") != 0 || strcmp(l[7].value, "Perfect (0 Variation)") != 0 ||
+        strcmp(l[8].label, "2x Zoom (inc. damage to 65 / 150)") != 0 || l[8].y != 380) {
+        TEST_FAIL("info AWP", "Price red at $800, 10|30, 23 rounds/min, Far (400), Heavy, Perfect, 2x Zoom 65 / 150");
+    }
+    n = cs2d_buymenu_info(CS2D_WEP_M3, 5000, l, 12);
+    if (l[1].red || strcmp(l[5].value, "Short (50)") != 0 || strcmp(l[7].value, "Very Bad (10 Variation)") != 0 ||
+        strcmp(l[8].label, "5 bullets per shot (damage up to 130)") != 0) {
+        TEST_FAIL("info M3", "Short (50), Very Bad (10 Variation), 5 bullets up to 130");
+    }
+    n = cs2d_buymenu_info(CS2D_WEP_KEVLAR, 5000, l, 12);
+    if (n != 4 || strcmp(l[2].value, "65") != 0 || l[2].y != 260 ||
+        strcmp(l[3].label, "Costs 10 $ per armor point. Max 65 AP") != 0) {
+        TEST_FAIL("info Kevlar", "Armor 65 and the price per point");
+    }
+
+    /* Commands through sys/controls.cfg: B opens the menu, 2 Shotgun, 1 buys the M3 (offline: on the spot) */
+    memset(&s_ws, 0, sizeof(s_ws));
+    s_ws.scene = CS2D_SCENE_GAME;
+    s_ws.local_player_id = 1;
+    s_ws.config.window_width = 850;
+    s_ws.config.window_height = 480;
+    cs2d_player_init(&s_ws.game.players[1], 1, "P");
+    s_ws.game.players[1].alive = true;
+    s_ws.game.players[1].team = CS2D_TEAM_CT;
+    s_ws.game.players[1].money = 2000;
+    if (!cs2d_binds_load(&s_ws.binds, "sys/controls.cfg")) TEST_FAIL("binds", "sys/controls.cfg not loaded");
+    s_ws.game.players[1].team = CS2D_TEAM_SPEC;
+    cs2d_client_handle_key(&s_ws, 'B', true);
+    if (s_ws.buy.menu != 0) TEST_FAIL("buy spectator", "Spectators can not open the buy menu");
+    s_ws.game.players[1].team = CS2D_TEAM_CT;
+    cs2d_client_handle_key(&s_ws, 'B', true);
+    cs2d_client_handle_key(&s_ws, '2', true);
+    if (s_ws.buy.menu != CS2D_BUYMENU_SHOTGUN) TEST_FAIL("buy keys", "B then 2 must open the Shotgun page");
+    cs2d_client_handle_key(&s_ws, '1', true);
+    if (s_ws.game.players[1].inventory[CS2D_SLOT_PRIMARY] != CS2D_WEP_M3 || s_ws.game.players[1].money != 300 ||
+        s_ws.buy.menu != CS2D_BUYMENU_SHOTGUN) {
+        TEST_FAIL("buy item", "Key 1 buys the M3 ($1700) and the menu stays open");
+    }
+    /* A click on Back (16, 364 in the window at (125, 20)), then Close (key 0) */
+    cs2d_client_handle_mouse(&s_ws, 125.0f + 20.0f, 20.0f + 370.0f, 1, true);
+    if (s_ws.buy.menu != CS2D_BUYMENU_MAIN || s_ws.mouse_fire) TEST_FAIL("buy back", "Back returns to the sections");
+    cs2d_client_handle_key(&s_ws, '0', true);
+    cs2d_client_handle_key(&s_ws, 'C', true);
+    if (s_ws.buy.menu != CS2D_BUYMENU_EQUIPMENT) TEST_FAIL("buyequip", "C (buyequip) opens the Equipment page");
+
+    TEST_PASS("Buy menu: sections, T / CT items, previews, weapon info, B / C / number keys, Back");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -2234,7 +2334,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 23;
+    int total = 24;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -2259,6 +2359,7 @@ int main(void)
     if (test_spectator()) passed++;
     if (test_construction()) passed++;
     if (test_weapon_select()) passed++;
+    if (test_buy_menu()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

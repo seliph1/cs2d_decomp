@@ -8,6 +8,15 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Claude Code — Buy menu
+- **Buy menu** (`src/cs2d_hudmen.c`): `Tgui_hudmen` menus 20..26 from the dump: sections, T / CT items, disabled
+  Defuse Kit / shield, `_k` images on buttons, rotating `_m` section previews, `weaponinfo` description with the client's
+  `init_weapons` stats, money box. `buy` / `buyequip` / `buyammo1` / `buyammo2` go through `sys/controls.cfg`
+  (`B`, `C`, `,`, `.`); the hardcoded `B` shortcut is gone. The "Construct" menu now uses the shared `Tgui_hudmen` button.
+- **Tools:** `tools/agent/weapontables.py` recovers the per-weapon `init_weapons` tables (also the muzzle offsets).
+- **Verification:** `test_buy_menu` (layout, previews, info lines, keys and Back click); screenshots of our client on
+  de_dust2 offline. Not compared with the original client yet, and not run against the dedicated.
+
 ## 2026-10-12 — Claude Code — weapon selection HUD and bindings
 - **Changed:** invnext / invprev / slotN logic and the selection HUD ported from `CS2D.exe` (KNOWLEDGE "Weapon selection
   HUD"); attack / attack2 with the HUD open holds the item. New `src/cs2d_bind.c` reads `sys/controls.cfg` (defaults

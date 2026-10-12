@@ -416,6 +416,7 @@ static bool game_load_map(cs2d_client_t *client, const char *map_name)
     cs2d_dynobj_init(&client->dynobj, &client->game.map);
     if (client->net_sock == INVALID_SOCKET) cs2d_dynobj_spawn_map_buildings(&client->dynobj);
     client->build_mode = client->build_menu_open = false;
+    client->buy.menu   = 0;
     client->ents_round = client->game.round_number;
     client->snapshot_states_reset = false;
     client->walk_active = false;
@@ -729,6 +730,7 @@ static void game_enter(cs2d_client_t *client)
     cs2d_texture_load_ex(&client->tex_m4a1,   "gfx/weapons/m4a1.bmp",   2);
     cs2d_texture_load_ex(&client->tex_deagle, "gfx/weapons/deagle.bmp", 2);
     cs2d_texture_load_ex(&s_tex_shade,        "gfx/gui_shade.bmp",      3);
+    cs2d_hudmen_load();
 
     if (!joining) cs2d_client_connect(client, client->config.server_ip, client->config.server_port);
 }
@@ -753,6 +755,7 @@ static void game_leave(cs2d_client_t *client)
     cs2d_texture_free(&client->tex_m4a1);
     cs2d_texture_free(&client->tex_deagle);
     cs2d_texture_free(&s_tex_shade);
+    cs2d_hudmen_unload();
 
     cs2d_game_free(&client->game);
     memset(&client->game, 0, sizeof(client->game));
@@ -784,6 +787,8 @@ static void game_update(cs2d_client_t *client, float delta_time)
             client->invsel.rot[w] = fmodf(client->invsel.rot[w] + 3.0f * delta_time * 60.0f, 360.0f);
         }
     }
+    /* Buy menu section preview: Tgui_hudmen.rot += g_dt * 3 */
+    if (client->buy.menu) client->buy.rot = fmodf(client->buy.rot + 3.0f * delta_time * 60.0f, 360.0f);
     if (pl->alive && !cs2d_client_any_ui_open(client)) {
         /*
          * Aiming: calculate world mouse position and rotation angle.
@@ -1053,58 +1058,23 @@ static const build_btn_t s_build_btns[] = {
 
 static void build_menu_origin(const cs2d_client_t *client, float *wx, float *wy)
 {
-    *wx = (float)(client->config.window_width / 2 - 300);
-    *wy = (float)(client->config.window_height / 2 - 220);
-}
-
-/* Tgui_hudmen.button (0x140129620): black inside at 0.3, frame 200 hovered / 150 / 50 disabled, additive
- * gui_shade 0.3 / 0.1 over the top 10 px, key number at +5 (alpha 0.4), label at +20, right text at w - 5 */
-static void hudmen_button(const cs2d_client_t *client, float x, float y, float w, const char *key,
-                          const char *label, const char *right, bool center_label)
-{
-    bool hover = point_in_rect(client->mouse_screen_x, client->mouse_screen_y, x, y, w, 25.0f);
-    float fc = hover ? 200.0f / 255.0f : 150.0f / 255.0f;
-    cs2d_render_rect(x + 1.0f, y + 1.0f, w - 2.0f, 23.0f, 0.0f, 0.0f, 0.0f, 0.3f, true);
-    cs2d_render_rect(x + 1.0f, y, w - 2.0f, 1.0f, fc, fc, fc, 1.0f, true);
-    cs2d_render_rect(x, y + 1.0f, 1.0f, 23.0f, fc, fc, fc, 1.0f, true);
-    cs2d_render_rect(x + 1.0f, y + 24.0f, w - 2.0f, 1.0f, fc, fc, fc, 1.0f, true);
-    cs2d_render_rect(x + w - 1.0f, y + 1.0f, 1.0f, 23.0f, fc, fc, fc, 1.0f, true);
-    if (s_tex_shade.id) {
-        cs2d_render_sprite_frame(&s_tex_shade, 10, 10, 0, x + 1.0f + (w - 2.0f) * 0.5f, y + 6.0f, w - 2.0f, 10.0f,
-                                 0.0f, 1.0f, 1.0f, 1.0f, hover ? 0.3f : 0.1f, 4);
-    }
-    float tc = hover ? 1.0f : 200.0f / 255.0f;
-    float tw, th;
-    cs2d_render_text_measure(CS2D_FONT_REGULAR, label, &tw, &th);
-    float ty = y + 12.0f - (float)((int)th / 2);
-    if (key && key[0]) cs2d_render_text_ex(CS2D_FONT_REGULAR, x + 5.0f, ty, key, tc, tc, tc, 0.4f);
-    float lx = center_label ? (float)((int)(x + w * 0.5f) - (int)(tw * 0.5f)) : x + 20.0f;
-    cs2d_render_text_ex(CS2D_FONT_REGULAR, lx, ty, label, tc, tc, tc, 1.0f);
-    if (right && right[0]) {
-        float rw, rh;
-        cs2d_render_text_measure(CS2D_FONT_REGULAR, right, &rw, &rh);
-        cs2d_render_text_ex(CS2D_FONT_REGULAR, x + w - 5.0f - rw, ty, right, tc, tc, tc, 0.4f);
-    }
+    cs2d_hudmen_origin(client->config.window_width, client->config.window_height, wx, wy);
 }
 
 static void render_build_menu(cs2d_client_t *client)
 {
-    float wx, wy;
+    float wx, wy, mx = client->mouse_screen_x, my = client->mouse_screen_y;
     build_menu_origin(client, &wx, &wy);
-    /* Window frame and title like the other Tgui windows (cs2d_ui_window_begin colors) */
-    cs2d_render_rect(wx, wy, 600.0f, 440.0f, 58.0f / 255.0f, 58.0f / 255.0f, 58.0f / 255.0f, 228.0f / 255.0f, true);
-    cs2d_render_rect(wx, wy, 600.0f, 440.0f, 96.0f / 255.0f, 96.0f / 255.0f, 96.0f / 255.0f, 245.0f / 255.0f, false);
-    cs2d_render_text_ex(CS2D_FONT_REGULAR, wx + 11.0f, wy + 4.0f, "Construct", 1.0f, 1.0f, 1.0f, 1.0f); /* 0372 */
+    cs2d_hudmen_window(wx, wy, "Construct"); /* 0372 */
     for (size_t i = 0; i < sizeof(s_build_btns) / sizeof(s_build_btns[0]); i++) {
         const build_btn_t *b = &s_build_btns[i];
         const cs2d_dynobj_def_t *d = cs2d_dynobj_def(b->typ);
-        char key[4] = "", price[16];
-        if (b->key > 0) snprintf(key, sizeof(key), "%d", b->key);
+        char price[16];
         snprintf(price, sizeof(price), "%d$", d->price);
-        hudmen_button(client, wx + b->x, wy + b->y, 240.0f, key, d->name, price, false);
-        if (b->remove_btn) hudmen_button(client, wx + b->x + 245.0f, wy + b->y, 25.0f, "", "X", "", true);
+        cs2d_hudmen_button(mx, my, wx + b->x, wy + b->y, 240.0f, b->key, d->name, price, true, NULL);
+        if (b->remove_btn) cs2d_hudmen_fbutton(mx, my, wx + b->x + 245.0f, wy + b->y, 25.0f, "X", true);
     }
-    hudmen_button(client, wx + 16.0f, wy + 440.0f - 46.0f, 240.0f, "0", "Cancel", "", false); /* 0027 */
+    cs2d_hudmen_button(mx, my, wx + 16.0f, wy + 440.0f - 46.0f, 240.0f, 0, "Cancel", "", true, NULL); /* 0027 */
 }
 
 /* Clicks in the "Construct" menu; returns true when the click belongs to the menu */
@@ -1140,6 +1110,74 @@ static void build_menu_key(cs2d_client_t *client, int digit)
             return;
         }
     }
+}
+
+/* ---------------------------------------------------------------------------
+ * Buy menu (Tgui_hudmen menus 20..26, cs2d_hudmen.c)
+ * --------------------------------------------------------------------------- */
+
+static cs2d_buyctx_t buy_ctx(const cs2d_client_t *client)
+{
+    const cs2d_player_t *me = &client->game.players[client->local_player_id];
+    cs2d_buyctx_t ctx = { (int)me->team, me->money, false };
+    /* DAT_140ddf078: Info_BombSpot entities counted at map load (0x1401d0000 "Counting Map Mission Entities") */
+    for (uint32_t i = 0; i < client->game.map.entity_count; i++) {
+        if (client->game.map.entities[i].type == CS2D_ENT_INFO_BOMBSPOT) ctx.bomb_spots = true;
+    }
+    return ctx;
+}
+
+/* FUN_1401fff70(player, item, 0, 1, 0): online [23, item, 0] (the server answers [23, player, item | 250, money]);
+ * offline the item is bought on the spot */
+static void buy_item(cs2d_client_t *client, int item)
+{
+    cs2d_player_t *me = &client->game.players[client->local_player_id];
+    if (!me->alive || me->team < 1) return;
+    if (client->connected && client->join_stage == 5) {
+        uint8_t pkt[3] = { (uint8_t)CS2D_NET_BUY, (uint8_t)item, 0 };
+        cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+    } else {
+        cs2d_player_buy_weapon(me, (uint8_t)item);
+    }
+}
+
+static void buy_menu_result(cs2d_client_t *client, cs2d_buy_act_t act, int item)
+{
+    if (act != CS2D_BUY_ACT_NONE) client->spec.idle_cam = false; /* Tgui_hudmen.button: DAT_140ddf328 = 0 */
+    if (act == CS2D_BUY_ACT_ITEM) buy_item(client, item);
+    else if (act == CS2D_BUY_ACT_AUTOBUY || act == CS2D_BUY_ACT_REBUY) {
+        cs2d_scene_game_buy_cmd(client, act == CS2D_BUY_ACT_AUTOBUY ? "autobuy" : "rebuy");
+    }
+}
+
+/*
+ * Command dispatcher at 0x1401b3e30 (0x1401b546d..): in game (DAT_140ddf418 1..2) "buy" opens menu 20 and
+ * "buyequip" menu 26 (FUN_14014ee60) unless the buy menu setting 0x140a14e20[1] starts with "-"; "buyammo1" /
+ * "buyammo2" buy item 61 / 62 at once. The menu also needs the local player alive (0x140a1afd8 method +0x90,
+ * assumed to be its health).
+ */
+bool cs2d_scene_game_buy_cmd(cs2d_client_t *client, const char *cmd)
+{
+    int menu = 0, item = 0;
+    if (_stricmp(cmd, "buy") == 0) menu = CS2D_BUYMENU_MAIN;
+    else if (_stricmp(cmd, "buyequip") == 0) menu = CS2D_BUYMENU_EQUIPMENT;
+    else if (_stricmp(cmd, "buyammo1") == 0) item = CS2D_WEP_PRIMARYAMMO;
+    else if (_stricmp(cmd, "buyammo2") == 0) item = CS2D_WEP_SECONDARYAMMO;
+    else if (_stricmp(cmd, "autobuy") == 0 || _stricmp(cmd, "rebuy") == 0) {
+        cs2d_client_console_print(client, 255, 220, 0, "'%s' is not reconstructed yet", cmd);
+        return true;
+    } else return false;
+
+    if (client->scene != CS2D_SCENE_GAME) return true;
+    const cs2d_player_t *me = &client->game.players[client->local_player_id];
+    if ((me->team != CS2D_TEAM_T && me->team != CS2D_TEAM_CT) || !me->alive) return true;
+    if (item) {
+        buy_item(client, item);
+    } else {
+        client->build_menu_open = false;
+        client->buy.menu = menu;
+    }
+    return true;
 }
 
 /* [39]: respawn request (FUN_140298b30 -> FUN_14020c120), sent unless a living player is under the cursor */
@@ -1290,6 +1328,12 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
         if (local_pl->alive) render_build_menu(client);
         else client->build_menu_open = false;
     }
+    if (client->buy.menu) {
+        cs2d_buyctx_t ctx = buy_ctx(client);
+        if (local_pl->alive) cs2d_buymenu_render(&client->buy, &ctx, client->mouse_screen_x, client->mouse_screen_y,
+                                                 screen_w, screen_h);
+        else client->buy.menu = 0;
+    }
     render_center_msgs(client, screen_w, screen_h);
 }
 
@@ -1337,9 +1381,19 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
         if (pressed) build_menu_key(client, key - '0');
         return;
     }
-    /* Weapon selection bindings of sys/controls.cfg ("1".."9", "0") */
+    /* Number keys pick Buy menu buttons (Tgui_hudmen.button: DAT_140ddf340 == key) */
+    if (client->buy.menu && key >= '0' && key <= '9') {
+        if (pressed) {
+            int item;
+            cs2d_buyctx_t ctx = buy_ctx(client);
+            cs2d_buy_act_t act = cs2d_buymenu_key(&client->buy, &ctx, key - '0', &item);
+            buy_menu_result(client, act, item);
+        }
+        return;
+    }
+    /* Bindings of sys/controls.cfg: weapon selection ("1".."9", "0") and buying ("B", "C", ",", ".") */
     const char *bound = pressed ? cs2d_binds_find(&client->binds, cs2d_bind_key_name(key)) : NULL;
-    if (bound && cs2d_scene_game_inv_cmd(client, bound)) return;
+    if (bound && (cs2d_scene_game_inv_cmd(client, bound) || cs2d_scene_game_buy_cmd(client, bound))) return;
 
     switch (key) {
         case 'W': case 'w': case VK_UP:
@@ -1362,24 +1416,6 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
             if (pressed && cs2d_weapon_reload(pl) && online) {
                 uint8_t pkt[2] = { (uint8_t)CS2D_NET_RELOAD, 1 };
                 cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
-            }
-            break;
-        case 'B': case 'b':
-            if (pressed) {
-                /* Buy menu shortcut: primary rifle and kevlar + helmet. Online the server decides:
-                 * [23, type u16] -> [23, player, type | 250 refused, money u16, u8] */
-                uint8_t buy_wep = (pl->team == CS2D_TEAM_T) ? CS2D_WEP_AK47 : CS2D_WEP_M4A1;
-                if (online) {
-                    uint8_t pkt1[3] = { (uint8_t)CS2D_NET_BUY, buy_wep, 0 };
-                    uint8_t pkt2[3] = { (uint8_t)CS2D_NET_BUY, CS2D_WEP_KEVLARHELM, 0 };
-                    cs2d_client_send_udp(client, pkt1, sizeof(pkt1), true);
-                    cs2d_client_send_udp(client, pkt2, sizeof(pkt2), true);
-                } else {
-                    if (!cs2d_player_buy_weapon(pl, buy_wep)) {
-                        cs2d_player_buy_weapon(pl, CS2D_WEP_DEAGLE);
-                    }
-                    cs2d_player_buy_weapon(pl, CS2D_WEP_KEVLARHELM);
-                }
             }
             break;
         case 'G': case 'g':
@@ -1434,6 +1470,18 @@ static void game_handle_mouse(cs2d_client_t *client, float mx, float my, int but
         if (!pressed) { client->mouse_fire = false; client->mouse_attack2 = false; }
         return;
     }
+    if (client->buy.menu) {
+        /* The menu is modal: clicks never reach the game */
+        if (pressed && button == 1) {
+            int item;
+            cs2d_buyctx_t ctx = buy_ctx(client);
+            cs2d_buy_act_t act = cs2d_buymenu_click(&client->buy, &ctx, mx, my, client->config.window_width,
+                                                    client->config.window_height, &item);
+            buy_menu_result(client, act, item);
+        }
+        if (!pressed) { client->mouse_fire = false; client->mouse_attack2 = false; }
+        return;
+    }
     /* attack / attack2 with the weapon selection HUD open hold the highlighted item instead of firing, and the
      * fire timer waits 400 ms (FUN_140219820 / FUN_14021b910) */
     if (pressed && (button == 1 || button == 2) && me->alive && client->invsel.slot != 0) {
@@ -1466,6 +1514,10 @@ static void game_handle_mouse(cs2d_client_t *client, float mx, float my, int but
 
 static void game_handle_escape(cs2d_client_t *client)
 {
+    if (client->buy.menu) {
+        client->buy.menu = 0;
+        return;
+    }
     if (client->build_menu_open || client->build_mode) {
         client->build_menu_open = client->build_mode = false;
         return;

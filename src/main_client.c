@@ -24,6 +24,9 @@ static int sdl_key_to_cs2d_key(SDL_Keycode key)
         case SDLK_B:      return 'B';
         case SDLK_G:      return 'G';
         case SDLK_M:      return 'M';
+        case SDLK_C:      return 'C';
+        case SDLK_COMMA:  return ',';
+        case SDLK_PERIOD: return '.';
         case SDLK_0:      return '0';
         case SDLK_1:      return '1';
         case SDLK_2:      return '2';

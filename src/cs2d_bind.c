@@ -91,6 +91,11 @@ const char *cs2d_bind_key_name(int key)
         single[1] = '\0';
         return single;
     }
+    if (key == ',' || key == '.') {
+        single[0] = (char)key;
+        single[1] = '\0';
+        return single;
+    }
     switch (key) {
         case VK_SPACE:    return "space";
         case VK_LCONTROL: return "leftctrl";

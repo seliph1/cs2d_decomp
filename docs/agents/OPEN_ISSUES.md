@@ -8,8 +8,8 @@ the same one.
 - **Audio:** there is no audio system (material sounds, shots, `Env_Sound`).
 - **Shots:** offline shots have no spread, and the reach of weapons other than the knife and the AK-47
   is not measured.
-- **Muzzle offsets:** the per-weapon muzzle offset table (`PTR_DAT_1409f5d20` in `CS2D.exe`) is not
-  recovered; values are calibrated.
+- **Muzzle offsets:** the per-weapon muzzle offset table (`0x1409f5d20` in `CS2D.exe`) is now recovered
+  (KNOWLEDGE "Buy menu") but not used yet; `cs2d_fx` still uses the calibrated 30 / 22 px.
 - **Explosion damage fall-off:** assumed; only distance 0 was measured.
 - **Fragments:** which fragment frames and tints belong to each material is inferred from captures.
 - **Player kill and death:** opcode 19 is not handled (a death is seen through `[17]` with health 0).
@@ -26,7 +26,13 @@ the same one.
   - Bindings: only the weapon selection commands go through `sys/controls.cfg`; movement, reload, use, buy, drop and
     the spectator keys are still hardcoded in `game_handle_key`. `cs2d_bind_key_name` knows only digits, letters,
     space, leftctrl and leftshift. The HUD font scale is fixed at 1 (13 px).
-- **Buy menu:** there is no UI; `B` buys a rifle and kevlar + helmet as a shortcut.
+- **Buy menu, not reconstructed** (KNOWLEDGE "Buy menu" has what is done):
+  - `autobuy` / `rebuy` only print a message (the original's `FUN_1401fff70` path with `DAT_140ddf2e0` / `2e4`).
+  - The custom buy menu (`custombuy`, when the setting `0x140a14e20[1]` is longer than 2 characters) and the "menu
+    disabled" case (it starts with "-"): the setting is not received yet, so the default menu always opens.
+  - The radial menu variant (`DAT_140dde9ac`, `TRadialMenu`), the voxel weapon preview (`DAT_140a14ca0`), the button sound.
+  - Offline, buying ignores buy zones and buy time (online the server decides and answers `[23, pid, 250]`).
+  - Not compared with a screenshot of the original: the window frame / title reuse the "Construct" menu's colors.
 - **Server browser, not reconstructed:**
   - U.S.G.N. serverlist download: the Internet tab always uses `sys/core/svl.cache`.
   - Filters dialog: the button only shows the count from `sys/filters.cfg`, and filters are not applied.

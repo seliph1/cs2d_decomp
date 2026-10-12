@@ -20,6 +20,7 @@
 #include "cs2d_dynobj.h"
 #include "cs2d_player.h"
 #include "cs2d_bind.h"
+#include "cs2d_hudmen.h"
 
 #define CS2D_CONSOLE_MAX_LINES     1024 /* Ring buffer: the oldest line is dropped when full */
 #define CS2D_CONSOLE_LINE_LEN      192
@@ -78,6 +79,7 @@ struct cs2d_client {
     int             build_tx;          /* DAT_140ddf470 / DAT_140ddf46c: tile under the cursor */
     int             build_ty;
     float           build_rot;         /* DAT_140ddf468: player rotation when the menu opened */
+    cs2d_buymenu_t  buy;               /* Buy menu (Tgui_hudmen menus 20..26, "buy" / "buyequip" commands) */
 
     /* Respawn game modes: mp_respawndelay ([252,6], 0x140a14e40[1]) and the local player's death time
      * (Tpl +0x350 timer) for "Respawn possible in $1 sec" */

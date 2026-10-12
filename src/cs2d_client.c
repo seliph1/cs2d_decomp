@@ -1531,6 +1531,8 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         }
     } else if (cs2d_scene_game_inv_cmd(client, cmd)) {
         /* invnext / invprev / slot0..slot10 (weapon selection HUD) */
+    } else if (cs2d_scene_game_buy_cmd(client, cmd)) {
+        /* buy / buyequip / buyammo1 / buyammo2 (Buy menu) */
     } else if (_stricmp(cmd, "bind") == 0) {
         /* bind "<key>" "<command>" like sys/controls.cfg; without a command it shows the binding */
         char key[64], bcmd[CS2D_BIND_CMD_LEN];

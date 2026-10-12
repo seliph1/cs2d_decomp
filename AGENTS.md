@@ -66,6 +66,7 @@ Our client must be able to play on the original dedicated server without the ser
 | `src/cs2d_editor.c` | Map editor model: brush / modifier byte, painting, tile properties and `.inf`, entity tables |
 | `src/cs2d_transfer.c` | Join-time file transfer `[252,50]`: file list checks, requests, blocks, zlib, saving, `dls.cache` |
 | `src/cs2d_render.c` | OpenGL 1.x immediate mode, GDI+ image loading, shadows, HUD, text |
+| `src/cs2d_hudmen.c` | Hud menus (`Tgui_hudmen`): window, `button` / `fbutton` / `box`, and the Buy menu (pages, weapon info, previews) |
 | `src/cs2d_ui.c` | Immediate-mode UI library (textbox, dropdown, numberbox, shared scrolling `cs2d_ui_scroll_*` / `cs2d_ui_scrollbar`) |
 | `tests/test_cs2d.c` | Regression suite (`test_cs2d.exe`) |
 | `tools/agent/` | Capture and reverse-engineering scripts (see `docs/agents/TOOLS.md`) |
