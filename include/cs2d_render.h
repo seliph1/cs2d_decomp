@@ -54,6 +54,19 @@ typedef struct {
     cs2d_texture_t            tex_blueflag;      /* gfx/weapons/blueflag.bmp */
     cs2d_texture_t            tex_noflag;        /* gfx/weapons/noflag.bmp */
 
+    /* Projectile Sprites (gfx/weapons) */
+    cs2d_texture_t            tex_proj_rocket;
+    cs2d_texture_t            tex_proj_rpg;
+    cs2d_texture_t            tex_proj_grenade;
+    cs2d_texture_t            tex_proj_molotov;
+    cs2d_texture_t            tex_proj_flare;
+    cs2d_texture_t            tex_proj_gutbomb;
+    cs2d_texture_t            tex_proj_airstrike;
+    cs2d_texture_t            tex_proj_flashbang;
+    cs2d_texture_t            tex_proj_smokegrenade;
+    cs2d_texture_t            tex_proj_gasgrenade;
+    cs2d_texture_t            tex_proj_snowball;
+
     /* Map & Entity Sprites */
     cs2d_texture_t            tex_shadowmap;     /* gfx/shadowmap.bmp (64x288 -> 18 frames of 32x32, maskMode=3) */
     cs2d_texture_t            tex_decals;        /* gfx/decals.bmp (576x128 -> 72 frames of 32x32, maskMode=3) */
@@ -130,6 +143,7 @@ bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank);
 void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank);
 cs2d_gfx_bank_t *cs2d_render_get_gfx_bank(void);
 const cs2d_texture_t *cs2d_gfx_get_sprite(cs2d_gfx_bank_t *bank, const char *rel_path, bool black_mask);
+const cs2d_texture_t *cs2d_render_get_projectile_texture(uint8_t type);
 
 /* Texture loading (supports CS2D maskMode 0=opaque, 1=black key, 2=magenta/alpha, 3=luminance-to-alpha, plus padded cell atlases) */
 bool cs2d_texture_load_grid(cs2d_texture_t *tex, const char *filepath, int mask_mode, int cell_w, int cell_h);

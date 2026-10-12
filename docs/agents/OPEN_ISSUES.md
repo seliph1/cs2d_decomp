@@ -108,7 +108,7 @@ the same one.
     for movement, kill rewards and `mp_building_limit` / `mp_building_price` overrides.
   - `g_prop_class[cellprop] == 1` is approximated by our collision 0; the team-game table `0x140a015d0` is assumed
     (every mode but Deathmatch) and the respawn-mode table `0x1409f57b8` as modes 1..4.
-  - `[252,7,3]` items are read, but `[252,7,6]` projectiles, `[252,7,7]` images and `[252,7,8]` tweens are not.
+  - `[252,7,3]` items and `[252,7,6]` ground projectiles are read, but `[252,7,7]` images and `[252,7,8]` tweens are not.
 - **CTF:** captures, returns and scores (`[64]` setteamscores, `[226]` messages) are not shown on the HUD; the flag
   drawing follows the code but was not compared with a screenshot of the original.
 

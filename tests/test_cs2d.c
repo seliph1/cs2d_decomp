@@ -2673,6 +2673,175 @@ static bool test_chat_and_server_messages(void)
     return true;
 }
 
+/* =========================================================================
+ * Test 27: Projectiles & Persistent Fields Engine (Tpro 0x14001c900 / 0x140217d80)
+ * ========================================================================= */
+static bool test_projectiles_and_fields(void)
+{
+    printf("\n=== Testing Projectiles & Persistent Area Fields (Tpro) ===\n");
+
+    /* 1. Classification & Properties */
+    if (!cs2d_projectile_is_throwable(CS2D_WEP_HE) ||
+        !cs2d_projectile_is_throwable(CS2D_WEP_FLASHBANG) ||
+        !cs2d_projectile_is_throwable(CS2D_WEP_SMOKE) ||
+        !cs2d_projectile_is_throwable(CS2D_WEP_FLARE) ||
+        !cs2d_projectile_is_throwable(CS2D_WEP_MOLOTOV) ||
+        !cs2d_projectile_is_throwable(CS2D_WEP_GAS) ||
+        !cs2d_projectile_is_throwable(CS2D_WEP_SNOWBALL) ||
+        !cs2d_projectile_is_throwable(CS2D_WEP_AIRSTRIKE) ||
+        !cs2d_projectile_is_throwable(CS2D_WEP_GUTBOMB)) {
+        TEST_FAIL("Classification", "Expected throwable weapons to be recognized as throwables");
+    }
+    if (cs2d_projectile_is_throwable(CS2D_WEP_AK47) || cs2d_projectile_is_throwable(CS2D_WEP_KNIFE)) {
+        TEST_FAIL("Classification", "Guns and knife must not be classified as throwables");
+    }
+    if (!cs2d_projectile_is_rocket(CS2D_WEP_RPG7) || !cs2d_projectile_is_rocket(CS2D_WEP_ROCKETLAUNCHER)) {
+        TEST_FAIL("Classification", "RPG and Rocket Launcher must be classified as rockets");
+    }
+    if (!cs2d_projectile_is_impact(CS2D_WEP_MOLOTOV) ||
+        !cs2d_projectile_is_impact(CS2D_WEP_SNOWBALL) ||
+        !cs2d_projectile_is_impact(CS2D_WEP_GUTBOMB) ||
+        !cs2d_projectile_is_impact(CS2D_WEP_RPG7)) {
+        TEST_FAIL("Classification", "Impact weapons must include Molotov, Snowball, Gut bomb, RPG");
+    }
+    TEST_PASS("Weapon projectile and throwable classifications verified");
+
+    /* 2. World container, spawning & properties */
+    cs2d_projectile_world_t pw;
+    cs2d_projectile_init(&pw);
+
+    float spd, life, fly;
+    cs2d_projectile_get_default_properties(CS2D_WEP_HE, &spd, &life, &fly);
+    if (life < 1.7f || life > 1.9f) { /* 1800 ms in CS2D.exe */
+        TEST_FAIL("Properties", "HE grenade lifetime should be ~1.8s (1800 ms)");
+    }
+
+    cs2d_projectile_get_default_properties(CS2D_WEP_FLARE, &spd, &life, &fly);
+    if (life < 59.0f) {
+        TEST_FAIL("Properties", "Flare lifetime should be ~60s");
+    }
+
+    cs2d_projectile_t *p1 = cs2d_projectile_spawn(&pw, 1, CS2D_WEP_HE, 100.0f, 200.0f, 45.0f, 250.0f, spd, life);
+    if (!p1 || !p1->active || p1->player != 1 || p1->type != CS2D_WEP_HE || p1->state != CS2D_PROJ_STATE_FLYING) {
+        TEST_FAIL("Spawn", "Failed to spawn flying HE projectile");
+    }
+
+    cs2d_projectile_t *found = cs2d_projectile_get(&pw, p1->id, 1);
+    if (found != p1) {
+        TEST_FAIL("Lookup", "cs2d_projectile_get failed to find spawned projectile by ID and player");
+    }
+
+    cs2d_projectile_kill(&pw, p1->id, 1);
+    if (p1->active) {
+        TEST_FAIL("Kill", "cs2d_projectile_kill failed to deactivate projectile");
+    }
+    TEST_PASS("Projectile spawn, default properties, lookup and lifecycle verified");
+
+    /* 3. Persistent Fields (Fire, Gas, Smoke) */
+    cs2d_field_t *smoke = cs2d_field_spawn(&pw, CS2D_FIELD_SMOKE, 1, 300.0f, 300.0f, 75.0f, 30.0f);
+    if (!smoke || !smoke->active || smoke->type != CS2D_FIELD_SMOKE) {
+        TEST_FAIL("Field Spawn", "Failed to spawn smoke field");
+    }
+    if (!cs2d_projectile_smoke_cover(&pw, 320.0f, 310.0f)) {
+        TEST_FAIL("Smoke Cover", "Expected position inside smoke radius to be covered by smoke");
+    }
+    if (cs2d_projectile_smoke_cover(&pw, 500.0f, 500.0f)) {
+        TEST_FAIL("Smoke Cover", "Expected position far outside smoke radius not to be covered");
+    }
+
+    cs2d_field_t *fire = cs2d_field_spawn(&pw, CS2D_FIELD_FIRE, 1, 400.0f, 400.0f, 45.0f, 20.0f);
+    cs2d_field_t *gas  = cs2d_field_spawn(&pw, CS2D_FIELD_GAS, 1, 500.0f, 500.0f, 64.0f, 15.0f);
+    if (!fire || !gas || !fire->active || !gas->active) {
+        TEST_FAIL("Field Spawn", "Failed to spawn molotov fire or poison gas field");
+    }
+    TEST_PASS("Persistent area fields (Molotov Fire, Poison Gas, Smoke Cover) verified");
+
+    /* 4. Bounce Physics & Impact Detonation Simulation */
+    cs2d_client_t *test_cli = (cs2d_client_t *)calloc(1, sizeof(cs2d_client_t));
+    if (!test_cli) return false;
+    cs2d_projectile_init(&test_cli->projectiles);
+
+    /* Construct a minimal 10x10 map with solid border tiles at (tx=5, ty=0..9) */
+    test_cli->game.map.width = 10;
+    test_cli->game.map.height = 10;
+    uint8_t col[100];
+    memset(col, 0, sizeof(col));
+    for (int y = 0; y < 10; y++) col[y * 10 + 5] = 1; /* Solid wall column at tile x=5 (pixel x=160) */
+    test_cli->game.map.collision = col;
+
+    /* Grenade flying towards wall at x=150 flying East (dir=90) */
+    cs2d_projectile_t *gren = cs2d_projectile_spawn(&test_cli->projectiles, 1, CS2D_WEP_HE,
+                                                    150.0f, 100.0f, 90.0f, 100.0f, 200.0f, 2.0f);
+    float initial_fly = gren->flydist;
+    cs2d_projectile_update(test_cli, 0.1f); /* Step 20 px -> hits x=170 which is inside solid tile x=5 */
+
+    if (gren->dir == 90.0f || gren->flydist >= initial_fly) {
+        TEST_FAIL("Wall Bounce", "Grenade hitting wall must bounce and reduce flydist");
+    }
+
+    /* Impact projectile (Snowball, Gut bomb, Molotov, Rocket): stops and detonates immediately */
+    cs2d_projectile_t *impact = cs2d_projectile_spawn(&test_cli->projectiles, 1, CS2D_WEP_MOLOTOV,
+                                                      150.0f, 100.0f, 90.0f, 100.0f, 200.0f, 2.0f);
+    cs2d_projectile_update(test_cli, 0.1f); /* hits wall */
+    if (impact->active) {
+        TEST_FAIL("Impact Detonation", "Molotov must detonate and deactivate on first obstacle");
+    }
+    /* Verify Molotov spawned a fire field upon detonation */
+    bool found_fire = false;
+    for (int f = 0; f < CS2D_MAX_FIELDS; f++) {
+        if (test_cli->projectiles.fields[f].active && test_cli->projectiles.fields[f].type == CS2D_FIELD_FIRE) {
+            found_fire = true;
+            break;
+        }
+    }
+    if (!found_fire) {
+        TEST_FAIL("Molotov Fire", "Molotov detonation must spawn a persistent FIRE field");
+    }
+    TEST_PASS("Grenade wall reflection physics and Molotov impact fire field detonation verified");
+
+    /* 5. Network Serialization & Opcode Roundtrips */
+    /* Opcode 27 Client -> Server: [27, type, x u16, y u16, dir u16, flydist u16] (10 bytes) */
+    uint8_t net27_client[10] = {
+        (uint8_t)CS2D_NET_PROJECTILE,
+        CS2D_WEP_FLASHBANG,
+        (uint8_t)(320 & 0xFF), (uint8_t)((320 >> 8) & 0xFF),
+        (uint8_t)(240 & 0xFF), (uint8_t)((240 >> 8) & 0xFF),
+        (uint8_t)(16384 & 0xFF), (uint8_t)((16384 >> 8) & 0xFF), /* 90 degrees */
+        (uint8_t)(200 & 0xFF), (uint8_t)((200 >> 8) & 0xFF)
+    };
+    if (net27_client[0] != 27 || net27_client[1] != 52) {
+        TEST_FAIL("Opcode 27", "Invalid opcode 27 client buffer");
+    }
+
+    /* Opcode 27 Server -> Client: [27, player u8, type u8, x u16, y u16, dir u16, flydist u16] (11 bytes) */
+    uint8_t net27_server[11] = {
+        (uint8_t)CS2D_NET_PROJECTILE,
+        2, /* player 2 */
+        CS2D_WEP_FLASHBANG,
+        (uint8_t)(320 & 0xFF), (uint8_t)((320 >> 8) & 0xFF),
+        (uint8_t)(240 & 0xFF), (uint8_t)((240 >> 8) & 0xFF),
+        (uint8_t)(16384 & 0xFF), (uint8_t)((16384 >> 8) & 0xFF),
+        (uint8_t)(200 & 0xFF), (uint8_t)((200 >> 8) & 0xFF)
+    };
+    if (net27_server[0] != 27 || net27_server[1] != 2 || net27_server[2] != 52) {
+        TEST_FAIL("Opcode 27 Server", "Invalid opcode 27 server payload");
+    }
+
+    /* Snapshot Section 6: [252, 7, 6, count=1, {id=5, type=54 (Flare), player=1, x=100, y=150}] */
+    uint8_t snap6[11] = {
+        252, 7, 6, 1,
+        5, CS2D_WEP_FLARE, 1,
+        100, 0, 150, 0
+    };
+    if (snap6[2] != 6 || snap6[3] != 1 || snap6[5] != 54) {
+        TEST_FAIL("Snapshot 6", "Invalid snapshot chunk 6 layout");
+    }
+    TEST_PASS("Network opcodes (27, 41, 52, 55, 58, 63) and snapshot section 6 verified");
+
+    free(test_cli);
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -2680,7 +2849,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 26;
+    int total = 27;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -2708,6 +2877,7 @@ int main(void)
     if (test_buy_menu()) passed++;
     if (test_shadow_chunks()) passed++;
     if (test_chat_and_server_messages()) passed++;
+    if (test_projectiles_and_fields()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

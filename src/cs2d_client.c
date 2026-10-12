@@ -330,6 +330,7 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
     client->xfer.accept   = client->config.download;
     client->xfer.log      = xfer_console_log;
     client->xfer.log_user = client;
+    cs2d_projectile_init(&client->projectiles);
 
     client->mouse_screen_x = (float)client->config.window_width * 0.5f + 110.0f;
     client->mouse_screen_y = (float)client->config.window_height * 0.5f - 10.0f;
@@ -1164,6 +1165,25 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         }
                         /* Joining shows the map as it is: no break effects for what broke earlier */
                         client->ents.event_count = 0;
+                    } else if (snap_type == 6) {
+                        /* Ground projectiles (FUN_1402ce7c0 case 6): count u8, then {id u8, typ u8, player u8, x u16, y u16} (7 bytes) */
+                        if (pos < recvd) {
+                            int count = buffer[pos++];
+                            for (int k = 0; k < count && pos + 7 <= recvd; k++, pos += 7) {
+                                uint8_t id = buffer[pos];
+                                uint8_t typ = buffer[pos + 1];
+                                uint8_t player = buffer[pos + 2];
+                                uint16_t rx = (uint16_t)(buffer[pos + 3] | (buffer[pos + 4] << 8));
+                                uint16_t ry = (uint16_t)(buffer[pos + 5] | (buffer[pos + 6] << 8));
+                                float speed, lifetime, def_fly;
+                                cs2d_projectile_get_default_properties(typ, &speed, &lifetime, &def_fly);
+                                cs2d_projectile_t *p = cs2d_projectile_spawn_with_id(&client->projectiles, id, player, typ,
+                                                                                     (float)rx, (float)ry, 0.0f, 0.0f, 0.0f, lifetime);
+                                if (p) {
+                                    p->state = CS2D_PROJ_STATE_GROUND;
+                                }
+                            }
+                        }
                     } else if (snap_type == 200) {
                         client->join_stage     = 5;
                         client->connected      = true;
@@ -1577,6 +1597,83 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 if (pid > 0 && pid <= CS2D_MAX_PLAYERS && pid != client->local_player_id) {
                     cs2d_scene_game_remote_shot(client, &client->game.players[pid]);
                 }
+                pos += 3;
+            } else if (opcode == CS2D_NET_PROJECTILE) {
+                /* Server -> Client: [27, player u8, type u8, x u16, y u16, dir u16, flydist u16] (11 bytes, FUN_1402d0000 0x1402d3340) */
+                if (pos + 11 > recvd) break;
+                uint8_t player = buffer[pos + 1];
+                uint8_t type = buffer[pos + 2];
+                uint16_t rx = (uint16_t)(buffer[pos + 3] | (buffer[pos + 4] << 8));
+                uint16_t ry = (uint16_t)(buffer[pos + 5] | (buffer[pos + 6] << 8));
+                uint16_t rdir = (uint16_t)(buffer[pos + 7] | (buffer[pos + 8] << 8));
+                uint16_t flydist = (uint16_t)(buffer[pos + 9] | (buffer[pos + 10] << 8));
+                float dir_deg = (float)rdir * (360.0f / 65536.0f);
+                float speed, lifetime, def_fly;
+                cs2d_projectile_get_default_properties(type, &speed, &lifetime, &def_fly);
+                cs2d_projectile_spawn(&client->projectiles, player, type, (float)rx, (float)ry, dir_deg, (float)flydist, speed, lifetime);
+                pos += 11;
+            } else if (opcode == CS2D_NET_SPAWN_PROJECTILE) {
+                /* Server -> Client: [58, player u8, type u8, id u8, x_bias u16, y_bias u16, flydist u16, dir u16] (12 bytes, FUN_1400a91d0) */
+                if (pos + 12 > recvd) break;
+                uint8_t player = buffer[pos + 1];
+                uint8_t type = buffer[pos + 2];
+                uint8_t id = buffer[pos + 3];
+                uint16_t rx = (uint16_t)(buffer[pos + 4] | (buffer[pos + 5] << 8));
+                uint16_t ry = (uint16_t)(buffer[pos + 6] | (buffer[pos + 7] << 8));
+                uint16_t flydist = (uint16_t)(buffer[pos + 8] | (buffer[pos + 9] << 8));
+                uint16_t rdir = (uint16_t)(buffer[pos + 10] | (buffer[pos + 11] << 8));
+                float x = (float)((int)rx - 0x8000);
+                float y = (float)((int)ry - 0x8000);
+                float dir_deg = (float)rdir * (360.0f / 65536.0f);
+                float speed, lifetime, def_fly;
+                cs2d_projectile_get_default_properties(type, &speed, &lifetime, &def_fly);
+                cs2d_projectile_spawn_with_id(&client->projectiles, id, player, type, x, y, dir_deg, (float)flydist, speed, lifetime);
+                pos += 12;
+            } else if (opcode == CS2D_NET_SPAWN_GND_PROJ) {
+                /* Server -> Client: [52, player u8, type u8, id u16, x u16, y u16, rot u32] (13 bytes, FUN_140060ee0) */
+                if (pos + 13 > recvd) break;
+                uint8_t player = buffer[pos + 1];
+                uint8_t type = buffer[pos + 2];
+                uint16_t id = (uint16_t)(buffer[pos + 3] | (buffer[pos + 4] << 8));
+                uint16_t rx = (uint16_t)(buffer[pos + 5] | (buffer[pos + 6] << 8));
+                uint16_t ry = (uint16_t)(buffer[pos + 7] | (buffer[pos + 8] << 8));
+                uint32_t rot;
+                memcpy(&rot, buffer + pos + 9, 4);
+                float speed, lifetime, def_fly;
+                cs2d_projectile_get_default_properties(type, &speed, &lifetime, &def_fly);
+                cs2d_projectile_t *p = cs2d_projectile_spawn_with_id(&client->projectiles, (uint8_t)id, player, type,
+                                                                     (float)rx, (float)ry, 0.0f, 0.0f, 0.0f, lifetime);
+                if (p) {
+                    p->state = CS2D_PROJ_STATE_GROUND;
+                    p->rot = (float)rot;
+                }
+                pos += 13;
+            } else if (opcode == CS2D_NET_MOVE_PROJECTILE) {
+                /* Server -> Client: [63, id u8, player u8, x_bias u16, y_bias u16] (7 bytes, FUN_14007dce0) */
+                if (pos + 7 > recvd) break;
+                uint8_t id = buffer[pos + 1];
+                uint8_t player = buffer[pos + 2];
+                uint16_t rx = (uint16_t)(buffer[pos + 3] | (buffer[pos + 4] << 8));
+                uint16_t ry = (uint16_t)(buffer[pos + 5] | (buffer[pos + 6] << 8));
+                cs2d_projectile_t *p = cs2d_projectile_get(&client->projectiles, id, player);
+                if (p) {
+                    p->x = (float)((int)rx - 0x8000);
+                    p->y = (float)((int)ry - 0x8000);
+                }
+                pos += 7;
+            } else if (opcode == CS2D_NET_KILL_PROJECTILE) {
+                /* Server -> Client: [41, id u8, player u8] (3 bytes, FUN_1402daf80) */
+                if (pos + 3 > recvd) break;
+                uint8_t id = buffer[pos + 1];
+                uint8_t player = buffer[pos + 2];
+                cs2d_projectile_remove(client, id, player);
+                pos += 3;
+            } else if (opcode == CS2D_NET_KILL_PROJECTILE_SILENT) {
+                /* Server -> Client: [55, id u8, player u8] (3 bytes, FUN_1402dd7a0) */
+                if (pos + 3 > recvd) break;
+                uint8_t id = buffer[pos + 1];
+                uint8_t player = buffer[pos + 2];
+                cs2d_projectile_kill(&client->projectiles, id, player);
                 pos += 3;
             } else if (opcode == CS2D_NET_DYNOBJ_REMOVE || opcode == CS2D_NET_DYNOBJ_MODE ||
                        opcode == CS2D_NET_DYNOBJ_HEALTH || opcode == CS2D_NET_DO_SPAWN) {

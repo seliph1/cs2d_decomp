@@ -595,6 +595,60 @@ static void fire_shot(cs2d_client_t *client, const cs2d_player_t *pl)
     if (!wep) return;
     bool melee = (wep->slot == CS2D_SLOT_MELEE || pl->current_weapon == CS2D_WEP_WRENCH);
 
+    /* Projectile weapons: throwables (grenades, flare, molotov, gutbomb, etc.) and rockets */
+    if (cs2d_projectile_is_throwable(pl->current_weapon) || cs2d_projectile_is_rocket(pl->current_weapon)) {
+        float world_mx = client->mouse_screen_x + client->cam_x;
+        float world_my = client->mouse_screen_y + client->cam_y;
+        float dx = world_mx - pl->pos.x;
+        float dy = world_my - pl->pos.y;
+        float dist = sqrtf(dx * dx + dy * dy);
+        if (dist > 385.0f && cs2d_projectile_is_throwable(pl->current_weapon)) {
+            dist = 385.0f; /* 0x181 = 385 px max throw distance in CS2D.exe FUN_140217d80 */
+        }
+        float dir = pl->angle;
+        float def_speed, def_lifetime, def_flydist;
+        cs2d_projectile_get_default_properties(pl->current_weapon, &def_speed, &def_lifetime, &def_flydist);
+        float flydist = cs2d_projectile_is_throwable(pl->current_weapon) ? dist : def_flydist;
+
+        cs2d_projectile_spawn(&client->projectiles, pl->id, pl->current_weapon,
+                              pl->pos.x, pl->pos.y, dir, flydist, def_speed, def_lifetime);
+
+        if (client->connected && client->join_stage == 5) {
+            /* Client -> Server: [27, type, x u16, y u16, dir u16, flydist u16] (10 bytes) */
+            uint16_t x_u16 = (uint16_t)(pl->pos.x < 0.0f ? 0 : (pl->pos.x > 65535.0f ? 65535 : (int)pl->pos.x));
+            uint16_t y_u16 = (uint16_t)(pl->pos.y < 0.0f ? 0 : (pl->pos.y > 65535.0f ? 65535 : (int)pl->pos.y));
+            float norm_dir = fmodf(fmodf(dir, 360.0f) + 360.0f, 360.0f);
+            uint16_t dir_u16 = (uint16_t)(norm_dir * (65536.0f / 360.0f));
+            uint16_t fly_u16 = (uint16_t)(flydist < 0.0f ? 0 : (flydist > 65535.0f ? 65535 : (int)flydist));
+            uint8_t pkt[10];
+            pkt[0] = (uint8_t)CS2D_NET_PROJECTILE;
+            pkt[1] = pl->current_weapon;
+            pkt[2] = (uint8_t)(x_u16 & 0xFF);
+            pkt[3] = (uint8_t)((x_u16 >> 8) & 0xFF);
+            pkt[4] = (uint8_t)(y_u16 & 0xFF);
+            pkt[5] = (uint8_t)((y_u16 >> 8) & 0xFF);
+            pkt[6] = (uint8_t)(dir_u16 & 0xFF);
+            pkt[7] = (uint8_t)((dir_u16 >> 8) & 0xFF);
+            pkt[8] = (uint8_t)(fly_u16 & 0xFF);
+            pkt[9] = (uint8_t)((fly_u16 >> 8) & 0xFF);
+            cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+        }
+
+        /* Throwables disappear from inventory after throw; only Flashbang starts with 2 charges */
+        if (cs2d_projectile_is_throwable(pl->current_weapon)) {
+            cs2d_player_t *mutable_pl = &client->game.players[client->local_player_id];
+            if (pl->current_weapon == CS2D_WEP_FLASHBANG && mutable_pl->reserve_ammo[CS2D_WEP_FLASHBANG] > 0) {
+                mutable_pl->clip_ammo[CS2D_WEP_FLASHBANG] = 1;
+                mutable_pl->reserve_ammo[CS2D_WEP_FLASHBANG]--;
+            } else {
+                cs2d_player_strip_weapon(mutable_pl, pl->current_weapon);
+            }
+            return;
+        }
+
+        /* For rockets (ammo of rocket launcher / RPG), continue to gun recoil and tracer below */
+    }
+
     if (client->connected && client->join_stage == 5) {
         uint8_t seed = 0;
         if (!melee) {
@@ -636,6 +690,13 @@ void cs2d_scene_game_remote_shot(cs2d_client_t *client, cs2d_player_t *pl)
     const cs2d_weapon_def_t *wep = cs2d_weapon_get(pl->current_weapon);
     if (!wep) return;
     bool melee = (wep->slot == CS2D_SLOT_MELEE || pl->current_weapon == CS2D_WEP_WRENCH);
+
+    if (cs2d_projectile_is_rocket(pl->current_weapon)) {
+        float def_speed, def_lifetime, def_flydist;
+        cs2d_projectile_get_default_properties(pl->current_weapon, &def_speed, &def_lifetime, &def_flydist);
+        cs2d_projectile_spawn(&client->projectiles, pl->id, pl->current_weapon,
+                              pl->pos.x, pl->pos.y, pl->angle, def_flydist, def_speed, def_lifetime);
+    }
 
     if (wep->visual_recoil > 0) {
         pl->recoil = (float)wep->visual_recoil + ((float)(rand() & 0x7FFF) / 32768.0f);
@@ -798,6 +859,7 @@ static void game_leave(cs2d_client_t *client)
 
     cs2d_game_free(&client->game);
     memset(&client->game, 0, sizeof(client->game));
+    cs2d_projectile_clear(&client->projectiles);
     client->pending_map[0] = '\0';
     client->chat_open = false;
     client->chat_just_opened = false;
@@ -915,6 +977,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
             cs2d_fx_clear(&client->fx);
             cs2d_dynobj_clear(&client->dynobj);
             cs2d_dynobj_spawn_map_buildings(&client->dynobj);
+            cs2d_projectile_clear(&client->projectiles);
         }
         cs2d_ents_update(&client->ents, delta_time);
         int tx = (int)(pl->pos.x / CS2D_TILE_SIZE);
@@ -935,6 +998,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
     drain_entity_events(client);
     update_dynobjs(client, delta_time);
     cs2d_fx_update(&client->fx, delta_time);
+    cs2d_projectile_update(client, delta_time);
 
     /* Camera stays centered on the player like CS2D.exe; a lagging camera would also turn the aim
      * every frame while walking (and send a rotation packet each time) with the mouse at rest.
@@ -1404,6 +1468,58 @@ static void render_ground_items(const cs2d_client_t *client)
     }
 }
 
+/* Projectiles resting on ground (glist in CS2D.exe) and ambient fields (fire, gas, smoke) */
+static void render_projectiles_ground(const cs2d_client_t *client)
+{
+    float cx = roundf(client->cam_x), cy = roundf(client->cam_y);
+
+    /* Render persistent fields first */
+    for (int i = 0; i < CS2D_MAX_FIELDS; i++) {
+        const cs2d_field_t *f = &client->projectiles.fields[i];
+        if (!f->active) continue;
+        float fx = f->x - cx, fy = f->y - cy;
+        if (f->type == CS2D_FIELD_FIRE) {
+            cs2d_render_circle(fx, fy, f->radius, 1.0f, 0.35f, 0.05f, 0.25f, true);
+        } else if (f->type == CS2D_FIELD_GAS) {
+            cs2d_render_circle(fx, fy, f->radius, 0.2f, 0.85f, 0.1f, 0.25f, true);
+        } else if (f->type == CS2D_FIELD_SMOKE) {
+            cs2d_render_circle(fx, fy, f->radius, 0.75f, 0.75f, 0.75f, 0.40f, true);
+        }
+    }
+
+    /* Render ground projectiles */
+    for (int i = 0; i < CS2D_MAX_PROJECTILES; i++) {
+        const cs2d_projectile_t *p = &client->projectiles.projectiles[i];
+        if (!p->active || p->state != CS2D_PROJ_STATE_GROUND) continue;
+        const cs2d_texture_t *tex = cs2d_render_get_projectile_texture(p->type);
+        if (!tex || !tex->id) continue;
+        float w = (tex->width > 64) ? (float)(tex->width / 2) : (float)tex->width;
+        float h = (tex->height > 32) ? (float)(tex->height / 2) : (float)tex->height;
+        if (w < 8.0f) w = 16.0f;
+        if (h < 8.0f) h = 16.0f;
+        cs2d_render_sprite(tex, p->x - cx, p->y - cy, w, h, p->rot, 1.0f, 1.0f, 1.0f, 1.0f);
+    }
+}
+
+/* Flying projectiles (list in CS2D.exe) */
+static void render_projectiles_flying(const cs2d_client_t *client)
+{
+    float cx = roundf(client->cam_x), cy = roundf(client->cam_y);
+
+    for (int i = 0; i < CS2D_MAX_PROJECTILES; i++) {
+        const cs2d_projectile_t *p = &client->projectiles.projectiles[i];
+        if (!p->active || p->state != CS2D_PROJ_STATE_FLYING) continue;
+        const cs2d_texture_t *tex = cs2d_render_get_projectile_texture(p->type);
+        if (!tex || !tex->id) continue;
+        float w = (tex->width > 64) ? (float)(tex->width / 2) : (float)tex->width;
+        float h = (tex->height > 32) ? (float)(tex->height / 2) : (float)tex->height;
+        if (w < 8.0f) w = 16.0f;
+        if (h < 8.0f) h = 16.0f;
+        float rot = cs2d_projectile_is_rocket(p->type) ? p->dir : p->rot;
+        cs2d_render_sprite(tex, p->x - cx, p->y - cy, w, h, rot, 1.0f, 1.0f, 1.0f, 1.0f);
+    }
+}
+
 /*
  * FUN_14024fb10: text centered on (x, y) with a black shadow at +1, over a black box at alpha 0.4 that has
  * gfx/gui_c.bmp corners (8 px at font scale 1), 8 px wider than the text (width rounded up to even) and
@@ -1539,6 +1655,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     int  me = client->local_player_id;
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_GROUND, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
     render_ground_items(client);
+    render_projectiles_ground(client);
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_OBSTACLE, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
 
     /* 2. Players (Tpl.draw: shadow, legs, torso frame, armor/helmet, held weapon, objective icon) */
@@ -1558,6 +1675,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
             render_carried_flag(p, client->cam_x, client->cam_y);
         }
     }
+    render_projectiles_flying(client);
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_WALL, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
 
     /* Breakable debris and explosions */

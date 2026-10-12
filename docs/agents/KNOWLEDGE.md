@@ -44,6 +44,7 @@ When you confirm or refute something, update this file. All multi-byte integers 
   - `[252,4,status]` → `[252,5,map,sha]`
   - `[252,6, map_name(RStr), server_name(RStr), …]`, then `[252,7,section,…]` snapshot chunks, ending with `[252,7,200,…]`.
 - **Snapshot section 4:** the non-zero entity states, `{x u16, y u16, state u8}`.
+- **Snapshot section 6 (ground projectiles, REA `0x1402c0000` 0x1402d1850):** `[252,7,6,count]`, then per ground projectile `{id u8, type u8, player u8, x u16, y u16}` (7 bytes each).
 - **Client data (proxy, Lua):** after the snapshot the original sends
   `[252,10, 0x1c,0x02, size u16 (=4+zlib len), raw size u32 (=1024), zlib(32x32 spray)]`.
   **The server runs its `join` (Lua hook, player list, announcement to the others) only after this.**
@@ -121,6 +122,7 @@ modded C4 dedicated (`tools/agent/capture_transfer.sh`, map fun_roleplay). Code:
 | Buy | `[23][type][0]` | |
 | Use | `[26][mode u8][target i32][x u16][y u16]` | Mode 100 = Trigger_Use with its tile; target ray at 0, 16 and 32 px along the aim |
 | Team | `[20][team][look]` | `team`: 0 Spectator (`look = 5`), 1 T, 2 CT; `look`: `0..3` class skin or `4` Auto-Select skin |
+| Projectile | `[27][type][x u16][y u16][dir u16 = deg·65536/360][flydist u16]` | Sent on throw/fire; flydist clamped to 385 px (0x181) for throwables |
 | Spectate | `[67][player]` | Reliable. Followed player, 0 = free look; only sent while dead or Spectator |
 | Spec position | `[32][x+32768 u16][y+32768 u16]` | Unreliable, once per second while dead or Spectator: the camera center |
 
@@ -139,10 +141,16 @@ modded C4 dedicated (`tools/agent/capture_transfer.sh`, map fun_roleplay). Code:
 | 23 | `[23,pid,type,money u16,u8]` | Buy result; type 250 = refused (prison has no buy zone) |
 | 24 | `[24,pid,type,clip u16,reserve u16,u8,item id u16,tile x u16,tile y u16,u8]` | Drop; the item lies on the player's tile |
 | 25 | `[25,pid,item id u16,type,clip u16,reserve u16,u8]` | Collect |
+| 27 | `[27,pid,type,x u16,y u16,dir u16,flydist u16]` | Projectile broadcast (11 bytes, REA `0x1402d3340`) |
 | 31 | `[31,x u16,y u16,state]` | Entity event |
 | 33 | `[33,type,item id u16,tile x u16,tile y u16,clip u16,reserve u16]` | Spawn item |
+| 41 | `[41,id,pid]` | Kill/detonate projectile (3 bytes, REA `0x1402daf80`) |
 | 42 | `[42,pid,field,value u16]` | Playerdata. Fields: 0 health, 2 money, 3 armor, 5 weapon given, 6 weapon taken, 8 max health |
+| 52 | `[52,pid,type,id u16,x u16,y u16,rot u32]` | Spawn ground projectile (13 bytes, REA `0x140060ee0`) |
+| 55 | `[55,id,pid]` | Silent kill projectile (3 bytes, REA `0x1402dd7a0`) |
+| 58 | `[58,pid,type,id,x+32768 u16,y+32768 u16,flydist u16,dir u16]` | Spawn flying projectile (12 bytes, REA `0x1400a91d0`) |
 | 61 | `[61,pid,type,clip u16,reserve u16]` | Set ammo |
+| 63 | `[63,id,pid,x+32768 u16,y+32768 u16]` | Move projectile (7 bytes, REA `0x14007dce0`) |
 | 226 | `[226,1,u16,len u16,text,u8]` | Message |
 | 240 | `[240,pid,mode,len u8,UTF-16LE (2×len bytes)]` | Chat & Server Info (`mode == 50`: `"1"` clear serverinfo, `"2"` open `"<server_name> - Info"` window; `mode == 51`: append UTF-16LE serverinfo line with optional `U+00A9` + 9 digits `RRRGGGBBB` color tag or `U+00BB` gold link) |
 | 229 / 247 / 249 | | Pings; reply to 249 with the same 5 bytes |
@@ -628,3 +636,33 @@ chat prompt `FUN_14029f7b0`, opcode 240 handler `FUN_1402c8100` (`recv 240 msg`)
   changes (DynWall toggles or player buildings change), fast delta tracking marks only the affected localized chunks dirty,
   avoiding full-map software rasterization freezes and dynamic heap reallocations. Visible dirty chunks are lazily generated
   and updated into GPU textures.
+
+## Projectiles and Persistent Fields (Tpro, Tfield)
+
+Source: REA `CS2D.exe` class `Tpro` (`0x14001c900`, `add 0x1400a8b30`, `addground 0x140030120`, `spawnprojectile 0x1400a9190`, `spawngroundprojectile 0x140060ee0`, `remove 0x1402daf80`, `kill 0x1402dd7a0`), `Tpl.attack / throw` (`0x140217d80`). Code: `src/cs2d_projectile.c`, `include/cs2d_projectile.h`.
+
+- **Throw Distance:** Aim distance clamped to max 385 px (`0x181` in `FUN_140217d80`).
+- **Throwables:** HE Grenade (51), Flashbang (52), Smoke Grenade (53), Flare (54), Gas Grenade (72), Molotov Cocktail (73), Snowball (75), Air Strike (76), Gut Bomb (86).
+  - All disappear from player inventory upon throwing except **Flashbang (52)** which starts with 2 charges (1 in clip, 1 reserve).
+- **Rockets / Missiles:** Rocket Launcher (48) and RPG-7 (47) fire as weapon ammo.
+- **Flight & Wall Collision:**
+  - Bouncing Grenades (HE, Flashbang, Smoke, Gas): bounce off map walls and obstacle tiles. Reflection reverses axis velocity component, reduces remaining `flydist *= 0.5f`, speed `speed *= 0.65f`, and reverses spin `rot_speed = -rot_speed`. Detonates/activates at end of lifetime.
+  - Impact Projectiles (Rocket, RPG, Molotov, Snowball, Gut Bomb): stop and detonate immediately upon hitting the first obstacle (map wall, breakable, building, or player).
+    - Molotov: explosion + spawns persistent `CS2D_FIELD_FIRE` (radius 45 px, duration 20s).
+    - Snowball: spawns snow puff particles.
+    - Gut Bomb: spawns blood particles.
+    - Gas Grenade: grenade bounce + spawns persistent `CS2D_FIELD_GAS` (radius 64 px, duration 15s).
+    - Smoke Grenade: grenade bounce + spawns persistent `CS2D_FIELD_SMOKE` (radius 75 px, duration 30s) providing smoke cover.
+    - Flare: settles on ground, stays for ~60s emitting bright sparkle particles, then disappears silently.
+    - Air Strike: stays on ground for ~7s emitting marker smoke puffs, then creates massive cluster explosions.
+- **Visuals:** Items without dedicated projectile sprite fallback to their dropped ground sprite (`tex_weapons_d[type]`).
+- **Network Opcodes:**
+  - Client -> Server: `[27, type u8, x u16, y u16, dir u16 (deg*65536/360), flydist u16]` (10 bytes).
+  - Server -> Client: `[27, player u8, type u8, x u16, y u16, dir u16, flydist u16]` (11 bytes).
+  - Spawn flying projectile: `[58, player u8, type u8, id u8, x_bias u16, y_bias u16, flydist u16, dir u16]` (12 bytes, signed coord bias 0x8000).
+  - Spawn ground projectile: `[52, player u8, type u8, id u16, x u16, y u16, rot u32]` (13 bytes).
+  - Move projectile: `[63, id u8, player u8, x_bias u16, y_bias u16]` (7 bytes).
+  - Kill / Detonate projectile: `[41, id u8, player u8]` (3 bytes).
+  - Silent kill projectile: `[55, id u8, player u8]` (3 bytes).
+  - Snapshot section 6: `[252, 7, 6, count u8, count * { id u8, type u8, player u8, x u16, y u16 }]` (7 bytes each).
+

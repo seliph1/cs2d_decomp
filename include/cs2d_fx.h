@@ -22,7 +22,12 @@ typedef enum {
     CS2D_FX_GLOWDOT   = 4, /* incbindata/glowdot.bmp left along the bullet path / impact sparks */
     CS2D_FX_MUZZLE     = 5, /* incbindata/flare_x.png at the muzzle (+ yellow light around the shooter) */
     CS2D_FX_SHELL      = 6, /* gfx/shells.bmp case flying out of the weapon (then lies on the floor) */
-    CS2D_FX_KNIFESLASH = 7  /* gfx/knifeslash.bmp melee swing arc (Tp type 13, 0x14004b4e0 & 0x140265220) */
+    CS2D_FX_KNIFESLASH = 7,  /* gfx/knifeslash.bmp melee swing arc (Tp type 13, 0x14004b4e0 & 0x140265220) */
+    CS2D_FX_SMOKE      = 8,  /* Smoke / gas puff */
+    CS2D_FX_FIRE       = 9,  /* Fire / flame particle */
+    CS2D_FX_SPARKLE    = 10, /* Bright flare sparkle */
+    CS2D_FX_BLOOD      = 11, /* Gut bomb blood drop / splat */
+    CS2D_FX_SNOW       = 12  /* Snowball snow puff */
 } cs2d_fx_kind_t;
 
 typedef struct {
@@ -80,6 +85,13 @@ void cs2d_fx_shot(cs2d_fx_t *fx, float px, float py, float angle_deg, float muzz
  * angle_deg, additive blend (LIGHTBLEND = 4), alpha 1.0 fading by 0.07 per 60 Hz frame (4.2/s).
  */
 void cs2d_fx_knifeslash(cs2d_fx_t *fx, float px, float py, float angle_deg);
+
+/* Projectile & field visual effects */
+void cs2d_fx_smoke_puff(cs2d_fx_t *fx, float x, float y, float r, float g, float b, float size, float speed);
+void cs2d_fx_fire_puff(cs2d_fx_t *fx, float x, float y, float size);
+void cs2d_fx_sparkle(cs2d_fx_t *fx, float x, float y, float r, float g, float b);
+void cs2d_fx_blood_splat(cs2d_fx_t *fx, float x, float y, int count);
+void cs2d_fx_snow_puff(cs2d_fx_t *fx, float x, float y, int count);
 
 void cs2d_fx_update(cs2d_fx_t *fx, float dt);
 

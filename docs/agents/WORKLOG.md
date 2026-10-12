@@ -8,6 +8,20 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Antigravity — Projectiles and Persistent Area Fields (Tpro, Tfield)
+- **Changed:** implemented full projectiles and fields system (`include/cs2d_projectile.h`, `src/cs2d_projectile.c`):
+  - Projectile classification (throwables vs. rockets vs. impact weapons).
+  - Throwable consumption with 2 charges for Flashbang (1 clip, 1 reserve) and 1 for others (item stripped on throw).
+  - Flight simulation with wall ricochet (bouncing grenades reflect velocity, reduce flydist and speed, reverse spin).
+  - Impact detonation on first obstacle/wall/player for Rockets, RPG, Molotov, Snowball, Gut Bomb.
+  - Cosmetic effects and persistent area fields (`CS2D_FIELD_FIRE`, `CS2D_FIELD_GAS`, `CS2D_FIELD_SMOKE`) with smoke cover detection (`cs2d_projectile_smoke_cover`).
+  - Added particle FX: smoke puffs, fire puffs, sparkles, blood splats, snow puffs (`cs2d_fx.c`, `cs2d_render.c`).
+  - Loaded projectile textures (rocket, rpg, grenade, molotov, flare, gutbomb, airstrike, flashbang, smokegrenade, gasgrenade, snowball) with fallback to ground weapon sprites.
+  - Client networking & dispatch: Client->Server opcode 27 (`CS2D_NET_PROJECTILE`), Server->Client opcodes 27, 41, 52, 55, 58, 63, and snapshot chunk 6 (`[252, 7, 6]`).
+  - Integrated into game loop, firing logic, rendering passes (ground and flying) and state resets.
+- **Verified:** dump inspection of `Tpro.c` and opcode handlers in `1400a0000.c`, `1402d0000.c`, `1402e0000.c`; added `test_projectiles_and_fields` to test suite (`test_cs2d.exe` 27 / 27 passing).
+- **Left:** Satchel charge intentionally deferred per user instruction.
+
 ## 2026-10-12 — Claude Code — player hover text
 - **Changed:** hovering another player shows its name ("Friend: " / "Enemy: " in a team or deathmatch) and "hp%"
   (`render_player_hover` in `src/cs2d_scene_game.c`, `cs2d_player_hover_kind` in `src/cs2d_player.c`), from the player

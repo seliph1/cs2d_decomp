@@ -770,6 +770,19 @@ bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank)
     cs2d_texture_load_ex(&bank->tex_blueflag, "gfx/weapons/blueflag.bmp", 2);
     cs2d_texture_load_ex(&bank->tex_noflag,   "gfx/weapons/noflag.bmp",   2);
 
+    /* Projectile Sprites */
+    cs2d_texture_load_ex(&bank->tex_proj_rocket,       "gfx/weapons/rocket.bmp",          2);
+    cs2d_texture_load_ex(&bank->tex_proj_rpg,          "gfx/weapons/rpg.bmp",             2);
+    cs2d_texture_load_ex(&bank->tex_proj_grenade,      "gfx/weapons/grenade.bmp",         2);
+    cs2d_texture_load_ex(&bank->tex_proj_molotov,      "gfx/weapons/molotovcocktail.bmp", 2);
+    cs2d_texture_load_ex(&bank->tex_proj_flare,        "gfx/weapons/flare.bmp",           2);
+    cs2d_texture_load_ex(&bank->tex_proj_gutbomb,      "gfx/weapons/gutbomb.bmp",         2);
+    cs2d_texture_load_ex(&bank->tex_proj_airstrike,    "gfx/weapons/airstrike.bmp",       2);
+    cs2d_texture_load_ex(&bank->tex_proj_flashbang,    "gfx/weapons/flashbang.bmp",       2);
+    cs2d_texture_load_ex(&bank->tex_proj_smokegrenade, "gfx/weapons/smokegrenade.bmp",    2);
+    cs2d_texture_load_ex(&bank->tex_proj_gasgrenade,   "gfx/weapons/gasgrenade.bmp",      2);
+    cs2d_texture_load_ex(&bank->tex_proj_snowball,     "gfx/weapons/snowball.bmp",        2);
+
     /* 3. Map & Entity Sprites (including embedded IncBin assets extracted from CS2D.exe) */
     cs2d_texture_load_grid(&bank->tex_shadowmap, "gfx/shadowmap.bmp",       3, 32, 32);
     cs2d_texture_load_grid(&bank->tex_decals,    "gfx/decals.bmp",          3, 32, 32);
@@ -861,6 +874,18 @@ void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank)
     cs2d_texture_free(&bank->tex_blueflag);
     cs2d_texture_free(&bank->tex_noflag);
 
+    cs2d_texture_free(&bank->tex_proj_rocket);
+    cs2d_texture_free(&bank->tex_proj_rpg);
+    cs2d_texture_free(&bank->tex_proj_grenade);
+    cs2d_texture_free(&bank->tex_proj_molotov);
+    cs2d_texture_free(&bank->tex_proj_flare);
+    cs2d_texture_free(&bank->tex_proj_gutbomb);
+    cs2d_texture_free(&bank->tex_proj_airstrike);
+    cs2d_texture_free(&bank->tex_proj_flashbang);
+    cs2d_texture_free(&bank->tex_proj_smokegrenade);
+    cs2d_texture_free(&bank->tex_proj_gasgrenade);
+    cs2d_texture_free(&bank->tex_proj_snowball);
+
     cs2d_texture_free(&bank->tex_shadowmap);
     cs2d_texture_free(&bank->tex_decals);
     cs2d_texture_free(&bank->tex_buildings);
@@ -927,6 +952,36 @@ const cs2d_texture_t *cs2d_gfx_get_sprite(cs2d_gfx_bank_t *bank, const char *rel
     }
 
     return entry->tex.id ? &entry->tex : NULL;
+}
+
+const cs2d_texture_t *cs2d_render_get_projectile_texture(uint8_t type)
+{
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    if (!bank) return NULL;
+
+    const cs2d_texture_t *t = NULL;
+    switch (type) {
+        case CS2D_WEP_ROCKETLAUNCHER: t = &bank->tex_proj_rocket; break;
+        case CS2D_WEP_RPG7:           t = &bank->tex_proj_rpg; break;
+        case CS2D_WEP_GRENADELAUNCHER:
+        case CS2D_WEP_HE:             t = &bank->tex_proj_grenade; break;
+        case CS2D_WEP_FLASHBANG:      t = &bank->tex_proj_flashbang; break;
+        case CS2D_WEP_SMOKE:          t = &bank->tex_proj_smokegrenade; break;
+        case CS2D_WEP_FLARE:          t = &bank->tex_proj_flare; break;
+        case CS2D_WEP_GAS:            t = &bank->tex_proj_gasgrenade; break;
+        case CS2D_WEP_MOLOTOV:        t = &bank->tex_proj_molotov; break;
+        case CS2D_WEP_SNOWBALL:       t = &bank->tex_proj_snowball; break;
+        case CS2D_WEP_AIRSTRIKE:      t = &bank->tex_proj_airstrike; break;
+        case CS2D_WEP_GUTBOMB:        t = &bank->tex_proj_gutbomb; break;
+        default:                      break;
+    }
+    if (t && t->id) return t;
+
+    /* Fallback to ground item texture (tex_weapons_d[type]) per requirement */
+    if (type > 0 && type < CS2D_MAX_WEAPONS && bank->tex_weapons_d[type].id) {
+        return &bank->tex_weapons_d[type];
+    }
+    return NULL;
 }
 
 void cs2d_render_rect(float x, float y, float w, float h, float r, float g, float b, float a, bool fill)
@@ -3811,6 +3866,24 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
             float h = (float)bank->tex_knifeslash.height;
             cs2d_render_sprite_frame(&bank->tex_knifeslash, 0, 0, 0, sx, sy, w, h,
                                      p->rot, 1.0f, 1.0f, 1.0f, t, 4);
+        } else if (p->kind == CS2D_FX_SMOKE && bank) {
+            float cur_size = p->size * (1.0f + (1.0f - t) * 0.8f);
+            cs2d_render_sprite_frame(&bank->tex_glowdot, 0, 0, 0, sx, sy, cur_size, cur_size,
+                                     p->rot, p->r, p->g, p->b, 0.45f * t, 3);
+        } else if (p->kind == CS2D_FX_FIRE && bank) {
+            float cur_size = p->size * (0.8f + t * 0.4f);
+            cs2d_render_sprite_frame(&bank->tex_glowdot, 0, 0, 0, sx, sy, cur_size, cur_size,
+                                     p->rot, p->r, p->g, p->b, t, 4);
+        } else if (p->kind == CS2D_FX_SPARKLE && bank) {
+            cs2d_render_sprite_frame(&bank->tex_glowdot, 0, 0, 0, sx, sy, p->size, p->size,
+                                     p->rot, p->r, p->g, p->b, t, 4);
+        } else if (p->kind == CS2D_FX_BLOOD && bank) {
+            cs2d_render_sprite_frame(&bank->tex_fragments, 32, 32, p->frame, sx, sy, p->size, p->size,
+                                     p->rot, p->r, p->g, p->b, t, 0);
+        } else if (p->kind == CS2D_FX_SNOW && bank) {
+            float cur_size = p->size * (0.8f + t * 0.3f);
+            cs2d_render_sprite_frame(&bank->tex_glowdot, 0, 0, 0, sx, sy, cur_size, cur_size,
+                                     p->rot, p->r, p->g, p->b, 0.7f * t, 3);
         }
     }
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);

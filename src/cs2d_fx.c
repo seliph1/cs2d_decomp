@@ -239,6 +239,116 @@ void cs2d_fx_knifeslash(cs2d_fx_t *fx, float px, float py, float angle_deg)
     p->size     = 32.0f;
 }
 
+void cs2d_fx_smoke_puff(cs2d_fx_t *fx, float x, float y, float r, float g, float b, float size, float speed)
+{
+    if (!fx) return;
+    cs2d_fx_particle_t *p = alloc_particle(fx);
+    float a = frand(fx) * 6.2831853f;
+    float v = frand(fx) * speed;
+    p->kind     = CS2D_FX_SMOKE;
+    p->x        = x + (frand(fx) - 0.5f) * 8.0f;
+    p->y        = y + (frand(fx) - 0.5f) * 8.0f;
+    p->vx       = cosf(a) * v;
+    p->vy       = sinf(a) * v;
+    p->rot      = frand(fx) * 360.0f;
+    p->vrot     = (frand(fx) - 0.5f) * 60.0f;
+    p->max_life = p->life = 1.2f + frand(fx) * 0.8f;
+    p->size     = size > 0.0f ? size : (16.0f + frand(fx) * 12.0f);
+    p->r        = r;
+    p->g        = g;
+    p->b        = b;
+    p->drag     = 1.5f;
+}
+
+void cs2d_fx_fire_puff(cs2d_fx_t *fx, float x, float y, float size)
+{
+    if (!fx) return;
+    cs2d_fx_particle_t *p = alloc_particle(fx);
+    float a = frand(fx) * 6.2831853f;
+    float v = 15.0f + frand(fx) * 35.0f;
+    p->kind     = CS2D_FX_FIRE;
+    p->x        = x + (frand(fx) - 0.5f) * 12.0f;
+    p->y        = y + (frand(fx) - 0.5f) * 12.0f;
+    p->vx       = cosf(a) * v;
+    p->vy       = sinf(a) * v - (20.0f + frand(fx) * 20.0f); /* Flames drift slightly upward */
+    p->rot      = frand(fx) * 360.0f;
+    p->vrot     = (frand(fx) - 0.5f) * 180.0f;
+    p->max_life = p->life = 0.5f + frand(fx) * 0.4f;
+    p->size     = size > 0.0f ? size : (14.0f + frand(fx) * 10.0f);
+    p->r        = 1.0f;
+    p->g        = 0.4f + frand(fx) * 0.3f;
+    p->b        = 0.05f;
+    p->drag     = 2.0f;
+}
+
+void cs2d_fx_sparkle(cs2d_fx_t *fx, float x, float y, float r, float g, float b)
+{
+    if (!fx) return;
+    cs2d_fx_particle_t *p = alloc_particle(fx);
+    float a = frand(fx) * 6.2831853f;
+    float v = 30.0f + frand(fx) * 70.0f;
+    p->kind     = CS2D_FX_SPARKLE;
+    p->x        = x + (frand(fx) - 0.5f) * 4.0f;
+    p->y        = y + (frand(fx) - 0.5f) * 4.0f;
+    p->vx       = cosf(a) * v;
+    p->vy       = sinf(a) * v;
+    p->rot      = frand(fx) * 360.0f;
+    p->vrot     = (frand(fx) - 0.5f) * 360.0f;
+    p->max_life = p->life = 0.25f + frand(fx) * 0.35f;
+    p->size     = 4.0f + frand(fx) * 4.0f;
+    p->r        = r;
+    p->g        = g;
+    p->b        = b;
+    p->drag     = 3.0f;
+}
+
+void cs2d_fx_blood_splat(cs2d_fx_t *fx, float x, float y, int count)
+{
+    if (!fx || count <= 0) return;
+    for (int i = 0; i < count; i++) {
+        cs2d_fx_particle_t *p = alloc_particle(fx);
+        float a = frand(fx) * 6.2831853f;
+        float v = 20.0f + frand(fx) * 100.0f;
+        p->kind     = CS2D_FX_BLOOD;
+        p->x        = x + (frand(fx) - 0.5f) * 6.0f;
+        p->y        = y + (frand(fx) - 0.5f) * 6.0f;
+        p->vx       = cosf(a) * v;
+        p->vy       = sinf(a) * v;
+        p->rot      = frand(fx) * 360.0f;
+        p->vrot     = (frand(fx) - 0.5f) * 360.0f;
+        p->max_life = p->life = 0.6f + frand(fx) * 0.8f;
+        p->size     = 6.0f + frand(fx) * 8.0f;
+        p->frame    = 12 + (int)(frand(fx) * 4.0f) % 4; /* Flesh fragments / blood drops */
+        p->r        = 0.65f + frand(fx) * 0.2f;
+        p->g        = 0.02f;
+        p->b        = 0.02f;
+        p->drag     = 4.0f;
+    }
+}
+
+void cs2d_fx_snow_puff(cs2d_fx_t *fx, float x, float y, int count)
+{
+    if (!fx || count <= 0) return;
+    for (int i = 0; i < count; i++) {
+        cs2d_fx_particle_t *p = alloc_particle(fx);
+        float a = frand(fx) * 6.2831853f;
+        float v = 15.0f + frand(fx) * 60.0f;
+        p->kind     = CS2D_FX_SNOW;
+        p->x        = x + (frand(fx) - 0.5f) * 8.0f;
+        p->y        = y + (frand(fx) - 0.5f) * 8.0f;
+        p->vx       = cosf(a) * v;
+        p->vy       = sinf(a) * v;
+        p->rot      = frand(fx) * 360.0f;
+        p->vrot     = (frand(fx) - 0.5f) * 180.0f;
+        p->max_life = p->life = 0.5f + frand(fx) * 0.6f;
+        p->size     = 5.0f + frand(fx) * 7.0f;
+        p->r        = 0.95f;
+        p->g        = 0.95f;
+        p->b        = 1.0f;
+        p->drag     = 3.0f;
+    }
+}
+
 void cs2d_fx_update(cs2d_fx_t *fx, float dt)
 {
     if (!fx) return;

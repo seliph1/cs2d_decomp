@@ -21,6 +21,7 @@
 #include "cs2d_player.h"
 #include "cs2d_bind.h"
 #include "cs2d_hudmen.h"
+#include "cs2d_projectile.h"
 
 #define CS2D_CONSOLE_MAX_LINES     1024 /* Ring buffer: the oldest line is dropped when full */
 #define CS2D_CONSOLE_LINE_LEN      192
@@ -84,6 +85,7 @@ struct cs2d_client {
     cs2d_fx_t       fx;                /* Breakable debris / explosion effects */
     cs2d_ground_item_t ground_items[CS2D_MAX_GROUND_ITEMS];
     cs2d_dynobj_world_t dynobj;        /* Dynamic objects (buildings): Env_Building offline, the server's online */
+    cs2d_projectile_world_t projectiles; /* Projectiles & fields (grenades, rockets, molotov, flare, gas, etc.) */
 
     /* Construction (Tpl.attack2 with the Wrench, 0x1401fd6c0): the first right click shows the build helper,
      * the second opens the "Construct" menu (Tgui_hudmen menu 60) for the tile under the cursor */
