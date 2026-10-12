@@ -546,6 +546,42 @@ bool cs2d_scene_game_walk_to(cs2d_client_t *client, int tx, int ty)
     return found;
 }
 
+static bool team_game(const cs2d_client_t *client);
+
+/*
+ * Debris where a shot reaches a building (Tshoot.Shoot 0x1402073ed, run for every player's shot): the ray
+ * from the shooter to (hx, hy) (the trace stops inside solid buildings, Barricades let it through) checks
+ * each tile it enters for an object of category 1 or 2 within 457 x 272 px of the shooter. A Wrench on an
+ * own building (Tdo.sameteam 0x140005460) repairs it instead; other hits throw Tp.breakable material 1.
+ */
+static void building_hit_debris(cs2d_client_t *client, const cs2d_player_t *pl, const cs2d_weapon_def_t *wep,
+                                float hx, float hy)
+{
+    if (wep->damage <= 0) return;
+    float dx = hx - pl->pos.x, dy = hy - pl->pos.y;
+    float dist = sqrtf(dx * dx + dy * dy);
+    if (dist < 1.0f) dist = 1.0f;
+    float ux = dx / dist, uy = dy / dist;
+    int last_tx = -1, last_ty = -1;
+    for (float d = 0.0f; d <= dist + 1.0f; d += 1.0f) { /* + 1: the trace ends on the first pixel of a solid tile */
+        float px = pl->pos.x + ux * d, py = pl->pos.y + uy * d;
+        if (px < 0.0f || py < 0.0f) return;
+        int tx = (int)(px * 0.03125f), ty = (int)(py * 0.03125f);
+        if (tx == last_tx && ty == last_ty) continue;
+        last_tx = tx;
+        last_ty = ty;
+        const cs2d_dynobj_t *o = cs2d_dynobj_at_tile(&client->dynobj, tx, ty);
+        if (!o || !cs2d_dynobj_hit_debris(o->typ)) continue;
+        if (fabsf(o->x - pl->pos.x) > 457.0f || fabsf(o->y - pl->pos.y) > 272.0f) continue;
+        if (pl->current_weapon == CS2D_WEP_WRENCH) {
+            bool same = team_game(client) ? ((pl->team == CS2D_TEAM_T && o->team == 1) || (pl->team > CS2D_TEAM_T && o->team > 1))
+                                          : (o->player == pl->id);
+            if (same) continue;
+        }
+        cs2d_fx_building_hit(&client->fx, px, py, pl->angle);
+    }
+}
+
 /*
  * A shot of the local player. Online it is the fire packet [7, seed u8] (recorded from CS2D.exe:
  * melee always sends 0, firearms count 0, 2, 3, 4, ... per shot; the server stores the byte,
@@ -585,6 +621,7 @@ static void fire_shot(cs2d_client_t *client, const cs2d_player_t *pl)
         float muzzle = (wep->slot == CS2D_SLOT_SECONDARY) ? 22.0f : 30.0f;
         cs2d_fx_shot(&client->fx, pl->pos.x, pl->pos.y, pl->angle, muzzle, hx, hy, hit_wall, shell);
     }
+    building_hit_debris(client, pl, wep, hx, hy);
     if (hit < 0) return;
     const cs2d_entity_t *e = &client->game.map.entities[hit];
     cs2d_fx_breakable_hit(&client->fx, hx, hy, e->int_settings[2], pl->angle);
@@ -618,6 +655,7 @@ void cs2d_scene_game_remote_shot(cs2d_client_t *client, cs2d_player_t *pl)
         cs2d_fx_shot(&client->fx, pl->pos.x, pl->pos.y, pl->angle, wep->slot == CS2D_SLOT_SECONDARY ? 22.0f : 30.0f,
                      hx, hy, hit_wall, shell);
     }
+    building_hit_debris(client, pl, wep, hx, hy);
     if (hit >= 0) cs2d_fx_breakable_hit(&client->fx, hx, hy, client->game.map.entities[hit].int_settings[2], pl->angle);
 }
 
@@ -862,7 +900,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
                           (pl->current_weapon == CS2D_WEP_KNIFE || pl->current_weapon == CS2D_WEP_CLAW);
         if (!cs2d_client_any_ui_open(client) && (client->mouse_fire || melee_atk2) && !client->build_menu_open && cs2d_weapon_fire(pl)) {
             if (melee_atk2 && !client->mouse_fire) {
-                pl->fire_cooldown = 21.0f * 0.02f; /* 21 ticks at 50 Hz (0x1401fdc28) */
+                pl->fire_cooldown = 1.2f; /* Tpl.attack2 knife / claw: firetimer.reset(1200) (0x1401fdde8) */
             }
             fire_shot(client, pl);
         }

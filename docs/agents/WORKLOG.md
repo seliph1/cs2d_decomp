@@ -8,6 +8,22 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Claude Code — fire rate twice too fast
+- **Changed:** `fire_delay` converts firedelay ticks at 39 ms (`Tpl.attack` `firetimer.reset(firedelay * 0x27)`,
+  0x140216b8f) instead of 20 ms, so every weapon fired ~1.95x faster than the original. Knife / Claw right click
+  waits 1200 ms (0x1401fdde8) instead of 0.42 s.
+- **Verified:** dump + objdump (`Ttimer.reset`, imul 0x27); regression in `test_weapons` (AK-47 117 ms, AWP 2535 ms).
+  Not yet measured on a proxy capture (interval between `[7]` of the original).
+- **Left:** whether semi-automatic weapons need a new click in the original (we fire while the button is held).
+
+## 2026-10-12 — Claude Code — building hit debris
+- **Changed:** shots (local and remote) that reach a building throw gray fragments both ways
+  (`cs2d_fx_building_hit`, `cs2d_dynobj_hit_debris`, `building_hit_debris` in `src/cs2d_scene_game.c`), ported
+  from `Tshoot.Shoot` 0x1402073ed -> `Tp.breakable` material 1 -> `Tp.matp`. Particles got a per-particle `drag`.
+- **Verified:** REA / dump / objdump only (type mask 0x9b80, matp constants Rnd(0.2, 3), Tp type 12 update);
+  regression in `test_construction`. Not yet compared with a screenshot of the original.
+- **Left:** see OPEN_ISSUES (hit sounds, wall stop of fragments, screenshot check).
+
 ## 2026-10-12 — Claude Code — chat send/receive verified on the remote server
 - **Changed:** no code change. Live end-to-end check of the `[240]` (`CS2D_NET_MSG2`) chat path against
   `140.238.183.194:36969` (user-authorized), driven by `tools/agent/udp_proxy.py` + `cs2d_client.exe`

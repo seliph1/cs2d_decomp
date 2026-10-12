@@ -74,6 +74,17 @@ bool cs2d_dynobj_casts_shadow(int typ)
     return cs2d_dynobj_collision(typ) == 1 && typ != CS2D_DO_SITE;
 }
 
+/*
+ * Tshoot.Shoot (0x1402073ed): a shot with damage > 0 that reaches one of these types throws debris
+ * (Tp.breakable material 1): Barricade, Wall I..III, and below 16 the bits of 0x9b80 (Dispenser, Turret,
+ * Supply, Dual / Triple Turret, Super Supply).
+ */
+bool cs2d_dynobj_hit_debris(int typ)
+{
+    if (typ == CS2D_DO_BARRICADE || (typ >= CS2D_DO_WALL_1 && typ <= CS2D_DO_WALL_3)) return true;
+    return typ >= 0 && typ < 16 && ((0x9b80u >> typ) & 1u);
+}
+
 /* Rewrites the object overlay of one tile and recomputes its collision (tiles < entities < objects) */
 static void refresh_tile(cs2d_dynobj_world_t *w, int tx, int ty)
 {

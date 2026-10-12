@@ -69,6 +69,43 @@ void cs2d_fx_breakable_hit(cs2d_fx_t *fx, float x, float y, int material, float 
     spawn_fragments(fx, x, y, material, 3, angle_deg + 180.0f, 120.0f, 40.0f, 110.0f);
 }
 
+/*
+ * Tp.breakable (0x1401197c0) with material 1: two bursts of 2 x particles (sys/config.cfg "particles 4",
+ * DAT_140ddf182) Tp.matp (0x14004c710) fragments, one back along angle + 180, one along the shot.
+ * Each fragment (Tp type 12, Tp.Create 0x14004ac20, Tp.draw 0x140263cc0):
+ *   position: impact + Rnd(-5, 5) (breakable) + Rnd(-5, 5) (matp) on each axis;
+ *   frame Rand(4, 7), gray Rand(50, 150), rotation Rand(1, 360), scale Rnd(0.4, 0.7), alpha blend;
+ *   speed Rnd(0.2, 3) px per frame exactly along the direction, minus speed / 15 per frame;
+ *   alpha Rnd(0.7, 1.2) minus 0.01 per frame.
+ * Not reproduced: a fragment stops when it enters a wall, and a stopped one (layer 5) moves to another Tp list.
+ */
+#define BUILDING_HIT_PARTICLES 4
+
+void cs2d_fx_building_hit(cs2d_fx_t *fx, float x, float y, float angle_deg)
+{
+    if (!fx) return;
+    for (int burst = 0; burst < 2; burst++) {
+        float a = (angle_deg + (burst == 0 ? 180.0f : 0.0f)) * 0.017453292519943295f;
+        for (int i = 0; i < 2 * BUILDING_HIT_PARTICLES; i++) {
+            cs2d_fx_particle_t *p = alloc_particle(fx);
+            float v = (0.2f + frand(fx) * 2.8f) * 60.0f;
+            float gray = (float)(50 + (int)(frand(fx) * 101.0f)) / 255.0f;
+            p->kind     = CS2D_FX_FRAGMENT;
+            p->x        = x + (frand(fx) - 0.5f) * 10.0f + (frand(fx) - 0.5f) * 10.0f;
+            p->y        = y + (frand(fx) - 0.5f) * 10.0f + (frand(fx) - 0.5f) * 10.0f;
+            p->vx       = sinf(a) * v;
+            p->vy       = -cosf(a) * v;
+            p->drag     = 4.0f;                 /* 1 / 15 per 60 Hz frame */
+            p->rot      = (float)(1 + (int)(frand(fx) * 360.0f));
+            p->max_life = 1.0f / 0.6f;          /* life / max_life = alpha, 0.6 per second */
+            p->life     = (0.7f + frand(fx) * 0.5f) * p->max_life;
+            p->size     = 32.0f * (0.4f + frand(fx) * 0.3f);
+            p->frame    = 4 + (int)(frand(fx) * 4.0f) % 4;
+            p->r = p->g = p->b = gray;
+        }
+    }
+}
+
 void cs2d_fx_explosion(cs2d_fx_t *fx, float x, float y, float range)
 {
     if (!fx) return;
@@ -223,7 +260,7 @@ void cs2d_fx_update(cs2d_fx_t *fx, float dt)
         p->x   += p->vx * dt;
         p->y   += p->vy * dt;
         p->rot += p->vrot * dt;
-        float drag = 1.0f - 2.5f * dt; /* Debris slows down on the floor */
+        float drag = 1.0f - (p->drag > 0.0f ? p->drag : 2.5f) * dt; /* Debris slows down on the floor */
         if (drag < 0.0f) drag = 0.0f;
         p->vx *= drag;
         p->vy *= drag;

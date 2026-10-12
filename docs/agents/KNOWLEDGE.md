@@ -454,6 +454,16 @@ offline dedicated with `sv_gamemode 3` + `tools/agent/lua/construct_probe.lua`. 
   bands sends `[39]` unless a living player is within 20 px of the cursor; the server answers `[21]`. While
   `mp_respawndelay` (`[252,6]` byte after sv_gamemode) runs the HUD shows 0767 in (200, 0, 0).
 - **Kill:** `[19, victim, killer, weapon, u8, x u16, y u16]` (9 bytes).
+- **Shot debris** (`Tshoot.Shoot` 0x1402073ed, client side for every shot): each tile the bullet enters is checked with
+  `Tdo.getatpos`; an object of category 1 or 2 within 457 x 272 px of the shooter, of type 1, 3..5 or below 16 in the
+  mask 0x9b80 (7, 8, 9, 11, 12, 15), hit with damage > 0, calls `Tp.breakable(x, y, 1, angle + 180)` and
+  `Tp.breakable(x, y, 1, angle)` (a Wrench on an own building, `Tdo.sameteam` 0x140005460, repairs instead).
+  `Tp.breakable` (0x1401197c0) material 1: a random sound of the array at 0x140a0d890, then 2 x `particles`
+  (`DAT_140ddf182`, 4 in the shipped config) `Tp.matp(1, ...)` at impact + Rnd(-5, 5). `Tp.matp` (0x14004c710)
+  material 1: another Rnd(-5, 5), frame Rand(4, 7), gray Rand(50, 150), speed Rnd(0.2, 3) px per frame along the
+  direction (constants 0x140bd6b30 / p5 = 3). Tp type 12 (`Tp.Create` 0x14004ac20, `Tp.draw` 0x140263cc0): rotation
+  Rand(1, 360), alpha Rnd(0.7, 1.2) - 0.01 per frame, scale Rnd(0.4, 0.7), alpha blend, speed - speed / 15 per
+  frame, stops inside a wall tile; on layer 5 a fragment slower than 0.3 moves to another Tp list.
 
 ## Capture the flag
 
@@ -543,6 +553,11 @@ Source: dump `Tgui_hudmen` (`update 0x14002eb80`, `button 0x140129620`, `fbutton
 - **Client stats** (`init_weapons`, `tools/agent/weapontables.py`): damage 0x1409f62a0, clip 0x140a017a8, reserve
   0x140a017b0, fire delay 0x1409f2600, range 0x1409f62a8, accuracy 0x1409f5d18, weight 0x1409efd18 (float), zoom damage
   0x1409efd10 / 0x1409efd08. Range, accuracy and weight differ from the dedicated's table (M3 range 50, AWP weight -0.5).
+- **Fire and reload timers** (`Tpl.firetimer` / `Tpl.reloadtimer`, `Ttimer.reset(ms)`: time = ms + `g_time_ms`):
+  `Tpl.attack` (`FUN_1402164d0`, imul 0x27 at 0x140216b8f) re-arms the fire timer with firedelay x **39 ms** (AK-47 3
+  -> 117 ms); the client also reads `firedelay` from `sys/weapons.cfg` into 0x1409f2600 (`FUN_140175f40`, clamped
+  2..255). Knife / Claw right click (`Tpl.attack2`, 0x1401fdde8 / 0x1401fde66) waits 1200 ms. Reload is two stages of
+  reload x 5 ms each (`FUN_140214780` states 1 -> 4 -> 2), reload x 10 ms in total.
 - **moneyinfo:** box (514, 30) 70 x 25, `"<money> $"` right aligned at 579, y 33, in (200).
 
 ## In-game chat and server messages

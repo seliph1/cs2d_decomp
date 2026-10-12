@@ -99,6 +99,9 @@ cs2d_dynobj_t *cs2d_dynobj_get(cs2d_dynobj_world_t *w, int id);
 cs2d_dynobj_t *cs2d_dynobj_at_tile(cs2d_dynobj_world_t *w, int tx, int ty);
 int            cs2d_dynobj_count(const cs2d_dynobj_world_t *w);
 
+/* Does a bullet hitting this type throw debris (Tshoot.Shoot)? */
+bool cs2d_dynobj_hit_debris(int typ);
+
 /* Tdo.add: a new object (replacing one with the same id; id -1 takes the next free id) */
 cs2d_dynobj_t *cs2d_dynobj_add(cs2d_dynobj_world_t *w, int id, int typ, int x, int y);
 /* FUN_1401431e0 (client side of [49]): buildings are snapped to their tile by Tdo.inibuilding */

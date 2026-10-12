@@ -30,6 +30,10 @@
  *   PTR_DAT_14059d3f8 : recoil_attack
  */
 static cs2d_weapon_def_t g_weapon_table[CS2D_MAX_WEAPONS];
+
+/* CS2D.exe Tpl.attack (FUN_1402164d0, imul 0x27 at 0x140216b8f) re-arms the fire timer with firetimer.reset(firedelay * 39) in
+ * milliseconds (Ttimer.reset: time = ms + g_time_ms), so one firedelay tick is 39 ms, not a 50 Hz tick */
+#define FIRE_DELAY_TICK_SEC 0.039f
 static bool g_weapons_initialized = false;
 
 static void set_wep(
@@ -55,7 +59,7 @@ static void set_wep(
     w->max_reserve       = reserve;
     w->fire_delay_ticks  = rate_ticks;
     w->reload_ticks      = reload_ticks;
-    w->fire_delay        = (rate_ticks > 0) ? ((float)rate_ticks * 0.02f) : 0.20f;
+    w->fire_delay        = (rate_ticks > 0) ? ((float)rate_ticks * FIRE_DELAY_TICK_SEC) : 0.20f;
     w->reload_time       = (reload_ticks > 0) ? ((float)reload_ticks * 0.01f) : 0.0f;
     w->speed_offset      = speed_offset;
     w->speed_modifier    = 1.0f + (speed_offset * 0.02f);
@@ -269,7 +273,7 @@ bool cs2d_weapons_load_cfg(const char *filepath)
                 if (val > 255) val = 255;
                 if (val < 2)   val = 2;
                 w->fire_delay_ticks = val;
-                w->fire_delay = (float)val * 0.02f;
+                w->fire_delay = (float)val * FIRE_DELAY_TICK_SEC;
             }
         }
     }

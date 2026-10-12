@@ -10,6 +10,9 @@ the same one.
   is not measured.
 - **Muzzle offsets:** the per-weapon muzzle offset table (`0x1409f5d20` in `CS2D.exe`) is now recovered
   (KNOWLEDGE "Buy menu") but not used yet; `cs2d_fx` still uses the calibrated 30 / 22 px.
+- **Fire rate, not measured:** the 39 ms firedelay tick comes from REA only; compare the `[7]` interval of the
+  original on a proxy capture. Unknown whether semi-automatic weapons need a new click (we fire while held), and the
+  global timer 0x140a1b008 that knife right click also sets to 1200 ms is not reconstructed.
 - **Explosion damage fall-off:** assumed; only distance 0 was measured.
 - **Fragments:** which fragment frames and tints belong to each material is inferred from captures.
 - **Player kill and death:** opcode 19 is not handled (a death is seen through `[17]` with health 0).
@@ -92,6 +95,8 @@ the same one.
     passes x = 16: one of the two is wrong (check on a screenshot).
   - Not drawn: portals (22 / 23), NPCs (30), Lua images (40, `Tdo` image fields and `[252,7,7]` image data),
     laser mine beams, Construction Site smoke particles, dynamic lights; turret tracers use a calibrated 300 px reach.
+  - Building hit debris (`cs2d_fx_building_hit`): no hit sound (array 0x140a0d890 not identified), fragments do not
+    stop at walls, the `particles` setting is fixed at 4, and the look is not compared with a screenshot yet.
   - Not handled: the hover info / health of buildings, the `[37]` upgrade progress display, teleporter use
     ("Select Teleporter Destination" 0528), Supply (`FUN_14028dba0` item menu, menu 61/62), Gate Field team blocking
     for movement, kill rewards and `mp_building_limit` / `mp_building_price` overrides.

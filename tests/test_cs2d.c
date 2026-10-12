@@ -57,6 +57,12 @@ static bool test_weapons(void)
     }
     TEST_PASS("AWP Definition (dmg=50, z1=65, z2=150, reload=400, rate=65, price=$4750)");
 
+    /* CS2D.exe Tpl.attack re-arms the fire timer with firedelay * 39 ms (imul 0x27 at 0x140216b8f) */
+    if (fabsf(ak->fire_delay - 0.117f) > 0.0005f || fabsf(awp->fire_delay - 2.535f) > 0.0005f) {
+        TEST_FAIL("Fire delay (Tpl.attack 0x140216b8f)", "firedelay tick is not 39 ms");
+    }
+    TEST_PASS("Fire delay = firedelay x 39 ms (AK-47 117 ms, AWP 2535 ms)");
+
     const cs2d_weapon_def_t *deagle = cs2d_weapon_get(CS2D_WEP_DEAGLE);
     if (!deagle || deagle->clip_size != 7 || deagle->max_reserve != 35 ||
         deagle->damage != 34 || deagle->price != 650) {
@@ -2053,6 +2059,26 @@ static bool test_construction(void)
     if (cs2d_dynobj_casts_shadow(CS2D_DO_SITE) || cs2d_dynobj_casts_shadow(CS2D_DO_BARRICADE) ||
         cs2d_dynobj_casts_shadow(CS2D_DO_GATE_FIELD)) TEST_FAIL("Shadow", "flat building casts a shadow");
     if (cs2d_dynobj_net_message(&w, spawn_turret, 12, 0, NULL) != -1) TEST_FAIL("[49]", "truncated message accepted");
+
+    /* Shot debris (Tshoot.Shoot 0x1402073ed): types 1, 3..5 and the 0x9b80 bits (7, 8, 9, 11, 12, 15) */
+    for (int t = 0; t <= 40; t++) {
+        bool want = t == 1 || t == 3 || t == 4 || t == 5 || t == 7 || t == 8 || t == 9 || t == 11 || t == 12 || t == 15;
+        if (cs2d_dynobj_hit_debris(t) != want) TEST_FAIL("Hit debris", "wrong building type set");
+    }
+    /* Tp.breakable material 1 at "particles 4": 2 bursts of 8 gray fragments (frames 4..7), back and onwards */
+    static cs2d_fx_t hfx;
+    cs2d_fx_clear(&hfx);
+    cs2d_fx_building_hit(&hfx, 100.0f, 100.0f, 90.0f); /* Shot heading east */
+    int back = 0, on = 0;
+    for (int i = 0; i < hfx.count; i++) {
+        const cs2d_fx_particle_t *p = &hfx.p[i];
+        if (p->kind != CS2D_FX_FRAGMENT || p->frame < 4 || p->frame > 7 || p->r != p->g || p->r < 50.0f / 255.0f - 0.001f ||
+            p->r > 150.0f / 255.0f + 0.001f || fabsf(p->x - 100.0f) > 10.0f || fabsf(p->vy) > 0.01f)
+            TEST_FAIL("Hit debris", "fragment out of Tp.matp material 1 ranges");
+        if (p->vx < -11.9f && p->vx > -180.1f) back++;
+        if (p->vx > 11.9f && p->vx < 180.1f) on++;
+    }
+    if (hfx.count != 16 || back != 8 || on != 8) TEST_FAIL("Hit debris", "expected 8 fragments each way");
 
     /* [36,id,0,target]: aim at player 5 (east of the turret) for 15 frames, 5 of them firing */
     players[5].alive = true; players[5].team = CS2D_TEAM_T; players[5].health = 100;

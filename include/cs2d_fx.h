@@ -30,6 +30,7 @@ typedef struct {
     float          x, y;       /* World position (center) */
     float          x2, y2;     /* Tracer end */
     float          vx, vy;     /* px/s */
+    float          drag;       /* Speed lost per second as a fraction (0: debris default 2.5) */
     float          rot, vrot;  /* Degrees, degrees/s */
     float          life, max_life;
     float          size;       /* Drawn size in px */
@@ -53,6 +54,10 @@ void cs2d_fx_clear(cs2d_fx_t *fx);
 /* Bullet hit an Env_Breakable of material (ints[2]: 0 wood, 1 stone, 2 metal, 3 flesh, 4 glass, 5 nothing)
  * at (x, y); angle_deg is the shot direction (fragments bounce back towards the shooter) */
 void cs2d_fx_breakable_hit(cs2d_fx_t *fx, float x, float y, int material, float angle_deg);
+
+/* Bullet hit a building at (x, y) (Tshoot.Shoot -> Tp.breakable material 1): gray fragments thrown back
+ * towards the shooter and onwards along the shot */
+void cs2d_fx_building_hit(cs2d_fx_t *fx, float x, float y, float angle_deg);
 
 /* Env_Breakable destroyed: tile parts of its tile image plus fragments, and an explosion if it explodes */
 void cs2d_fx_breakable_break(cs2d_fx_t *fx, const cs2d_entity_t *e);
