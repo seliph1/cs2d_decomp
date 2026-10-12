@@ -1457,6 +1457,11 @@ static void render_ground_items(const cs2d_client_t *client)
     cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
     if (!bank) return;
     float cx = roundf(client->cam_x), cy = roundf(client->cam_y);
+    bool do_shadow = cs2d_render_get_shadows_enabled() && cs2d_render_get_item_shadows() &&
+                     cs2d_render_get_shadow_intensity() > 0;
+    float shadow_a = do_shadow ? ((float)cs2d_render_get_shadow_intensity() * 0.01f) : 0.0f;
+    const cs2d_texture_t *stex = bank->tex_shadow.id ? &bank->tex_shadow : &bank->tex_leaf;
+
     for (int i = 0; i < CS2D_MAX_GROUND_ITEMS; i++) {
         const cs2d_ground_item_t *it = &client->ground_items[i];
         if (!it->active || it->type == 0 || it->type >= CS2D_MAX_WEAPONS) continue;
@@ -1464,7 +1469,19 @@ static void render_ground_items(const cs2d_client_t *client)
         if (!dtex->id) continue;
         float dw = (dtex->width > 64) ? (float)(dtex->width / 2) : (float)dtex->width;
         float dh = (dtex->height > 32) ? (float)(dtex->height / 2) : (float)dtex->height;
-        cs2d_render_sprite(dtex, it->x - cx, it->y - cy, dw, dh, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+        float ix = it->x - cx;
+        float iy = it->y - cy;
+
+        /* Titem.draw (0x1401483a0): incbindata/shadow.bmp at (x, y) + 1px drop shadow of item image at (x+1, y+1) */
+        if (do_shadow) {
+            if (stex && stex->id) {
+                cs2d_render_sprite_frame(stex, 32, 32, 0, ix, iy, 32.0f, 32.0f, 0.0f,
+                                         0.0f, 0.0f, 0.0f, shadow_a, 0);
+            }
+            cs2d_render_sprite(dtex, ix + 1.0f, iy + 1.0f, dw, dh, 0.0f, 0.0f, 0.0f, 0.0f, shadow_a);
+        }
+
+        cs2d_render_sprite(dtex, ix, iy, dw, dh, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
     }
 }
 
@@ -1487,7 +1504,13 @@ static void render_projectiles_ground(const cs2d_client_t *client)
         }
     }
 
-    /* Render ground projectiles */
+    /* Render ground projectiles (Tpro.draw 0x140288702) */
+    bool do_shadow = cs2d_render_get_shadows_enabled() && cs2d_render_get_item_shadows() &&
+                     cs2d_render_get_shadow_intensity() > 0;
+    float shadow_a = do_shadow ? ((float)cs2d_render_get_shadow_intensity() * 0.01f) : 0.0f;
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    const cs2d_texture_t *stex = (bank && bank->tex_shadow.id) ? &bank->tex_shadow : (bank ? &bank->tex_leaf : NULL);
+
     for (int i = 0; i < CS2D_MAX_PROJECTILES; i++) {
         const cs2d_projectile_t *p = &client->projectiles.projectiles[i];
         if (!p->active || p->state != CS2D_PROJ_STATE_GROUND) continue;
@@ -1497,7 +1520,16 @@ static void render_projectiles_ground(const cs2d_client_t *client)
         float h = (tex->height > 32) ? (float)(tex->height / 2) : (float)tex->height;
         if (w < 8.0f) w = 16.0f;
         if (h < 8.0f) h = 16.0f;
-        cs2d_render_sprite(tex, p->x - cx, p->y - cy, w, h, p->rot, 1.0f, 1.0f, 1.0f, 1.0f);
+        float px = p->x - cx;
+        float py = p->y - cy;
+        if (do_shadow) {
+            if (stex && stex->id) {
+                cs2d_render_sprite_frame(stex, 32, 32, 0, px, py, 32.0f, 32.0f, p->rot,
+                                         0.0f, 0.0f, 0.0f, shadow_a, 0);
+            }
+            cs2d_render_sprite(tex, px + 1.0f, py + 1.0f, w, h, p->rot, 0.0f, 0.0f, 0.0f, shadow_a);
+        }
+        cs2d_render_sprite(tex, px, py, w, h, p->rot, 1.0f, 1.0f, 1.0f, 1.0f);
     }
 }
 

@@ -23,6 +23,10 @@ bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
     cfg->hud_fastswitch = true;
     cfg->drawradar = 4;
     cfg->radarsize = 0;
+    cfg->shadows = 50;
+    cfg->playershadows = true;
+    cfg->itemshadows = true;
+    cfg->mapshadows = 4;
 
     FILE *f = fopen(filepath, "r");
     if (!f) return false;
@@ -64,6 +68,14 @@ bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
                 cfg->drawradar = atoi(val);
             } else if (strcmp(key, "radarsize") == 0) {
                 cfg->radarsize = atoi(val);
+            } else if (strcmp(key, "shadows") == 0) {
+                cfg->shadows = atoi(val);
+            } else if (strcmp(key, "playershadows") == 0) {
+                cfg->playershadows = (atoi(val) != 0);
+            } else if (strcmp(key, "itemshadows") == 0) {
+                cfg->itemshadows = (atoi(val) != 0);
+            } else if (strcmp(key, "mapshadows") == 0) {
+                cfg->mapshadows = atoi(val);
             }
         }
     }

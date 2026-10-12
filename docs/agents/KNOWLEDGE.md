@@ -636,6 +636,18 @@ chat prompt `FUN_14029f7b0`, opcode 240 handler `FUN_1402c8100` (`recv 240 msg`)
   changes (DynWall toggles or player buildings change), fast delta tracking marks only the affected localized chunks dirty,
   avoiding full-map software rasterization freezes and dynamic heap reallocations. Visible dirty chunks are lazily generated
   and updated into GPU textures.
+- **Player shadows (REA `Tpl.draw 0x140121160 / 0x140122298`):**
+  - Triggered when `playershadows != 0` and `shadows > 0` (`DAT_140ddf184` and `DAT_140a14f7b`).
+  - Image: `incbindata/shadow.bmp` (`PTR_bbNullObject_140a0e038`, 32x32 circular soft shadow loaded with maskMode 3).
+  - Geometry: Centered on player position `(sx, sy)` including recoil backward kickback, rotation 0.0 deg.
+  - Scale: `1.5x` (`32.0f * 1.5f = 48.0f` px width/height).
+  - Color & Alpha: Black `(0, 0, 0)`, alpha `player_alpha * (shadows * 0.01f)` (0.50 at default 50% opacity, 0.10 under stealth suit).
+  - Also applied to hostages (`Info_Hostage`, `Thostage.draw 0x140147090`) with the same 48x48 scale 1.5.
+- **Ground item & projectile shadows (REA `Titem.draw 0x1401483a0`, `Te.draw 0x140260000`, `Tpro.draw 0x140288702`):**
+  - Triggered when `itemshadows != 0` and `shadows > 0` (`DAT_140ddf183` and `DAT_140a14f7b`).
+  - Circular ground shadow: `incbindata/shadow.bmp` at scale 1.0 (32x32 px) in black `(0,0,0)` at `(x, y)` with alpha `shadows * 0.01f`.
+  - Item silhouette drop shadow: Item image (`tex_weapons_d[type]` or projectile sprite) rendered in black `(0,0,0)` with alpha `shadows * 0.01f` offset by `+1.0 px, +1.0 px` at `(x + 1.0f, y + 1.0f)`.
+  - Normal item drawn at `(x, y)` in full color above both shadows.
 
 ## Projectiles and Persistent Fields (Tpro, Tfield)
 

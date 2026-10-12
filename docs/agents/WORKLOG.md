@@ -8,6 +8,18 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Antigravity — Player and ground item shadows
+- **Changed:** implemented authentic player, hostage, ground item, and ground projectile drop shadows:
+  - Added shadow cvars and config parameters: `shadows` (0..100), `playershadows` (0|1), `itemshadows` (0|1), `mapshadows` (0..4) (`include/cs2d_config.h`, `src/cs2d_config.c`).
+  - Added shadow control and querying API: `cs2d_render_set/get_shadow_intensity`, `cs2d_render_set/get_player_shadows`, `cs2d_render_set/get_item_shadows` (`include/cs2d_render.h`, `src/cs2d_render.c`).
+  - Added `tex_shadow` texture loading (`incbindata/shadow.bmp`, maskMode 3) to `cs2d_gfx_bank_t`.
+  - Player shadows (`Tpl.draw 0x140121160 / 0x140122298`): rendered centered at player `(sx, sy)` including recoil backward kickback, scale 1.5 (48x48 px), color black `(0,0,0)`, alpha `player_alpha * (shadows * 0.01f)` (0.50 default, 0.10 stealth suit).
+  - Hostage shadows (`Thostage.draw 0x140147090`): scale 1.5 (48x48 px) centered at hostage position.
+  - Ground item shadows (`Titem.draw 0x1401483a0`, `Te.draw 0x140260000`): 32x32 circular soft shadow from `shadow.bmp` at `(x, y)` plus 1px offset silhouette drop shadow from the weapon sprite at `(x + 1.0f, y + 1.0f)` in black with alpha `shadows * 0.01f`.
+  - Ground projectile shadows (`Tpro.draw 0x140288702`): 32x32 circular shadow at `(x, y)` with rotation `p->rot` plus 1px offset silhouette drop shadow at `(x + 1.0f, y + 1.0f)`.
+  - Interactive console commands: `shadows [0..100]`, `playershadows [0|1]`, `itemshadows [0|1]` in `cs2d_client.c`.
+- **Verified:** dump disassembly of `Tpl.draw`, `Titem.draw`, `Te.draw`, `Tpro.draw`, `Thostage.draw`; added `test_item_and_player_shadows` regression test in `tests/test_cs2d.c` (28 / 28 passed).
+
 ## 2026-10-12 — Antigravity — Projectiles and Persistent Area Fields (Tpro, Tfield)
 - **Changed:** implemented full projectiles and fields system (`include/cs2d_projectile.h`, `src/cs2d_projectile.c`):
   - Projectile classification (throwables vs. rockets vs. impact weapons).

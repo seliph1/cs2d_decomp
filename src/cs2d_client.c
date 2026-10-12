@@ -323,6 +323,9 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
 
     /* Load user config from sys/config.cfg */
     cs2d_config_load(&client->config, "sys/config.cfg");
+    cs2d_render_set_shadow_intensity(client->config.shadows);
+    cs2d_render_set_player_shadows(client->config.playershadows);
+    cs2d_render_set_item_shadows(client->config.itemshadows);
     cs2d_binds_defaults(&client->binds);
     cs2d_binds_load(&client->binds, "sys/controls.cfg");
     client->opt_name_cursor = (int)strlen(client->config.name);
@@ -1802,7 +1805,9 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         cs2d_client_console_print(client, 220, 220, 220, "equip <id|name>     - Equip weapon/item (e.g. equip ak47, equip awp, equip 30)");
         cs2d_client_console_print(client, 220, 220, 220, "weapons / itemlist  - List all weapons & IDs");
         cs2d_client_console_print(client, 220, 220, 220, "sun <0..360>        - Set map sun angle (daylight_time) & rebuild shadows");
-        cs2d_client_console_print(client, 220, 220, 220, "shadows [0|1]       - Toggle map shadow & lighting overlay");
+        cs2d_client_console_print(client, 220, 220, 220, "shadows [0..100]    - Set shadow opacity (0 = disabled)");
+        cs2d_client_console_print(client, 220, 220, 220, "playershadows [0|1] - Toggle player & hostage drop shadows");
+        cs2d_client_console_print(client, 220, 220, 220, "itemshadows [0|1]   - Toggle ground item & projectile shadows");
         cs2d_client_console_print(client, 220, 220, 220, "tp <tx> <ty>        - Teleport player to tile (tx, ty) (see: pos)");
         cs2d_client_console_print(client, 220, 220, 220, "hp <val> / armor <v>- Set player health / armor (money <val>, team <t|ct>)");
         cs2d_client_console_print(client, 220, 220, 220, "bot_add [t|ct]      - Spawn a bot (bot_kill to remove bots)");
@@ -1946,9 +1951,33 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         }
         cs2d_client_console_print(client, 170, 170, 170, "FPS display: %s", client->show_fps ? "ON" : "OFF");
     } else if (_stricmp(cmd, "shadows") == 0 || _stricmp(cmd, "shadow") == 0) {
-        bool en = (n >= 2) ? (atoi(arg1) != 0) : !cs2d_render_get_shadows_enabled();
-        cs2d_render_set_shadows_enabled(en);
-        cs2d_client_console_print(client, 170, 170, 170, "Map shadows & lighting: %s", en ? "ENABLED" : "DISABLED");
+        if (n >= 2) {
+            int val = atoi(arg1);
+            if (val <= 1 && strcmp(arg1, "1") == 0) val = 50;
+            cs2d_render_set_shadow_intensity(val);
+            cs2d_render_set_shadows_enabled(val > 0);
+            client->config.shadows = val;
+        } else {
+            bool en = !cs2d_render_get_shadows_enabled();
+            cs2d_render_set_shadows_enabled(en);
+            if (en && cs2d_render_get_shadow_intensity() == 0) {
+                cs2d_render_set_shadow_intensity(50);
+                client->config.shadows = 50;
+            }
+        }
+        cs2d_client_console_print(client, 170, 170, 170, "Shadows: %s (intensity: %d%%)",
+                                  cs2d_render_get_shadows_enabled() ? "ENABLED" : "DISABLED",
+                                  cs2d_render_get_shadow_intensity());
+    } else if (_stricmp(cmd, "playershadows") == 0 || _stricmp(cmd, "playershadow") == 0) {
+        bool en = (n >= 2) ? (atoi(arg1) != 0) : !cs2d_render_get_player_shadows();
+        cs2d_render_set_player_shadows(en);
+        client->config.playershadows = en;
+        cs2d_client_console_print(client, 170, 170, 170, "Player shadows: %s", en ? "ENABLED" : "DISABLED");
+    } else if (_stricmp(cmd, "itemshadows") == 0 || _stricmp(cmd, "itemshadow") == 0) {
+        bool en = (n >= 2) ? (atoi(arg1) != 0) : !cs2d_render_get_item_shadows();
+        cs2d_render_set_item_shadows(en);
+        client->config.itemshadows = en;
+        cs2d_client_console_print(client, 170, 170, 170, "Item shadows: %s", en ? "ENABLED" : "DISABLED");
     } else if (_stricmp(cmd, "sun") == 0 || _stricmp(cmd, "daylight") == 0 || _stricmp(cmd, "light") == 0) {
         if (!map) {
             cs2d_client_console_print(client, 255, 45, 45, "No map loaded.");

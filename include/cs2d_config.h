@@ -19,6 +19,10 @@ typedef struct {
     bool hud_fastswitch; /* "hud_fastswitch": a slot key with one item holds it at once (DAT_140ddf19e) */
     int  drawradar;      /* "drawradar" 0..4 (DAT_140ddf19b) */
     int  radarsize;      /* "radarsize" (DAT_140ddf19a) */
+    int  shadows;        /* "shadows" 0..100 shadow opacity (DAT_140a14f7b) */
+    bool playershadows;  /* "playershadows" 0|1 draw player shadows (DAT_140ddf184) */
+    bool itemshadows;    /* "itemshadows" 0|1 draw ground item shadows (DAT_140ddf183) */
+    int  mapshadows;     /* "mapshadows" 0..4 (DAT_140ddf190) */
 } cs2d_config_t;
 
 /* Load config from sys/config.cfg */

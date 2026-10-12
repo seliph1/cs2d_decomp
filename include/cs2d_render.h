@@ -76,6 +76,7 @@ typedef struct {
     cs2d_texture_t            tex_palms;         /* gfx/sprites/palms.bmp (64x96 -> 3 frames of 64x32) */
     cs2d_texture_t            tex_tree;          /* gfx/sprites/tree.bmp */
     cs2d_texture_t            tex_leaf;          /* gfx/sprites/leaf.bmp */
+    cs2d_texture_t            tex_shadow;        /* incbindata/shadow.bmp (32x32, maskMode=3, 0x140a0e038) */
     cs2d_texture_t            tex_lamp1;         /* gfx/sprites/lamp1.bmp */
     cs2d_texture_t            tex_lamp2;         /* gfx/sprites/lamp2.bmp */
     cs2d_texture_t            tex_flare1;        /* gfx/sprites/flare1.bmp (maskMode=3) */
@@ -278,6 +279,12 @@ void  cs2d_render_scissor_end(void);
 void  cs2d_render_invalidate_shadows(void);
 void  cs2d_render_set_shadows_enabled(bool enabled);
 bool  cs2d_render_get_shadows_enabled(void);
+void  cs2d_render_set_shadow_intensity(int intensity);
+int   cs2d_render_get_shadow_intensity(void);
+void  cs2d_render_set_player_shadows(bool enabled);
+bool  cs2d_render_get_player_shadows(void);
+void  cs2d_render_set_item_shadows(bool enabled);
+bool  cs2d_render_get_item_shadows(void);
 void  cs2d_render_ensure_shadow_chunks(const cs2d_map_t *map);
 void  cs2d_render_get_shadow_chunk_info(int *out_chunks_x, int *out_chunks_y, int *out_dirty_count);
 void  cs2d_render_clear_shadow_dirty_test(void);

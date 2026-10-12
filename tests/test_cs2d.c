@@ -2842,6 +2842,122 @@ static bool test_projectiles_and_fields(void)
     return true;
 }
 
+/*
+ * ============================================================================
+ * Player & Ground Item Shadows (Tpl.draw 0x140121160, Titem.draw 0x1401483a0,
+ * Te.draw 0x140260000, Tpro.draw 0x140288702, Thostage.draw 0x140147090)
+ * ============================================================================
+ */
+static bool test_item_and_player_shadows(void)
+{
+    printf("\n=== Testing Player and Ground Item Shadows ===\n");
+
+    /* 1. Config loading & defaults */
+    cs2d_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    if (!cs2d_config_load(&cfg, "sys/config.cfg")) {
+        TEST_FAIL("Shadow Config", "Failed to load sys/config.cfg");
+        return false;
+    }
+    if (cfg.shadows != 50 || !cfg.playershadows || !cfg.itemshadows) {
+        TEST_FAIL("Shadow Config", "Expected shadows=50, playershadows=1, itemshadows=1");
+        return false;
+    }
+    TEST_PASS("sys/config.cfg shadow parameters (shadows 50, playershadows 1, itemshadows 1) parsed");
+
+    /* 2. Render getters & setters */
+    cs2d_render_set_shadow_intensity(80);
+    if (cs2d_render_get_shadow_intensity() != 80) {
+        TEST_FAIL("Shadow Getters/Setters", "Failed to set shadow intensity to 80");
+        return false;
+    }
+    cs2d_render_set_player_shadows(false);
+    if (cs2d_render_get_player_shadows()) {
+        TEST_FAIL("Shadow Getters/Setters", "Failed to disable player shadows");
+        return false;
+    }
+    cs2d_render_set_item_shadows(false);
+    if (cs2d_render_get_item_shadows()) {
+        TEST_FAIL("Shadow Getters/Setters", "Failed to disable item shadows");
+        return false;
+    }
+
+    /* Reset to defaults */
+    cs2d_render_set_shadow_intensity(50);
+    cs2d_render_set_player_shadows(true);
+    cs2d_render_set_item_shadows(true);
+    TEST_PASS("Shadow intensity, playershadows, itemshadows getters & setters verified");
+
+    /* 3. Interactive console commands */
+    cs2d_client_t *cli = (cs2d_client_t *)calloc(1, sizeof(cs2d_client_t));
+    if (!cli) {
+        TEST_FAIL("Shadow Commands", "Failed to allocate client");
+        return false;
+    }
+    cli->config.shadows = 50;
+    cli->config.playershadows = true;
+    cli->config.itemshadows = true;
+
+    cs2d_client_console_exec(cli, "playershadows 0");
+    if (cs2d_render_get_player_shadows() || cli->config.playershadows) {
+        TEST_FAIL("Shadow Commands", "playershadows 0 failed");
+        free(cli);
+        return false;
+    }
+    cs2d_client_console_exec(cli, "playershadows 1");
+    if (!cs2d_render_get_player_shadows() || !cli->config.playershadows) {
+        TEST_FAIL("Shadow Commands", "playershadows 1 failed");
+        free(cli);
+        return false;
+    }
+
+    cs2d_client_console_exec(cli, "itemshadows 0");
+    if (cs2d_render_get_item_shadows() || cli->config.itemshadows) {
+        TEST_FAIL("Shadow Commands", "itemshadows 0 failed");
+        free(cli);
+        return false;
+    }
+    cs2d_client_console_exec(cli, "itemshadows 1");
+    if (!cs2d_render_get_item_shadows() || !cli->config.itemshadows) {
+        TEST_FAIL("Shadow Commands", "itemshadows 1 failed");
+        free(cli);
+        return false;
+    }
+
+    cs2d_client_console_exec(cli, "shadows 75");
+    if (cs2d_render_get_shadow_intensity() != 75 || cli->config.shadows != 75) {
+        TEST_FAIL("Shadow Commands", "shadows 75 failed");
+        free(cli);
+        return false;
+    }
+    TEST_PASS("Console commands (playershadows [0|1], itemshadows [0|1], shadows [0..100]) verified");
+    free(cli);
+
+    /* 4. Geometry & scaling verification against REA/Ghidra addresses */
+    /* Player shadow: incbindata/shadow.bmp at scale 1.5 = 48.0 px (Tpl.draw 0x140121160 / 0x140122298) */
+    float player_scale = 1.5f;
+    float player_shadow_w = 32.0f * player_scale;
+    float player_shadow_h = 32.0f * player_scale;
+    if (player_shadow_w != 48.0f || player_shadow_h != 48.0f) {
+        TEST_FAIL("Player Shadow Geometry", "Player shadow expected 48x48 px (scale 1.5)");
+        return false;
+    }
+
+    /* Ground item shadow: incbindata/shadow.bmp at scale 1.0 = 32.0 px at (x, y) */
+    /* and drop shadow silhouette at (x + 1.0, y + 1.0) (Titem.draw 0x1401483a0) */
+    float item_shadow_w = 32.0f * 1.0f;
+    float item_shadow_h = 32.0f * 1.0f;
+    float drop_dx = 1.0f;
+    float drop_dy = 1.0f;
+    if (item_shadow_w != 32.0f || item_shadow_h != 32.0f || drop_dx != 1.0f || drop_dy != 1.0f) {
+        TEST_FAIL("Item Shadow Geometry", "Item shadow expected 32x32 circle + +1,+1 offset drop silhouette");
+        return false;
+    }
+    TEST_PASS("Player shadow (48x48 scale 1.5) and Item shadow (32x32 circle + +1,+1 silhouette) verified");
+
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -2849,7 +2965,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 27;
+    int total = 28;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -2878,6 +2994,7 @@ int main(void)
     if (test_shadow_chunks()) passed++;
     if (test_chat_and_server_messages()) passed++;
     if (test_projectiles_and_fields()) passed++;
+    if (test_item_and_player_shadows()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

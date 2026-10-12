@@ -81,6 +81,11 @@ static bool init_gdiplus_once(void)
 #define GL_TEXTURE_MAX_LEVEL 0x813D
 #endif
 
+static bool s_shadows_enabled   = true;
+static int  s_shadow_intensity  = 50;   /* "shadows" (0..100, default 50, DAT_140a14f7b) */
+static bool s_player_shadows    = true; /* "playershadows" (0|1, default 1, DAT_140ddf184) */
+static bool s_item_shadows      = true; /* "itemshadows" (0|1, default 1, DAT_140ddf183) */
+
 /*
  * Reconstructed from CS2D.exe maskMode jump table (0x1401ad6a9 & 0x140062db0):
  *   mask_mode == 0: Opaque / embedded alpha only
@@ -801,9 +806,10 @@ bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank)
             cs2d_texture_load_ex(&bank->tex_tree, "gfx/sprites/tree01.bmp", 3);
         }
     }
-    if (!cs2d_texture_load_ex(&bank->tex_leaf, "incbindata/shadow.bmp", 3)) {
-        cs2d_texture_load_ex(&bank->tex_leaf, "gfx/shadow.bmp", 3);
+    if (!cs2d_texture_load_ex(&bank->tex_shadow, "incbindata/shadow.bmp", 3)) {
+        cs2d_texture_load_ex(&bank->tex_shadow, "gfx/shadow.bmp", 3);
     }
+    bank->tex_leaf = bank->tex_shadow;
     if (!cs2d_texture_load_grid(&bank->tex_lamp1, "incbindata/objects.bmp", 2, 32, 32)) {
         if (!cs2d_texture_load_grid(&bank->tex_lamp1, "gfx/incbindata/objects.bmp", 2, 32, 32)) {
             cs2d_texture_load_ex(&bank->tex_lamp1, "gfx/sprites/lamp1.bmp", 2);
@@ -893,7 +899,8 @@ void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank)
     cs2d_texture_free(&bank->tex_buildhelper);
     cs2d_texture_free(&bank->tex_palms);
     cs2d_texture_free(&bank->tex_tree);
-    cs2d_texture_free(&bank->tex_leaf);
+    cs2d_texture_free(&bank->tex_shadow);
+    bank->tex_leaf.id = 0;
     cs2d_texture_free(&bank->tex_lamp1);
     cs2d_texture_free(&bank->tex_lamp2);
     cs2d_texture_free(&bank->tex_flare1);
@@ -1192,11 +1199,16 @@ void cs2d_render_player(
     float sx = (player->pos.x - cam_x) - sin_a * recoil_px;
     float sy = (player->pos.y - cam_y) + cos_a * recoil_px;
 
-    /* 0. Player Ground Drop Shadow (gfx/shadow.bmp, maskMode=3) */
-    if (bank && bank->tex_leaf.id) {
-        cs2d_render_sprite_frame(&bank->tex_leaf, bank->tex_leaf.width, bank->tex_leaf.height, 0,
-                                 sx + 2.0f, sy + 2.0f, 32.0f, 32.0f, 0.0f,
-                                 0.0f, 0.0f, 0.0f, 0.35f, 0);
+    /* 0. Player Ground Drop Shadow (Tpl.draw 0x140121160 / 0x140122298: incbindata/shadow.bmp at scale 1.5 in black, alpha 0.5) */
+    if (s_shadows_enabled && s_player_shadows && s_shadow_intensity > 0 && bank) {
+        const cs2d_texture_t *stex = bank->tex_shadow.id ? &bank->tex_shadow : &bank->tex_leaf;
+        if (stex && stex->id) {
+            float player_a = (player->armor == 206) ? 0.2f : 1.0f;
+            float shadow_a = player_a * ((float)s_shadow_intensity * 0.01f);
+            cs2d_render_sprite_frame(stex, 32, 32, 0,
+                                     sx, sy, 48.0f, 48.0f, 0.0f,
+                                     0.0f, 0.0f, 0.0f, shadow_a, 0);
+        }
     }
 
     /* 1. Walking Legs (gfx/player/legs.bmp: 128x64 -> 8 frames of 32x32, offset 5px behind player) */
@@ -1434,7 +1446,6 @@ typedef struct {
 } cs2d_shadow_system_t;
 
 static cs2d_shadow_system_t s_shadow_sys = {0};
-static bool                 s_shadows_enabled = true;
 
 /*
  * Reconstructed from 0x14025e420 (cast_shadow_volume) + lighting/gfx_penumbra.png & lighting/gfx_blur.png:
@@ -2362,12 +2373,23 @@ void cs2d_render_map_ex(
                 break;
             }
             case CS2D_ENT_ENV_ITEM: {
-                /* Env_Item (21): ints[0]=weapon/item ID -> drawn with gfx/weapons/<wep>_d.bmp (Titem.draw 0x140147b80) */
+                /* Env_Item (21): ints[0]=weapon/item ID -> drawn with gfx/weapons/<wep>_d.bmp (Titem.draw 0x140147b80 / Te.draw 0x140260000) */
                 int wep_id = ent->int_settings[0];
                 if (bank && wep_id > 0 && wep_id < CS2D_MAX_WEAPONS && bank->tex_weapons_d[wep_id].id) {
                     const cs2d_texture_t *dtex = &bank->tex_weapons_d[wep_id];
                     float dw = (dtex->width > 64) ? (float)(dtex->width / 2) : (float)dtex->width;
                     float dh = (dtex->height > 32) ? (float)(dtex->height / 2) : (float)dtex->height;
+                    if (s_shadows_enabled && s_item_shadows && s_shadow_intensity > 0) {
+                        float shadow_a = (float)s_shadow_intensity * 0.01f;
+                        const cs2d_texture_t *stex = bank->tex_shadow.id ? &bank->tex_shadow : &bank->tex_leaf;
+                        if (stex && stex->id) {
+                            cs2d_render_sprite_frame(stex, 32, 32, 0,
+                                                     ex, ey, 32.0f, 32.0f, 0.0f,
+                                                     0.0f, 0.0f, 0.0f, shadow_a, 0);
+                        }
+                        cs2d_render_sprite(dtex, ex + 1.0f, ey + 1.0f, dw, dh, 0.0f,
+                                           0.0f, 0.0f, 0.0f, shadow_a);
+                    }
                     cs2d_render_sprite(dtex, ex, ey, dw, dh, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
                 }
                 break;
@@ -2412,6 +2434,15 @@ void cs2d_render_map_ex(
                 if (bank && bank->tex_hostages.id) {
                     float rot = (float)ent->int_settings[0];
                     int look = ent->int_settings[1] & 7;
+                    if (s_shadows_enabled && s_player_shadows && s_shadow_intensity > 0) {
+                        const cs2d_texture_t *stex = bank->tex_shadow.id ? &bank->tex_shadow : &bank->tex_leaf;
+                        if (stex && stex->id) {
+                            float shadow_a = ((float)s_shadow_intensity * 0.01f);
+                            cs2d_render_sprite_frame(stex, 32, 32, 0,
+                                                     ex, ey, 48.0f, 48.0f, 0.0f,
+                                                     0.0f, 0.0f, 0.0f, shadow_a, 0);
+                        }
+                    }
                     if (bank->tex_legs.id) {
                         cs2d_render_sprite_frame(&bank->tex_legs, 32, 32, 0, ex, ey, 32.0f, 32.0f, rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
                     }
@@ -2743,6 +2774,38 @@ void cs2d_render_set_shadows_enabled(bool enabled)
 bool cs2d_render_get_shadows_enabled(void)
 {
     return s_shadows_enabled;
+}
+
+void cs2d_render_set_shadow_intensity(int intensity)
+{
+    if (intensity < 0) intensity = 0;
+    if (intensity > 100) intensity = 100;
+    s_shadow_intensity = intensity;
+}
+
+int cs2d_render_get_shadow_intensity(void)
+{
+    return s_shadow_intensity;
+}
+
+void cs2d_render_set_player_shadows(bool enabled)
+{
+    s_player_shadows = enabled;
+}
+
+bool cs2d_render_get_player_shadows(void)
+{
+    return s_player_shadows;
+}
+
+void cs2d_render_set_item_shadows(bool enabled)
+{
+    s_item_shadows = enabled;
+}
+
+bool cs2d_render_get_item_shadows(void)
+{
+    return s_item_shadows;
 }
 
 static void ensure_minimap_texture(cs2d_gfx_bank_t *bank, const cs2d_map_t *map, const cs2d_player_t *player)
