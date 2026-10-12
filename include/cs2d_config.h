@@ -23,6 +23,7 @@ typedef struct {
     bool playershadows;  /* "playershadows" 0|1 draw player shadows (DAT_140ddf184) */
     bool itemshadows;    /* "itemshadows" 0|1 draw ground item shadows (DAT_140ddf183) */
     int  mapshadows;     /* "mapshadows" 0..4 (DAT_140ddf190) */
+    int  light;          /* "light" 0..5 light engine quality, 0 = off (DAT_140ddf185) */
 } cs2d_config_t;
 
 /* Load config from sys/config.cfg */

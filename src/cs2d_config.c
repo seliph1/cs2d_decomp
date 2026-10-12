@@ -27,6 +27,7 @@ bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
     cfg->playershadows = true;
     cfg->itemshadows = true;
     cfg->mapshadows = 4;
+    cfg->light = 5;
 
     FILE *f = fopen(filepath, "r");
     if (!f) return false;
@@ -76,6 +77,8 @@ bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
                 cfg->itemshadows = (atoi(val) != 0);
             } else if (strcmp(key, "mapshadows") == 0) {
                 cfg->mapshadows = atoi(val);
+            } else if (strcmp(key, "light") == 0) {
+                cfg->light = atoi(val);
             }
         }
     }

@@ -1,0 +1,527 @@
+# TSmartLighting trace of the ORIGINAL (CS2D.exe in Unicorn, tools/agent/emu_light.py floor) for maps/fun_roleplay.map, camera (15, 20),
+# light 5, mapshadows 4, shadows 50. Regenerate with tools/agent/light_check.sh maps/fun_roleplay.map 15 20 floor.
+transform 0.000 1.000 1.000
+blend 3
+alpha 1.000
+color 255 255 255
+blend 5
+rotation 270.000
+image shadowmap 33.000 220.000 4
+rotation 270.000
+image shadowmap 33.000 284.000 4
+rotation 0.000
+image shadowmap 65.000 28.000 2
+rotation 270.000
+image shadowmap 65.000 60.000 1
+rotation 270.000
+image shadowmap 65.000 92.000 1
+rotation 270.000
+image shadowmap 65.000 124.000 1
+rotation 270.000
+image shadowmap 65.000 156.000 1
+rotation 270.000
+image shadowmap 65.000 188.000 1
+rotation 0.000
+image shadowmap 65.000 220.000 0
+rotation 270.000
+image shadowmap 65.000 220.000 0
+rotation 270.000
+image shadowmap 65.000 252.000 1
+rotation 0.000
+image shadowmap 65.000 284.000 0
+rotation 270.000
+image shadowmap 65.000 284.000 0
+rotation 270.000
+image shadowmap 65.000 316.000 1
+rotation 270.000
+image shadowmap 65.000 348.000 1
+rotation 270.000
+image shadowmap 65.000 380.000 1
+rotation 270.000
+image shadowmap 65.000 412.000 1
+rotation 270.000
+image shadowmap 65.000 444.000 1
+rotation 270.000
+image shadowmap 65.000 476.000 1
+rotation 90.000
+image shadowmap 97.000 28.000 2
+rotation 90.000
+image shadowmap 97.000 60.000 1
+rotation 90.000
+image shadowmap 97.000 92.000 1
+rotation 90.000
+image shadowmap 97.000 124.000 1
+rotation 90.000
+image shadowmap 97.000 156.000 1
+rotation 90.000
+image shadowmap 97.000 188.000 0
+rotation 0.000
+image shadowmap 129.000 188.000 1
+rotation 0.000
+image shadowmap 161.000 28.000 2
+rotation 270.000
+image shadowmap 161.000 60.000 1
+rotation 270.000
+image shadowmap 161.000 92.000 1
+rotation 270.000
+image shadowmap 161.000 124.000 1
+rotation 270.000
+image shadowmap 161.000 156.000 1
+rotation 0.000
+image shadowmap 161.000 188.000 0
+rotation 90.000
+image shadowmap 193.000 28.000 2
+rotation 90.000
+image shadowmap 193.000 60.000 1
+rotation 90.000
+image shadowmap 193.000 92.000 1
+rotation 90.000
+image shadowmap 193.000 124.000 1
+rotation 90.000
+image shadowmap 193.000 156.000 1
+rotation 90.000
+image shadowmap 193.000 188.000 1
+rotation 90.000
+image shadowmap 193.000 220.000 1
+rotation 90.000
+image shadowmap 193.000 252.000 1
+rotation 90.000
+image shadowmap 193.000 284.000 1
+rotation 90.000
+image shadowmap 193.000 316.000 0
+rotation 0.000
+image shadowmap 225.000 316.000 1
+rotation 0.000
+image shadowmap 257.000 316.000 1
+rotation 0.000
+image shadowmap 289.000 60.000 2
+rotation 270.000
+image shadowmap 289.000 92.000 1
+rotation 270.000
+image shadowmap 289.000 124.000 1
+rotation 270.000
+image shadowmap 289.000 156.000 1
+rotation 270.000
+image shadowmap 289.000 188.000 1
+rotation 270.000
+image shadowmap 289.000 220.000 1
+rotation 270.000
+image shadowmap 289.000 252.000 2
+rotation 0.000
+image shadowmap 289.000 316.000 1
+rotation 0.000
+image shadowmap 321.000 60.000 1
+rotation 180.000
+image shadowmap 321.000 252.000 1
+rotation 0.000
+image shadowmap 321.000 316.000 1
+rotation 0.000
+image shadowmap 353.000 60.000 1
+rotation 270.000
+image shadowmap 353.000 252.000 0
+rotation 270.000
+image shadowmap 353.000 284.000 1
+rotation 0.000
+image shadowmap 353.000 316.000 0
+rotation 0.000
+image shadowmap 385.000 60.000 1
+rotation 0.000
+image shadowmap 417.000 60.000 1
+rotation 180.000
+image shadowmap 417.000 252.000 0
+rotation 90.000
+image shadowmap 417.000 284.000 1
+rotation 90.000
+image shadowmap 417.000 316.000 0
+rotation 0.000
+image shadowmap 449.000 60.000 1
+rotation 180.000
+image shadowmap 449.000 252.000 1
+rotation 0.000
+image shadowmap 449.000 316.000 1
+rotation 0.000
+image shadowmap 481.000 60.000 1
+rotation 180.000
+image shadowmap 481.000 252.000 1
+rotation 0.000
+image shadowmap 481.000 316.000 1
+rotation 0.000
+image shadowmap 513.000 60.000 1
+rotation 180.000
+image shadowmap 513.000 252.000 1
+rotation 0.000
+image shadowmap 513.000 316.000 1
+rotation 0.000
+image shadowmap 545.000 60.000 1
+rotation 180.000
+image shadowmap 545.000 252.000 1
+rotation 0.000
+image shadowmap 545.000 316.000 1
+rotation 90.000
+image shadowmap 577.000 60.000 2
+rotation 90.000
+image shadowmap 577.000 92.000 0
+rotation 180.000
+image shadowmap 577.000 252.000 0
+rotation 270.000
+image shadowmap 577.000 252.000 0
+rotation 0.000
+image shadowmap 577.000 284.000 3
+rotation 0.000
+image shadowmap 577.000 316.000 0
+rotation 90.000
+image shadowmap 577.000 316.000 0
+rotation 90.000
+image shadowmap 609.000 92.000 2
+rotation 90.000
+image shadowmap 609.000 124.000 1
+rotation 90.000
+image shadowmap 609.000 156.000 1
+rotation 90.000
+image shadowmap 609.000 188.000 1
+rotation 90.000
+image shadowmap 609.000 220.000 1
+rotation 180.000
+image shadowmap 609.000 252.000 2
+rotation 0.000
+image shadowmap 609.000 316.000 1
+rotation 0.000
+image shadowmap 641.000 316.000 1
+rotation 0.000
+image shadowmap 673.000 28.000 2
+rotation 270.000
+image shadowmap 673.000 60.000 1
+rotation 270.000
+image shadowmap 673.000 92.000 1
+rotation 270.000
+image shadowmap 673.000 124.000 1
+rotation 270.000
+image shadowmap 673.000 156.000 1
+rotation 270.000
+image shadowmap 673.000 188.000 1
+rotation 270.000
+image shadowmap 673.000 220.000 1
+rotation 270.000
+image shadowmap 673.000 252.000 1
+rotation 270.000
+image shadowmap 673.000 284.000 1
+rotation 0.000
+image shadowmap 673.000 316.000 0
+rotation 0.000
+image shadowmap 705.000 28.000 1
+rotation 0.000
+image shadowmap 737.000 28.000 1
+rotation 0.000
+image shadowmap 769.000 28.000 1
+rotation 0.000
+image shadowmap 801.000 28.000 1
+rotation 0.000
+image shadowmap 833.000 28.000 1
+rotation 0.000
+image shadowmap 865.000 28.000 1
+rotation 180.000
+image shadowmap 865.000 252.000 0
+rotation 90.000
+image shadowmap 865.000 284.000 1
+rotation 90.000
+image shadowmap 865.000 316.000 0
+rotation 0.000
+rotation 0.000
+image occlusion 65.000 28.000 3
+rotation 270.000
+image occlusion 65.000 60.000 6
+rotation 270.000
+image occlusion 65.000 92.000 6
+rotation 270.000
+image occlusion 65.000 124.000 6
+rotation 270.000
+image occlusion 65.000 156.000 6
+rotation 270.000
+image occlusion 65.000 188.000 6
+rotation 270.000
+image occlusion 65.000 220.000 6
+rotation 270.000
+image occlusion 65.000 252.000 6
+rotation 270.000
+image occlusion 65.000 284.000 6
+rotation 270.000
+image occlusion 65.000 316.000 6
+rotation 270.000
+image occlusion 65.000 348.000 6
+rotation 270.000
+image occlusion 65.000 380.000 6
+rotation 270.000
+image occlusion 65.000 412.000 6
+rotation 270.000
+image occlusion 65.000 444.000 6
+rotation 270.000
+image occlusion 65.000 476.000 6
+rotation 90.000
+image occlusion 97.000 28.000 3
+rotation 90.000
+image occlusion 97.000 60.000 6
+rotation 90.000
+image occlusion 97.000 92.000 6
+rotation 90.000
+image occlusion 97.000 124.000 6
+transform 270.000 -1.000 -1.000
+image occlusion 97.000 156.000 7
+scale 1.000 1.000
+rotation 90.000
+image occlusion 97.000 188.000 8
+rotation 0.000
+image occlusion 129.000 188.000 5
+rotation 0.000
+image occlusion 161.000 28.000 3
+rotation 270.000
+image occlusion 161.000 60.000 6
+rotation 270.000
+image occlusion 161.000 92.000 6
+rotation 270.000
+image occlusion 161.000 124.000 6
+transform 90.000 1.000 -1.000
+image occlusion 161.000 156.000 7
+scale 1.000 1.000
+rotation 0.000
+image occlusion 161.000 188.000 8
+rotation 90.000
+image occlusion 193.000 28.000 3
+rotation 90.000
+image occlusion 193.000 60.000 6
+rotation 90.000
+image occlusion 193.000 92.000 6
+rotation 90.000
+image occlusion 193.000 124.000 6
+rotation 90.000
+image occlusion 193.000 156.000 6
+rotation 90.000
+image occlusion 193.000 188.000 6
+rotation 90.000
+image occlusion 193.000 220.000 6
+rotation 90.000
+image occlusion 193.000 252.000 6
+transform 270.000 -1.000 -1.000
+image occlusion 193.000 284.000 7
+scale 1.000 1.000
+rotation 90.000
+image occlusion 193.000 316.000 8
+transform 0.000 -1.000 1.000
+image occlusion 225.000 316.000 7
+scale 1.000 1.000
+rotation 0.000
+image occlusion 257.000 316.000 6
+rotation 0.000
+image occlusion 289.000 60.000 3
+rotation 180.000
+image occlusion 289.000 92.000 8
+rotation 270.000
+image occlusion 289.000 92.000 6
+transform 90.000 -1.000 1.000
+image occlusion 289.000 124.000 7
+scale 1.000 1.000
+rotation 270.000
+image occlusion 289.000 124.000 6
+rotation 270.000
+image occlusion 289.000 156.000 6
+rotation 90.000
+image occlusion 289.000 156.000 6
+rotation 270.000
+image occlusion 289.000 188.000 6
+rotation 90.000
+image occlusion 289.000 188.000 6
+transform 270.000 -1.000 -1.000
+image occlusion 289.000 220.000 7
+scale 1.000 1.000
+rotation 270.000
+image occlusion 289.000 220.000 6
+rotation 90.000
+image occlusion 289.000 252.000 8
+rotation 270.000
+image occlusion 289.000 252.000 3
+rotation 0.000
+image occlusion 289.000 316.000 6
+rotation 0.000
+image occlusion 321.000 60.000 6
+rotation 180.000
+image occlusion 321.000 92.000 5
+rotation 0.000
+image occlusion 321.000 252.000 5
+transform 180.000 -1.000 1.000
+image occlusion 321.000 252.000 7
+scale 1.000 1.000
+rotation 0.000
+image occlusion 321.000 316.000 7
+rotation 180.000
+image occlusion 353.000 60.000 8
+rotation 0.000
+image occlusion 353.000 60.000 6
+rotation 270.000
+image occlusion 353.000 92.000 8
+rotation 90.000
+image occlusion 353.000 92.000 5
+rotation 90.000
+image occlusion 353.000 124.000 8
+rotation 270.000
+image occlusion 353.000 124.000 7
+rotation 270.000
+image occlusion 353.000 156.000 6
+rotation 270.000
+image occlusion 353.000 188.000 6
+transform 90.000 1.000 -1.000
+image occlusion 353.000 220.000 7
+scale 1.000 1.000
+rotation 0.000
+image occlusion 353.000 252.000 8
+rotation 270.000
+image occlusion 353.000 252.000 8
+rotation 270.000
+image occlusion 353.000 284.000 5
+rotation 0.000
+image occlusion 353.000 316.000 8
+rotation 180.000
+image occlusion 385.000 60.000 7
+rotation 0.000
+image occlusion 385.000 60.000 6
+transform 0.000 -1.000 1.000
+image occlusion 385.000 124.000 7
+scale 1.000 1.000
+rotation 0.000
+image occlusion 417.000 60.000 6
+rotation 180.000
+image occlusion 417.000 60.000 6
+rotation 0.000
+image occlusion 417.000 124.000 6
+rotation 180.000
+image occlusion 417.000 252.000 8
+rotation 90.000
+image occlusion 417.000 284.000 5
+rotation 90.000
+image occlusion 417.000 316.000 8
+rotation 0.000
+image occlusion 449.000 60.000 6
+rotation 180.000
+image occlusion 449.000 60.000 6
+rotation 0.000
+image occlusion 449.000 124.000 6
+rotation 180.000
+image occlusion 449.000 252.000 7
+transform 0.000 -1.000 1.000
+image occlusion 449.000 316.000 7
+scale 1.000 1.000
+transform 180.000 -1.000 1.000
+image occlusion 481.000 60.000 7
+scale 1.000 1.000
+rotation 0.000
+image occlusion 481.000 60.000 6
+rotation 0.000
+image occlusion 481.000 124.000 7
+rotation 180.000
+image occlusion 481.000 156.000 8
+transform 90.000 -1.000 1.000
+image occlusion 481.000 188.000 7
+scale 1.000 1.000
+transform 270.000 -1.000 -1.000
+image occlusion 481.000 220.000 7
+scale 1.000 1.000
+rotation 90.000
+image occlusion 481.000 252.000 8
+rotation 180.000
+image occlusion 481.000 252.000 6
+rotation 0.000
+image occlusion 481.000 316.000 6
+rotation 270.000
+image occlusion 513.000 60.000 8
+rotation 0.000
+image occlusion 513.000 60.000 6
+rotation 270.000
+image occlusion 513.000 92.000 5
+rotation 0.000
+image occlusion 513.000 124.000 8
+rotation 180.000
+image occlusion 513.000 156.000 7
+rotation 0.000
+image occlusion 513.000 252.000 5
+rotation 180.000
+image occlusion 513.000 252.000 6
+rotation 0.000
+image occlusion 513.000 316.000 6
+rotation 0.000
+image occlusion 545.000 60.000 6
+rotation 180.000
+image occlusion 545.000 156.000 6
+rotation 0.000
+image occlusion 545.000 220.000 4
+rotation 0.000
+image occlusion 545.000 252.000 8
+rotation 180.000
+image occlusion 545.000 252.000 6
+rotation 0.000
+image occlusion 545.000 316.000 6
+transform 0.000 -1.000 1.000
+image occlusion 577.000 60.000 4
+scale 1.000 1.000
+rotation 90.000
+image occlusion 577.000 92.000 8
+rotation 180.000
+image occlusion 577.000 156.000 6
+rotation 0.000
+image occlusion 577.000 220.000 6
+rotation 180.000
+image occlusion 577.000 252.000 6
+rotation 0.000
+image occlusion 577.000 316.000 6
+rotation 90.000
+image occlusion 609.000 92.000 4
+rotation 90.000
+image occlusion 609.000 124.000 6
+rotation 180.000
+image occlusion 609.000 156.000 3
+rotation 90.000
+image occlusion 609.000 220.000 3
+rotation 180.000
+image occlusion 609.000 252.000 3
+rotation 0.000
+image occlusion 609.000 316.000 6
+rotation 0.000
+image occlusion 641.000 316.000 7
+rotation 0.000
+image occlusion 673.000 28.000 3
+rotation 270.000
+image occlusion 673.000 60.000 6
+rotation 270.000
+image occlusion 673.000 92.000 6
+rotation 270.000
+image occlusion 673.000 124.000 6
+rotation 270.000
+image occlusion 673.000 156.000 6
+rotation 270.000
+image occlusion 673.000 188.000 6
+rotation 270.000
+image occlusion 673.000 220.000 6
+rotation 270.000
+image occlusion 673.000 252.000 6
+transform 90.000 1.000 -1.000
+image occlusion 673.000 284.000 7
+scale 1.000 1.000
+rotation 0.000
+image occlusion 673.000 316.000 8
+rotation 0.000
+image occlusion 705.000 28.000 6
+rotation 0.000
+image occlusion 737.000 28.000 6
+rotation 0.000
+image occlusion 769.000 28.000 6
+rotation 0.000
+image occlusion 801.000 28.000 6
+rotation 0.000
+image occlusion 833.000 28.000 6
+rotation 0.000
+image occlusion 865.000 28.000 6
+rotation 180.000
+image occlusion 865.000 252.000 8
+rotation 90.000
+image occlusion 865.000 284.000 5
+rotation 90.000
+image occlusion 865.000 316.000 8
+transform 0.000 1.000 1.000
+blend 3

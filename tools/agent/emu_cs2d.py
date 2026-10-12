@@ -30,7 +30,7 @@ A = {
     'Max2D_SetTransform': 0x1403276D0, 'Max2D_SetOrigin': 0x1403271B0, 'cs2d_DrawImage': 0x14010A7C0,
     'cs2d_DrawImageRect': 0x140113C70, 'cs2d_DrawRect': 0x140120A50, 'DrawPoly': 0x14013B1B0,
     'cs2d_DrawTexturedPoly': 0x140131CD0, 'bbArrayFromData': 0x1408DB7B0, 'sincos': 0x140916780,
-    'atan2': 0x140916530, 'cos': 0x140916630, 'sin': 0x140917520,
+    'atan2': 0x140916530, 'cos': 0x140916630, 'sin': 0x140917520, 'acos': 0x1409204E0,  # msvcrt import thunk
 }
 
 HEAP = 0x200000000
@@ -221,6 +221,7 @@ class Cs2dEmu:
         self.hook(A['atan2'], lambda e: e.ret_double(math.atan2(e.dx(0), e.dx(1))))
         self.hook(A['cos'], lambda e: e.ret_double(math.cos(e.dx(0))))
         self.hook(A['sin'], lambda e: e.ret_double(math.sin(e.dx(0))))
+        self.hook(A['acos'], lambda e: e.ret_double(math.acos(max(-1.0, min(1.0, e.dx(0))))))
         self.images = {}
 
     def log_append(self, item):

@@ -1,4 +1,5 @@
 #include "cs2d_render.h"
+#include "cs2d_light.h"
 #include "cs2d_dynobj.h"
 #include "cs2d_weapons.h"
 #include "cs2d_map.h"
@@ -932,6 +933,20 @@ void cs2d_texture_free(cs2d_texture_t *tex)
     }
 }
 
+/* RGBA pixels of an image file (mask mode 0), (a << 24) | (b << 16) | (g << 8) | r per pixel; free() the result */
+uint32_t *cs2d_image_load_rgba(const char *path, int *out_w, int *out_h)
+{
+    rgba_image_t img = {0};
+    cs2d_texture_t tmp;
+    s_capture = &img;
+    cs2d_texture_load_ex(&tmp, path, 0);
+    s_capture = NULL;
+    cs2d_texture_free(&tmp);
+    if (out_w) *out_w = img.w;
+    if (out_h) *out_h = img.h;
+    return img.px;
+}
+
 /* Helper to derive gfx/weapons/<slug>.bmp from weapon ID & name (reconstructed from 0x1401d9210) */
 static void weapon_id_to_slug(uint8_t id, const char *name, char *out_slug, size_t max_len)
 {
@@ -1045,6 +1060,9 @@ bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank)
         cs2d_texture_load_ex(&bank->tex_shadow, "gfx/shadow.bmp", 3);
     }
     bank->tex_leaf = bank->tex_shadow;
+    if (!cs2d_texture_load_grid(&bank->tex_buttons, "incbindata/buttons.bmp", 2, 32, 32)) {
+        cs2d_texture_load_grid(&bank->tex_buttons, "gfx/incbindata/buttons.bmp", 2, 32, 32);
+    }
     if (!cs2d_texture_load_grid(&bank->tex_objects, "incbindata/objects.bmp", 2, 32, 32)) {
         if (!cs2d_texture_load_grid(&bank->tex_objects, "gfx/incbindata/objects.bmp", 2, 32, 32)) {
             cs2d_texture_load_ex(&bank->tex_objects, "gfx/sprites/lamp1.bmp", 2);
@@ -1128,6 +1146,7 @@ void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank)
     cs2d_texture_free(&bank->tex_proj_snowball);
 
     cs2d_texture_free(&bank->tex_shadowmap);
+    cs2d_texture_free(&bank->tex_buttons);
     cs2d_texture_free(&bank->tex_decals);
     cs2d_texture_free(&bank->tex_buildings);
     for (int i = 0; i < 3; i++) cs2d_texture_free(&bank->tex_turret[i]);
@@ -1406,6 +1425,46 @@ int cs2d_player_get_frame(const cs2d_player_t *player, bool lefthanded)
  *      13.5px (melee/bomb, 0x1401229b5), or 12.5px (grenades, 0x1401227ab) + silencer overlay (0x1401217e4)
  *   6. Equipment overlay (gfx/equipment.bmp, 3 frames of 32x32: 0=bomb/defuse at angle-10, 1=NVG, 2=gasmask) (0x1401218b0..0x140121f19)
  */
+/*
+ * The player's silhouette for the light engine's day shadows (FUN_140112340), at the integer camera: the armor image,
+ * the held weapon 16.5 px ahead (12.5 for grenades; half size when its image is 64 px or more both ways), then the
+ * body frame, all midhandled at the weapon rotation. Not drawn: stealth suit (armor 206), Spectators, the dead, and
+ * players more than 99 px off screen.
+ */
+void cs2d_render_player_light_shadow(const cs2d_player_t *player, const cs2d_texture_t *skin_tex, float cam_x, float cam_y)
+{
+    if (!player || !player->alive || player->team == 0 || player->armor == 206 || !cs2d_light_day_shadows()) return;
+    if (!s_player_shadows) return;
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    float x = player->pos.x - cam_x, y = player->pos.y - cam_y;
+    if ((unsigned)((int)x + 99) > 0x418u || (unsigned)((int)y + 99) > 0x2a6u) return;
+    float rot = player->angle + ((player->slash_timer > 0.0f) ? (6.0f * player->slash_timer) : 0.0f);
+    if (bank && player->armor >= 201 && player->armor <= 205 && bank->tex_weapons[79 + player->armor - 201].id) {
+        cs2d_light_add_player_part(&bank->tex_weapons[79 + player->armor - 201], 0, 0, 0, x, y, rot, 1.0f);
+    }
+    if (bank && player->current_weapon > 0 && player->current_weapon < CS2D_MAX_WEAPONS &&
+        bank->tex_weapons[player->current_weapon].id) {
+        const cs2d_texture_t *wt = &bank->tex_weapons[player->current_weapon];
+        const cs2d_weapon_def_t *wdef = cs2d_weapon_get(player->current_weapon);
+        float dist = (wdef && wdef->slot == CS2D_SLOT_GRENADE) ? 12.5f : 16.5f;
+        float sc = (wt->width > 63 && wt->height > 63) ? 0.5f : 1.0f;
+        double r = (double)rot * (3.14159265358979 / 180.0);
+        cs2d_light_add_player_part(wt, 0, 0, 0, (float)(sin(r) * dist + (double)x), (float)((double)y - dist * cos(r)), rot, sc);
+    }
+    const cs2d_texture_t *skin = skin_tex;
+    uint8_t look_idx = player->look & 3;
+    if (bank && bank->initialized) {
+        if (player->is_vip || player->team == CS2D_TEAM_VIP) { if (bank->tex_vip.id) skin = &bank->tex_vip; }
+        else if (player->team == CS2D_TEAM_CT) { if (bank->tex_ct[look_idx].id) skin = &bank->tex_ct[look_idx]; }
+        else if (player->team == CS2D_TEAM_T) { if (bank->tex_t[look_idx].id) skin = &bank->tex_t[look_idx]; }
+    }
+    if (skin && skin->id) {
+        int cw = (skin->width >= 64) ? (skin->width / 2) : skin->width;
+        int ch = (skin->height >= 96) ? (skin->height / 3) : skin->height;
+        cs2d_light_add_player_part(skin, cw, ch, cs2d_player_get_frame(player, false), x, y, rot, 1.0f);
+    }
+}
+
 void cs2d_render_player(
     const cs2d_player_t  *player,
     const cs2d_texture_t *skin_tex,
@@ -1498,9 +1557,19 @@ void cs2d_render_player(
         wy = sy - cos_d * wep_dist;
     }
 
-    /* 0. Cast shadow (our choice, see set_player_shadow_offset): the silhouette of legs, torso and held weapon, shifted
-     * along the sun. Pass 1 marks the texels with alpha >= 0.5 in the depth buffer only; pass 2 fills one black quad
-     * where they were marked, so the shadow has a single alpha and overlapping parts leave no seams. */
+    /* 0a. Light engine on (Tpl.draw 0x140121160): incbindata/shadow.bmp at scale 1.5, black at alpha 0.5 whenever
+     * "shadows" is not 0; the silhouette goes into the day shadows (cs2d_render_player_light_shadow) */
+    if (cs2d_light_day_shadows()) {
+        if (s_shadow_intensity > 0 && bank && bank->tex_shadow.id) {
+            float player_a = (player->armor == 206) ? 0.2f : 1.0f;
+            cs2d_render_sprite_frame(&bank->tex_shadow, 32, 32, 0, sx, sy, 48.0f, 48.0f, 0.0f,
+                                     0.0f, 0.0f, 0.0f, player_a * 0.5f, 0);
+        }
+    } else
+    /* 0b. Cast shadow without the light engine (our choice, see set_player_shadow_offset): the silhouette of legs,
+     * torso and held weapon, shifted along the sun. Pass 1 marks the texels with alpha >= 0.5 in the depth buffer only;
+     * pass 2 fills one black quad where they were marked, so the shadow has a single alpha and overlapping parts leave
+     * no seams. */
     if (s_shadows_enabled && s_player_shadows && s_shadow_intensity > 0) {
         float player_a = (player->armor == 206) ? 0.2f : 1.0f;
         float shadow_a = player_a * ((float)s_shadow_intensity * 0.01f);
@@ -2445,6 +2514,52 @@ static void render_shadow_chunks(const cs2d_map_t *map, float cam_x, float cam_y
     }
 }
 
+/*
+ * Trigger_Use buttons (Te.draw layer 1, 0x140276286..0x1402764ff), within (475, 290) of the screen center (409, 224).
+ * ints[0] 1..10 is a buttons.bmp frame (0 = invisible), rotated by ints[1] (0 / 1 180 / 2 -90 / 3 90). Above 10 the
+ * button is frame 1 with a flare1 glow pulsing at |sin(ms / 10)| + 0.5 (sin(ms / 3) above 15), colored 11 / 16 red,
+ * 12 / 17 green, 13 blue (50,50,255), 14 yellow, 15 white, set at the side ints[1] points to, turning ms / 30, then
+ * again at scale 0.7 turning ms / 20; with the light engine the glow is also a light sprite. Used (state 1): types 9
+ * and 10 show frames 9 and 8, above 10 frame 1, 1..8 nothing.
+ */
+static void render_trigger_use(const cs2d_gfx_bank_t *bank, const cs2d_entity_t *ent, int state, float cam_x, float cam_y,
+                               uint32_t tick_ms)
+{
+    int v = ent->int_settings[0], side = ent->int_settings[1];
+    float px = (float)(ent->x * 32) - cam_x, py = (float)(ent->y * 32) - cam_y;
+    if (fabsf(px - 409.0f) >= 475.0f || fabsf(py - 224.0f) >= 290.0f || !bank->tex_buttons.id || v == 0) return;
+    float rot = side == 1 ? 180.0f : (side == 2 ? -90.0f : (side == 3 ? 90.0f : 0.0f));
+    int frame;
+    if (state == 0) frame = (v >= 1 && v <= 10) ? v - 1 : 1;
+    else if (v == 9) frame = 9;
+    else if (v == 10) frame = 8;
+    else if (v > 10) frame = 1;
+    else return;
+    cs2d_render_sprite_frame(&bank->tex_buttons, 32, 32, frame, px + 16.0f, py + 16.0f, 32.0f, 32.0f, rot,
+                             1.0f, 1.0f, 1.0f, 1.0f, 0);
+    if (state != 0 || v <= 10 || !bank->tex_flare1.id) return;
+    int r = 255, g = 255, b = 255;
+    if (v == 11 || v == 16) { g = 0; b = 0; }
+    else if (v == 12 || v == 17) { r = 0; b = 0; }
+    else if (v == 13) { r = 50; g = 50; }
+    else if (v == 14) { b = 0; }
+    float pulse = fabsf(sinf((float)(tick_ms / 10) * (3.14159265f / 180.0f))) + 0.5f;
+    float alpha = v > 15 ? sinf((float)(tick_ms / 3) * (3.14159265f / 180.0f)) : pulse;
+    int ox = 0, oy = 0;
+    if (side == 0) ox = 16;
+    else if (side == 1) { ox = 16; oy = 32; }
+    else if (side == 2) oy = 16;
+    else if (side == 3) { ox = 32; oy = 16; }
+    float gx = (float)(ent->x * 32 + ox) - cam_x, gy = (float)(ent->y * 32 + oy) - cam_y;
+    const cs2d_texture_t *fl = &bank->tex_flare1;
+    float fr = (float)r / 255.0f, fg = (float)g / 255.0f, fb = (float)b / 255.0f;
+    cs2d_render_sprite_frame(fl, 0, 0, 0, gx, gy, (float)fl->width, (float)fl->height, (float)(tick_ms / 30), fr, fg, fb, alpha, 3);
+    cs2d_render_sprite_frame(fl, 0, 0, 0, gx, gy, (float)fl->width * 0.7f, (float)fl->height * 0.7f, (float)(tick_ms / 20),
+                             fr, fg, fb, alpha, 3);
+    cs2d_light_add_sprite(false, fl, (float)fl->width * 0.5f, (float)fl->height * 0.5f, gx + cam_x, gy + cam_y, 0.7f, 0.7f,
+                          r, g, b, (float)(tick_ms / 30), pulse);
+}
+
 /* Helper to render an Env_Sprite (type 22) entity (reconstructed from Te.draw 0x1402721f0..0x1402724ef) */
 /*
  * Env_Object (29), Te.draw 0x140271ee0. ints[0] type (editor list at 0x1402a8707: 0 Palm, 1 Tree, 2 Alarm, 3 Sink,
@@ -2501,8 +2616,8 @@ static void render_env_object_overhead(const cs2d_map_t *map, const cs2d_gfx_ban
     /* Leaf shadows (itemshadows, DAT_140ddf183): black at shadows % x alpha, moved 4 px along
      * (cos, sin)(ShadowRotation - 180) */
     bool shadows = s_item_shadows && s_shadow_intensity > 0;
-    float sun = (map->daylight_time > 999) ? (float)((map->daylight_time - 1000) % 360) : 225.0f;
-    float sun_rad = (sun - 180.0f) * (3.14159265f / 180.0f);
+    (void)map;
+    float sun_rad = (cs2d_light_shadow_rotation() - 180.0f) * (3.14159265f / 180.0f);
     float sh_dx = cosf(sun_rad) * 4.0f;
     float sh_dy = sinf(sun_rad) * 4.0f;
     float sh_alpha = (float)s_shadow_intensity * 0.01f * alpha;
@@ -2526,6 +2641,13 @@ static void render_env_object_overhead(const cs2d_map_t *map, const cs2d_gfx_ban
                 else      cs2d_render_sprite_frame(tex, 0, 0, 0, cx, cy, w, h, ang, 0.0f, 0.0f, 0.0f, sh_alpha, 0);
             }
         }
+        /* Te.update(2): the leaves light the day buffer (white floor light sprites, handle (15, 2), mapshadows > 1) */
+        if (cs2d_light_day_shadows()) {
+            for (int k = 1; k <= 8; k++) {
+                float ang = (float)(int)((double)(k * 45 + rot) + env_object_sway(k, (float)(k * 20) + age) * 3.0);
+                cs2d_light_add_sprite(true, tex, 15.0f, 2.0f, ex + cam_x, ey + cam_y, s, s, 255, 255, 255, ang, 1.0f);
+            }
+        }
     } else if (type == 1) {
         /* Tree: 7 treeleaves.png at size x 30 px from the center, position angle k * 51 + rot + 2 sway(age + k * 50),
          * rotation rot + 5 sway; then one at scale size x 1.2 on the center, rotation rot + 5 sin(age) (no shadow) */
@@ -2546,6 +2668,20 @@ static void render_env_object_overhead(const cs2d_map_t *map, const cs2d_gfx_ban
         }
         cs2d_render_sprite_frame(tex, 0, 0, 0, ex, ey, w * 1.2f, h * 1.2f,
                                  (float)rot + sinf(age * (3.14159265f / 180.0f)) * 5.0f, r, g, b, alpha, 0);
+        /* Te.update(2): the 7 clumps and the center light the day buffer (white floor light sprites, midhandle) */
+        if (cs2d_light_day_shadows()) {
+            float hx = (float)tex->width * 0.5f, hy = (float)tex->height * 0.5f;
+            for (int k = 1; k <= 7; k++) {
+                float sway = env_object_sway(k, age + (float)(k * 50));
+                double pos = ((double)(k * 51 + rot) + (double)sway * 2.0) * (3.14159265358979 / 180.0);
+                float lx = (float)(sin(pos) * (double)(size * 30.0f) + (double)ex);
+                float ly = (float)((double)ey - (double)(size * 30.0f) * cos(pos));
+                cs2d_light_add_sprite(true, tex, hx, hy, lx + cam_x, ly + cam_y, size, size, 255, 255, 255,
+                                      (float)(int)((double)rot + (double)sway * 5.0), 1.0f);
+            }
+            cs2d_light_add_sprite(true, tex, hx, hy, ex + cam_x, ey + cam_y, size * 1.2f, size * 1.2f, 255, 255, 255,
+                                  (float)(int)((double)rot + sin((double)age * (3.14159265358979 / 180.0)) * 5.0), 1.0f);
+        }
     } else if (type == 2) {
         /* Alarm: flare1 additive, rotation rot, alpha |sin(ms / 3 degrees)| x alpha */
         const cs2d_texture_t *tex = &bank->tex_flare1;
@@ -2553,6 +2689,10 @@ static void render_env_object_overhead(const cs2d_map_t *map, const cs2d_gfx_ban
         float pulse = fabsf(sinf((float)((tick_ms / 3) % 360) * (3.14159265f / 180.0f)));
         cs2d_render_sprite_frame(tex, 0, 0, 0, ex, ey, (float)tex->width * size, (float)tex->height * size,
                                  (float)rot, r, g, b, pulse * alpha, 3);
+        /* Te.draw: a light sprite in the alarm color at the same alpha */
+        cs2d_light_add_sprite(false, tex, (float)tex->width * 0.5f, (float)tex->height * 0.5f, ex + cam_x, ey + cam_y,
+                              size, size, ent->int_settings[1], ent->int_settings[2], ent->int_settings[3], (float)rot,
+                              pulse * alpha);
     } else if (type == 5 || type == 6) {
         /* Street Light: flare3 additive turning ms / 150 + rot; the flicker variant draws at alpha x Rnd(0, 0.8)
          * one frame in five (Rand(1, 5) == 1). Then the lamp, objects.bmp frame 2, white at scale 1 and rotation
@@ -2612,6 +2752,26 @@ static void render_env_sprite_entity(
     float b = (float)ent->int_settings[7] / 255.0f;
 
     cs2d_render_sprite_frame(tex, tex->width, tex->height, 0, sx, sy, w, h, rot, r, g, b, alpha, blend_mode);
+
+    /*
+     * Light engine (Te.update(2) 0x1400e4d80, sprites not covered by players): on screen, strs[7] "1" makes the sprite
+     * a white light sprite, and any blend but light (3), shade (4) and grayscale (6) keeps its area out of the day
+     * shadows (ObstacleShadow2), both at scale ints[0] / width, ints[1] / height.
+     */
+    if (atoi(ent->str_settings[4]) == 0 && cs2d_light_active()) {
+        float half = rot == 0.0f ? 0.0f : fabsf((w > h ? w : h) * 0.5f);
+        float hw = rot == 0.0f ? fabsf(w * 0.5f) : half, hh = rot == 0.0f ? fabsf(h * 0.5f) : half;
+        if (sx + hw >= 0.0f && sy + hh >= 0.0f && sx - hw <= 850.0f && sy - hh < 481.0f) {
+            float scx = w / (float)tex->width, scy = h / (float)tex->height;
+            float hx = (float)tex->width * 0.5f, hy = (float)tex->height * 0.5f;
+            if (strcmp(ent->str_settings[7], "1") == 0) {
+                cs2d_light_add_sprite(false, tex, hx, hy, sx + cam_x, sy + cam_y, scx, scy, 255, 255, 255, (float)(int)rot, 1.0f);
+            }
+            if (blend_mode != 3 && blend_mode != 4 && blend_mode != 6) {
+                cs2d_light_add_obstacle(tex, hx, hy, sx, sy, scx, scy, rot);
+            }
+        }
+    }
 }
 
 /*
@@ -2781,6 +2941,10 @@ void cs2d_render_map_ex(
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *ent = &map->entities[i];
         /* Hidden / open / broken by a trigger; a CTF flag base keeps its glow while the flag is away */
+        if (ent->type == CS2D_ENT_TRIGGER_USE) {
+            if (bank) render_trigger_use(bank, ent, map->entity_state[i], cam_x, cam_y, tick_ms);
+            continue;
+        }
         if (map->entity_state[i] && ent->type != CS2D_ENT_INFO_CTF_FLAG) continue;
         float ex = (float)(ent->x * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_x;
         float ey = (float)(ent->y * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_y;
@@ -2980,7 +3144,8 @@ void cs2d_render_map_overhead(
     }
 
     /* Pass 2: Unified Sun-Angle & Multi-Layer Room Shadow/Lighting Overlay (0x140262750..0x14026286f) */
-    if (s_shadows_enabled) {
+    /* The light engine draws the day shadows in its buffer (cs2d_light.c); this map is only for light 0 */
+    if (s_shadows_enabled && !cs2d_light_active()) {
         ensure_shadow_chunks(map);
         render_shadow_chunks(map, cam_x, cam_y);
     }

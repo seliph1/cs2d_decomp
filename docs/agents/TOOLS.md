@@ -119,6 +119,13 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 | `weapontables.py <objdump listing> <exe> <global…>` | Recovers the per-weapon tables of `init_weapons` (`0x140230000..0x140236000`), which `initarrays.py` cannot follow because each store is indexed by the current id `DAT_140ddf57c`: prints `global id:value …`. Used for the Buy menu stats and the muzzle offsets (KNOWLEDGE "Buy menu") |
 | `bbstr.py <exe> <hexaddr…>` | Prints the BlitzMax string objects at those addresses: decodes the `bbs__` literals of the dump. Feed it the `lea` targets of a range: `objdump -d -M intel --start-address=… --stop-address=… CS2D.exe \| grep -o "# 0x140a[0-9a-f]*"`. `--array <pointer global> <i or $> <n>` reads a static BBArray (arrays filled at runtime point to `bbEmptyArray`: use `initarrays.py`) |
 | `map_grid.c` | Prints the collision or mode grid around a tile |
+| `emu_cs2d.py` | Library: runs single `CS2D.exe` functions in Unicorn (`pip install unicorn pefile`) with the Max2D primitives (SetColor, SetBlend, DrawRect, DrawImage, DrawPoly, buffers, ...) replaced by recorders. Win64 calls with 8-byte stack slots; unhooked code runs for real |
+| `emu_light.py CS2D.exe <scene> <floor\|day\|main\|color>` | Runs the **original** light engine (`TSmartLighting`) on a scene file written by our client (`lightdump`, `cs2d_light_dump_scene`) and prints its draw calls in our trace format |
+| `light_trace.c` | Our light engine on a map and camera: prints the trace (`cs2d_light_set_trace`) and writes the scene file. `DAYLIGHT=<angle>` overrides the sun |
+| `light_check.sh <map> <cam x> <cam y> [main floor color]` | Builds `light_trace.exe`, runs both engines and diffs them (`LIGHT_CFG="<light> <mapshadows> <shadows>"`, default `5 4 50`; `DAYLIGHT=`). Exit 1 on a mismatch. Fixtures for `test_light_engine` are `out/<map>_<part>_orig.txt` copied to `tests/data/light_*.txt` |
+| `light_diff.py <ours> <orig> [n]` | Compares two traces line by line (float tolerance 0.01 + 1e-4 x value), shows the first n differences |
+| `emu_lightshadow.py CS2D.exe [cases]` | Runs `TLightSource.CalculateShadow` alone on wall / light layouts and prints its `DrawLineLight` calls |
+| `gen_occlusion_table.py CS2D.exe` | Runs `DrawTilesFloor` on the 256 neighbour patterns and prints the occlusion table pasted into `src/cs2d_light.c` |
 | `lua/*.lua` | Dedicated Lua probes; output lines start with `BP` / `WP` / `PD` / `JL` |
 
 Lua probes:
@@ -131,6 +138,8 @@ Lua probes:
 | `joinleave_probe.lua` | join, leave and team hooks plus a player count every 2 s |
 | `twoplayer_probe.lua` | Places players 1 and 2 side by side, AK for player 2 |
 | `construct_probe.lua` | Run with `sv_gamemode 3` in `sys/server.cfg` (back it up): logs `build` / `objectkill` / `spawn` / `die` (`CP` lines), spawns several objects around the first spawned player, sets $16000 and kills the player after 25 s |
+| `light_probe.lua` | Spawns player 1 on fun_roleplay and moves it through 6 fixed positions, one every 4 s, for light engine screenshots (`drive_orig.ps1` `shot` steps every 4 s) |
+| `night_probe.lua` | `sv_daylighttime 90` (night), then `light_probe.lua` |
 | `spec_probe.lua` | Adds a T and a CT bot; logs `specswitch` (whom each spectator follows, `SP` lines) and team changes |
 
 Notes:
@@ -166,5 +175,8 @@ Debug console commands:
 | `walkto tx ty` | Walks the BFS path to a tile |
 | `net_send <hex>` | Sends a raw reliable message |
 | `consolebench` | Console performance benchmark |
+| `light n`, `mapshadows n` | Light engine settings (`light 0` = off) |
+| `lightdump [path]` | Writes the light engine scene for `emu_light.py` (default `tools/agent/out/light.scene`) |
+| `sun n` / `daylight n` | Sets the map's sun angle (`daylight_time`, 0..360) |
 
 With `CS2D_NET_LOG=1`, the client prints every datagram and every console line to stdout.

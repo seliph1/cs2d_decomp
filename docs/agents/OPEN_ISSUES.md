@@ -24,7 +24,7 @@ the same one.
 - **Env_Object and tile blending, not reconstructed** (KNOWLEDGE "Env_Object and tile blending"):
   - `Te.age` is per entity and only advances on screen; we use one clock for every object.
   - Sink / Toilet are drawn on our ground pass, under the ground items (the original draws `Te.draw(1)` after items).
-  - The light engine paths (`TLightingSprite` for the alarm, `Te.update` obstacle shadows) and the 3D mode (`Tile3D`).
+  - The 3D mode (`Tile3D`).
   - The setting `DAT_140ddf17f` that turns tile blending off is not read; we always blend. In the editor, painting does
     not re-run `updatetile` (we compute the neighbour every frame, so a cleared 0x40 flag never stays cleared).
   - `test_file_transfer` "Transfer list" fails while `maps/fun_roleplay.map` / `gfx/c4/` exist locally.
@@ -124,6 +124,18 @@ the same one.
   - `[252,7,3]` items and `[252,7,6]` ground projectiles are read, but `[252,7,7]` images and `[252,7,8]` tweens are not.
 - **CTF:** captures, returns and scores (`[64]` setteamscores, `[226]` messages) are not shown on the HUD; the flag
   drawing follows the code but was not compared with a screenshot of the original.
+- **Light engine, not reconstructed** (KNOWLEDGE "Light engine"; what exists matches the original call for call):
+  - Flashlights (`TLightSource` type 1, the player's flashlight item) are never created.
+  - Light sprites of particles, muzzle flashes, explosions, `TSparkle`, projectiles and buildings (`Tdo`), the shadows of
+    buildings (`FUN_14025f0e0`) and of flying projectiles (`Tpro.draw_flying_shadow`).
+  - The player silhouette in the day shadows leaves out the carried bomb / defuse kit; `ObstacleShadow` (player parts as
+    obstacles) is not filled.
+  - `DrawStripesLightColor`, `render3d` (`DAT_140ddf084`), and the map editor (the original lights the editor too; ours
+    turns the engine off there).
+  - Trigger_Use buttons are drawn on our ground pass, not on `Te.draw(1)`.
+  - The `light 0` path (old CPU shadow map) was never compared with the original's `mapshadows 1`.
+  - The sprite / obstacle queues (Env_Sprite, palm / tree leaves, alarms) are not covered by the emulator test (the scene
+    file does not carry them); they were checked on screenshots only.
 
 ## Verification debt
 - **Original + our client, one session:** not re-run after the latest join/leave fix (the session ended

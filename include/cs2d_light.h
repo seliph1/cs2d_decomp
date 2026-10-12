@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include "cs2d_types.h"
+#include "cs2d_render.h"
 
 typedef struct {
     int  light;          /* "light" 0..5 (DAT_140ddf185); 0 = engine off; SetQuality(light - 1) */
@@ -28,6 +29,8 @@ typedef struct {
 
 /* Settings; takes effect at once (FUN_1401733b0) */
 void cs2d_light_configure(const cs2d_light_config_t *cfg);
+/* sv_daylighttime: the sun angle the server imposes, -1 = the map's own (FUN_140262ed0) */
+void cs2d_light_set_daylight(int angle);
 /* The engine draws on this map (light != 0 and a map is loaded) */
 bool cs2d_light_active(void);
 /* TSmartLighting.InitMap + the entity lights of FUN_1401d6790 (Env_Room, Env_Light, Env_LightStripe) */
@@ -40,6 +43,25 @@ void cs2d_light_frame(const cs2d_map_t *map, int cam_x, int cam_y, float dt);
 void cs2d_light_draw_floor(void);   /* DrawLayer1: floor occlusion, after the items */
 void cs2d_light_draw_color(void);   /* DrawLightsColorList: additive light color, after the players */
 void cs2d_light_draw_buffer(void);  /* DrawLayer2: the light buffer, shade blend, over the world */
+
+/*
+ * What the scene adds to the next light buffer:
+ *  - a light sprite (TLightingSprite.DrawSprite 0x140013ac0, added after the toning) or a floor light sprite
+ *    (TLightingSpriteFloor, added over the day shadows), at world (x, y) in color x alpha;
+ *  - an image whose area the day shadows leave lit (ObstacleShadow2.Create 0x14002e8e0), at screen (x, y).
+ * (hx, hy) is the image handle. Both do nothing while the engine is off.
+ */
+void cs2d_light_add_sprite(bool floor, const cs2d_texture_t *tex, float hx, float hy, float x, float y, float sx, float sy,
+                           int r, int g, int b, float rot, float alpha);
+void cs2d_light_add_obstacle(const cs2d_texture_t *tex, float hx, float hy, float x, float y, float sx, float sy, float rot);
+/* One part of a player's silhouette in the day shadows (FUN_140112340: armor, held weapon, bomb / kit, body; midhandled,
+ * black, 4 px away from the sun), at screen (x, y) for this frame's camera; submit before cs2d_light_frame */
+void cs2d_light_add_player_part(const cs2d_texture_t *tex, int cell_w, int cell_h, int frame, float x, float y,
+                                float rot, float scale);
+/* TSmartLighting.ShadowRotation: the sun angle the shadows use (the map's daylight time, smoothed) */
+float cs2d_light_shadow_rotation(void);
+/* mapshadows > 1: day shadows, floor sprites and occlusion are on */
+bool cs2d_light_day_shadows(void);
 
 /* Prints every Max2D call (and skips OpenGL) while set; NULL restores drawing */
 void cs2d_light_set_trace(void (*fn)(const char *line, void *ud), void *ud);

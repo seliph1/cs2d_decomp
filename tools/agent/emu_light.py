@@ -1,9 +1,9 @@
 """Runs the ORIGINAL light engine (TSmartLighting, CS2D.exe) on a scene and prints its draw calls.
 
 usage: python -I tools/agent/emu_light.py CS2D.exe <scene.txt> <part> [cam_x cam_y]
-  part: floor  - TSmartLighting.DrawTilesFloor (occlusion pass, drawn after the items)
+  part: floor  - TSmartLighting.DrawLayer1 -> DrawTilesFloor (occlusion pass, drawn after the items)
         day    - TSmartLighting.GenerateDayBuffer
-        main   - TLightSource.UpdateLightsList + TSmartLighting.GenerateMainBuffer (the whole light buffer)
+        main   - TSmartLighting.Update: the light buffers and GenerateMainBuffer (the whole light buffer)
         color  - TLightSource.DrawLightsColorList (additive pass after the players)
 
 The scene file is written by our client (`lightdump` console command, cs2d_light_dump_scene): it holds the
@@ -48,6 +48,9 @@ F_DAY_BUFFER = 0x140260330
 F_MAIN_BUFFER = 0x1402626D0
 F_UPDATE_LIGHTS = 0x1400346D0
 F_COLOR_LIST = 0x14004F670
+F_UPDATE = 0x140262890          # TSmartLighting.Update
+F_DRAW_LAYER1 = 0x14010E4B0     # TSmartLighting.DrawLayer1
+G_DT = 0x140A1B090              # time factor (1.0 per 60 Hz frame)
 F_PULL_FBO = 0x1400814B0
 F_DOWNCAST = 0x1408C3280
 SKIP = {0x140112340: 'playershadows', 0x14025F0E0: 'tdoshadow', 0x1401483B0: 'projectileshadows'}
@@ -315,6 +318,8 @@ def main():
     emu = LightEmu(exe)
     emu.setup(sc, cam[0], cam[1])
     if part == 'floor':
+        log = emu.call(F_DRAW_LAYER1, [])
+    elif part == 'tilesfloor':
         log = emu.call(F_TILES_FLOOR, [])
     elif part == 'day':
         log = emu.call(F_DAY_BUFFER, [])
@@ -322,11 +327,12 @@ def main():
         hook_day_primitives(emu)
         log = emu.call(F_DAY_BUFFER, [])
     elif part == 'main':
-        log = emu.call(F_UPDATE_LIGHTS, [])
-        log = log + emu.call(F_MAIN_BUFFER, [])
+        emu.set_f32(G_DT, 1.0)
+        log = emu.call(F_UPDATE, [])
     elif part == 'color':
         emu.call(F_UPDATE_LIGHTS, [])
-        log = emu.call(F_COLOR_LIST, [])
+        # FUN_140281fd0 around the call: SetBlend(4), SetTransform(0, 1, 1) ... SetBlend(3)
+        log = [('SetBlend', 4), ('SetTransform', 0.0, 1.0, 1.0)] + emu.call(F_COLOR_LIST, []) + [('SetBlend', 3)]
     else:
         raise SystemExit('unknown part ' + part)
     for item in log:

@@ -7,7 +7,7 @@
 
 #define CS2D_MAX_PLAYERS        32
 #define CS2D_MAX_WEAPONS        100
-#define CS2D_MAX_ENTITIES       2048
+#define CS2D_MAX_ENTITIES       16384 /* fun_roleplay has 9901 */
 #define CS2D_MAX_NAME_LEN       32
 #define CS2D_TILE_SIZE          32
 #define CS2D_DEFAULT_PORT       36963

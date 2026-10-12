@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "cs2d_light.h"
 
 /*
  * Editor scene: the map editor (GUI built by FUN_1401a85f0, loop FUN_1402bf960, CS2D.exe).
@@ -82,6 +83,7 @@ static void editor_load_tileset(cs2d_client_t *client, bool load_defaults)
         cs2d_ed_inf_load(map, inf);
     }
     cs2d_render_invalidate_shadows();
+    cs2d_light_load_map(NULL);   /* no light engine in the editor */
 }
 
 static void editor_new_map(cs2d_client_t *client, const char *tileset)
@@ -97,7 +99,7 @@ static bool editor_load_map(cs2d_client_t *client, const char *name)
 {
     char path[128];
     snprintf(path, sizeof(path), "maps/%s.map", name);
-    cs2d_map_t loaded;
+    static cs2d_map_t loaded;   /* static: too big for the stack */
     memset(&loaded, 0, sizeof(loaded));
     if (!cs2d_map_load_file(&loaded, path)) {
         cs2d_client_console_print(client, 255, 45, 45, "Error: Unable to load map '%s'", path);

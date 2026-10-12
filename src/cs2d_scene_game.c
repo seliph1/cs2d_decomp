@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "cs2d_light.h"
+#include <SDL3/SDL.h>
 
 /*
  * Game scene: a loaded map with the local player, practice bots, HUD and the
@@ -404,6 +406,7 @@ static bool game_load_map(cs2d_client_t *client, const char *map_name)
     cs2d_texture_free(&client->tex_tileset);
     cs2d_texture_load_tileset(&client->tex_tileset, client->game.map.tileset);
     cs2d_render_invalidate_shadows();
+    cs2d_light_load_map(&client->game.map);
     cs2d_game_start_round(&client->game);
 
     /* Entity logic: offline the client runs it (round start fires every Trigger_Start);
@@ -1685,6 +1688,20 @@ static bool render_player_hover(cs2d_client_t *client, int screen_w, int screen_
 
 static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
 {
+    /* Light engine (FUN_140262ed0): light buffers for this frame, at the integer camera; dt in 60 Hz frames */
+    static uint64_t last_ms;
+    uint64_t now_ms = SDL_GetTicks();
+    float light_dt = last_ms ? (float)(now_ms - last_ms) * 0.06f : 1.0f;
+    last_ms = now_ms;
+    for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
+        const cs2d_player_t *p = &client->game.players[i];
+        if (p->alive) {
+            cs2d_render_player_light_shadow(p, (p->team == CS2D_TEAM_CT) ? &client->tex_ct : &client->tex_t,
+                                            roundf(client->cam_x), roundf(client->cam_y));
+        }
+    }
+    cs2d_light_frame(&client->game.map, (int)roundf(client->cam_x), (int)roundf(client->cam_y), light_dt);
+
     /* 1. Map Pass 0 & 1 (background, tileset, tile modifiers, ground entities, items, hostages) */
     cs2d_render_map_ex(&client->game.map, &client->tex_tileset, client->cam_x, client->cam_y, screen_w, screen_h);
     bool tg = team_game(client);
@@ -1693,6 +1710,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     render_ground_items(client);
     render_projectiles_ground(client);
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_OBSTACLE, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
+    cs2d_light_draw_floor();   /* DrawLayer1: floor occlusion after the items (FUN_140281fd0) */
 
     /* 2. Players (Tpl.draw: shadow, legs, torso frame, armor/helmet, held weapon, objective icon) */
     for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
@@ -1711,6 +1729,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
             render_carried_flag(p, client->cam_x, client->cam_y);
         }
     }
+    cs2d_light_draw_color();   /* DrawLightsColorList: additive light color after the players */
     render_projectiles_flying(client);
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_WALL, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
 
@@ -1719,6 +1738,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
 
     /* 3. Map Pass 2 (Overhead entities: Env_Sprite, Env_Image over players, Env_Object trees/lamps, Shadow Map) */
     cs2d_render_map_overhead(&client->game.map, client->cam_x, client->cam_y, screen_w, screen_h);
+    cs2d_light_draw_buffer();  /* DrawLayer2: the light buffer over the world, before the HUD */
 
     /* 4. In-Game HUD (hud_nums.bmp, hud_symbols.bmp, hud_radar_advanced.png) */
     const cs2d_player_t *local_pl = &client->game.players[client->local_player_id];

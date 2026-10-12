@@ -28,6 +28,7 @@
 #include "cs2d_dynobj.h"
 #include "cs2d_bind.h"
 #include "cs2d_scoreboard.h"
+#include "cs2d_light.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -196,7 +197,7 @@ static bool test_map_loading(void)
     };
 
     for (size_t i = 0; i < sizeof(maps) / sizeof(maps[0]); i++) {
-        cs2d_map_t map;
+        static cs2d_map_t map;   /* static: too big for the stack */
         if (!cs2d_map_load_file(&map, maps[i].path)) {
             printf("  Error loading %s\n", maps[i].path);
             TEST_FAIL("Map Loading", maps[i].path);
@@ -245,7 +246,7 @@ static bool test_game_loop(void)
 {
     printf("\n=== Testing Game Loop, Round Progression & Economy ===\n");
 
-    cs2d_game_t game;
+    static cs2d_game_t game;   /* static: too big for the stack */
     cs2d_game_init(&game, CS2D_MODE_STANDARD);
 
     /* Load de_dust2.map and verify auto-detected gamemode == CS2D_MODE_DE (FUN_140113d50) */
@@ -506,7 +507,7 @@ static bool test_entities_and_sprites(void)
     TEST_PASS("All 50 CS2D entity type names (0..96) verified against cs2d.com/entities.php");
 
     /* 7.2 Verify Te.inzone (FUN_140033fd0) rectangular & single-tile zone checks */
-    cs2d_map_t map;
+    static cs2d_map_t map;   /* static: too big for the stack */
     if (!cs2d_map_load_file(&map, "maps/de_dust2.map")) {
         TEST_FAIL("Load de_dust2.map for Te.inzone", "Failed to load de_dust2.map");
     }
@@ -2392,7 +2393,7 @@ static bool test_shadow_chunks(void)
 {
     printf("\n=== Testing Chunk-based Map Shadows & Incremental Invalidation ===\n");
 
-    cs2d_map_t map;
+    static cs2d_map_t map;   /* static: too big for the stack */
     memset(&map, 0, sizeof(map));
     if (!cs2d_map_load_file(&map, "maps/de_dust2.map")) {
         TEST_FAIL("Shadow Chunks", "Failed to load de_dust2.map");
@@ -3231,6 +3232,102 @@ static bool test_hud_action_progress_bar(void)
     return true;
 }
 
+/*
+ * Light engine (src/cs2d_light.c) against the ORIGINAL: every Max2D call our TSmartLighting port makes must equal the
+ * calls of CS2D.exe's own functions, run in Unicorn on the same scene (tools/agent/emu_light.py; the fixtures in
+ * tests/data/light_*.txt came from it). Numbers match within 0.01 + 1e-4 * |v|.
+ */
+typedef struct {
+    char  **lines;
+    int     count, cap;
+} light_lines_t;
+
+static void light_collect(const char *line, void *ud)
+{
+    light_lines_t *t = (light_lines_t *)ud;
+    if (t->count == t->cap) {
+        t->cap = t->cap ? t->cap * 2 : 1024;
+        t->lines = (char **)realloc(t->lines, (size_t)t->cap * sizeof(char *));
+    }
+    t->lines[t->count++] = _strdup(line);
+}
+
+static bool light_line_same(const char *a, const char *b)
+{
+    char ca[1024], cb[1024];
+    snprintf(ca, sizeof(ca), "%s", a);
+    snprintf(cb, sizeof(cb), "%s", b);
+    char *sa = NULL, *sb = NULL;
+    char *ta = strtok_s(ca, " ", &sa), *tb = strtok_s(cb, " ", &sb);
+    while (ta && tb) {
+        if (strcmp(ta, tb) != 0) {
+            char *ea, *eb;
+            double x = strtod(ta, &ea), y = strtod(tb, &eb);
+            if (*ea || *eb) return false;
+            if (fabs(x - y) > 0.01 + 1e-4 * fmax(fabs(x), fabs(y))) return false;
+        }
+        ta = strtok_s(NULL, " ", &sa);
+        tb = strtok_s(NULL, " ", &sb);
+    }
+    return ta == NULL && tb == NULL;
+}
+
+static bool light_case(const char *map_name, int cx, int cy, const char *part)
+{
+    static cs2d_map_t map;
+    char path[128], fixture[160], msg[512];
+    snprintf(path, sizeof(path), "maps/%s.map", map_name);
+    snprintf(fixture, sizeof(fixture), "tests/data/light_%s_%d_%d_%s.txt", map_name, cx, cy, part);
+    memset(&map, 0, sizeof(map));
+    if (!cs2d_map_load_file(&map, path)) TEST_FAIL("Light engine", path);
+    cs2d_light_config_t cfg = {5, 4, 50, true};
+    cs2d_light_configure(&cfg);
+    cs2d_light_set_daylight(-1);
+    cs2d_light_load_map(&map);
+    light_lines_t ours = {0};
+    if (strcmp(part, "main") == 0) cs2d_light_set_trace(light_collect, &ours);
+    cs2d_light_frame(&map, cx, cy, 1.0f);
+    if (strcmp(part, "floor") == 0) { cs2d_light_set_trace(light_collect, &ours); cs2d_light_draw_floor(); }
+    if (strcmp(part, "color") == 0) { cs2d_light_set_trace(light_collect, &ours); cs2d_light_draw_color(); }
+    cs2d_light_set_trace(NULL, NULL);
+    cs2d_light_load_map(NULL);
+    cs2d_map_free(&map);
+    FILE *f = fopen(fixture, "r");
+    if (!f) TEST_FAIL("Light engine", fixture);
+    char line[1024];
+    int n = 0, bad = -1;
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (line[0] == '#' || !line[0]) continue;
+        if (bad < 0 && (n >= ours.count || !light_line_same(ours.lines[n], line))) {
+            bad = n;
+            snprintf(msg, sizeof(msg), "%s line %d: ours '%.80s', original '%.80s'", fixture, n + 1,
+                     n < ours.count ? ours.lines[n] : "<end>", line);
+        }
+        n++;
+    }
+    fclose(f);
+    if (bad < 0 && n != ours.count) {
+        bad = n;
+        snprintf(msg, sizeof(msg), "%s: %d lines, original %d", fixture, ours.count, n);
+    }
+    for (int i = 0; i < ours.count; i++) free(ours.lines[i]);
+    free(ours.lines);
+    if (bad >= 0) TEST_FAIL("Light engine", msg);
+    return true;
+}
+
+static bool test_light_engine(void)
+{
+    printf("\n=== Testing the light engine against the original (TSmartLighting) ===\n");
+    if (!light_case("as_mars", 800, 600, "main")) return false;
+    if (!light_case("fun_roleplay", 999, 0, "main")) return false;
+    if (!light_case("fun_roleplay", 15, 20, "floor")) return false;
+    if (!light_case("fun_roleplay", 15, 20, "color")) return false;
+    TEST_PASS("Light buffer, floor occlusion and light color = the original's draw calls (4 scenes)");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -3238,7 +3335,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 31;
+    int total = 32;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -3271,6 +3368,7 @@ int main(void)
     if (test_scoreboard()) passed++;
     if (test_tile_blending()) passed++;
     if (test_hud_action_progress_bar()) passed++;
+    if (test_light_engine()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

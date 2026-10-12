@@ -1,0 +1,31 @@
+# TSmartLighting trace of the ORIGINAL (CS2D.exe in Unicorn, tools/agent/emu_light.py color) for maps/fun_roleplay.map, camera (15, 20),
+# light 5, mapshadows 4, shadows 50. Regenerate with tools/agent/light_check.sh maps/fun_roleplay.map 15 20 color.
+blend 4
+transform 0.000 1.000 1.000
+blend 4
+transform 0.000 1.000 1.000
+alpha 1.000
+color 16 16 0
+drawbuffer buf1 1.000 92.000 512.000 512.000
+color 33 33 33
+drawbuffer buf2 18.000 -211.000 512.000 512.000
+color 33 33 33
+drawbuffer buf3 178.000 -211.000 512.000 512.000
+color 33 33 33
+drawbuffer buf4 368.000 11.000 512.000 512.000
+color 33 33 33
+drawbuffer buf5 368.000 -211.000 512.000 512.000
+color 33 33 33
+drawbuffer buf6 193.000 -100.000 512.000 512.000
+color 33 33 33
+drawbuffer buf7 18.000 11.000 512.000 512.000
+color 16 16 0
+drawbuffer buf8 705.000 252.000 512.000 512.000
+color 16 16 0
+drawbuffer buf9 385.000 92.000 512.000 512.000
+color 16 16 0
+drawbuffer buf10 1.000 252.000 512.000 512.000
+color 16 16 0
+drawbuffer buf11 385.000 252.000 512.000 512.000
+alpha 1.000
+blend 3

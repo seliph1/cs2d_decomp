@@ -78,6 +78,7 @@ typedef struct {
     cs2d_texture_t            tex_leaf;          /* gfx/sprites/leaf.bmp */
     cs2d_texture_t            tex_shadow;        /* incbindata/shadow.bmp (32x32, maskMode=3, 0x140a0e038) */
     cs2d_texture_t            tex_objects;       /* incbindata/objects.bmp (10 frames of 32x32, midhandle, g_img_objects) */
+    cs2d_texture_t            tex_buttons;       /* incbindata/buttons.bmp (10 frames of 32x32, midhandle, mask 255,0,255; g_img_buttons) */
     cs2d_texture_t            tex_lamp2;         /* gfx/sprites/lamp2.bmp */
     cs2d_texture_t            tex_flare1;        /* gfx/sprites/flare1.bmp (maskMode=3) */
     cs2d_texture_t            tex_flare3;        /* gfx/sprites/flare3.bmp (maskMode=3) */
@@ -158,6 +159,8 @@ uint8_t  cs2d_render_tileblend_neighbour(const cs2d_map_t *map, int tx, int ty, 
 uint32_t cs2d_render_tileblend_mix(uint32_t a, uint32_t b, uint8_t mask);
 int      cs2d_render_tileblend_mask(int frame, int x, int y);
 void cs2d_texture_free(cs2d_texture_t *tex);
+/* RGBA pixels of an image file (mask mode 0), (a << 24) | (b << 16) | (g << 8) | r per pixel; free() the result */
+uint32_t *cs2d_image_load_rgba(const char *path, int *out_w, int *out_h);
 
 /* 2D Primitives */
 void cs2d_render_rect(float x, float y, float w, float h, float r, float g, float b, float a, bool fill);
@@ -192,6 +195,8 @@ void cs2d_render_sprite_frame(
 int cs2d_player_get_frame(const cs2d_player_t *player, bool lefthanded);
 
 /* Top-down player rendering (legs.bmp, 32x32 torso frame from ct/t/vip.bmp, armor, equipment.bmp, weapon in hands) */
+/* The player's silhouette in the light engine's day shadows (FUN_140112340); call before cs2d_light_frame */
+void cs2d_render_player_light_shadow(const cs2d_player_t *player, const cs2d_texture_t *skin_tex, float cam_x, float cam_y);
 void cs2d_render_player(
     const cs2d_player_t  *player,
     const cs2d_texture_t *skin_tex,

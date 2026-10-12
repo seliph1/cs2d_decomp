@@ -8,6 +8,19 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Claude Code — Light engine (TSmartLighting)
+- **Changed:** new `src/cs2d_light.c` ports the original light engine: day shadows of walls, obstacles, high walls and
+  room roofs along the sun, player silhouettes, Env_Room / Env_Light / Env_LightStripe, toning, per-light buffers with
+  wall shadows and penumbra, floor occlusion, light sprites (Env_Sprite, alarms, Trigger_Use glow, leaves) and
+  `ObstacleShadow2`. Settings `light` / `mapshadows`, server `sv_forcelight` / `sv_daylighttime` (`[252,6]`, `[237,19/20]`),
+  console `light`, `mapshadows`, `daylight`, `lightdump`. Trigger_Use buttons are drawn. `CS2D_MAX_ENTITIES` 16384
+  (fun_roleplay has 9901 entities).
+- **Verified:** the original's functions run in Unicorn (`tools/agent/emu_light.py`); our traces are identical on
+  fun_roleplay, de_dust2, de_inferno, as_mars, de_vantage and cs_assault, light 1..5, mapshadows 2..4, sun 30..300.
+  `test_light_engine` locks 4 traces. Screenshots against the original on fun_roleplay: 91..94 % of pixels within 8 by
+  day, 94 % at night (the rest is items, HUD and timing). About 1.5 ms per frame.
+- **Left:** flashlights, particle / building / projectile light sprites and shadows, editor lighting (OPEN_ISSUES).
+
 ## 2026-10-12 — Cline — Advanced radar (minimap) fidelity pass
 - **Changed:** the top-left HUD radar in `cs2d_render.c` now renders the real tileset instead of hardcoded
   brown/gray tile colours. `ensure_minimap_texture` builds a cached full-map minimap (2 px/tile, box-averaged via

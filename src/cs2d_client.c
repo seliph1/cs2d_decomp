@@ -4,6 +4,7 @@
 #include "cs2d_map.h"
 #include "cs2d_game.h"
 #include "cs2d_network.h"
+#include "cs2d_light.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -285,6 +286,17 @@ static void xfer_console_log(void *user, uint8_t r, uint8_t g, uint8_t b, const 
     cs2d_client_console_print((cs2d_client_t *)user, r, g, b, "%s", text);
 }
 
+
+/* light / mapshadows / shadows / playershadows -> the light engine (FUN_1401733b0) */
+static void apply_light_config(const cs2d_client_t *client)
+{
+    /* sv_forcelight turns the engine on at quality 1 for a player with "light 0" ([237] case 0x13) */
+    int light = client->config.light == 0 && client->net_forcelight ? 1 : client->config.light;
+    cs2d_light_config_t lc = {light, client->config.mapshadows, client->config.shadows, client->config.playershadows};
+    cs2d_light_configure(&lc);
+    cs2d_light_set_daylight(client->net_daylight);
+}
+
 bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
 {
     if (!client) return false;
@@ -298,6 +310,7 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
     /* Default Server Info state (overwritten by [252, 6] and [240] when joining a server) */
     strncpy(client->net_server_name, "CS2D Server", sizeof(client->net_server_name) - 1);
     client->net_hovertext = 31; /* The dedicated's default mp_hovertext (proxy capture of [252,6]) */
+    client->net_daylight = -1;
     client->net_ticks     = -1;
     cs2d_client_load_serverinfo(client, "sys/serverinfo.txt");
 
@@ -327,6 +340,7 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
     cs2d_render_set_shadow_intensity(client->config.shadows);
     cs2d_render_set_player_shadows(client->config.playershadows);
     cs2d_render_set_item_shadows(client->config.itemshadows);
+    apply_light_config(client);
     cs2d_binds_defaults(&client->binds);
     cs2d_binds_load(&client->binds, "sys/controls.cfg");
     client->opt_name_cursor = (int)strlen(client->config.name);
@@ -1131,6 +1145,15 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                                 int h = s + 8 + buffer[s + 7];
                                 if (h < recvd) h += 1 + buffer[h];
                                 if (h + 3 < recvd) client->net_hovertext = buffer[h + 3];
+                                /* Then a u8, the background image (str), its scroll x / y and a header i32, sv_forcelight
+                                 * u8 and sv_daylighttime + 1 as u16 (0x1402d1144; proxy: 0 = the map's own time) */
+                                int b = h + 5;
+                                if (b < recvd) b += 1 + buffer[b];
+                                if (b + 15 <= recvd) {
+                                    client->net_forcelight = buffer[b + 12] != 0;
+                                    client->net_daylight = (buffer[b + 13] | (buffer[b + 14] << 8)) - 1;
+                                    apply_light_config(client);
+                                }
                             }
                         }
                         client->join_stage = 4;
@@ -1756,6 +1779,18 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         cs2d_client_console_print(client, 255, 220, 0, "spec mode changed to %d", value);
                     }
                     if (setting == 16) client->net_hovertext = value; /* mp_hovertext (FUN_1401e3f10 case 0x10) */
+                    if (setting == 19) {
+                        /* sv_forcelight (case 0x13): the engine turns on and builds the map lights (FUN_1401d6790) */
+                        client->net_forcelight = value != 0;
+                        cs2d_client_console_print(client, value ? 0 : 255, value ? 255 : 0, 0, "force lighting %s",
+                                                  value ? "ENABLED" : "DISABLED");
+                        apply_light_config(client);
+                        cs2d_light_load_map(&client->game.map);
+                    }
+                    if (setting == 20) {
+                        client->net_daylight = value;   /* sv_daylighttime (case 0x14) */
+                        apply_light_config(client);
+                    }
                     pos += 6;
                 } else {
                     break;
@@ -2002,6 +2037,7 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
             cs2d_render_set_shadow_intensity(val);
             cs2d_render_set_shadows_enabled(val > 0);
             client->config.shadows = val;
+            apply_light_config(client);
         } else {
             bool en = !cs2d_render_get_shadows_enabled();
             cs2d_render_set_shadows_enabled(en);
@@ -2017,13 +2053,30 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         bool en = (n >= 2) ? (atoi(arg1) != 0) : !cs2d_render_get_player_shadows();
         cs2d_render_set_player_shadows(en);
         client->config.playershadows = en;
+        apply_light_config(client);
         cs2d_client_console_print(client, 170, 170, 170, "Player shadows: %s", en ? "ENABLED" : "DISABLED");
     } else if (_stricmp(cmd, "itemshadows") == 0 || _stricmp(cmd, "itemshadow") == 0) {
         bool en = (n >= 2) ? (atoi(arg1) != 0) : !cs2d_render_get_item_shadows();
         cs2d_render_set_item_shadows(en);
         client->config.itemshadows = en;
         cs2d_client_console_print(client, 170, 170, 170, "Item shadows: %s", en ? "ENABLED" : "DISABLED");
-    } else if (_stricmp(cmd, "sun") == 0 || _stricmp(cmd, "daylight") == 0 || _stricmp(cmd, "light") == 0) {
+    } else if (_stricmp(cmd, "light") == 0 || _stricmp(cmd, "mapshadows") == 0) {
+        /* Settings of sys/config.cfg: light 0..5 (light engine quality, 0 = off), mapshadows 0..4 */
+        int *val = _stricmp(cmd, "light") == 0 ? &client->config.light : &client->config.mapshadows;
+        if (n >= 2) *val = atoi(arg1);
+        apply_light_config(client);
+        if (map) cs2d_light_load_map(map);
+        cs2d_client_console_print(client, 170, 170, 170, "%s %d", cmd, *val);
+    } else if (_stricmp(cmd, "lightdump") == 0) {
+        /* Scene of the light engine for tools/agent/emu_light.py */
+        const char *path = n >= 2 ? arg1 : "tools/agent/out/light.scene";
+        FILE *f = fopen(path, "w");
+        if (f) {
+            cs2d_light_dump_scene(f, (int)roundf(client->cam_x), (int)roundf(client->cam_y));
+            fclose(f);
+        }
+        cs2d_client_console_print(client, 170, 170, 170, "lightdump: %s %s", path, f ? "written" : "failed");
+    } else if (_stricmp(cmd, "sun") == 0 || _stricmp(cmd, "daylight") == 0) {
         if (!map) {
             cs2d_client_console_print(client, 255, 45, 45, "No map loaded.");
         } else if (n < 2) {

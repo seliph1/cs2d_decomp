@@ -35,6 +35,7 @@ enum {
     IMG_LIGHT, IMG_FLASHLIGHT, IMG_PENUMBRA, IMG_ROOMMAP, IMG_ROOMMAP_INVERT, IMG_STREAM, IMG_BLUR, IMG_SHADOWMAP,
     IMG_OCCLUSION, IMG_COUNT
 };
+#define IMG_EXT_MAX 64      /* other images the light sprites use (registered by texture) */
 
 typedef struct {
     const char    *name;      /* trace name (tools/agent/emu_light.py IMAGES) */
@@ -43,18 +44,20 @@ typedef struct {
     bool           midhandle;
     cs2d_texture_t tex;
     bool           tried;
+    const cs2d_texture_t *ext;  /* an image of the renderer (light sprites) instead of tex */
+    float          hx, hy;      /* its handle */
 } light_image_t;
 
-static light_image_t s_img[IMG_COUNT] = {
-    {"light",          "gfx/lighting/gfx_light.png",          0,  0,  false, {0}, false}, /* 0x140a0df98 */
-    {"flashlight",     "gfx/lighting/gfx_flashlight.png",     0,  0,  true,  {0}, false}, /* 0x140a0df90 */
-    {"penumbra",       "gfx/lighting/gfx_penumbra.png",       0,  0,  false, {0}, false}, /* 0x140a0df88 */
-    {"roommap",        "gfx/lighting/gfx_roommap.png",        32, 32, false, {0}, false}, /* 0x140a0df80 */
-    {"roommap_invert", "gfx/lighting/gfx_roommap_invert.png", 32, 32, false, {0}, false}, /* 0x140a0df78 */
-    {"stream",         "gfx/lighting/gfx_stream.png",         64, 64, false, {0}, false}, /* 0x140a0df70 */
-    {"blur",           "gfx/lighting/gfx_blur.png",           0,  0,  false, {0}, false}, /* 0x140a0df68 */
-    {"shadowmap",      "gfx/lighting/gfx_shadowmap.png",      32, 32, true,  {0}, false}, /* 0x140a0df60, 6 frames */
-    {"occlusion",      "gfx/lighting/gfx_oclussionmap.png",   32, 32, true,  {0}, false}, /* 0x140a0df58, 11 frames */
+static light_image_t s_img[IMG_COUNT + IMG_EXT_MAX] = {
+    {"light",          "gfx/lighting/gfx_light.png",          0,  0,  false, {0}, false, NULL, 0.0f, 0.0f}, /* 0x140a0df98 */
+    {"flashlight",     "gfx/lighting/gfx_flashlight.png",     0,  0,  true,  {0}, false, NULL, 0.0f, 0.0f}, /* 0x140a0df90 */
+    {"penumbra",       "gfx/lighting/gfx_penumbra.png",       0,  0,  false, {0}, false, NULL, 0.0f, 0.0f}, /* 0x140a0df88 */
+    {"roommap",        "gfx/lighting/gfx_roommap.png",        32, 32, false, {0}, false, NULL, 0.0f, 0.0f}, /* 0x140a0df80 */
+    {"roommap_invert", "gfx/lighting/gfx_roommap_invert.png", 32, 32, false, {0}, false, NULL, 0.0f, 0.0f}, /* 0x140a0df78 */
+    {"stream",         "gfx/lighting/gfx_stream.png",         64, 64, false, {0}, false, NULL, 0.0f, 0.0f}, /* 0x140a0df70 */
+    {"blur",           "gfx/lighting/gfx_blur.png",           0,  0,  false, {0}, false, NULL, 0.0f, 0.0f}, /* 0x140a0df68 */
+    {"shadowmap",      "gfx/lighting/gfx_shadowmap.png",      32, 32, true,  {0}, false, NULL, 0.0f, 0.0f}, /* 0x140a0df60, 6 frames */
+    {"occlusion",      "gfx/lighting/gfx_oclussionmap.png",   32, 32, true,  {0}, false, NULL, 0.0f, 0.0f}, /* 0x140a0df58, 11 frames */
 };
 
 /* ------------------------------------------------------------------------------------------------------------
@@ -118,6 +121,7 @@ static struct {
     light_stripe_t *stripes; int stripe_count;
     int   light_counter;            /* TLightSource.Counter */
     uint32_t solid_version;
+    int   server_daylight;          /* sv_daylighttime (0x140a14ec8[1]) + 1; 0 = the map's time */
     bool  frame_ready;              /* the light buffer holds this frame */
 } L;
 
@@ -311,10 +315,15 @@ static void m2d_rect(float x, float y, float w, float h)
     glEnd();
 }
 
+static const cs2d_texture_t *img_tex(const light_image_t *im)
+{
+    return im->ext ? im->ext : &im->tex;
+}
+
 /* UV rectangle of frame `frame` (cell atlases built by cs2d_texture_load_grid carry a 4 px border per cell) */
 static void image_uv(const light_image_t *im, int frame, float *u0, float *v0, float *u1, float *v1, float *fw, float *fh)
 {
-    const cs2d_texture_t *t = &im->tex;
+    const cs2d_texture_t *t = img_tex(im);
     int cw = im->cell_w ? im->cell_w : t->width, ch = im->cell_h ? im->cell_h : t->height;
     int cols = cw > 0 ? t->width / cw : 1;
     if (cols < 1) cols = 1;
@@ -332,11 +341,11 @@ static void image_uv(const light_image_t *im, int frame, float *u0, float *v0, f
 
 static void gl_textured_quad(const light_image_t *im, int frame, float x0, float y0, float x1, float y1, float tx, float ty)
 {
-    if (!im->tex.id) return;
+    if (!img_tex(im)->id) return;
     float u0, v0, u1, v1, fw, fh;
     image_uv(im, frame, &u0, &v0, &u1, &v1, &fw, &fh);
     glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, im->tex.id);
+    glBindTexture(GL_TEXTURE_2D, img_tex(im)->id);
     gl_apply_blend();
     gl_color();
     float px[4] = {x0, x1, x1, x0}, py[4] = {y0, y0, y1, y1};
@@ -360,7 +369,7 @@ static void m2d_image(int img, float x, float y, int frame)
     if (!gl_ready()) return;
     float u0, v0, u1, v1, fw, fh;
     image_uv(im, frame, &u0, &v0, &u1, &v1, &fw, &fh);
-    float hx = im->midhandle ? fw * 0.5f : 0.0f, hy = im->midhandle ? fh * 0.5f : 0.0f;
+    float hx = im->midhandle ? fw * 0.5f : im->hx, hy = im->midhandle ? fh * 0.5f : im->hy;
     gl_textured_quad(im, frame, -hx, -hy, fw - hx, fh - hy, x + M.ox, y + M.oy);
 }
 
@@ -451,11 +460,11 @@ static void m2d_textured_poly(int img, const float *xyuv, int n)
         trace_floats(head, xyuv, n * 4);
         return;
     }
-    if (!gl_ready() || n < 3 || !im->tex.id) return;
+    if (!gl_ready() || n < 3 || !img_tex(im)->id) return;
     float u0, v0, u1, v1, fw, fh;
     image_uv(im, 0, &u0, &v0, &u1, &v1, &fw, &fh);
     glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, im->tex.id);
+    glBindTexture(GL_TEXTURE_2D, img_tex(im)->id);
     gl_apply_blend();
     gl_color();
     glBegin(GL_TRIANGLES);
@@ -906,8 +915,8 @@ static void light_update_buffer(light_source_t *ls, int force)
         m2d_rect(0.0f, lo, lo, f15 + f15);
         m2d_rect(0.0f, hi, 1000.0f, 500.0f);
     } else {
-        /* Flashlight: everything outside the rotated square of the light is cleared */
-        double r = (double)f21, rr = (double)sqrtf(f15 * f15 + f15 * f15), far = (double)ls->max_size;
+        /* Flashlight: the four quads from the corners of the rotated square outwards are cleared (rot + 45 + 90 k) */
+        double r = (double)f21, rr = (double)sqrtf(f15 * f15 + f15 * f15), reach = (double)ls->max_size;
         float rot = ls->rotation;
         float qx[4], qy[4], fx[5], fy[5];
         for (int k = 0; k < 4; k++) {
@@ -917,13 +926,13 @@ static void light_update_buffer(light_source_t *ls, int force)
         }
         for (int k = 0; k < 5; k++) {
             double a = (double)(rot + 45.0f + 90.0f * (float)k) * DEG2RAD;
-            fx[k] = (float)(cos(a) * far + (double)qx[k & 3]);
-            fy[k] = (float)(sin(a) * far + (double)qy[k & 3]);
+            fx[k] = (float)(cos(a) * reach + (double)qx[k & 3]);
+            fy[k] = (float)(sin(a) * reach + (double)qy[k & 3]);
         }
         m2d_blend(5);
         for (int k = 0; k < 4; k++) {
             int n = (k + 1) & 3;
-            float q[8] = {qx[k], qy[k], fx[k], fy[k], fx[k + 1] + (qx[n] - qx[k & 3]) * 0.0f, fy[k + 1], qx[n], qy[n]};
+            float q[8] = {qx[k], qy[k], fx[k], fy[k], fx[k + 1], fy[k + 1], qx[n], qy[n]};
             m2d_poly(q, 4);
         }
     }
@@ -1089,25 +1098,132 @@ static void draw_stripes_light(float p1)
     m2d_color(255, 255, 255);
 }
 
-/* TLightingSprite.DrawSprites / TLightingSpriteFloor.DrawSprites with no queued sprite (state changes only) */
+/* An image of the renderer for the light sprites, by texture and handle */
+static int ext_image_cells(const cs2d_texture_t *tex, float hx, float hy, int cell_w, int cell_h)
+{
+    for (int i = IMG_COUNT; i < IMG_COUNT + IMG_EXT_MAX; i++) {
+        light_image_t *im = &s_img[i];
+        if (im->ext == tex && im->hx == hx && im->hy == hy && im->cell_w == cell_w && im->cell_h == cell_h) return i;
+        if (!im->ext) {
+            im->name = "ext";
+            im->ext = tex;
+            im->hx = hx;
+            im->hy = hy;
+            im->cell_w = cell_w;
+            im->cell_h = cell_h;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int ext_image(const cs2d_texture_t *tex, float hx, float hy)
+{
+    return ext_image_cells(tex, hx, hy, 0, 0);
+}
+
+/* Player silhouettes of FUN_140112340 (screen positions at the frame's camera) */
+#define PLAYER_PART_MAX 256
+typedef struct {
+    int   img, frame;
+    float x, y, rot, sx, sy;
+} light_part_t;
+
+static light_part_t s_parts[PLAYER_PART_MAX];
+static int s_part_count;
+
+/* FUN_140112340: black, alpha blend, 4 px along ShadowRotation - 180, at the night buffer scale */
+static void draw_player_shadows(void)
+{
+    float p1 = 1.0f / L.scale_night;
+    double rad = (double)(L.shadow_rot - 180.0f) * DEG2RAD;
+    float ox = (float)(cos(rad) * (double)p1 * 4.0), oy = (float)((double)p1 * 4.0 * sin(rad));
+    m2d_blend(3);
+    m2d_color(0, 0, 0);
+    m2d_alpha(1.0f);
+    for (int i = 0; i < s_part_count; i++) {
+        const light_part_t *pt = &s_parts[i];
+        m2d_transform(pt->rot, pt->sx * p1, pt->sy * p1);
+        m2d_image(pt->img, (float)(int)(pt->x * p1) + ox, (float)(int)(pt->y * p1) + oy, pt->frame);
+    }
+    m2d_transform(0.0f, 1.0f, 1.0f);
+}
+
+/* TLightingSprite / TLightingSpriteFloor queues (499 sprites, DrawCount 0x140dde1c8 / 0x140dde168) */
+#define SPRITE_MAX 499
+typedef struct {
+    int   img, frame;
+    float x, y, sx, sy, rot, alpha;
+    int   r, g, b;
+} light_sprite_t;
+
+static light_sprite_t s_sprites[2][SPRITE_MAX];
+static int s_sprite_count[2];
+
+/* TLightingSprite.DrawSprite (0x140013ac0) / TLightingSpriteFloor.DrawSprite (0x140013c70): world position */
+static void queue_sprite(bool floor, int img, float x, float y, float sx, float sy, int r, int g, int b, float rot,
+                         float alpha, int frame)
+{
+    int *n = &s_sprite_count[floor ? 1 : 0];
+    if (img < 0 || !(L.cam_y - 64.0f <= y && L.cam_x - 64.0f <= x && x <= L.cam_x + 914.0f && y <= L.cam_y + 544.0f) ||
+        *n >= SPRITE_MAX) {
+        return;
+    }
+    light_sprite_t *sp = &s_sprites[floor ? 1 : 0][(*n)++];
+    sp->img = img; sp->frame = frame;
+    sp->x = x; sp->y = y; sp->sx = sx; sp->sy = sy; sp->rot = rot; sp->alpha = alpha;
+    sp->r = r; sp->g = g; sp->b = b;
+}
+
+/* TLightingSprite.DrawSprites (0x140111ec0) / TLightingSpriteFloor.DrawSprites (0x140112110): added to the light
+ * buffer in their color x alpha, then the queue is emptied */
 static void draw_sprites(bool floor)
 {
+    int k = floor ? 1 : 0;
+    float inv = 1.0f / L.scale_night;
     m2d_transform(0.0f, 1.0f, 1.0f);
     m2d_blend(3);
     m2d_alpha(1.0f);
     m2d_color(255, 255, 255);
     if (floor) { m2d_alpha(1.0f); m2d_blend(4); }
     else { m2d_blend(4); m2d_alpha(1.0f); }
+    for (int i = 0; i < s_sprite_count[k]; i++) {
+        const light_sprite_t *sp = &s_sprites[k][i];
+        m2d_color((int)((float)sp->r * sp->alpha), (int)((float)sp->g * sp->alpha), (int)((float)sp->b * sp->alpha));
+        m2d_transform(sp->rot, sp->sx * inv, sp->sy * inv);
+        m2d_image(sp->img, (sp->x - L.cam_x) * inv, (sp->y - L.cam_y) * inv, sp->frame);
+    }
     m2d_color(255, 255, 255);
     m2d_transform(0.0f, 1.0f, 1.0f);
+    s_sprite_count[k] = 0;
 }
 
-/* ObstacleShadow.Draw (0x1401116b0) / ObstacleShadow2.Draw (0x140111550) with empty lists */
+/* ObstacleShadow2 list (0x140dde178): images added white into the day buffer, so what they cover is not shaded */
+#define OBSTACLE_MAX 1024
+typedef struct {
+    int   img, frame;
+    float x, y, sx, sy, rot;
+} light_obstacle_t;
+
+static light_obstacle_t s_obstacles[OBSTACLE_MAX];
+static int s_obstacle_count;
+
+/* ObstacleShadow.Draw (0x1401116b0; its list stays empty: player parts with the 3D mode) / ObstacleShadow2.Draw
+ * (0x140111550): LIGHTBLEND white, transform (rot, sx / p, sy / p) at (x / p, y / p), then the list is emptied */
 static void draw_obstacle_shadows(bool second)
 {
+    float p1 = 1.0f / L.scale_night;
     m2d_blend(4);
     m2d_color(255, 255, 255);
     m2d_alpha(1.0f);
+    if (second) {
+        for (int i = 0; i < s_obstacle_count; i++) {
+            const light_obstacle_t *o = &s_obstacles[i];
+            m2d_transform(o->rot, o->sx * p1, o->sy * p1);
+            m2d_image(o->img, o->x * p1, o->y * p1, o->frame);
+        }
+        s_obstacle_count = 0;
+    }
     m2d_transform(0.0f, 1.0f, 1.0f);
     if (second) m2d_blend(3);
 }
@@ -1494,8 +1610,11 @@ static void generate_day_buffer(void)
     if (L.cfg.playershadows && L.cfg.mapshadows > 1) {
         m2d_blend(5);
         m2d_color(0, 0, 0);
-        m2d_marker("playershadows");
+        /* The emulator skips FUN_140112340 (no Tpl objects there): a trace without players prints a marker */
+        if (s_trace && s_part_count == 0) m2d_marker("playershadows");
+        else draw_player_shadows();
     }
+    s_part_count = 0;
     m2d_alpha(1.0f);
     m2d_marker("projectileshadows");
     m2d_alpha(1.0f);
@@ -1947,8 +2066,10 @@ static void draw_tiles_floor(void)
                 }
             }
         }
+        if (pass == 0) m2d_rotation(0.0f);
     }
     m2d_transform(0.0f, 1.0f, 1.0f);
+    m2d_blend(3);
 }
 
 /* ------------------------------------------------------------------------------------------------------------
@@ -2112,6 +2233,11 @@ void cs2d_light_configure(const cs2d_light_config_t *cfg)
     L.day_brightness = 255 - (int)((float)cfg->shadows * 2.55f);
 }
 
+void cs2d_light_set_daylight(int angle)
+{
+    L.server_daylight = angle + 1;
+}
+
 bool cs2d_light_active(void)
 {
     return L.map_loaded && L.mode != -1;
@@ -2125,6 +2251,9 @@ void cs2d_light_load_map(const cs2d_map_t *map)
     L.room_count = L.light_count = L.stripe_count = 0;
     L.map_loaded = false;
     for (int i = 0; i < MAX_BUFFERS; i++) s_buf[i].free = true;
+    s_sprite_count[0] = s_sprite_count[1] = 0;
+    s_obstacle_count = 0;
+    s_part_count = 0;
     if (!map || !map->tiles || map->width == 0 || map->height == 0) return;
     if (L.scale_night == 0.0f) { L.scale_night = 1.0f; L.scale_lights = 1.0f; }
     load_toning();
@@ -2206,21 +2335,15 @@ void cs2d_light_frame(const cs2d_map_t *map, int cam_x, int cam_y, float dt)
     }
     L.cam_x = (float)cam_x;
     L.cam_y = (float)cam_y;
-    L.shadow_rot_set = (float)fmod360((double)map->daylight_time);
+    /* FUN_140262ed0: sv_daylighttime when the server sets one, else the map's time */
+    L.shadow_rot_set = (float)fmod360((double)(L.server_daylight == 0 ? map->daylight_time : L.server_daylight - 1));
     if (L.mode == -1) return;
-    /* Te.trigger case 0x21: the light follows its entity; Te.update(2) case 0x21: rotation speed ints[6] */
+    /* Te.trigger case 0x21: the light follows its entity state */
     for (int i = 0; i < L.light_count; i++) {
         light_source_t *ls = &L.lights[i];
         if (ls->ent < 0 || (uint32_t)ls->ent >= map->entity_count) continue;
         int want = map->entity_state[ls->ent] == 0;
         if (ls->state != want) light_change_state(ls, want);
-        const cs2d_entity_t *e = &map->entities[ls->ent];
-        if (map->entity_state[ls->ent] == 0 && e->int_settings[6] != 0) {
-            ls->rot_start += e->int_settings[6];
-            ls->rot_end += e->int_settings[6];
-            light_angles(ls->rot_start, ls->rot_end, &ls->astart, &ls->aend);
-            ls->rotation = (float)str_int(e->str_settings[3]);
-        }
     }
     load_images();
     if (gl_ready()) {
@@ -2230,8 +2353,21 @@ void cs2d_light_frame(const cs2d_map_t *map, int cam_x, int cam_y, float dt)
         }
     }
     update_engine(dt);
+    s_part_count = 0;
     gl_restore();
     L.frame_ready = true;
+    /* Te.draw(2) case 0x21, later in the frame: rotation speed ints[6] turns ints[7] / ints[8], applied next frame */
+    for (int i = 0; i < L.light_count; i++) {
+        light_source_t *ls = &L.lights[i];
+        if (ls->ent < 0 || (uint32_t)ls->ent >= map->entity_count) continue;
+        const cs2d_entity_t *e = &map->entities[ls->ent];
+        if (map->entity_state[ls->ent] == 0 && e->int_settings[6] != 0) {
+            ls->rot_start += e->int_settings[6];
+            ls->rot_end += e->int_settings[6];
+            light_angles(ls->rot_start, ls->rot_end, &ls->astart, &ls->aend);
+            ls->rotation = (float)str_int(e->str_settings[3]);
+        }
+    }
 }
 
 void cs2d_light_draw_floor(void)
@@ -2267,6 +2403,45 @@ void cs2d_light_draw_buffer(void)
     m2d_draw_buffer(0, 0.0f, 0.0f, 854.0f, 480.0f, true);
     m2d_blend(3);
     gl_restore();
+}
+
+void cs2d_light_add_sprite(bool floor, const cs2d_texture_t *tex, float hx, float hy, float x, float y, float sx, float sy,
+                           int r, int g, int b, float rot, float alpha)
+{
+    if (!cs2d_light_active() || !tex) return;
+    queue_sprite(floor, ext_image(tex, hx, hy), x, y, sx, sy, r, g, b, rot, alpha, 0);
+}
+
+void cs2d_light_add_player_part(const cs2d_texture_t *tex, int cell_w, int cell_h, int frame, float x, float y,
+                                float rot, float scale)
+{
+    if (!cs2d_light_active() || !tex || s_part_count >= PLAYER_PART_MAX) return;
+    float fw = (float)(cell_w ? cell_w : tex->width), fh = (float)(cell_h ? cell_h : tex->height);
+    int img = ext_image_cells(tex, fw * 0.5f, fh * 0.5f, cell_w, cell_h);
+    if (img < 0) return;
+    light_part_t *pt = &s_parts[s_part_count++];
+    pt->img = img; pt->frame = frame;
+    pt->x = x; pt->y = y; pt->rot = rot; pt->sx = scale; pt->sy = scale;
+}
+
+void cs2d_light_add_obstacle(const cs2d_texture_t *tex, float hx, float hy, float x, float y, float sx, float sy, float rot)
+{
+    if (!cs2d_light_active() || L.cfg.mapshadows <= 1 || !tex || s_obstacle_count >= OBSTACLE_MAX) return;
+    int img = ext_image(tex, hx, hy);
+    if (img < 0) return;
+    light_obstacle_t *o = &s_obstacles[s_obstacle_count++];
+    o->img = img; o->frame = 0;
+    o->x = x; o->y = y; o->sx = sx; o->sy = sy; o->rot = rot;
+}
+
+float cs2d_light_shadow_rotation(void)
+{
+    return L.map_loaded ? L.shadow_rot : 225.0f;
+}
+
+bool cs2d_light_day_shadows(void)
+{
+    return cs2d_light_active() && L.cfg.mapshadows > 1;
 }
 
 void cs2d_light_set_trace(void (*fn)(const char *line, void *ud), void *ud)
