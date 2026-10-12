@@ -454,6 +454,24 @@ offline dedicated with `sv_gamemode 3` + `tools/agent/lua/construct_probe.lua`. 
   bands sends `[39]` unless a living player is within 20 px of the cursor; the server answers `[21]`. While
   `mp_respawndelay` (`[252,6]` byte after sv_gamemode) runs the HUD shows 0767 in (200, 0, 0).
 - **Kill:** `[19, victim, killer, weapon, u8, x u16, y u16]` (9 bytes).
+- **Hover text** (`FUN_1402a12d0`, called only with the cursor on the 850x480 screen): `mp_hovertext` (`0x140a14e00[1]`)
+  is a bit mask, 1 | 2 players, 4 hostages, 8 buildings. It comes in `[252,6]` at maxplayers + 12 + both string
+  lengths (31 with the dedicated's default config, proxy) and in `[237,16,i32]`. Bit 8: the first category 1 object
+  in `Tdo.list` with `|mouse + cam - (x + 16)| < 17` on both axes. Lines through `FUN_14024fb10` (text centered on a
+  point, shadow +1, black 0.4 box with `gfx/gui_c.bmp` corners 8 px, text width rounded to even + 8, max(text h + 2,
+  16) high): at cursor y - 25 the type name, or "$1 by $2" (0777) when the owner is in game; colors: owner set and no
+  team game -> own (255,255,0) / others (0,255,0), else team 1 (255,25,0), 2 (50,150,255), other yellow (unowned with
+  another team value: no title). At y + 25 "n%": a client (`DAT_140ddf400 == 0`, set at join) reads health as a percent;
+  above 100 it shows 100 % in (0,510,0) and "Upgrade n%" (0778 + " " + n + "%") at y + 45 in yellow, else clamps to
+  >= 1 with ((100 - p) * 5.1, p * 5.1, 0). The listen server computes health / max health and upgrade points itself.
+- **Player hover text** (same function, bits 1 | 2, tried before hostages and buildings, which it then skips): the first
+  `Tpl.list` player that is not the local one, team >= 1, health >= 1, `Tpl.fog` (+0x3f8) 0, within 20 px of the cursor
+  on both axes. Bit 1 title at y - 25, bit 2 "hp%" at y + 25 in ((100 - hp) * 5.1, hp * 5.1, 0). `0x140a015d0[sv_gamemode]
+  == 0` (no teams): "Enemy: name" (0774 + ": ") in (255,0,0). Team game: no local player or a Spectator -> the name in
+  (255,255,0); team mate (T with T, CT with VIP) -> "Friend: name" (0775) in (0,255,0); else enemy. An enemy covered by
+  smoke (`Tpro.smokegren_cover`) gets nothing, and its health only shows under sv_specmode 1 while the flag 0x140a1afd8
+  is 0 (the local player is not alive in a team; `FUN_1402559c0` sets it). Then `FUN_14029fc70`: a left click on the
+  hovered player while that flag is 0 follows it as a spectator (specmode 1, or 2 for a team mate) and sends `[67]`.
 - **Shot debris** (`Tshoot.Shoot` 0x1402073ed, client side for every shot): each tile the bullet enters is checked with
   `Tdo.getatpos`; an object of category 1 or 2 within 457 x 272 px of the shooter, of type 1, 3..5 or below 16 in the
   mask 0x9b80 (7, 8, 9, 11, 12, 15), hit with damage > 0, calls `Tp.breakable(x, y, 1, angle + 180)` and

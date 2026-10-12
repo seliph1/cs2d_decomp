@@ -428,3 +428,21 @@ bool cs2d_player_move(cs2d_player_t *player, const cs2d_map_t *map, float dx, fl
     player->pos.y = y;
     return moved;
 }
+
+/*
+ * FUN_1402a12d0, player branch: without teams everybody is an enemy. In a team game a Spectator (or no local player)
+ * sees the name in yellow, a team mate (T with T, CT / VIP together) is a friend, anybody else an enemy. An enemy's
+ * health is shown only under sv_specmode 1 while the local player is not alive in a team; the others always.
+ * (An enemy covered by smoke, Tpro.smokegren_cover, gets no text at all: there are no smoke grenades yet.)
+ */
+cs2d_pl_hover_t cs2d_player_hover_kind(const cs2d_player_t *local, const cs2d_player_t *target, bool team_game,
+                                       int specmode, bool local_alive, bool *show_health)
+{
+    cs2d_pl_hover_t kind = CS2D_PL_HOVER_ENEMY;
+    if (team_game) {
+        if (!local || local->team == CS2D_TEAM_SPEC) kind = CS2D_PL_HOVER_NEUTRAL;
+        else if ((local->team == CS2D_TEAM_T) == (target->team == CS2D_TEAM_T)) kind = CS2D_PL_HOVER_FRIEND;
+    }
+    *show_health = kind != CS2D_PL_HOVER_ENEMY || (specmode == 1 && !local_alive);
+    return kind;
+}

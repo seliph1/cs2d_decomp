@@ -8,6 +8,23 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Claude Code — player hover text
+- **Changed:** hovering another player shows its name ("Friend: " / "Enemy: " in a team or deathmatch) and "hp%"
+  (`render_player_hover` in `src/cs2d_scene_game.c`, `cs2d_player_hover_kind` in `src/cs2d_player.c`), from the player
+  branch of `FUN_1402a12d0`; it takes precedence over the building hover.
+- **Verified:** dump; regression in `test_construction` (friend / enemy / neutral, enemy health rules); our client on
+  the offline dedicated with the reworked `tools/agent/lua/hover_probe.lua` shows "Enemy: [b]LUL" in red, no health.
+- **Left:** smoke cover, fog, click-to-spectate, table 0x140a015d0 (OPEN_ISSUES).
+
+## 2026-10-12 — Claude Code — building hover health
+- **Changed:** hovering a building shows its name / "$1 by $2", "n%" health and "Upgrade n%" (`render_building_hover`
+  and `hover_text` in `src/cs2d_scene_game.c`, `cs2d_dynobj_hovered` / `cs2d_dynobj_hover_health`), ported from
+  `FUN_1402a12d0` / `FUN_14024fb10`. `mp_hovertext` is read from `[252,6]` and `[237,16]` (`net_hovertext`).
+- **Verified:** dump + objdump (strings "%", " ", ": " at 0x140a6dd00 / 0x140a71020 / 0x140a66160); proxy log of
+  `[252,6]` (hovertext 31); regression in `test_construction`; our client on the offline dedicated with
+  `tools/agent/lua/hover_probe.lua` shows "Turret" in CT blue and "100%" in green.
+- **Left:** screenshot of the original; player / hostage / item hover texts (OPEN_ISSUES).
+
 ## 2026-10-12 — Claude Code — fire rate twice too fast
 - **Changed:** `fire_delay` converts firedelay ticks at 39 ms (`Tpl.attack` `firetimer.reset(firedelay * 0x27)`,
   0x140216b8f) instead of 20 ms, so every weapon fired ~1.95x faster than the original. Knife / Claw right click

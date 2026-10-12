@@ -58,6 +58,19 @@ uint8_t cs2d_invsel_slot(cs2d_invsel_t *sel, const cs2d_player_t *player, int sl
 /* attack / attack2 while the HUD is open: the highlighted item (or CS2D_WEP_NONE), and the HUD closes (FUN_140219820) */
 uint8_t cs2d_invsel_confirm(cs2d_invsel_t *sel, const cs2d_player_t *player);
 
+/*
+ * Player hover text (FUN_1402a12d0, mp_hovertext 1 name / 2 health): the kind of title the hovered player gets and
+ * whether its health is shown. local is NULL without a local player; local_alive is the flag 0x140a1afd8 (alive in a
+ * team); team_game is 0x140a015d0[sv_gamemode] != 0.
+ */
+typedef enum {
+    CS2D_PL_HOVER_NEUTRAL = 0, /* name in (255,255,0): no local player or a Spectator */
+    CS2D_PL_HOVER_FRIEND  = 1, /* "Friend: name" (0775) in (0,255,0) */
+    CS2D_PL_HOVER_ENEMY   = 2  /* "Enemy: name" (0774) in (255,0,0) */
+} cs2d_pl_hover_t;
+cs2d_pl_hover_t cs2d_player_hover_kind(const cs2d_player_t *local, const cs2d_player_t *target, bool team_game,
+                                       int specmode, bool local_alive, bool *show_health);
+
 /* Check map collision and move player */
 bool cs2d_player_move(cs2d_player_t *player, const cs2d_map_t *map, float dx, float dy);
 

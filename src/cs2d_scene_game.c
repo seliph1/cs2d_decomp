@@ -27,6 +27,7 @@ static void center_camera_on_local_player(cs2d_client_t *client)
 #define SPEC_BTN_H 25.0f /* 25 * font height / 13 */
 
 static cs2d_texture_t s_tex_shade; /* gfx/gui_shade.bmp (0x140a0de78) */
+static cs2d_texture_t s_tex_gui_c;  /* gfx/gui_c.bmp: 4 rounded corners of 16x16, maskMode 3 (0x140a0dea0) */
 
 /* DAT_140ddf344: HUD windows open (the console does not count) */
 static bool spec_menu_open(const cs2d_client_t *client)
@@ -1403,6 +1404,133 @@ static void render_ground_items(const cs2d_client_t *client)
     }
 }
 
+/*
+ * FUN_14024fb10: text centered on (x, y) with a black shadow at +1, over a black box at alpha 0.4 that has
+ * gfx/gui_c.bmp corners (8 px at font scale 1), 8 px wider than the text (width rounded up to even) and
+ * max(text height + 2, 16) high (rounded up to even).
+ */
+static void hover_text(const char *text, int x, int y, int r, int g, int b)
+{
+    if (!text[0]) return;
+    if (!s_tex_gui_c.id) cs2d_texture_load_grid(&s_tex_gui_c, "gfx/gui_c.bmp", 3, 16, 16);
+    const int c = 8;
+    int th = (int)cs2d_render_font_line_height(CS2D_FONT_REGULAR);
+    int tw = (int)cs2d_render_text_width_ex(CS2D_FONT_REGULAR, text);
+    tw += tw % 2 == 1;
+    int h = th + 2 < 2 * c ? 2 * c : th + 2;
+    h += h & 1;
+    int tx = x - tw / 2, left = tx - c / 2, top = y - h / 2;
+    int inner = tw - c > 0 ? tw - c : 0, right = left + c + inner;
+    float hc = c * 0.5f;
+    cs2d_render_sprite_frame(&s_tex_gui_c, 16, 16, 0, left + hc, top + hc, c, c, 0.0f, 0, 0, 0, 0.4f, 0);
+    cs2d_render_sprite_frame(&s_tex_gui_c, 16, 16, 2, left + hc, top + h - c + hc, c, c, 0.0f, 0, 0, 0, 0.4f, 0);
+    cs2d_render_sprite_frame(&s_tex_gui_c, 16, 16, 1, right + hc, top + hc, c, c, 0.0f, 0, 0, 0, 0.4f, 0);
+    cs2d_render_sprite_frame(&s_tex_gui_c, 16, 16, 3, right + hc, top + h - c + hc, c, c, 0.0f, 0, 0, 0, 0.4f, 0);
+    if (h > 2 * c) {
+        cs2d_render_rect((float)left, (float)(top + c), c, (float)(h - 2 * c), 0, 0, 0, 0.4f, true);
+        cs2d_render_rect((float)right, (float)(top + c), c, (float)(h - 2 * c), 0, 0, 0, 0.4f, true);
+    }
+    if (inner > 0) cs2d_render_rect((float)(left + c), (float)top, (float)inner, (float)h, 0, 0, 0, 0.4f, true);
+    int ty = y - th / 2;
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, (float)(tx + 1), (float)(ty + 1), text, 0, 0, 0, 1.0f);
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, (float)tx, (float)ty, text, r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
+}
+
+/*
+ * Building hover text (FUN_1402a12d0, mp_hovertext bit 8; FUN_1402a2cf0 only calls it with the cursor on the
+ * 850x480 screen): at the cursor - 25 the type name (0x1409f79f8), "$1 by $2" (0777) when the owner is in game;
+ * at + 25 the health "n%"; at + 45 "Upgrade n%" (0778) in yellow while an upgrade is under way.
+ * Title colors: without a team game the local player's buildings yellow and the others green; in a team game
+ * (and for unowned buildings) T (255,25,0), CT (50,150,255), else yellow (an unowned building of another team
+ * value gets no title).
+ */
+static void render_building_hover(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    float mx = client->mouse_screen_x, my = client->mouse_screen_y;
+    if (!(client->net_hovertext & 8) || mx < 0 || my < 0 || mx > screen_w || my > screen_h) return;
+    const cs2d_dynobj_t *o = cs2d_dynobj_hovered(&client->dynobj, client->cam_x + mx, client->cam_y + my);
+    if (!o) return;
+    const char *name = cs2d_dynobj_def(o->typ)->name;
+    const cs2d_player_t *owner = NULL;
+    if (o->player >= 1 && o->player <= CS2D_MAX_PLAYERS) {
+        owner = &client->game.players[o->player];
+        if (owner->id == 0 && owner->name[0] == '\0') owner = NULL;
+    }
+    char title[160];
+    snprintf(title, sizeof(title), "%s", name);
+    if (owner) snprintf(title, sizeof(title), "%s by %s", name, owner->name);
+    int c[3] = { 255, 255, 0 };
+    bool show = true;
+    if (o->player != 0 && !team_game(client)) {
+        if (o->player != client->local_player_id) { c[0] = 0; c[1] = 255; c[2] = 0; }
+    } else if (o->team == 1) {
+        c[0] = 255; c[1] = 25; c[2] = 0;
+    } else if (o->team == 2) {
+        c[0] = 50; c[1] = 150; c[2] = 255;
+    } else if (o->player == 0 && o->team != 0) {
+        show = false;
+    }
+    int x = (int)mx;
+    if (show) hover_text(title, x, (int)(my - 25.0f), c[0], c[1], c[2]);
+
+    int pct, upgrade, rgb[3];
+    char line[64];
+    cs2d_dynobj_hover_health(o, &pct, &upgrade, rgb);
+    snprintf(line, sizeof(line), "%d%%", pct);
+    hover_text(line, x, (int)(my + 25.0f), rgb[0], rgb[1], rgb[2]);
+    if (upgrade > 0) {
+        snprintf(line, sizeof(line), "Upgrade %d%%", upgrade);
+        hover_text(line, x, (int)(my + 45.0f), 255, 255, 0);
+    }
+}
+
+/*
+ * Player hover text (FUN_1402a12d0, mp_hovertext bits 1 | 2, checked before hostages and buildings): the first other
+ * living player in a team within 20 px of the cursor (Tpl.fog must be 0: no fog of war yet). Bit 1 draws the title
+ * at the cursor - 25 (cs2d_player_hover_kind), bit 2 "health%" at + 25 in ((100 - hp) * 5.1, hp * 5.1, 0).
+ * Returns true when a player is hovered.
+ */
+static bool render_player_hover(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    float mx = client->mouse_screen_x, my = client->mouse_screen_y;
+    if (!(client->net_hovertext & 3) || mx < 0 || my < 0 || mx > screen_w || my > screen_h) return false;
+    float wx = client->cam_x + mx, wy = client->cam_y + my;
+    int me = client->local_player_id;
+    const cs2d_player_t *target = NULL;
+    for (int i = 1; i <= CS2D_MAX_PLAYERS && !target; i++) {
+        const cs2d_player_t *p = &client->game.players[i];
+        if (i == me || p->team < CS2D_TEAM_T || !p->alive || p->health < 1) continue;
+        if (fabsf(wx - p->pos.x) < 20.0f && fabsf(wy - p->pos.y) < 20.0f) target = p;
+    }
+    if (!target) return false;
+    const cs2d_player_t *local = (me >= 1 && me <= CS2D_MAX_PLAYERS) ? &client->game.players[me] : NULL;
+    bool local_alive = local && local->alive && local->team >= CS2D_TEAM_T;
+    bool show_health;
+    cs2d_pl_hover_t kind = cs2d_player_hover_kind(local, target, team_game(client), client->spec.server_mode,
+                                                  local_alive, &show_health);
+    int x = (int)mx;
+    if (client->net_hovertext & 1) {
+        char title[96];
+        if (kind == CS2D_PL_HOVER_NEUTRAL) {
+            hover_text(target->name, x, (int)(my - 25.0f), 255, 255, 0);
+        } else if (kind == CS2D_PL_HOVER_FRIEND) {
+            snprintf(title, sizeof(title), "Friend: %s", target->name);
+            hover_text(title, x, (int)(my - 25.0f), 0, 255, 0);
+        } else {
+            snprintf(title, sizeof(title), "Enemy: %s", target->name);
+            hover_text(title, x, (int)(my - 25.0f), 255, 0, 0);
+        }
+    }
+    if ((client->net_hovertext & 2) && show_health) {
+        char line[32];
+        int hp = target->health;
+        snprintf(line, sizeof(line), "%d%%", hp);
+        float r = (100 - hp) * 5.1f, g = hp * 5.1f;
+        hover_text(line, x, (int)(my + 25.0f), r < 0 ? 0 : (r > 255 ? 255 : (int)r), g < 0 ? 0 : (g > 255 ? 255 : (int)g), 0);
+    }
+    return true;
+}
+
 static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
 {
     /* 1. Map Pass 0 & 1 (background, tileset, tile modifiers, ground entities, items, hostages) */
@@ -1449,6 +1577,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
         bool ok = cs2d_dynobj_can_build(&client->dynobj, client->game.players, me, ptx, pty, tx, ty, false) == 1;
         cs2d_render_build_helper(ptx, pty, tx, ty, ok, client->cam_x, client->cam_y);
     }
+    if (!render_player_hover(client, screen_w, screen_h)) render_building_hover(client, screen_w, screen_h);
     if (local_pl->alive) {
         cs2d_render_hud(local_pl, &client->game, screen_w, screen_h);
         /* Right of the radar (drawradar != 0: radarsize + 100 + 8), else at 8 (FUN_140295190) */

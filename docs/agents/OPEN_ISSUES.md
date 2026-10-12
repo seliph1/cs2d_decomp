@@ -97,7 +97,13 @@ the same one.
     laser mine beams, Construction Site smoke particles, dynamic lights; turret tracers use a calibrated 300 px reach.
   - Building hit debris (`cs2d_fx_building_hit`): no hit sound (array 0x140a0d890 not identified), fragments do not
     stop at walls, the `particles` setting is fixed at 4, and the look is not compared with a screenshot yet.
-  - Not handled: the hover info / health of buildings, the `[37]` upgrade progress display, teleporter use
+  - Building hover text (KNOWLEDGE "Construction mode"): not compared with a screenshot of the original; the text
+    height uses our 15 px line height for Max2D `TextHeight`. Hostage (bit 4) hover text and the ground item hover
+    (`FUN_14029ffb0`, `THudItemHover`) are not done.
+  - Player hover text: no smoke cover check (no smoke grenades) and no `Tpl.fog` (no fog of war); the click on the
+    hovered player to spectate it (`FUN_14029fc70`) is not done. `team_game()` stands for both `0x140a015d0` tests
+    (buildings `== 1`, players `!= 0`): the table values are not read yet.
+  - Not handled: teleporter use
     ("Select Teleporter Destination" 0528), Supply (`FUN_14028dba0` item menu, menu 61/62), Gate Field team blocking
     for movement, kill rewards and `mp_building_limit` / `mp_building_price` overrides.
   - `g_prop_class[cellprop] == 1` is approximated by our collision 0; the team-game table `0x140a015d0` is assumed

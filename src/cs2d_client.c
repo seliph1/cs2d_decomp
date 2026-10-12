@@ -297,6 +297,7 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
 
     /* Default Server Info state (overwritten by [252, 6] and [240] when joining a server) */
     strncpy(client->net_server_name, "CS2D Server", sizeof(client->net_server_name) - 1);
+    client->net_hovertext = 31; /* The dedicated's default mp_hovertext (proxy capture of [252,6]) */
     cs2d_client_load_serverinfo(client, "sys/serverinfo.txt");
 
     /* Default Create Server & Options UI state matching CS2D screenshots */
@@ -1110,6 +1111,13 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                             client->spec.server_mode = buffer[s + 2];
                             client->net_sv_gamemode  = buffer[s + 3];
                             client->net_respawn_delay = buffer[s + 4];
+                            /* Then infammo, u8, two strings, u8, u8, u8 and mp_hovertext (0x140a14e00), at s + 12 + both
+                             * string lengths; 31 with the dedicated's default config (proxy) */
+                            if (s + 7 < recvd) {
+                                int h = s + 8 + buffer[s + 7];
+                                if (h < recvd) h += 1 + buffer[h];
+                                if (h + 3 < recvd) client->net_hovertext = buffer[h + 3];
+                            }
                         }
                         client->join_stage = 4;
                     }
@@ -1609,6 +1617,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         client->spec.server_mode = value & 0xFF;
                         cs2d_client_console_print(client, 255, 220, 0, "spec mode changed to %d", value);
                     }
+                    if (setting == 16) client->net_hovertext = value; /* mp_hovertext (FUN_1401e3f10 case 0x10) */
                     pos += 6;
                 } else {
                     break;

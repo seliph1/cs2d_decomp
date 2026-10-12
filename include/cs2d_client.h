@@ -170,6 +170,7 @@ struct cs2d_client {
     char                net_server_name[64];
     int                 net_sv_fow;        /* sv_fow from [252,6] (enables the spectator "Fog" button) */
     int                 net_sv_gamemode;   /* sv_gamemode from [252,6]: 0 Normal, 1 Deathmatch, 2 Team DM, 3 Construction, 4 Zombies */
+    int                 net_hovertext;     /* mp_hovertext (0x140a14e00[1], [252,6] / [237,16]): 1|2 players, 4 hostages, 8 buildings */
     char                net_password[64];  /* Server password sent in [252,1] (connect <ip> <port> [password]) */
     uint8_t             net_seen_seq[8192]; /* Reliable sequence numbers already handled (1 bit each) */
     cs2d_xfer_t         xfer;               /* Join-time file transfer [252,50] */

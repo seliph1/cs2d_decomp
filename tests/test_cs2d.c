@@ -2112,6 +2112,37 @@ static bool test_construction(void)
     if (!o || o->typ != CS2D_DO_DISPENSER || o->team != 1 || o->player != 4 || o->mode != 0 || fx.kind != 2)
         TEST_FAIL("[36,1]", "site did not become a Dispenser");
 
+    /* Hover text (FUN_1402a12d0): a building within 17 px of its tile center; health line colors and upgrade */
+    if (cs2d_dynobj_hovered(&w, 896 + 16 + 16, 1024 + 16) != o) TEST_FAIL("Hover", "16 px from the center");
+    if (cs2d_dynobj_hovered(&w, 896 + 16 + 17, 1024 + 16)) TEST_FAIL("Hover", "17 px from the center");
+    int pct, up, rgb[3];
+    o->health = 60;
+    cs2d_dynobj_hover_health(o, &pct, &up, rgb);
+    if (pct != 60 || up != 0 || rgb[0] != 204 || rgb[1] != 255 || rgb[2] != 0) TEST_FAIL("Hover", "60%");
+    o->health = 0;
+    cs2d_dynobj_hover_health(o, &pct, &up, rgb);
+    if (pct != 1 || rgb[0] != 255 || rgb[1] != 5) TEST_FAIL("Hover", "0 shows 1%");
+    o->health = 150;
+    cs2d_dynobj_hover_health(o, &pct, &up, rgb);
+    if (pct != 100 || up != 50 || rgb[0] != 0 || rgb[1] != 255) TEST_FAIL("Hover", "upgrade progress 150");
+
+    /* Player hover text (FUN_1402a12d0): friend / enemy / neutral, enemy health only for a dead viewer under specmode 1 */
+    {
+        cs2d_player_t me_t = { 0 }, me_spec = { 0 }, t2 = { 0 }, ct = { 0 }, vip = { 0 }, me_ct = { 0 };
+        me_t.team = CS2D_TEAM_T; t2.team = CS2D_TEAM_T; ct.team = CS2D_TEAM_CT; vip.team = CS2D_TEAM_VIP;
+        me_ct.team = CS2D_TEAM_CT; me_spec.team = CS2D_TEAM_SPEC;
+        bool hp;
+        if (cs2d_player_hover_kind(&me_t, &t2, true, 1, true, &hp) != CS2D_PL_HOVER_FRIEND || !hp) TEST_FAIL("Player hover", "T mate");
+        if (cs2d_player_hover_kind(&me_ct, &vip, true, 1, true, &hp) != CS2D_PL_HOVER_FRIEND) TEST_FAIL("Player hover", "CT + VIP");
+        if (cs2d_player_hover_kind(&me_t, &ct, true, 1, true, &hp) != CS2D_PL_HOVER_ENEMY || hp) TEST_FAIL("Player hover", "enemy, alive");
+        if (cs2d_player_hover_kind(&me_t, &ct, true, 1, false, &hp) != CS2D_PL_HOVER_ENEMY || !hp) TEST_FAIL("Player hover", "enemy, dead, specmode 1");
+        if (cs2d_player_hover_kind(&me_t, &ct, true, 2, false, &hp) != CS2D_PL_HOVER_ENEMY || hp) TEST_FAIL("Player hover", "enemy, specmode 2");
+        if (cs2d_player_hover_kind(&me_spec, &ct, true, 0, false, &hp) != CS2D_PL_HOVER_NEUTRAL || !hp) TEST_FAIL("Player hover", "spectator");
+        if (cs2d_player_hover_kind(NULL, &ct, true, 0, false, &hp) != CS2D_PL_HOVER_NEUTRAL) TEST_FAIL("Player hover", "no local player");
+        if (cs2d_player_hover_kind(&me_t, &t2, false, 1, true, &hp) != CS2D_PL_HOVER_ENEMY || hp) TEST_FAIL("Player hover", "deathmatch");
+    }
+    o->health = 100;
+
     /* Barbed wire hit: [36,id,5] wobbles 60 frames; Barbed Wire leaves the tile walkable */
     static const uint8_t wire[] = { 49, 102, 0, 2, 0x60, 0x03, 0x00, 0x04, 0, 0, 0, 1, 4 };
     static const uint8_t hit[] = { 36, 102, 0, 5 };

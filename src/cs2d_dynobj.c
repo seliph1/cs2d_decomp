@@ -164,6 +164,43 @@ int cs2d_dynobj_count(const cs2d_dynobj_world_t *w)
     return n;
 }
 
+/* Hover text (FUN_1402a12d0, mp_hovertext bit 8): |camx - x + mx - 16| < 17 on both axes, first in list order */
+const cs2d_dynobj_t *cs2d_dynobj_hovered(const cs2d_dynobj_world_t *w, float wx, float wy)
+{
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *o = &w->objs[i];
+        const cs2d_dynobj_def_t *d = o->active ? cs2d_dynobj_def(o->typ) : NULL;
+        if (!d || d->category != 1) continue;
+        if (fabsf(wx - 16.0f - o->x) < 17.0f && fabsf(wy - 16.0f - o->y) < 17.0f) return o;
+    }
+    return NULL;
+}
+
+/*
+ * Client branch (DAT_140ddf400 == 0, health is a percent): values above 100 are the upgrade progress, shown
+ * as 100 % in (0, 510, 0) plus "Upgrade n%"; otherwise the percent clamped to >= 1 in ((100 - p) * 5.1, p * 5.1, 0).
+ * Max2D SetColor clamps the channels to 0..255.
+ */
+void cs2d_dynobj_hover_health(const cs2d_dynobj_t *o, int *percent, int *upgrade, int rgb[3])
+{
+    int p = o->health, up = 0, r, g;
+    if (p > 100) {
+        up = p - 100;
+        p  = 100;
+        r  = 0;
+        g  = 510;
+    } else {
+        if (p < 1) p = 1;
+        g = (int)((float)p * 5.1f);
+        r = (int)((float)(100 - p) * 5.1f);
+    }
+    *percent = p;
+    *upgrade = up;
+    rgb[0] = r > 255 ? 255 : r;
+    rgb[1] = g > 255 ? 255 : g;
+    rgb[2] = 0;
+}
+
 /* Tdo.getnextfreeid: the lowest unused id from 1 */
 static int next_free_id(cs2d_dynobj_world_t *w)
 {

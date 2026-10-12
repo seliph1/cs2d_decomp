@@ -99,6 +99,11 @@ cs2d_dynobj_t *cs2d_dynobj_get(cs2d_dynobj_world_t *w, int id);
 cs2d_dynobj_t *cs2d_dynobj_at_tile(cs2d_dynobj_world_t *w, int tx, int ty);
 int            cs2d_dynobj_count(const cs2d_dynobj_world_t *w);
 
+/* FUN_1402a12d0 (mp_hovertext bit 8): the building (category 1) whose tile center is within 17 px of the world point */
+const cs2d_dynobj_t *cs2d_dynobj_hovered(const cs2d_dynobj_world_t *w, float wx, float wy);
+/* Health line of that hover text: percent, upgrade progress (0 = no "Upgrade n%" line) and color 0..255 */
+void cs2d_dynobj_hover_health(const cs2d_dynobj_t *o, int *percent, int *upgrade, int rgb[3]);
+
 /* Does a bullet hitting this type throw debris (Tshoot.Shoot)? */
 bool cs2d_dynobj_hit_debris(int typ);
 
