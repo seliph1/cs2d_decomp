@@ -676,6 +676,11 @@ client offline and against the dedicated. Code: `src/cs2d_scoreboard.c`.
   - Scale: `1.5x` (`32.0f * 1.5f = 48.0f` px width/height).
   - Color & Alpha: Black `(0, 0, 0)`, alpha `player_alpha * (shadows * 0.01f)` (0.50 at default 50% opacity, 0.10 under stealth suit).
   - Also applied to hostages (`Info_Hostage`, `Thostage.draw 0x140147090`) with the same 48x48 scale 1.5.
+  - **Our client differs on purpose (user request, 2026-10-12):** players cast their silhouette (legs, torso, held
+    weapon) shifted along the map sun, with the obstacle shadow length formula for h = 6 px
+    (`dz = -3 - 6 |sin(sun - 180)| / 2`; sun 225 -> (+3.6, +3.6) px). Two passes: the parts mark texels with alpha
+    >= 0.5 in the depth buffer (color writes off), then one black quad at the shadow alpha fills `GL_EQUAL` pixels, so
+    overlaps leave no seams (`set_player_shadow_offset`, `cs2d_render_player`). Hostages keep the blob.
 - **Ground item & projectile shadows (REA `Titem.draw 0x1401483a0`, `Te.draw 0x140260000`, `Tpro.draw 0x140288702`):**
   - Triggered when `itemshadows != 0` and `shadows > 0` (`DAT_140ddf183` and `DAT_140a14f7b`).
   - Circular ground shadow: `incbindata/shadow.bmp` at scale 1.0 (32x32 px) in black `(0,0,0)` at `(x, y)` with alpha `shadows * 0.01f`.

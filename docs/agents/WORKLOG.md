@@ -8,6 +8,13 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Claude Code — projected player shadow
+- **Changed:** at the user's request, `cs2d_render_player` casts the player's silhouette (legs, torso, weapon in black)
+  along the map sun instead of the `shadow.bmp` blob of the original `Tpl.draw`. Second round: offset reduced (h 6 px,
+  ~3.6 px per axis) and two-pass depth mask + one quad, which fixed the legs' semi-transparent outline showing over
+  the torso shadow. Hostages keep the blob.
+- **Verified:** build, 29 / 29 tests, screenshots on de_dust2 (standing and walking).
+
 ## 2026-10-12 — Claude Code — Scoreboard (Tab)
 - **Changed:** `src/cs2d_scoreboard.c` (port of `Thud_scoreboard`), shown while `showscores` (Tab) is held. Network:
   `[19]` kill scoring (byte 3 is the assist, byte 4 the weapon), `[22]` round end reason -> team scores, `[64]`, `[247]`

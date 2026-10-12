@@ -86,6 +86,32 @@ static int  s_shadow_intensity  = 50;   /* "shadows" (0..100, default 50, DAT_14
 static bool s_player_shadows    = true; /* "playershadows" (0|1, default 1, DAT_140ddf184) */
 static bool s_item_shadows      = true; /* "itemshadows" (0|1, default 1, DAT_140ddf183) */
 
+/* Player cast shadow offset in px, set from the map's sun angle by cs2d_render_map_ex */
+static float s_player_shadow_dx = 3.62f;
+static float s_player_shadow_dy = 3.62f;
+
+/*
+ * Our choice, not from REA: the original Tpl.draw (0x140121160) draws incbindata/shadow.bmp at scale 1.5 under the
+ * player. We cast the player's silhouette instead, along the same sun direction and with the same length formula
+ * as an obstacle in the shadow map (dz = -(h / 2) - h * |sin(sun - 180)| / 2), for h = 6 px so the shadow stays
+ * close to the body (225 deg -> (+3.6, +3.6)).
+ */
+static void set_player_shadow_offset(const cs2d_map_t *map)
+{
+    float sun_angle = 225.0f;
+    if (map->daylight_time > 999) {
+        sun_angle = (float)((map->daylight_time - 1000) % 360);
+    } else if (map->daylight_time >= 0 && map->daylight_time < 360) {
+        sun_angle = (float)map->daylight_time;
+    }
+    const float h = 6.0f;
+    float rad_sun  = sun_angle * (3.14159265f / 180.0f);
+    float s_factor = fabsf(sinf((sun_angle - 180.0f) * (3.14159265f / 180.0f))) * 0.5f;
+    float dz       = -(h * 0.5f) - h * s_factor;
+    s_player_shadow_dx = dz * cosf(rad_sun);
+    s_player_shadow_dy = dz * sinf(rad_sun);
+}
+
 /*
  * Reconstructed from CS2D.exe maskMode jump table (0x1401ad6a9 & 0x140062db0):
  *   mask_mode == 0: Opaque / embedded alpha only
@@ -1199,32 +1225,16 @@ void cs2d_render_player(
     float sx = (player->pos.x - cam_x) - sin_a * recoil_px;
     float sy = (player->pos.y - cam_y) + cos_a * recoil_px;
 
-    /* 0. Player Ground Drop Shadow (Tpl.draw 0x140121160 / 0x140122298: incbindata/shadow.bmp at scale 1.5 in black, alpha 0.5) */
-    if (s_shadows_enabled && s_player_shadows && s_shadow_intensity > 0 && bank) {
-        const cs2d_texture_t *stex = bank->tex_shadow.id ? &bank->tex_shadow : &bank->tex_leaf;
-        if (stex && stex->id) {
-            float player_a = (player->armor == 206) ? 0.2f : 1.0f;
-            float shadow_a = player_a * ((float)s_shadow_intensity * 0.01f);
-            cs2d_render_sprite_frame(stex, 32, 32, 0,
-                                     sx, sy, 48.0f, 48.0f, 0.0f,
-                                     0.0f, 0.0f, 0.0f, shadow_a, 0);
-        }
-    }
-
-    /* 1. Walking Legs (gfx/player/legs.bmp: 128x64 -> 8 frames of 32x32, offset 5px behind player) */
+    /* Walking legs (gfx/player/legs.bmp: 128x64 -> 8 frames of 32x32, offset 5px behind player) */
     bool moving = (player->feet_timer > 0.0f) ||
                   (fabsf(player->vel.x) > 1.0f || fabsf(player->vel.y) > 1.0f);
-    if (moving && bank && bank->tex_legs.id) {
-        int leg_frame = ((int)player->feet_frame) & 7;
-        float leg_ang = (player->feet_timer > 0.0f) ? player->feet_angle : player->angle;
-        float lx = sx - sin_a * 5.0f;
-        float ly = sy + cos_a * 5.0f;
-        cs2d_render_sprite_frame(&bank->tex_legs, 32, 32, leg_frame,
-                                 lx, ly, 32.0f, 32.0f, leg_ang,
-                                 1.0f, 1.0f, 1.0f, 1.0f, 0);
-    }
+    bool draw_legs = moving && bank && bank->tex_legs.id;
+    int leg_frame = ((int)player->feet_frame) & 7;
+    float leg_ang = (player->feet_timer > 0.0f) ? player->feet_angle : player->angle;
+    float lx = sx - sin_a * 5.0f;
+    float ly = sy + cos_a * 5.0f;
 
-    /* 2. Resolve Player Skin Texture (ct1..4, t1..4, vip) */
+    /* Resolve Player Skin Texture (ct1..4, t1..4, vip) */
     const cs2d_texture_t *active_skin = skin_tex;
     uint8_t look_idx = player->look & 3;
     if (bank && bank->initialized) {
@@ -1238,11 +1248,92 @@ void cs2d_render_player(
     }
 
     int body_frame = cs2d_player_get_frame(player, false);
+    bool draw_body = active_skin && active_skin->id;
+    /* Slice exact 32x32 frame from 64x96 player sheet (2 cols x 3 rows) */
+    int cell_w = 0, cell_h = 0;
+    if (draw_body) {
+        cell_w = (active_skin->width >= 64) ? (active_skin->width / 2) : active_skin->width;
+        cell_h = (active_skin->height >= 96) ? (active_skin->height / 3) : active_skin->height;
+    }
 
-    if (active_skin && active_skin->id) {
-        /* Slice exact 32x32 frame from 64x96 player sheet (2 cols x 3 rows) */
-        int cell_w = (active_skin->width >= 64) ? (active_skin->width / 2) : active_skin->width;
-        int cell_h = (active_skin->height >= 96) ? (active_skin->height / 3) : active_skin->height;
+    /* Held weapon in hands (0x1401215ee..0x1401218a0 & 0x140122791..0x140122a20) */
+    const cs2d_texture_t *active_wep = wep_tex;
+    if (bank && player->current_weapon > 0 && player->current_weapon < CS2D_MAX_WEAPONS) {
+        if (bank->tex_weapons[player->current_weapon].id) {
+            active_wep = &bank->tex_weapons[player->current_weapon];
+        }
+    }
+    const cs2d_texture_t *held_tex = NULL;
+    float wx = sx, wy = sy;
+    if ((player->is_reloading || player->reload_timer > 0.0f) && bank && bank->tex_reload.id) {
+        /* Reloading sprite at 13.5px in front of player (0x140122983) */
+        held_tex = &bank->tex_reload;
+        wx = sx + sin_d * 13.5f;
+        wy = sy - cos_d * 13.5f;
+    } else if (active_wep && active_wep->id) {
+        /* Held weapon distance along draw_angle: 16.5px for firearms (0x14012168e),
+         * 12.5px for grenades (0x1401227ab), 13.5px for melee/bomb (0x1401229b5) */
+        const cs2d_weapon_def_t *wdef = cs2d_weapon_get(player->current_weapon);
+        float wep_dist = 16.5f;
+        if (wdef) {
+            if (wdef->slot == CS2D_SLOT_GRENADE) {
+                wep_dist = 12.5f;
+            } else if (wdef->slot == CS2D_SLOT_MELEE || wdef->slot == CS2D_SLOT_BOMB) {
+                wep_dist = 13.5f;
+            }
+        }
+        held_tex = active_wep;
+        wx = sx + sin_d * wep_dist;
+        wy = sy - cos_d * wep_dist;
+    }
+
+    /* 0. Cast shadow (our choice, see set_player_shadow_offset): the silhouette of legs, torso and held weapon, shifted
+     * along the sun. Pass 1 marks the texels with alpha >= 0.5 in the depth buffer only; pass 2 fills one black quad
+     * where they were marked, so the shadow has a single alpha and overlapping parts leave no seams. */
+    if (s_shadows_enabled && s_player_shadows && s_shadow_intensity > 0) {
+        float player_a = (player->armor == 206) ? 0.2f : 1.0f;
+        float shadow_a = player_a * ((float)s_shadow_intensity * 0.01f);
+        float dx = s_player_shadow_dx, dy = s_player_shadow_dy;
+        glClear(GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_ALWAYS);
+        glDepthMask(GL_TRUE);
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        glEnable(GL_ALPHA_TEST);
+        glAlphaFunc(GL_GEQUAL, 0.5f);
+        if (draw_legs) {
+            cs2d_render_sprite_frame(&bank->tex_legs, 32, 32, leg_frame, lx + dx, ly + dy, 32.0f, 32.0f, leg_ang,
+                                     1.0f, 1.0f, 1.0f, 1.0f, 0);
+        }
+        if (draw_body) {
+            cs2d_render_sprite_frame(active_skin, cell_w, cell_h, body_frame, sx + dx, sy + dy, 32.0f, 32.0f, draw_ang,
+                                     1.0f, 1.0f, 1.0f, 1.0f, 0);
+        }
+        if (held_tex) {
+            cs2d_render_sprite(held_tex, wx + dx, wy + dy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
+        }
+        glDisable(GL_ALPHA_TEST);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+        /* Pass 2: the cleared depth is 1.0 and sprites sit at z 0, so GL_EQUAL keeps only the marked pixels */
+        glDepthFunc(GL_EQUAL);
+        glDepthMask(GL_FALSE);
+        cs2d_render_rect(sx + dx - 48.0f, sy + dy - 48.0f, 96.0f, 96.0f, 0.0f, 0.0f, 0.0f, shadow_a, true);
+        glEnable(GL_TEXTURE_2D);
+        glDepthMask(GL_TRUE);
+        glDepthFunc(GL_LESS);
+        glDisable(GL_DEPTH_TEST);
+    }
+
+    /* 1. Walking legs */
+    if (draw_legs) {
+        cs2d_render_sprite_frame(&bank->tex_legs, 32, 32, leg_frame,
+                                 lx, ly, 32.0f, 32.0f, leg_ang,
+                                 1.0f, 1.0f, 1.0f, 1.0f, 0);
+    }
+
+    /* 2. Player skin */
+    if (draw_body) {
         cs2d_render_sprite_frame(active_skin, cell_w, cell_h, body_frame,
                                  sx, sy, 32.0f, 32.0f, draw_ang,
                                  1.0f, 1.0f, 1.0f, 1.0f, 0);
@@ -1257,37 +1348,10 @@ void cs2d_render_player(
         }
     }
 
-    /* 4. Held Weapon in Hands (0x1401215ee..0x1401218a0 & 0x140122791..0x140122a20) */
-    const cs2d_texture_t *active_wep = wep_tex;
-    if (bank && player->current_weapon > 0 && player->current_weapon < CS2D_MAX_WEAPONS) {
-        if (bank->tex_weapons[player->current_weapon].id) {
-            active_wep = &bank->tex_weapons[player->current_weapon];
-        }
-    }
-
-    if ((player->is_reloading || player->reload_timer > 0.0f) && bank && bank->tex_reload.id) {
-        /* Reloading sprite at 13.5px in front of player (0x140122983) */
-        float wx = sx + sin_d * 13.5f;
-        float wy = sy - cos_d * 13.5f;
-        cs2d_render_sprite(&bank->tex_reload, wx, wy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
-    } else if (active_wep && active_wep->id) {
-        /* Held weapon distance along draw_angle: 16.5px for firearms (0x14012168e),
-         * 12.5px for grenades (0x1401227ab), 13.5px for melee/bomb (0x1401229b5) */
-        const cs2d_weapon_def_t *wdef = cs2d_weapon_get(player->current_weapon);
-        float wep_dist = 16.5f;
-        if (wdef) {
-            if (wdef->slot == CS2D_SLOT_GRENADE) {
-                wep_dist = 12.5f;
-            } else if (wdef->slot == CS2D_SLOT_MELEE || wdef->slot == CS2D_SLOT_BOMB) {
-                wep_dist = 13.5f;
-            }
-        }
-        float wx = sx + sin_d * wep_dist;
-        float wy = sy - cos_d * wep_dist;
-        cs2d_render_sprite(active_wep, wx, wy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
-
-        /* Silencer attachment overlay for USP (1) and M4A1 (32) when zoom_mode == 3 (0x1401217e4) */
-        if (bank && player->zoom_mode == 3) {
+    /* 4. Held weapon, with the silencer overlay for USP (1) and M4A1 (32) when zoom_mode == 3 (0x1401217e4) */
+    if (held_tex) {
+        cs2d_render_sprite(held_tex, wx, wy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
+        if (held_tex == active_wep && bank && player->zoom_mode == 3) {
             if (player->current_weapon == CS2D_WEP_USP && bank->tex_silencer.id) {
                 cs2d_render_sprite(&bank->tex_silencer, wx, wy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
             } else if (player->current_weapon == CS2D_WEP_M4A1 && bank->tex_m4a1s.id) {
@@ -2252,6 +2316,8 @@ void cs2d_render_map_ex(
 
     cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
     uint32_t tick_ms = GetTickCount();
+
+    set_player_shadow_offset(map);
 
     int start_tx = (int)(cam_x / CS2D_TILE_SIZE) - 1;
     int end_tx   = (int)((cam_x + screen_w) / CS2D_TILE_SIZE) + 1;
