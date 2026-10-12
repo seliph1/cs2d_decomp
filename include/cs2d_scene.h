@@ -63,6 +63,10 @@ bool cs2d_scene_game_walk_to(cs2d_client_t *client, int tx, int ty);
  * takes it (the server lists entities in map order) */
 void cs2d_scene_game_apply_entity_state(cs2d_client_t *client, int tx, int ty, uint8_t state);
 
+/* Spectator console commands (bound to space / leftctrl): next player to follow, free look <-> follow */
+void cs2d_scene_game_specplayer(cs2d_client_t *client);
+void cs2d_scene_game_specmode(cs2d_client_t *client);
+
 /* Draws a shot or melee swing of another player (server fire record [7, player, seed]) */
 void cs2d_scene_game_remote_shot(cs2d_client_t *client, cs2d_player_t *pl);
 

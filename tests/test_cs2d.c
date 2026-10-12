@@ -24,6 +24,7 @@
 #include "cs2d_entities.h"
 #include "cs2d_transfer.h"
 #include "cs2d_editor.h"
+#include "cs2d_spectate.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -1924,6 +1925,85 @@ static bool test_editor(void)
     return true;
 }
 
+/* Spectator camera (FUN_14025aa60, FUN_1401698a0, Tmap_scroll.toplayer_smoothly) and the join snapshot
+ * player names, checked against proxy captures of CS2D.exe on prison_funst3r with two bots */
+static bool test_spectator(void)
+{
+    printf("\n=== Testing Spectator Mode ===\n");
+
+    /* [252,7,1] names: cipher key "name" (captured bytes of the bots and of the joining player) */
+    static const uint8_t bot1[8] = { 0xc9, 0xc3, 0xca, 0xda, 0xc2, 0xe4, 0xda, 0xdb };
+    static const uint8_t me[4]   = { 0xe0, 0xc6, 0xce, 0xda };
+    char name[32];
+    cs2d_net_decrypt(bot1, 8, "name", name, sizeof(name));
+    if (strcmp(name, "[b]lawlz") != 0) TEST_FAIL("Snapshot names", "bot name not decoded");
+    cs2d_net_decrypt(me, 4, "name", name, sizeof(name));
+    if (strcmp(name, "real") != 0) TEST_FAIL("Snapshot names", "player name not decoded");
+
+    /* Players 1 (T) and 2 (CT) alive, 3 = local Spectator, 4 (CT) alive */
+    static cs2d_game_t g;
+    memset(&g, 0, sizeof(g));
+    cs2d_game_add_player(&g, 1, "t1", CS2D_TEAM_T);
+    cs2d_game_add_player(&g, 2, "ct2", CS2D_TEAM_CT);
+    cs2d_game_add_player(&g, 3, "me", CS2D_TEAM_SPEC);
+    cs2d_game_add_player(&g, 4, "ct4", CS2D_TEAM_CT);
+    g.players[1].alive = g.players[2].alive = g.players[4].alive = true;
+
+    /* The first pick at join follows player 1 and sends [67,1]; a valid target is kept */
+    cs2d_spec_t s;
+    cs2d_spec_init(&s, 1);
+    if (!cs2d_spec_pick(&s, &g, 3, 0) || s.target != 1) TEST_FAIL("Spectator pick", "first target is not player 1");
+    if (cs2d_spec_pick(&s, &g, 3, 0) || s.target != 1) TEST_FAIL("Spectator pick", "valid target not kept");
+    /* space: next (2, then 4, then back to 1) */
+    cs2d_spec_pick(&s, &g, 3, 1);
+    if (s.target != 2) TEST_FAIL("Spectator pick", "next is not player 2");
+    cs2d_spec_pick(&s, &g, 3, 1);
+    cs2d_spec_pick(&s, &g, 3, 1);
+    if (s.target != 1) TEST_FAIL("Spectator pick", "next does not wrap");
+    /* Previous: from the second entry the original wraps to the last one (0x140169c00: index <= 1) */
+    s.target = 2;
+    cs2d_spec_pick(&s, &g, 3, -1);
+    if (s.target != 4) TEST_FAIL("Spectator pick", "previous from the second player is not the last one");
+    cs2d_spec_pick(&s, &g, 3, -1);
+    if (s.target != 2) TEST_FAIL("Spectator pick", "previous from the last player");
+    /* A dead target is replaced; nobody alive -> 0 without [67] */
+    g.players[2].alive = false;
+    if (!cs2d_spec_pick(&s, &g, 3, 0) || s.target != 1) TEST_FAIL("Spectator pick", "dead target not replaced by the first one");
+    g.players[1].alive = g.players[4].alive = false;
+    if (cs2d_spec_pick(&s, &g, 3, 0) || s.target != 0) TEST_FAIL("Spectator pick", "no target expected");
+
+    /* sv_specmode 2: a dead Terrorist only follows Terrorists, a Spectator anybody */
+    g.players[1].alive = g.players[2].alive = g.players[4].alive = true;
+    cs2d_spec_init(&s, 2);
+    g.players[3].team = CS2D_TEAM_T;
+    cs2d_spec_pick(&s, &g, 3, 0);
+    cs2d_spec_pick(&s, &g, 3, 1);
+    if (s.target != 1) TEST_FAIL("Spectator own team", "a Terrorist may follow a Counter-Terrorist");
+    if (!cs2d_spec_can_follow(&s, CS2D_TEAM_CT, CS2D_TEAM_VIP) || cs2d_spec_can_follow(&s, CS2D_TEAM_T, CS2D_TEAM_CT) ||
+        !cs2d_spec_can_follow(&s, CS2D_TEAM_SPEC, CS2D_TEAM_CT)) {
+        TEST_FAIL("Spectator own team", "team filter");
+    }
+
+    /* Free look: 10 px per 60 Hz frame, 5 with walk, truncated per axis step */
+    int cx = 100, cy = 100;
+    cs2d_spec_free_look(&cx, &cy, false, true, true, false, false, 1.0f);
+    if (cx != 110 || cy != 90) TEST_FAIL("Free look", "10 px per frame");
+    cs2d_spec_free_look(&cx, &cy, true, false, false, true, true, 1.0f);
+    if (cx != 105 || cy != 95) TEST_FAIL("Free look", "walk halves the speed");
+    cs2d_spec_free_look(&cx, &cy, false, true, false, false, false, 0.45f);
+    if (cx != 109) TEST_FAIL("Free look", "4.5 px step not truncated");
+
+    /* Follow: farther than 32 px the camera jumps, closer it moves 0.3 of the distance per frame */
+    cx = 0; cy = 0;
+    cs2d_spec_follow(&cx, &cy, 1776.0f, 1456.0f, 425.0f, 240.0f, 1.0f);
+    if (cx != 1351 || cy != 1216) TEST_FAIL("Follow", "camera does not jump to the player");
+    cs2d_spec_follow(&cx, &cy, 1796.0f, 1446.0f, 425.0f, 240.0f, 1.0f);
+    if (cx != 1357 || cy != 1213) TEST_FAIL("Follow", "smoothing within 32 px is not 0.3 per frame");
+
+    TEST_PASS("Spectator: snapshot names, follow order (+ previous quirk), own team filter, free look, follow");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -1931,7 +2011,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 20;
+    int total = 21;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -1953,6 +2033,7 @@ int main(void)
     if (test_serverlist()) passed++;
     if (test_file_transfer()) passed++;
     if (test_editor()) passed++;
+    if (test_spectator()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

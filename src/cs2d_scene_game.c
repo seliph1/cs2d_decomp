@@ -21,6 +21,365 @@ static void center_camera_on_local_player(cs2d_client_t *client)
     client->cam_y = pl->pos.y - (float)client->config.window_height * 0.5f;
 }
 
+/* --- Spectator: camera, [67] / [32] and HUD of a dead player or a Spectator (cs2d_spectate.h) --- */
+
+#define SPEC_BAR_H 40.0f /* Black bands: button height + 15 (FUN_14029ac10) */
+#define SPEC_BTN_H 25.0f /* 25 * font height / 13 */
+
+static cs2d_texture_t s_tex_shade; /* gfx/gui_shade.bmp (0x140a0de78) */
+
+/* DAT_140ddf344: HUD windows open (the console does not count) */
+static bool spec_menu_open(const cs2d_client_t *client)
+{
+    return client->server_info_open || client->team_menu_open || client->download_open;
+}
+
+static const cs2d_player_t *spec_target(const cs2d_client_t *client)
+{
+    int t = client->spec.target;
+    if (t < 1 || t > CS2D_MAX_PLAYERS || client->game.players[t].id == 0) return NULL;
+    return &client->game.players[t];
+}
+
+/* FUN_1401682f0: [67, player] (reliable, 0 = free look) tells the server whom we watch; only while dead */
+static void spec_send_target(cs2d_client_t *client, int target)
+{
+    if (!client->connected || client->join_stage != 5) return;
+    if (client->game.players[client->local_player_id].alive) return;
+    uint8_t pkt[2] = { (uint8_t)CS2D_NET_CLIENTSPEC, (uint8_t)target };
+    cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+}
+
+static void spec_pick(cs2d_client_t *client, int dir)
+{
+    if (cs2d_spec_pick(&client->spec, &client->game, client->local_player_id, dir)) {
+        spec_send_target(client, client->spec.target);
+    }
+}
+
+/* "specplayer" (bound to space, 0x1401b58c6): the next player, or follow mode again. A proxy shows
+ * [67, n][67, n]: one from the pick, one from the command */
+void cs2d_scene_game_specplayer(cs2d_client_t *client)
+{
+    if (spec_menu_open(client) || client->spec.server_mode == 0) return;
+    if (client->spec.mode == CS2D_SPEC_FOLLOW) spec_pick(client, 1);
+    client->spec.mode = CS2D_SPEC_FOLLOW;
+    spec_send_target(client, client->spec.target);
+}
+
+/* "specmode" (bound to leftctrl, 0x1401b5980): free look <-> follow, only with sv_specmode 1 */
+void cs2d_scene_game_specmode(cs2d_client_t *client)
+{
+    if (client->spec.server_mode != 1) return;
+    if (client->spec.mode == CS2D_SPEC_FREE) {
+        client->spec.mode = CS2D_SPEC_FOLLOW;
+        spec_send_target(client, client->spec.target);
+    } else {
+        client->spec.mode = CS2D_SPEC_FREE;
+        spec_send_target(client, 0);
+    }
+}
+
+/* FUN_140060b10: nobody in T or CT and a menu open -> a random Info_T, next time an Info_CT, every 5 s */
+static void spec_showcase(cs2d_client_t *client, int *cam_x, int *cam_y, float half_w, float half_h)
+{
+    int playing = 0;
+    for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
+        const cs2d_player_t *p = &client->game.players[i];
+        if (p->id != 0 && p->team != CS2D_TEAM_SPEC) playing++;
+    }
+    if (playing == 0 && spec_menu_open(client)) {
+        cs2d_entity_type_t type = (client->spec.idle_team < 2) ? CS2D_ENT_INFO_T : CS2D_ENT_INFO_CT;
+        client->spec.idle_team = (type == CS2D_ENT_INFO_T) ? 2 : 1;
+        const cs2d_map_t *map = &client->game.map;
+        int n = 0;
+        for (uint32_t i = 0; i < map->entity_count; i++) n += (map->entities[i].type == type);
+        if (n > 0) {
+            int k = rand() % n; /* Te.getrandom */
+            for (uint32_t i = 0; i < map->entity_count; i++) {
+                if (map->entities[i].type != type || k-- > 0) continue;
+                *cam_x = (int)((float)(map->entities[i].x * 32 + 16) - half_w);
+                *cam_y = (int)((float)(map->entities[i].y * 32 + 16) - half_h);
+                break;
+            }
+        }
+    }
+    client->spec.idle_ticks = 5;
+}
+
+/* FUN_14025aa60: the camera of a local player that is not alive. tick = the 1 s network tick */
+static void update_spectator_camera(cs2d_client_t *client, float delta_time, bool tick)
+{
+    cs2d_spec_t *s = &client->spec;
+    float half_w = (float)client->config.window_width * 0.5f;
+    float half_h = (float)client->config.window_height * 0.5f;
+    int cx = (int)client->cam_x, cy = (int)client->cam_y;
+    float frames = delta_time * 60.0f; /* Time factor DAT_140a1b090: 1.0 per 60 Hz frame */
+
+    if (s->server_mode == 0) {
+        /* Nothing (War Mode): the camera looks far outside the map */
+        s->mode = CS2D_SPEC_NOTHING;
+        cx = cy = -100000;
+    } else {
+        if (s->server_mode == 2 || s->mode == CS2D_SPEC_NOTHING) s->mode = CS2D_SPEC_FOLLOW;
+        bool following = false;
+        if (s->mode == CS2D_SPEC_FREE) {
+            cs2d_spec_free_look(&cx, &cy, client->key_left, client->key_right, client->key_forward, client->key_back,
+                                client->key_walk, frames);
+        } else {
+            spec_pick(client, 0);
+            const cs2d_player_t *t = spec_target(client);
+            if (t) {
+                cs2d_spec_follow(&cx, &cy, t->pos.x, t->pos.y, half_w, half_h, frames);
+                following = true;
+            }
+        }
+        if (!following && s->idle_cam && tick && --s->idle_ticks < 1) spec_showcase(client, &cx, &cy, half_w, half_h);
+        /* Own Team only: a dead target is replaced by the next player (HUD, 0x14029b574) */
+        const cs2d_player_t *t = spec_target(client);
+        if (s->server_mode == 2 && t && !t->alive) spec_pick(client, 1);
+    }
+    client->cam_x = (float)cx;
+    client->cam_y = (float)cy;
+}
+
+static bool point_in_rect(float px, float py, float x, float y, float w, float h)
+{
+    return px >= x && py >= y && px <= x + w && py <= y + h;
+}
+
+/* Text colors of the spectator HUD: 0 gray/white, 1 Terrorist (255,25,0), 2 Counter-Terrorist (50,150,255) */
+static void spec_text_color(int color, bool hover, bool enabled, float *r, float *g, float *b, float *a)
+{
+    if (color == 1)      { *r = 1.0f;            *g = 25.0f / 255.0f;  *b = 0.0f; }
+    else if (color == 2) { *r = 50.0f / 255.0f;  *g = 150.0f / 255.0f; *b = 1.0f; }
+    if (color == 0) {
+        float c = hover ? 1.0f : (enabled ? 200.0f / 255.0f : 150.0f / 255.0f);
+        *r = *g = *b = c;
+        *a = 1.0f;
+    } else {
+        *a = hover ? 1.0f : (enabled ? 0.8f : 0.5f);
+    }
+}
+
+/*
+ * FUN_140298bf0: HUD button. Dark inside (50, alpha 0.6), 1 px frame 200 hovered / 150 / 100 disabled,
+ * additive gui_shade 0.3 hovered / 0.1, text centered and squeezed to w - 4. Returns whether it is hovered.
+ */
+static bool spec_button(const cs2d_client_t *client, float x, float y, float w, float h, const char *text,
+                        int color, bool enabled)
+{
+    bool inside = point_in_rect(client->mouse_screen_x, client->mouse_screen_y, x, y, w, h);
+    bool hover  = enabled && inside && !spec_menu_open(client);
+    float fc = hover ? 200.0f / 255.0f : (enabled ? 150.0f / 255.0f : 100.0f / 255.0f);
+    float d = 50.0f / 255.0f;
+    cs2d_render_rect(x + 1.0f, y + 1.0f, w - 2.0f, h - 2.0f, d, d, d, 0.6f, true);
+    cs2d_render_rect(x + 1.0f, y, w - 2.0f, 1.0f, fc, fc, fc, 1.0f, true);
+    cs2d_render_rect(x, y + 1.0f, 1.0f, h - 2.0f, fc, fc, fc, 1.0f, true);
+    cs2d_render_rect(x + 1.0f, y + h - 1.0f, w - 2.0f, 1.0f, fc, fc, fc, 1.0f, true);
+    cs2d_render_rect(x + w - 1.0f, y + 1.0f, 1.0f, h - 2.0f, fc, fc, fc, 1.0f, true);
+    if (s_tex_shade.id) {
+        cs2d_render_sprite_frame(&s_tex_shade, 10, 10, 0, x + 1.0f + (w - 2.0f) * 0.5f, y + 6.0f, w - 2.0f, 10.0f,
+                                 0.0f, 1.0f, 1.0f, 1.0f, hover ? 0.3f : 0.1f, 4);
+    }
+
+    float r = 1.0f, g = 1.0f, b = 1.0f, a = 1.0f;
+    spec_text_color(color, hover, enabled, &r, &g, &b, &a);
+    float tw, th;
+    cs2d_render_text_measure(CS2D_FONT_REGULAR, text, &tw, &th);
+    float sc = (tw > w - 4.0f) ? (w - 4.0f) / tw : 1.0f;
+    float tx = (float)((int)w / 2 + (int)x - (int)(tw * 0.5f * sc));
+    float ty = (float)((int)h / 2 + (int)y - (int)th / 2);
+    cs2d_render_text_scaled_ex(CS2D_FONT_REGULAR, tx, ty, text, sc, r, g, b, a);
+    return hover;
+}
+
+/* Special armors 201..206 are shown by name (items 79..84, name table 0x1409fff98 + 0x278) */
+static const char *const s_armor_names[6] = {
+    "Light Armor", "Armor", "Heavy Armor", "Medic Armor", "Super Armor", "Stealth Suit"
+};
+
+/* FUN_140299470: followed player's name, health and armor centered in the name box */
+static void spec_player_info(const cs2d_client_t *client, float x, float y, float w, float h, int color,
+                             const cs2d_player_t *p, bool enabled)
+{
+    const cs2d_font_id_t f = CS2D_FONT_REGULAR;
+    float w_sp = cs2d_render_text_width_ex(f, " ");
+    float w_name = cs2d_render_text_width_ex(f, p->name);
+    float w_num = cs2d_render_text_width_ex(f, "0000");
+    float total = w_name + w_sp + w_num + w_num;
+    bool hover = enabled && !spec_menu_open(client) &&
+                 point_in_rect(client->mouse_screen_x, client->mouse_screen_y, x, y, w, h);
+    char probe[CS2D_MAX_NAME_LEN + 4];
+    snprintf(probe, sizeof(probe), "%s(X)", p->name);
+    float tw, th;
+    cs2d_render_text_measure(f, probe, &tw, &th);
+    int x0 = ((int)w / 2 + (int)x) - (int)(total * 0.5f);
+
+    /* Avatar square left of the name; the original draws "?" when the player has none */
+    if (p->id != client->local_player_id) {
+        float ax = (float)x0 - h, gray = 128.0f / 255.0f;
+        cs2d_render_rect(ax - 1.0f, y + 2.0f, h - 4.0f, h - 4.0f, gray, gray, gray, 1.0f, true);
+        cs2d_render_rect(ax, y + 3.0f, h - 6.0f, h - 6.0f, 0.0f, 0.0f, 0.0f, 1.0f, true);
+        float qw, qh;
+        cs2d_render_text_measure(f, "?", &qw, &qh);
+        cs2d_render_text_ex(f, ax + (h - 6.0f - qw) * 0.5f, y + 3.0f + (h - 6.0f - qh) * 0.5f, "?", 1, 1, 1, 1);
+    }
+
+    /* Team colors, except in Deathmatch (no teams: table 0x140a015d0) */
+    float r = 1.0f, g = 1.0f, b = 1.0f, a = 1.0f;
+    spec_text_color(client->net_sv_gamemode == 1 ? 0 : color, hover, enabled, &r, &g, &b, &a);
+    float sc = (w - 3.0f <= total) ? (w - 4.0f) / total : 1.0f;
+    float ty = (float)(int)((float)((int)h / 2) + y - th * 0.5f);
+    cs2d_render_text_scaled_ex(f, (float)x0, ty, p->name, sc, r, g, b, a);
+
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    int cell = (bank && bank->tex_hud_symbols.height >= 64) ? 64 : 32;
+    float step = (w_sp + th) * sc;
+    char num[16];
+
+    /* Health: hud_symbols frame 0, additive (255,255,32); value from red (0) to green (100) */
+    float hx = (float)(int)((w_name + w_sp) * sc + (float)x0);
+    if (bank && bank->tex_hud_symbols.id) {
+        cs2d_render_sprite_frame(&bank->tex_hud_symbols, cell, cell, 0, hx + th * 0.5f, ty + 1.0f + th * 0.5f, th, th,
+                                 0.0f, 1.0f, 1.0f, 32.0f / 255.0f, a, 4);
+    }
+    float vx = (float)(int)(hx + step);
+    float hp = (float)p->health;
+    snprintf(num, sizeof(num), "%d", p->health);
+    cs2d_render_text_scaled_ex(f, vx, ty, num, sc, fminf(fmaxf((100.0f - hp) * 5.1f / 255.0f, 0.0f), 1.0f),
+                               fminf(fmaxf(hp * 5.1f / 255.0f, 0.0f), 1.0f), 0.0f, a);
+
+    /* Armor: frame 1, same colors */
+    if (p->armor > 0) {
+        float ax = (float)(int)(w_num * sc + vx);
+        if (bank && bank->tex_hud_symbols.id) {
+            cs2d_render_sprite_frame(&bank->tex_hud_symbols, cell, cell, 1, ax + th * 0.5f, ty + 1.0f + th * 0.5f, th, th,
+                                     0.0f, 1.0f, 1.0f, 32.0f / 255.0f, a, 4);
+        }
+        float av = (float)p->armor;
+        const char *txt = num;
+        if (p->armor >= 201 && p->armor <= 206) txt = s_armor_names[p->armor - 201];
+        else snprintf(num, sizeof(num), "%d", p->armor);
+        cs2d_render_text_scaled_ex(f, (float)(int)(step + ax), ty, txt, sc,
+                                   fminf(fmaxf((100.0f - av) * 5.1f / 255.0f, 0.0f), 1.0f),
+                                   fminf(fmaxf(av * 5.1f / 255.0f, 0.0f), 1.0f), 0.0f, a);
+    }
+}
+
+/* What the name box shows (FUN_14029ac10 at 0x14029b4ed..0x14029b68e) */
+typedef enum { SPEC_BOX_DASH, SPEC_BOX_NOSPEC, SPEC_BOX_NAME, SPEC_BOX_INFO } spec_box_kind_t;
+
+static spec_box_kind_t spec_box(const cs2d_client_t *client, const cs2d_player_t **out, int *color)
+{
+    const cs2d_spec_t *s = &client->spec;
+    const cs2d_player_t *t = spec_target(client);
+    int lt = (int)client->game.players[client->local_player_id].team;
+    *out = t;
+    *color = 0;
+    if (!t || s->mode != CS2D_SPEC_FOLLOW) return (s->server_mode != 0) ? SPEC_BOX_DASH : SPEC_BOX_NOSPEC;
+    if (t->team == CS2D_TEAM_T) {
+        *color = 1;
+        return (lt > 1 && s->server_mode != 1) ? SPEC_BOX_NAME : SPEC_BOX_INFO;
+    }
+    *color = 2;
+    return (lt == 1 && s->server_mode != 1) ? SPEC_BOX_NAME : SPEC_BOX_INFO;
+}
+
+/* Spectator HUD (FUN_14029ac10): bands, "Spectating", Menu / Map / Fog, name box and mode button */
+static void render_spectator_hud(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    const cs2d_spec_t *s = &client->spec;
+    const cs2d_player_t *me = &client->game.players[client->local_player_id];
+    bool menu = spec_menu_open(client);
+    float sw = (float)screen_w, sh = (float)screen_h;
+    float by = sh - 8.0f - SPEC_BTN_H;
+    const cs2d_font_id_t f = CS2D_FONT_REGULAR;
+    float tw, th;
+
+    cs2d_render_rect(0.0f, 0.0f, sw, SPEC_BAR_H, 0.0f, 0.0f, 0.0f, 0.55f, true);
+    cs2d_render_rect(0.0f, sh - SPEC_BAR_H, sw, SPEC_BAR_H, 0.0f, 0.0f, 0.0f, 0.55f, true);
+
+    /* A dead team member: "You are dead!" at the top. Respawn game modes (DM, TDM, Construction, Zombies)
+     * pulse yellow-red and offer a respawn (not implemented: the click sends nothing yet) */
+    if (me->team != CS2D_TEAM_SPEC) {
+        double t = (double)GetTickCount();
+        const char *msg;
+        float r, g;
+        if (client->net_sv_gamemode >= 1 && client->net_sv_gamemode <= 4) {
+            msg = "You are dead! - Click to respawn!"; /* sys/language 0764 */
+            r = 1.0f;
+            g = (float)fabs(sin((double)((int)t / 5) * 0.017453292519943295));
+        } else {
+            msg = "You are dead!";                     /* sys/language 0765 */
+            r = (float)(fabs(sin((double)((int)t / 10) * 0.017453292519943295)) * 155.0 + 100.0) / 255.0f;
+            g = 0.0f;
+        }
+        cs2d_render_text_measure(f, msg, &tw, &th);
+        cs2d_render_text_ex(f, (float)(screen_w / 2 - (int)tw / 2), 0.0f, msg, r, g, 0.0f, 1.0f);
+    }
+
+    const char *spectating = "Spectating"; /* 0768 */
+    cs2d_render_text_measure(f, spectating, &tw, &th);
+    float gray = 150.0f / 255.0f;
+    cs2d_render_text_ex(f, (float)(screen_w / 2 - (int)tw / 2), SPEC_BAR_H - th - 3.0f, spectating, gray, gray, gray, 1.0f);
+
+    /* Menu, Map and Fog (the last only with sv_fow and sv_specmode 1); their windows are not reconstructed */
+    spec_button(client, 5.0f, by, 46.0f, SPEC_BTN_H, "Menu", 0, !menu);
+    spec_button(client, 56.0f, by, 37.0f, SPEC_BTN_H, "Map", 0, !menu);
+    spec_button(client, 98.0f, by, 37.0f, SPEC_BTN_H, "Fog", 0, !menu && client->net_sv_fow > 0 && s->server_mode == 1);
+
+    /* Mode button: 0770 "Spectate Nothing", 0771 "Free Look", 0772 "Follow Player" */
+    static const char *const mode_names[3] = { "Spectate Nothing", "Free Look", "Follow Player" };
+    bool mode_enabled = !menu && (s->mode == CS2D_SPEC_FREE || (s->mode == CS2D_SPEC_FOLLOW && s->server_mode == 1));
+    spec_button(client, sw - 135.0f, by, 130.0f, SPEC_BTN_H, mode_names[s->mode], 0, mode_enabled);
+
+    /* Name box between them */
+    const cs2d_player_t *t;
+    int color;
+    spec_box_kind_t kind = spec_box(client, &t, &color);
+    float nx = 140.0f, nw = sw - 280.0f;
+    if (kind == SPEC_BOX_DASH) {
+        spec_button(client, nx, by, nw, SPEC_BTN_H, "-", 0, false);
+    } else if (kind == SPEC_BOX_NOSPEC) {
+        spec_button(client, nx, by, nw, SPEC_BTN_H, "Server does not allow Spectating", 0, false); /* 0773 */
+    } else if (kind == SPEC_BOX_NAME) {
+        spec_button(client, nx, by, nw, SPEC_BTN_H, t->name, color, !menu);
+    } else {
+        spec_button(client, nx, by, nw, SPEC_BTN_H, "", color, !menu);
+        spec_player_info(client, nx, by, nw, SPEC_BTN_H, color, t, !menu);
+    }
+}
+
+/* Clicks on the spectator HUD: the mode button toggles, the name box picks the next (left) or previous (right) player */
+static bool spectator_hud_click(cs2d_client_t *client, float mx, float my, int button)
+{
+    cs2d_spec_t *s = &client->spec;
+    if (spec_menu_open(client) || (button != 1 && button != 2)) return false;
+    float sw = (float)client->config.window_width, sh = (float)client->config.window_height;
+    float by = sh - 8.0f - SPEC_BTN_H;
+
+    if (point_in_rect(mx, my, sw - 135.0f, by, 130.0f, SPEC_BTN_H)) {
+        if (s->mode == CS2D_SPEC_FOLLOW && s->server_mode == 1) {
+            s->mode = CS2D_SPEC_FREE;
+            spec_send_target(client, 0);
+        } else if (s->mode == CS2D_SPEC_FREE) {
+            s->mode = CS2D_SPEC_FOLLOW;
+            spec_send_target(client, s->target);
+        }
+        return true;
+    }
+    const cs2d_player_t *t;
+    int color;
+    spec_box_kind_t kind = spec_box(client, &t, &color);
+    if ((kind == SPEC_BOX_NAME || kind == SPEC_BOX_INFO) && point_in_rect(mx, my, 140.0f, by, sw - 280.0f, SPEC_BTN_H)) {
+        if (s->mode == CS2D_SPEC_FOLLOW) spec_pick(client, button == 1 ? 1 : -1);
+        s->mode = CS2D_SPEC_FOLLOW;
+        return true;
+    }
+    return point_in_rect(mx, my, 0.0f, sh - SPEC_BAR_H, sw, SPEC_BAR_H);
+}
+
 /* Loads maps/<name>.map and its tileset (FUN_140113d50) into the running game */
 static bool game_load_map(cs2d_client_t *client, const char *map_name)
 {
@@ -315,6 +674,7 @@ static void game_enter(cs2d_client_t *client)
         client->game.players[client->local_player_id].alive = false;
     } else {
         /* Local player (CT, Player 1) and practice bots exist before the map spawns them */
+        cs2d_spec_init(&client->spec, 1);
         client->local_player_id = 1;
         cs2d_game_add_player(&client->game, 1, client->config.name, CS2D_TEAM_CT);
         cs2d_game_add_player(&client->game, 2, "Bot_Bravo", CS2D_TEAM_T);
@@ -348,6 +708,7 @@ static void game_enter(cs2d_client_t *client)
     cs2d_texture_load_ex(&client->tex_ak47,   "gfx/weapons/ak47.bmp",   2);
     cs2d_texture_load_ex(&client->tex_m4a1,   "gfx/weapons/m4a1.bmp",   2);
     cs2d_texture_load_ex(&client->tex_deagle, "gfx/weapons/deagle.bmp", 2);
+    cs2d_texture_load_ex(&s_tex_shade,        "gfx/gui_shade.bmp",      3);
 
     if (!joining) cs2d_client_connect(client, client->config.server_ip, client->config.server_port);
 }
@@ -371,6 +732,7 @@ static void game_leave(cs2d_client_t *client)
     cs2d_texture_free(&client->tex_ak47);
     cs2d_texture_free(&client->tex_m4a1);
     cs2d_texture_free(&client->tex_deagle);
+    cs2d_texture_free(&s_tex_shade);
 
     cs2d_game_free(&client->game);
     memset(&client->game, 0, sizeof(client->game));
@@ -491,8 +853,16 @@ static void game_update(cs2d_client_t *client, float delta_time)
     cs2d_fx_update(&client->fx, delta_time);
 
     /* Camera stays centered on the player like CS2D.exe; a lagging camera would also turn the aim
-     * every frame while walking (and send a rotation packet each time) with the mouse at rest */
-    center_camera_on_local_player(client);
+     * every frame while walking (and send a rotation packet each time) with the mouse at rest.
+     * Dead or Spectator: the spectator camera. Its 1 s tick (DAT_140ddf540) also paces [32] below. */
+    client->spec_tick += delta_time;
+    bool spec_tick = client->spec_tick >= 1.0f;
+    if (spec_tick) client->spec_tick = 0.0f;
+    if (pl->alive) {
+        center_camera_on_local_player(client);
+    } else {
+        update_spectator_camera(client, delta_time, spec_tick);
+    }
 
     /*
      * Network: like CS2D.exe, every update that changes the position sends it (unreliable)
@@ -521,6 +891,16 @@ static void game_update(cs2d_client_t *client, float delta_time)
             cs2d_client_send_udp(client, pkt, sizeof(pkt), false);
             client->net_sent_rot = rot;
         }
+    }
+
+    /* Dead or Spectator, once per second (FUN_14025a270): [32, x u16, y u16] = camera center + 32768
+     * (camx + 33193.0, camy + 33008.0 on the 850x480 screen), unreliable */
+    if (client->connected && client->join_stage == 5 && !pl->alive && spec_tick) {
+        int sx = ((int)(client->cam_x + (float)client->config.window_width * 0.5f) + 32768) & 0xFFFF;
+        int sy = ((int)(client->cam_y + (float)client->config.window_height * 0.5f) + 32768) & 0xFFFF;
+        uint8_t pkt[5] = { (uint8_t)CS2D_NET_SPECPOS, (uint8_t)(sx & 0xFF), (uint8_t)(sx >> 8),
+                           (uint8_t)(sy & 0xFF), (uint8_t)(sy >> 8) };
+        cs2d_client_send_udp(client, pkt, sizeof(pkt), false);
     }
 
     /* Poll network packets */
@@ -575,7 +955,11 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
 
     /* 4. In-Game HUD (hud_nums.bmp, hud_symbols.bmp, hud_radar_advanced.png) */
     const cs2d_player_t *local_pl = &client->game.players[client->local_player_id];
-    cs2d_render_hud(local_pl, &client->game, screen_w, screen_h);
+    if (local_pl->alive) {
+        cs2d_render_hud(local_pl, &client->game, screen_w, screen_h);
+    } else {
+        render_spectator_hud(client, screen_w, screen_h);
+    }
 }
 
 /* Weapon slot keys; online the new weapon is announced as [9, type, 0] (recorded from CS2D.exe) */
@@ -683,6 +1067,12 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
         case '5':
             if (pressed) switch_slot(client, pl, CS2D_SLOT_BOMB);
             break;
+        case VK_SPACE:    /* sys/controls.cfg: bind "space" "specplayer" */
+            if (pressed) cs2d_scene_game_specplayer(client);
+            break;
+        case VK_LCONTROL: /* bind "leftctrl" "specmode" */
+            if (pressed) cs2d_scene_game_specmode(client);
+            break;
         default:
             break;
     }
@@ -690,8 +1080,9 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
 
 static void game_handle_mouse(cs2d_client_t *client, float mx, float my, int button, bool pressed)
 {
-    (void)mx;
-    (void)my;
+    if (pressed && !client->game.players[client->local_player_id].alive && spectator_hud_click(client, mx, my, button)) {
+        return;
+    }
     if (button == 1) {        /* Left click: attack */
         client->mouse_fire = pressed;
     } else if (button == 2) { /* Right click: attack2 */

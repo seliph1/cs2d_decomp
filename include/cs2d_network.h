@@ -279,6 +279,8 @@ int     cs2d_pkt_r_str(const uint8_t *buf, int len, int *pos, char *out, int max
 void    cs2d_net_md5_hex(const char *str, char out_hex[33]);
 bool    cs2d_net_sha256_file(const char *filepath, char out_hex[65]);
 void    cs2d_net_encrypt(const char *txt, const char *key, uint8_t *out, int *out_len);
+/* Inverse of cs2d_net_encrypt (player names in the join snapshot use key "name", sprays "spr", 0x1402cd9a0) */
+void    cs2d_net_decrypt(const uint8_t *in, int n, const char *key, char *out, int max_out);
 void    cs2d_net_secret(const char *raw_secret, char *out);
 
 /* Opcode 252 (CS2D_NET_JOIN) 4-Stage Handshake Builders (0x1402ce900 & 0x1401dc530) */

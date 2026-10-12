@@ -8,6 +8,17 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-11 — Claude Code — spectator mode
+- **Changed:** spectator camera and HUD (`src/cs2d_spectate.c`, `cs2d_scene_game.c`): free look and follow, the
+  target picker, `[67]` and `[32]`, `space` / `leftctrl` (`specplayer` / `specmode` commands), the join
+  showcase, sv_specmode from `[252,6]` and `[237]`. The join snapshot section 1 (players already in game, names
+  deciphered) is now read, so bots and earlier players exist. The fixed `[67,1]` after the client data is gone.
+- **Verified:** proxy of the original vs ours on prison_funst3r with two bots (`spec_probe.lua`): `[67,1]` and
+  `[32] 20 f0 86 90 85` byte-identical at join, `specplayer` `[67,2][67,2]`, `specmode` `[67,0]` / `[67,2]`,
+  HUD screenshots match. Both clients on 140.238.183.194:36969 (empty server): no `[67]`, identical first
+  `[32]`, showcase every 5 s. `test_spectator` added (21 / 21).
+- **Left:** see OPEN_ISSUES "Spectator".
+
 ## 2026-10-11 — Claude Code — shared scrolling in the UI library
 - **Changed:**
   - `cs2d_ui`: `cs2d_ui_scroll_t` (first visible row + thumb grab), `cs2d_ui_scrollbar_style_t`, and

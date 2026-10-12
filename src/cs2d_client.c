@@ -241,6 +241,7 @@ void cs2d_client_select_team(cs2d_client_t *client, uint8_t team, uint8_t look)
     client->team_menu_page   = 0;
     client->server_info_open = false;
     client->mouse_fire       = false;
+    client->spec.idle_cam    = false; /* Every Tgui_hudmen button ends the spawn showcase (DAT_140ddf328 = 0) */
 
     cs2d_player_t *pl = &client->game.players[client->local_player_id];
 
@@ -655,6 +656,60 @@ static void join_load_map(cs2d_client_t *client, const char *map)
     client->game.players[client->local_player_id].alive = false;
 }
 
+/*
+ * [252,7,1]: the players already in the game (FUN_1402ce7c0 at 0x1402cd9a0, proxy): count u8, then per player
+ *   id, name (u8 length, cipher key "name"), spray (key "spr"), usgn id i32, steam os u8, steam name, steam id i64,
+ *   usgn name (the two names: u16 count + UTF-16, empty in every capture), team, spec state, look,
+ *   score u16 (+1000), deaths u16, assists u16, mvp u16, rank, x u16, y u16, rot u16 (360 / 65536 deg),
+ *   health, armor, special byte, weapon, weapon mode, votekick, votemap u16
+ * The local player's own record is skipped. Without it a spectator has nobody to follow.
+ */
+static void join_players(cs2d_client_t *client, const uint8_t *buf, int len, int *pos)
+{
+    int p = *pos;
+    if (p >= len) return;
+    int count = buf[p++];
+    for (int k = 0; k < count; k++) {
+        if (p + 2 > len) break;
+        int pid = buf[p++];
+        char name[CS2D_MAX_NAME_LEN];
+        int nlen = buf[p++];
+        if (p + nlen > len) break;
+        cs2d_net_decrypt(&buf[p], nlen, "name", name, sizeof(name));
+        p += nlen;
+        if (p + 1 > len || p + 1 + buf[p] > len) break;
+        p += 1 + buf[p];                              /* spray name */
+        p += 4 + 1;                                   /* usgn id, steam os */
+        if (p + 2 > len) break;
+        p += 2 + 2 * (buf[p] | (buf[p + 1] << 8));    /* steam name */
+        p += 8;                                       /* steam id */
+        if (p + 2 > len) break;
+        p += 2 + 2 * (buf[p] | (buf[p + 1] << 8));    /* usgn name */
+        if (p + 26 > len) break;
+        const uint8_t *r = &buf[p];
+        p += 26;
+        if (pid < 1 || pid > CS2D_MAX_PLAYERS || pid == client->local_player_id) continue;
+
+        cs2d_player_t *pl = &client->game.players[pid];
+        memset(pl, 0, sizeof(*pl));
+        cs2d_game_add_player(&client->game, pid, name, r[0] <= CS2D_TEAM_VIP ? (cs2d_team_t)r[0] : CS2D_TEAM_SPEC);
+        pl->look   = (r[2] <= 3) ? r[2] : 0;
+        pl->score  = (r[3] | (r[4] << 8)) - 1000;
+        pl->deaths = r[5] | (r[6] << 8);
+        pl->pos.x  = (float)(r[12] | (r[13] << 8));
+        pl->pos.y  = (float)(r[14] | (r[15] << 8));
+        pl->angle  = (float)(r[16] | (r[17] << 8)) * 0.005493164f;
+        pl->health = r[18];
+        pl->armor  = r[19];
+        pl->alive  = pl->team != CS2D_TEAM_SPEC && pl->health > 0;
+        if (r[21] != 0) {
+            cs2d_player_give_weapon(pl, r[21]);
+            cs2d_player_select_weapon(pl, r[21]);
+        }
+    }
+    *pos = p;
+}
+
 /* [252,50,...]: file list, cache checksums and file blocks (FUN_1402cd970) */
 static void join_transfer(cs2d_client_t *client, const uint8_t *buf, int len, int *pos)
 {
@@ -749,6 +804,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         client->local_player_id = (pid > 0 && pid <= CS2D_MAX_PLAYERS) ? pid : 1;
                         cs2d_game_add_player(&client->game, client->local_player_id, client->config.name, CS2D_TEAM_SPEC);
                         client->game.players[client->local_player_id].alive = false;
+                        cs2d_spec_init(&client->spec, 1); /* sv_specmode default until [252,6] */
 
                         /* FUN_1402c9f40: checksum of the local copy ("" when missing, the server then sends it) */
                         join_map_checksum(client);
@@ -795,6 +851,17 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         if (client->net_server_name[0] == '\0') {
                             snprintf(client->net_server_name, sizeof(client->net_server_name), "CS2D Server");
                         }
+                        /*
+                         * Game settings (FUN_1402ce7c0 at 0x1402d0560, varied on the dedicated): u16, u16, roundtime,
+                         * freezetime, c4timer, time i32, u8, u8, then when more than 5 bytes remain maxplayers, sv_fow,
+                         * sv_specmode, sv_gamemode, respawn delay, ...
+                         */
+                        int s = pos + 2 + 2 + 3 + 4 + 2;
+                        if (recvd - s > 5) {
+                            client->net_sv_fow       = buffer[s + 1];
+                            client->spec.server_mode = buffer[s + 2];
+                            client->net_sv_gamemode  = buffer[s + 3];
+                        }
                         client->join_stage = 4;
                     }
                     break;
@@ -805,7 +872,9 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     /* Stage 4 snapshot chunks: [252, 7, snap_type, ...] */
                     if (pos >= recvd) break;
                     uint8_t snap_type = buffer[pos++];
-                    if (snap_type == 4) {
+                    if (snap_type == 1) {
+                        join_players(client, buffer, recvd, &pos);
+                    } else if (snap_type == 4) {
                         /* Entity states: [count u8] then {x u16, y u16, state u8}; only non-zero states are sent */
                         if (!client->snapshot_states_reset) {
                             for (uint32_t i = 0; i < client->game.map.entity_count; i++) {
@@ -838,16 +907,24 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         /*
                          * Client data, as CS2D.exe sends it right after the snapshot: [252, 10, 28, 2,
                          * size u16, raw size u32, zlib] carrying the 32x32 spray logo (1024 bytes, blank
-                         * here), then [67, 1]. Only after this does the server run its "join" (Lua hook,
-                         * player list entry and the [248] announcement to the other players).
+                         * here). Only after this does the server run its "join" (Lua hook, player list
+                         * entry and the [248] announcement to the other players). The [67, player] that
+                         * followed it in earlier captures is the spectator camera picking its first
+                         * target: the game scene sends it on the next frame, and not at all when nobody
+                         * is alive (proxy, 140.238.183.194:36969).
                          */
                         static const uint8_t client_data[] = {
                             0xfc, 0x0a, 0x1c, 0x02, 0x15, 0x00, 0x00, 0x04, 0x00, 0x00,
                             0x78, 0xda, 0x63, 0x60, 0x18, 0x05, 0xa3, 0x60, 0x14, 0x8c, 0x54, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01
                         };
                         cs2d_client_send_udp(client, client_data, sizeof(client_data), true);
-                        uint8_t spec_pkt[2] = { (uint8_t)CS2D_NET_CLIENTSPEC, 1 };
-                        cs2d_client_send_udp(client, spec_pkt, sizeof(spec_pkt), true);
+
+                        /* The team menu opens with the spawn showcase (0x140190000: DAT_140ddf328 = 1,
+                         * DAT_140ddf324 = 0, DAT_140ddf320 = Rand(1, 2)) */
+                        client->spec.idle_cam   = true;
+                        client->spec.idle_ticks = 0;
+                        client->spec.idle_team  = 1 + rand() % 2;
+                        client->spec_tick       = 1.0f;
                     }
                     break;
                 } else {
@@ -1220,6 +1297,26 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     cs2d_scene_game_remote_shot(client, &client->game.players[pid]);
                 }
                 pos += 3;
+            } else if (opcode == CS2D_NET_CHANGESETTINGS) {
+                /* [237, setting, value] (FUN_1401e6c10 -> FUN_1401e3f10): settings 1, 11 and 12 carry a string
+                 * (u8 length + text), 2..10 and 13..24 an i32; 3 is sv_specmode */
+                if (pos + 2 > recvd) break;
+                uint8_t setting = buffer[pos + 1];
+                if (setting == 1 || setting == 11 || setting == 12) {
+                    if (pos + 3 > recvd || pos + 3 + buffer[pos + 2] > recvd) break;
+                    pos += 3 + buffer[pos + 2];
+                } else if ((setting >= 2 && setting <= 10) || (setting >= 13 && setting <= 24)) {
+                    if (pos + 6 > recvd) break;
+                    int32_t value;
+                    memcpy(&value, buffer + pos + 2, 4);
+                    if (setting == 3) {
+                        client->spec.server_mode = value & 0xFF;
+                        cs2d_client_console_print(client, 255, 220, 0, "spec mode changed to %d", value);
+                    }
+                    pos += 6;
+                } else {
+                    break;
+                }
             } else if (opcode == CS2D_NET_PING_INGAME) {
                 /* Server -> Client: [249, int32_t ts] -> Reply [249, int32_t ts] (0x1401d9f10) */
                 if (pos + 5 > recvd) break;
@@ -1322,6 +1419,19 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         } else {
             cs2d_scene_game_restart_round(client);
         }
+    } else if (_stricmp(cmd, "specmode") == 0 || _stricmp(cmd, "specplayer") == 0) {
+        /* Spectator bindings of sys/controls.cfg (leftctrl / space); only in game (DAT_140ddf418 1..2) */
+        if (client->scene == CS2D_SCENE_GAME) {
+            if (_stricmp(cmd, "specmode") == 0) cs2d_scene_game_specmode(client);
+            else cs2d_scene_game_specplayer(client);
+        }
+    } else if (_stricmp(cmd, "spec") == 0) {
+        /* Test helper: spectator state */
+        const cs2d_player_t *t = (client->spec.target > 0 && client->spec.target <= CS2D_MAX_PLAYERS)
+                                 ? &client->game.players[client->spec.target] : NULL;
+        cs2d_client_console_print(client, 220, 220, 220, "spec sv_specmode=%d mode=%d target=%d (%s) cam=%d,%d",
+                                  client->spec.server_mode, client->spec.mode, client->spec.target,
+                                  (t && t->id) ? t->name : "-", (int)client->cam_x, (int)client->cam_y);
     } else if (_stricmp(cmd, "entdump") == 0) {
         /* Positions of every entity in state 1, in map order (compared against the server in tests) */
         if (!map) {
@@ -1886,6 +1996,9 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
         }
 
         if (client->team_menu_open) {
+            if (sdl_key == SDLK_0 || (sdl_key >= (int)SDLK_1 && sdl_key <= (int)SDLK_6) || sdl_key == SDLK_BACKSPACE) {
+                client->spec.idle_cam = false; /* A menu button (Tgui_hudmen.button 0x140129f40) */
+            }
             if (sdl_key == SDLK_ESCAPE || sdl_key == SDLK_0 || sdl_key == SDLK_M) {
                 client->team_menu_open = false;
                 client->team_menu_page = 0;
@@ -2614,9 +2727,11 @@ static void cs2d_client_build_team_menu_ui(cs2d_client_t *client, int screen_w, 
             if (client->team_menu_page == 0) {
                 if (ui_menu_option_button(ui, CS2D_UI_ID("BtnTeamT"), "1", "Terrorists", count_t)) {
                     client->team_menu_page = 1;
+                    client->spec.idle_cam = false;
                 }
                 if (ui_menu_option_button(ui, CS2D_UI_ID("BtnTeamCT"), "2", "Counter-Terrorists", count_ct)) {
                     client->team_menu_page = 2;
+                    client->spec.idle_cam = false;
                 }
 
                 /* Empty 25px slot between team options and Auto-Select / Spectator */
@@ -2639,6 +2754,7 @@ static void cs2d_client_build_team_menu_ui(cs2d_client_t *client, int screen_w, 
                 if (ui_menu_option_button(ui, CS2D_UI_ID("BtnTeamClose"), "0", "Close", -1)) {
                     client->team_menu_open = false;
                     client->team_menu_page = 0;
+                    client->spec.idle_cam = false;
                 }
             } else {
                 uint8_t team = (client->team_menu_page == 1) ? CS2D_TEAM_T : CS2D_TEAM_CT;
@@ -2667,10 +2783,12 @@ static void cs2d_client_build_team_menu_ui(cs2d_client_t *client, int screen_w, 
 
                 if (ui_menu_option_button(ui, CS2D_UI_ID("BtnSkinBack"), "", "Back", -1)) {
                     client->team_menu_page = 0;
+                    client->spec.idle_cam = false;
                 }
                 if (ui_menu_option_button(ui, CS2D_UI_ID("BtnSkinClose"), "0", "Close", -1)) {
                     client->team_menu_open = false;
                     client->team_menu_page = 0;
+                    client->spec.idle_cam = false;
                 }
             }
         }

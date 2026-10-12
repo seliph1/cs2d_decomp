@@ -1,13 +1,15 @@
-"""UDP logging proxy: client <-> 127.0.0.1:LISTEN <-> 127.0.0.1:SERVER. Logs every datagram in hex with a timestamp."""
+"""UDP logging proxy: client <-> 127.0.0.1:LISTEN <-> 127.0.0.1:SERVER (or HOST:PORT). Logs every datagram in hex with a timestamp."""
 import socket, sys, time, select
 
-listen_port, server_port, log_path, duration = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3], float(sys.argv[4])
+listen_port, log_path, duration = int(sys.argv[1]), sys.argv[3], float(sys.argv[4])
+server_host, _, server_port = sys.argv[2].rpartition(':')
+server_host = server_host or '127.0.0.1'
 
 front = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 front.bind(('127.0.0.1', listen_port))
 back = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-back.bind(('127.0.0.1', 0))
-server = ('127.0.0.1', server_port)
+back.bind(('127.0.0.1' if server_host == '127.0.0.1' else '', 0))
+server = (server_host, int(server_port))
 client = None
 t0 = time.time()
 with open(log_path, 'w') as log:

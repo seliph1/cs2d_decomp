@@ -16,6 +16,7 @@
 #include "cs2d_serverlist.h"
 #include "cs2d_transfer.h"
 #include "cs2d_editor.h"
+#include "cs2d_spectate.h"
 
 #define CS2D_CONSOLE_MAX_LINES     1024 /* Ring buffer: the oldest line is dropped when full */
 #define CS2D_CONSOLE_LINE_LEN      192
@@ -83,6 +84,8 @@ struct cs2d_client {
     uint8_t         local_player_id;
     float           cam_x;
     float           cam_y;
+    cs2d_spec_t     spec;              /* Spectator camera while the local player is not alive */
+    float           spec_tick;         /* Seconds since the last 1 s tick (DAT_140ddf540): [32] and showcase */
 
     /* Input State */
     bool            key_forward;
@@ -114,6 +117,8 @@ struct cs2d_client {
     char                net_map_name[128];
     char                net_map_checksum[65];
     char                net_server_name[64];
+    int                 net_sv_fow;        /* sv_fow from [252,6] (enables the spectator "Fog" button) */
+    int                 net_sv_gamemode;   /* sv_gamemode from [252,6]: 0 Normal, 1 Deathmatch, 2 Team DM, 3 Construction, 4 Zombies */
     char                net_password[64];  /* Server password sent in [252,1] (connect <ip> <port> [password]) */
     uint8_t             net_seen_seq[8192]; /* Reliable sequence numbers already handled (1 bit each) */
     cs2d_xfer_t         xfer;               /* Join-time file transfer [252,50] */

@@ -12,7 +12,7 @@ the same one.
   recovered; values are calibrated.
 - **Explosion damage fall-off:** assumed; only distance 0 was measured.
 - **Fragments:** which fragment frames and tints belong to each material is inferred from captures.
-- **Player kill and death:** opcode 19 is not handled.
+- **Player kill and death:** opcode 19 is not handled (a death is seen through `[17]` with health 0).
 - **Opcode 40:** "kill dropped weapon"; its format is unknown.
 - **Round start and ground items:** whether dropped weapons are removed at round start is unknown.
 - **Spray:** our client sends a blank spray logo.
@@ -45,6 +45,16 @@ the same one.
 - **Join messages that differ from the original (proxy, not fixed):** the original sends `[252,0]` (2 bytes, ours
   adds an empty string), and in `[252,1]` it sends `01` after the U.S.G.N. fields and the spray file name
   (`unrealsoftware.bmp`) where ours sends empty strings. The dedicated accepts both.
+- **Spectator, not reconstructed** (KNOWLEDGE "Spectator" has what is done):
+  - The Menu / Map / Fog buttons are drawn but open nothing (game menu, big map `DAT_140a15478`, fog toggle).
+  - `mp_spectatemouse`: the followed player's mouse cursor (`Tpl.mx/my`, `net_mspec`) is not drawn, and its
+    network message is unknown. The kill cam (`Thud_killCam`) is not done.
+  - Respawn game modes: "Click to respawn" sends nothing (`FUN_140298b30`), and the respawn countdown text
+    (0767) is missing.
+  - Avatars: the name box always shows the "?" placeholder (Steam / U.S.G.N. avatars, `DAT_140a14fe8`).
+  - While spectating our HUD (timer, money, radar) is hidden; the original keeps its timer, money and minimap.
+  - Clicking a player on the scoreboard or the minimap to follow it (`FUN_14029fc70`, `0x140299e7a`).
+  - Snapshot section 1: the steam / usgn name strings are assumed to be u16 count + UTF-16 (always empty so far).
 - **Map editor, not reconstructed yet** (KNOWLEDGE "Map editor" has the layouts):
   - Map Properties (Map Settings window), Display Settings, and the Tools / More Options mode (Distance, Path
     Distance, Pathfinder, Tile Blender, Decal Painter, minimap sizes, export, move map).

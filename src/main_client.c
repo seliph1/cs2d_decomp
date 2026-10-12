@@ -37,6 +37,8 @@ static int sdl_key_to_cs2d_key(SDL_Keycode key)
         case SDLK_RIGHT:  return VK_RIGHT;
         case SDLK_LSHIFT:
         case SDLK_RSHIFT: return VK_SHIFT;
+        case SDLK_SPACE:  return VK_SPACE;
+        case SDLK_LCTRL:  return VK_LCONTROL;
         default:          return 0;
     }
 }

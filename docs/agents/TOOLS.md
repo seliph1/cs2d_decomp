@@ -107,7 +107,7 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 | `capture_original.sh <lua> <tag> "<steps>" [map] [secs]` | Dedicated (offline, optional Lua probe) + UDP proxy + **original** `CS2D.exe`, driven by `drive_orig.ps1` |
 | `capture_ours.sh <lua> <tag> "<capture steps>" [map] [secs]` | Same, but **our** `cs2d_client.exe --capture:…` with `CS2D_NET_LOG=1` |
 | `capture_transfer.sh <ded dir> <tag> "<steps>" [map] [secs] [password]` | A dedicated in **another folder** (e.g. the modded server in `C:\C4`) + proxy + our client run from a fresh copy of the game data in `out/game_<tag>/`, so downloads never land in the repo. Lists the new files. `CLIENT=orig` runs the original `CS2D.exe` there (steps are `drive_orig.ps1` steps); `KEEP=1` reuses the copy (second join). Restores the dedicated's `sys/server.cfg` |
-| `udp_proxy.py <listen> <server> <log> <secs>` | Logs every datagram as `t C>S/S>C len hex` |
+| `udp_proxy.py <listen> <server> <log> <secs>` | Logs every datagram as `t C>S/S>C len hex`. `<server>` is a local port or `host:port` (for a remote server, run the client from a copy such as `out/game_remote_orig/` so downloads stay out of the repo) |
 | `browser_proxy.py <log> <secs> [server port]` | Server browser: listens on 127.0.0.1:36980 (put it in a test `sys/core/svl.cache`) and 0.0.0.0:36963 (LAN broadcast), forwards to the dedicated. Back up and restore `svl.cache` |
 | `dumpops.py <proxy log> [skip ops csv]` | Strips the Tudp header and ACK triples, then prints one payload per line (e.g. skip pings `229,247,249,1`) |
 | `replay_proxy.py <proxy log> <ded log> <fixture>` | Rebuilds a client's entity state from server traffic and compares it with the Lua dump |
@@ -128,6 +128,7 @@ Lua probes:
 | `playerdata_probe.lua` | setmoney, sethealth, setarmor, equip, strip, setmaxhealth (to read opcode 42) |
 | `joinleave_probe.lua` | join, leave and team hooks plus a player count every 2 s |
 | `twoplayer_probe.lua` | Places players 1 and 2 side by side, AK for player 2 |
+| `spec_probe.lua` | Adds a T and a CT bot; logs `specswitch` (whom each spectator follows, `SP` lines) and team changes |
 
 Notes:
 

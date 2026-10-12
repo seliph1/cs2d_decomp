@@ -711,6 +711,28 @@ void cs2d_net_encrypt(const char *txt, const char *key, uint8_t *out, int *out_l
     if (out_len) *out_len = n;
 }
 
+void cs2d_net_decrypt(const uint8_t *in, int n, const char *key, char *out, int max_out)
+{
+    int period = key ? ((int)strlen(key) - 1) : 0;
+    int idx = 0, o = 0;
+    for (int i = 0; i < n && o < max_out - 1; i++) {
+        int k = 0;
+        if (period > 0) {
+            if (idx < period) {
+                k = (uint8_t)key[idx];
+                idx++;
+            } else {
+                k = (uint8_t)key[0];
+                idx = 1;
+            }
+        }
+        int v = (int)in[i] - k;
+        if (v < 0) v += 255;
+        out[o++] = (char)v;
+    }
+    if (max_out > 0) out[o] = '\0';
+}
+
 /* --- CS2D net_secret Transform (0x1402c9660 / 0x1401be680) --- */
 void cs2d_net_secret(const char *raw_secret, char *out)
 {
