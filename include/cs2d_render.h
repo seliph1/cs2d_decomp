@@ -240,6 +240,31 @@ void cs2d_render_hud(
     int screen_w, int screen_h
 );
 
+/* In-game action progress bar layout (reconstructed from FUN_140295190 0x1402958f0..0x140295f70 in CS2D.exe) */
+typedef struct {
+    float bar_x, bar_y;
+    float bar_w, bar_h;
+    float border;
+    float inner_x, inner_y;
+    float inner_w, inner_h;
+    float fill_w;
+    float text_x, text_y;
+    float progress;
+    const char *title;
+} cs2d_hud_progress_layout_t;
+
+bool cs2d_hud_progress_layout(
+    const cs2d_player_t *player,
+    int screen_w, int screen_h,
+    cs2d_hud_progress_layout_t *out_layout
+);
+
+/* Draws the in-game action progress bar (Reloading / Planting Bomb / Defusing Bomb) */
+void cs2d_render_hud_progress_bar(
+    const cs2d_player_t *player,
+    int screen_w, int screen_h
+);
+
 /* Weapon selection HUD (invnext / invprev / slotN) at the top of the screen, from x0 (FUN_140295190) */
 struct cs2d_invsel_s;
 void cs2d_render_weapon_select(const cs2d_player_t *player, const struct cs2d_invsel_s *sel, float x0);

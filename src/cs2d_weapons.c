@@ -430,12 +430,14 @@ bool cs2d_weapon_reload(cs2d_player_t *player)
     }
 
     player->reload_timer = wep->reload_time;
+    player->is_reloading = true;
     return true;
 }
 
 void cs2d_weapon_finish_reload(cs2d_player_t *player)
 {
     if (!player || player->reload_timer > 0.0f) return;
+    player->is_reloading = false;
 
     const cs2d_weapon_def_t *wep = cs2d_weapon_get(player->current_weapon);
     if (!wep) return;

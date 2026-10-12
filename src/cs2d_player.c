@@ -80,8 +80,11 @@ void cs2d_player_update(cs2d_player_t *player, float delta_time)
         player->reload_timer -= delta_time;
         if (player->reload_timer <= 0.0f) {
             player->reload_timer = 0.0f;
+            player->is_reloading = false;
             cs2d_weapon_finish_reload(player);
         }
+    } else {
+        player->is_reloading = false;
     }
 
     /* Visual recoil decay: 0.5 px per 60 Hz frame = 30.0 px/s (Tpl.updateAll 0x14021d1b1, 0x140bd69e8 = 0.5f) */
@@ -146,6 +149,7 @@ bool cs2d_player_give_weapon(cs2d_player_t *player, uint8_t weapon_id)
     player->current_weapon = weapon_id;
     player->fire_cooldown = 0.0f;
     player->reload_timer = 0.0f;
+    player->is_reloading = false;
     player->slash_timer = 0.0f;
     player->draw_angle = player->angle;
     return true;
@@ -177,6 +181,7 @@ bool cs2d_player_switch_weapon(cs2d_player_t *player, cs2d_weapon_slot_t slot)
     player->current_weapon = wep_id;
     player->fire_cooldown = 0.0f;
     player->reload_timer = 0.0f; /* Interrupt reload on switch */
+    player->is_reloading = false;
     player->slash_timer = 0.0f;
     player->draw_angle = player->angle;
     return true;

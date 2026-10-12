@@ -8,6 +8,18 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Antigravity — In-game Action Progress Bar (Reloading, Planting, Defusing)
+- **Changed:** reconstructed the in-game action progress bar from CS2D.exe `FUN_140295190` (`0x1402958f0..0x140295b70`).
+  Displays centered at `y = screen_h / 2 + 80px` with width 102px and height 20px, 1px outer frame, 2px padding,
+  98x16 inner filled rectangle, warm gold/amber `(255, 200, 0)` at alpha 0.75, soft black shadow underneath
+  (`incbindata/shadow.bmp` scaled 11x5 at alpha 0.40). Supports "Reloading" (`sys/language 0759`), "Planting Bomb"
+  (`0760`), and "Defusing Bomb" (`0761`). Synchronized `is_reloading` in `cs2d_weapons.c`, `cs2d_player.c`, and
+  `cs2d_client.c`.
+- **Verified:** `test_hud_action_progress_bar` added to `tests/test_cs2d.c` (passes 31/31 suites, verifying layout,
+  exact 102x20 geometry, centering, inner dimensions, progress calculations, and weapon filters). Visually matched against
+  the user screenshot.
+- **Left:** nothing; integrated directly into `cs2d_render_hud`.
+
 ## 2026-10-12 — DeepSeek — Lua language-server config
 - **Changed:** added `.luarc.json` (Lua 5.1, `workspace.library = meta`, the CS2D command/hook/global list in
   `diagnostics.globals`, and a few noisier diagnostics disabled) and `meta/cs2d.lua`, EmmyLua stubs for the CS2D

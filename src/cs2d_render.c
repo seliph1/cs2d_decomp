@@ -1228,6 +1228,8 @@ const cs2d_texture_t *cs2d_render_get_projectile_texture(uint8_t type)
 
 void cs2d_render_rect(float x, float y, float w, float h, float r, float g, float b, float a, bool fill)
 {
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_TEXTURE_2D);
     glColor4f(r, g, b, a);
     glBegin(fill ? GL_QUADS : GL_LINE_LOOP);
@@ -3433,6 +3435,133 @@ void cs2d_render_hud(
     if (player->inventory[CS2D_SLOT_BOMB] == CS2D_WEP_BOMB) {
         cs2d_render_sprite_frame(&bank->tex_hud_symbols, sym_cell, sym_cell, 6,
                                  24.0f, icon_y, 32.0f, 32.0f, 0.0f, 0.2f, 0.95f, 0.2f, 0.65f, 3);
+    }
+
+    /* 6. Action Progress Bar (Reloading, Planting Bomb, Defusing Bomb) */
+    cs2d_render_hud_progress_bar(player, screen_w, screen_h);
+}
+
+/*
+ * In-game action progress bar layout (reconstructed from FUN_140295190 0x1402958f0..0x140295f70 in CS2D.exe):
+ * Handles Reloading (sys/language 0759), Planting Bomb (0760) and Defusing Bomb (0761).
+ */
+bool cs2d_hud_progress_layout(
+    const cs2d_player_t *player,
+    int screen_w, int screen_h,
+    cs2d_hud_progress_layout_t *out_layout
+)
+{
+    if (!player || !player->alive) return false;
+
+    const char *title = NULL;
+    float progress = 0.0f;
+
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(player->current_weapon);
+    if ((player->is_reloading || player->reload_timer > 0.0f) &&
+        wep && wep->clip_size > 0 && wep->slot != CS2D_SLOT_MELEE) {
+        title = "Reloading"; /* sys/language 0759 */
+        float total = wep->reload_time;
+        if (total > 0.0f) {
+            progress = 1.0f - (player->reload_timer / total);
+        } else {
+            progress = 1.0f;
+        }
+    } else if (player->is_planting) {
+        title = "Planting Bomb"; /* sys/language 0760 */
+        progress = player->plant_progress / 3.0f;
+    } else if (player->is_defusing) {
+        title = "Defusing Bomb"; /* sys/language 0761 */
+        float max_time = player->has_defuse_kit ? 5.0f : 10.0f;
+        progress = player->defuse_progress / max_time;
+    } else {
+        return false;
+    }
+
+    if (progress < 0.0f) progress = 0.0f;
+    if (progress > 1.0f) progress = 1.0f;
+
+    /*
+     * Geometry from CS2D.exe FUN_140295190 (0x140295980):
+     * scale = font_height / 13.0f = 1.0f (DAT_140a1ccc8 * 0.07692308)
+     */
+    float scale = 1.0f;
+    int bar_w = (int)(scale * 102.0f);
+    int bar_h = (int)(scale * 20.0f);
+    int border = (int)scale;
+    if (border < 1) border = 1;
+
+    float bar_x = (float)(screen_w / 2 - bar_w / 2);
+    float bar_y = (float)(screen_h / 2) + scale * 80.0f;
+
+    int inner_w = bar_w - border * 4;
+    int inner_h = bar_h - border * 4;
+    float inner_x = bar_x + (float)(border * 2);
+    float inner_y = bar_y + (float)(border * 2);
+    float fill_w = (inner_w > 0) ? ((float)inner_w * progress) : 0.0f;
+
+    float text_w = cs2d_render_text_width(title);
+    float text_h = 13.0f * scale;
+    float text_x = (float)(screen_w / 2) - text_w * 0.5f;
+    float text_y = bar_y - text_h - scale * 4.0f;
+
+    if (out_layout) {
+        out_layout->bar_x = bar_x;
+        out_layout->bar_y = bar_y;
+        out_layout->bar_w = (float)bar_w;
+        out_layout->bar_h = (float)bar_h;
+        out_layout->border = (float)border;
+        out_layout->inner_x = inner_x;
+        out_layout->inner_y = inner_y;
+        out_layout->inner_w = (float)inner_w;
+        out_layout->inner_h = (float)inner_h;
+        out_layout->fill_w = fill_w;
+        out_layout->text_x = text_x;
+        out_layout->text_y = text_y;
+        out_layout->progress = progress;
+        out_layout->title = title;
+    }
+
+    return true;
+}
+
+void cs2d_render_hud_progress_bar(
+    const cs2d_player_t *player,
+    int screen_w, int screen_h
+)
+{
+    cs2d_hud_progress_layout_t l;
+    if (!cs2d_hud_progress_layout(player, screen_w, screen_h, &l)) return;
+
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+
+    /* 1. Background shadow (0x1402959c0): incbindata/shadow.bmp scaled by (11.0, 5.0) at alpha 0.4 */
+    float cx = (float)(screen_w / 2);
+    float cy = l.bar_y + l.bar_h * 0.5f;
+    const cs2d_texture_t *stex = (bank && bank->tex_shadow.id) ? &bank->tex_shadow : (bank ? &bank->tex_leaf : NULL);
+    if (stex && stex->id) {
+        cs2d_render_sprite_frame(stex, 32, 32, 0, cx, cy, 32.0f * 11.0f, 32.0f * 5.0f,
+                                 0.0f, 0.0f, 0.0f, 0.0f, 0.40f, 0);
+    } else {
+        cs2d_render_rect(l.bar_x, l.bar_y, l.bar_w, l.bar_h, 0.0f, 0.0f, 0.0f, 0.40f, true);
+    }
+
+    /* 2. Title text (0x140295a00..0x140295a50): yellow tint (255, 200, 0), alpha 0.75 */
+    float r = 1.0f;
+    float g = 200.0f / 255.0f; /* 0.784f (warm amber/gold HUD color * 1.64) */
+    float b = 0.0f;
+    float a = 0.75f;           /* Max2D_SetAlpha(0.75) */
+
+    cs2d_render_text(l.text_x, l.text_y, l.title, r, g, b, a);
+
+    /* 3. Outer border frame (top, bottom, left, right) (0x140295a70..0x140295b00) */
+    cs2d_render_rect(l.bar_x, l.bar_y, l.bar_w, l.border, r, g, b, a, true);
+    cs2d_render_rect(l.bar_x, l.bar_y + l.bar_h - l.border, l.bar_w, l.border, r, g, b, a, true);
+    cs2d_render_rect(l.bar_x, l.bar_y, l.border, l.bar_h, r, g, b, a, true);
+    cs2d_render_rect(l.bar_x + l.bar_w - l.border, l.bar_y, l.border, l.bar_h, r, g, b, a, true);
+
+    /* 4. Filled progress bar (0x140295b20) */
+    if (l.fill_w > 0.0f && l.inner_h > 0.0f) {
+        cs2d_render_rect(l.inner_x, l.inner_y, l.fill_w, l.inner_h, r, g, b, a, true);
     }
 }
 

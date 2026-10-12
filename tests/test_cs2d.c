@@ -3100,6 +3100,104 @@ static bool test_tile_blending(void)
     return true;
 }
 
+static bool test_hud_action_progress_bar(void)
+{
+    printf("\n=== Testing Action Progress Bar (Reloading / Planting / Defusing) ===\n");
+
+    cs2d_player_t pl;
+    memset(&pl, 0, sizeof(pl));
+    pl.alive = true;
+    pl.current_weapon = CS2D_WEP_AK47;
+    pl.clip_ammo[CS2D_WEP_AK47] = 10;
+    pl.reserve_ammo[CS2D_WEP_AK47] = 60;
+
+    cs2d_hud_progress_layout_t layout;
+
+    /* 1. Inactive when not reloading / planting / defusing */
+    if (cs2d_hud_progress_layout(&pl, 850, 480, &layout)) {
+        TEST_FAIL("Progress Bar Inactive", "should not show when idle");
+    }
+
+    /* 2. Reloading with AK-47: 50% progress */
+    const cs2d_weapon_def_t *ak = cs2d_weapon_get(CS2D_WEP_AK47);
+    if (!ak || ak->reload_time <= 0.0f) {
+        TEST_FAIL("AK47 Def", "invalid AK47 reload definition");
+    }
+
+    pl.is_reloading = true;
+    pl.reload_timer = ak->reload_time * 0.5f;
+
+    if (!cs2d_hud_progress_layout(&pl, 850, 480, &layout)) {
+        TEST_FAIL("Progress Bar Reload", "should show when reloading");
+    }
+
+    if (strcmp(layout.title, "Reloading") != 0) {
+        TEST_FAIL("Reload Title", "expected 'Reloading'");
+    }
+    if (fabsf(layout.progress - 0.5f) > 0.01f) {
+        TEST_FAIL("Reload Progress", "expected 0.5 progress");
+    }
+
+    /* Exact geometry check from CS2D.exe FUN_140295190 (0x140295980) */
+    if (layout.bar_w != 102.0f || layout.bar_h != 20.0f || layout.border != 1.0f) {
+        TEST_FAIL("Reload Geometry", "expected 102x20 bar with 1px border");
+    }
+    if (layout.bar_x != (850.0f * 0.5f - 51.0f) || layout.bar_y != (480.0f * 0.5f + 80.0f)) {
+        TEST_FAIL("Reload Position", "expected centered at (374, 320) for 850x480");
+    }
+    if (layout.inner_w != 98.0f || layout.inner_h != 16.0f) {
+        TEST_FAIL("Reload Inner Dimensions", "expected 98x16 inner area");
+    }
+    if (layout.inner_x != 376.0f || layout.inner_y != 322.0f) {
+        TEST_FAIL("Reload Inner Position", "expected inner at (376, 322)");
+    }
+    if (fabsf(layout.fill_w - 49.0f) > 0.01f) {
+        TEST_FAIL("Reload Fill Width", "expected 49px fill (98 * 0.5)");
+    }
+
+    /* 3. Melee weapon (Knife) cannot reload */
+    pl.current_weapon = CS2D_WEP_KNIFE;
+    if (cs2d_hud_progress_layout(&pl, 850, 480, &layout)) {
+        TEST_FAIL("Knife Reload", "melee weapon should not show reload bar");
+    }
+
+    /* 4. Planting Bomb (3.0s total) */
+    pl.current_weapon = CS2D_WEP_BOMB;
+    pl.is_reloading = false;
+    pl.reload_timer = 0.0f;
+    pl.is_planting = true;
+    pl.plant_progress = 1.5f;
+
+    if (!cs2d_hud_progress_layout(&pl, 850, 480, &layout)) {
+        TEST_FAIL("Planting Bar", "should show when planting");
+    }
+    if (strcmp(layout.title, "Planting Bomb") != 0 || fabsf(layout.progress - 0.5f) > 0.01f) {
+        TEST_FAIL("Planting Title/Progress", "expected 'Planting Bomb' at 0.5 progress");
+    }
+
+    /* 5. Defusing Bomb (5.0s with defuse kit, 10.0s without) */
+    pl.is_planting = false;
+    pl.is_defusing = true;
+    pl.has_defuse_kit = true;
+    pl.defuse_progress = 2.5f;
+
+    if (!cs2d_hud_progress_layout(&pl, 850, 480, &layout)) {
+        TEST_FAIL("Defusing Bar", "should show when defusing");
+    }
+    if (strcmp(layout.title, "Defusing Bomb") != 0 || fabsf(layout.progress - 0.5f) > 0.01f) {
+        TEST_FAIL("Defusing Kit Title/Progress", "expected 'Defusing Bomb' at 0.5 progress with kit");
+    }
+
+    pl.has_defuse_kit = false;
+    pl.defuse_progress = 5.0f;
+    if (!cs2d_hud_progress_layout(&pl, 850, 480, &layout) || fabsf(layout.progress - 0.5f) > 0.01f) {
+        TEST_FAIL("Defusing No Kit Title/Progress", "expected 'Defusing Bomb' at 0.5 progress without kit");
+    }
+
+    TEST_PASS("Action progress bar: layout, geometry (102x20 at y+80), progress formula and modes verified");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -3107,7 +3205,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 30;
+    int total = 31;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -3139,6 +3237,7 @@ int main(void)
     if (test_item_and_player_shadows()) passed++;
     if (test_scoreboard()) passed++;
     if (test_tile_blending()) passed++;
+    if (test_hud_action_progress_bar()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);
