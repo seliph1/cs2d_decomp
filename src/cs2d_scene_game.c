@@ -1733,7 +1733,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     }
     if (!render_player_hover(client, screen_w, screen_h)) render_building_hover(client, screen_w, screen_h);
     if (local_pl->alive) {
-        cs2d_render_hud(local_pl, &client->game, screen_w, screen_h);
+        cs2d_render_hud(local_pl, &client->game, &client->tex_tileset, screen_w, screen_h);
         /* Right of the radar (drawradar != 0: radarsize + 100 + 8), else at 8 (FUN_140295190) */
         float sel_x = client->config.drawradar ? (float)(client->config.radarsize + 108) : 8.0f;
         cs2d_render_weapon_select(local_pl, &client->invsel, sel_x);

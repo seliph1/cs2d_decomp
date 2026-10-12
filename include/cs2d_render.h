@@ -237,6 +237,7 @@ void cs2d_render_hud_number(
 void cs2d_render_hud(
     const cs2d_player_t *player,
     const cs2d_game_t   *game,
+    const cs2d_texture_t *tileset_tex,
     int screen_w, int screen_h
 );
 

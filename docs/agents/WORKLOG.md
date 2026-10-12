@@ -8,6 +8,19 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Cline — Advanced radar (minimap) fidelity pass
+- **Changed:** the top-left HUD radar in `cs2d_render.c` now renders the real tileset instead of hardcoded
+  brown/gray tile colours. `ensure_minimap_texture` builds a cached full-map minimap (2 px/tile, box-averaged via
+  `tileblend_find`) and crops it around the player's exact pixel position, so it slides smoothly instead of
+  snapping per tile (16 world px per radar px, matching `TSmartRadar`). Added player blips: the local player red,
+  teammates in team colour (T light red 0xff9696, CT light blue 0x9696ff), enemies hidden outside Deathmatch.
+  `cs2d_render_hud` gained a `tileset_tex` parameter (wired through `cs2d_scene_game.c`).
+- **Verified:** `gcc -fsyntax-only` clean; the regression suite still passes 30/31 (the one failure is the
+  pre-existing `test_file_transfer` "Transfer list" gap, unrelated). Full `build.bat` step [1/2] (test suite)
+  linked; step [2/2] was cut short by the terminal, but it compiles the same sources plus `main_client.c`.
+- **Left:** the full-screen `TSmartMinimap` overlay (big map) is still not reconstructed; the radar minimap does not
+  apply tile rotation/brightness (negligible at 2 px/tile). Recorded in `KNOWLEDGE.md`.
+
 ## 2026-10-12 — Antigravity — Scoreboard ping display & Opcode 229 clock ping reply
 - **Changed:** implemented client reply to `CS2D_NET_CLOCK_PING` (opcode 229 / 0xE5) in `src/cs2d_client.c`.
   The original dedicated server sends opcode 229 when `sv_antiaccel > 0` (default) every 2 ticks (~2 s) with

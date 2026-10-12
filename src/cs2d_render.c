@@ -3018,11 +3018,17 @@ void cs2d_render_map(
 }
 
 /*
- * Generates a 128x128 circular minimap texture centered around the local player
- * to render inside gfx/hud_radar_advanced.png + gfx/hud_radar_ring.png.
+ * Cached full-map minimap image: 2 px per map tile, box-averaged from the tileset.
+ * The original advanced radar (TSmartRadar) renders the map at 1/16 scale
+ * (2 px per 32 px tile) into sys/cache/radars/<map>.png and draws a circular
+ * crop of it around the camera (FUN_14027c8c0 / FUN_14027db80 in CS2D.exe).
+ * One pixel of this image covers 16 world pixels.
  */
-static int s_minimap_last_ptx = -9999;
-static int s_minimap_last_pty = -9999;
+static uint32_t         *s_minimap_full = NULL;
+static int               s_minimap_full_w = 0;
+static int               s_minimap_full_h = 0;
+static const cs2d_map_t *s_minimap_full_map = NULL;
+static uint32_t          s_minimap_full_tileset = 0;
 
 void cs2d_render_invalidate_shadows(void)
 {
@@ -3052,8 +3058,12 @@ void cs2d_render_invalidate_shadows(void)
     s_shadow_sys.solid_version = 0;
     s_shadow_sys.daylight_time = -1;
 
-    s_minimap_last_ptx  = -9999;
-    s_minimap_last_pty  = -9999;
+    free(s_minimap_full);
+    s_minimap_full         = NULL;
+    s_minimap_full_w       = 0;
+    s_minimap_full_h       = 0;
+    s_minimap_full_map     = NULL;
+    s_minimap_full_tileset = 0;
 }
 
 void cs2d_render_ensure_shadow_chunks(const cs2d_map_t *map)
@@ -3125,70 +3135,116 @@ bool cs2d_render_get_item_shadows(void)
     return s_item_shadows;
 }
 
-static void ensure_minimap_texture(cs2d_gfx_bank_t *bank, const cs2d_map_t *map, const cs2d_player_t *player)
+/* Builds the full-map minimap image (2 px per tile) once per map, box-averaging
+ * the tileset pixels the same way the tile renderer samples them. */
+static void build_minimap_full(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex)
+{
+    free(s_minimap_full);
+    s_minimap_full         = NULL;
+    s_minimap_full_w       = (int)map->width * 2;
+    s_minimap_full_h       = (int)map->height * 2;
+    s_minimap_full_map     = map;
+    s_minimap_full_tileset = tileset_tex ? tileset_tex->id : 0;
+
+    if (s_minimap_full_w <= 0 || s_minimap_full_h <= 0) return;
+
+    s_minimap_full = (uint32_t *)malloc((size_t)s_minimap_full_w * (size_t)s_minimap_full_h * 4);
+    if (!s_minimap_full) return;
+
+    /* Tileset pixels after their mask mode (the same source draw_tile_frame uses) */
+    tileblend_source_t *src = tileset_tex ? tileblend_find(tileset_tex->id) : NULL;
+    bool have = (src && src->tileset.px && src->tileset.w >= 32);
+    int tile_src = (map->use_64x64_tiles == 1) ? 64 : 32;
+    int tcols = have ? (src->tileset.w / tile_src) : 0;
+    if (tcols < 1) tcols = 1;
+    int half = tile_src >> 1; /* world px covered by one minimap px along one axis */
+
+    for (int my = 0; my < s_minimap_full_h; my++) {
+        int ty    = my >> 1;
+        int sub_y = (my & 1) * half;
+        for (int mx = 0; mx < s_minimap_full_w; mx++) {
+            int tx    = mx >> 1;
+            int sub_x = (mx & 1) * half;
+
+            unsigned sr = map->bg_r, sg = map->bg_g, sb = map->bg_b, sa = 255;
+            if ((uint32_t)tx < map->width && (uint32_t)ty < map->height) {
+                uint8_t t = map->tiles[(size_t)ty * map->width + (size_t)tx];
+                if (have && t != 0) {
+                    int tcol = t % tcols;
+                    int trow = t / tcols;
+                    int px0  = tcol * tile_src + sub_x;
+                    int py0  = trow * tile_src + sub_y;
+                    unsigned rr = 0, gg = 0, bb = 0, aa = 0;
+                    for (int y = 0; y < half; y++) {
+                        for (int x = 0; x < half; x++) {
+                            uint32_t p = src->tileset.px[(size_t)(py0 + y) * (size_t)src->tileset.w + (size_t)(px0 + x)];
+                            bb += (p >> 16) & 0xff;
+                            gg += (p >>  8) & 0xff;
+                            rr += (p      ) & 0xff;
+                            aa += (p >> 24) & 0xff;
+                        }
+                    }
+                    int n = half * half;
+                    /* Composite the tile over the map background, like the map renderer
+                     * does for transparent (non-void) tiles. */
+                    float af = (float)aa / (float)(n * 255.0f);
+                    sr = (unsigned)((float)(rr / n) * af + (float)map->bg_r * (1.0f - af));
+                    sg = (unsigned)((float)(gg / n) * af + (float)map->bg_g * (1.0f - af));
+                    sb = (unsigned)((float)(bb / n) * af + (float)map->bg_b * (1.0f - af));
+                    sa = 255;
+                }
+            }
+            s_minimap_full[(size_t)my * (size_t)s_minimap_full_w + (size_t)mx] =
+                (sa << 24) | (sb << 16) | (sg << 8) | sr;
+        }
+    }
+}
+
+static void ensure_minimap_texture(cs2d_gfx_bank_t *bank, const cs2d_map_t *map,
+                                   const cs2d_player_t *player, const cs2d_texture_t *tileset_tex)
 {
     if (!bank || !map || !map->tiles || map->width == 0 || map->height == 0 || !g_gl_ctx) return;
 
-    int ptx = player ? (int)(player->pos.x / CS2D_TILE_SIZE) : (int)(map->width / 2);
-    int pty = player ? (int)(player->pos.y / CS2D_TILE_SIZE) : (int)(map->height / 2);
-
-    if (bank->tex_minimap.id != 0 &&
-        abs(ptx - s_minimap_last_ptx) <= 1 &&
-        abs(pty - s_minimap_last_pty) <= 1) {
-        return;
+    if (!s_minimap_full || s_minimap_full_map != map ||
+        s_minimap_full_tileset != (tileset_tex ? tileset_tex->id : 0)) {
+        build_minimap_full(map, tileset_tex);
     }
-    s_minimap_last_ptx = ptx;
-    s_minimap_last_pty = pty;
+    if (!s_minimap_full) return;
+
+    /* Center on the player's exact pixel position (smooth, sub-tile) */
+    float player_px = player ? player->pos.x : ((float)map->width * CS2D_TILE_SIZE * 0.5f);
+    float player_py = player ? player->pos.y : ((float)map->height * CS2D_TILE_SIZE * 0.5f);
+
+    /* The original radar draws the minimap at scale * 0.0625 world px per radar px
+     * (16 world px = half a tile = one full-map minimap px) -> 2 radar px per tile. */
+    const float world_per_px = 16.0f;
+    const float radius = 56.5f; /* opening of gfx/hud_radar_advanced.png */
 
     uint8_t rgba[128 * 128 * 4];
     memset(rgba, 0, sizeof(rgba));
-
-    float center_tx = player ? (player->pos.x / (float)CS2D_TILE_SIZE) : ((float)map->width * 0.5f);
-    float center_ty = player ? (player->pos.y / (float)CS2D_TILE_SIZE) : ((float)map->height * 0.5f);
-    /* Local radar view spans 36x36 tiles across 128x128 radar pixels (~3.55 radar px per tile) */
-    float tiles_per_px = 36.0f / 128.0f;
 
     for (int py = 0; py < 128; py++) {
         for (int px = 0; px < 128; px++) {
             float dx = (float)px - 63.5f;
             float dy = (float)py - 63.5f;
-            if (dx * dx + dy * dy > 56.5f * 56.5f) {
-                continue;
-            }
+            if (dx * dx + dy * dy > radius * radius) continue;
 
-            int tx = (int)floorf(center_tx + dx * tiles_per_px);
-            int ty = (int)floorf(center_ty + dy * tiles_per_px);
-            if (tx < 0 || ty < 0 || (uint32_t)tx >= map->width || (uint32_t)ty >= map->height) {
-                rgba[(py * 128 + px) * 4 + 0] = 32;
-                rgba[(py * 128 + px) * 4 + 1] = 28;
-                rgba[(py * 128 + px) * 4 + 2] = 22;
-                rgba[(py * 128 + px) * 4 + 3] = 160;
-                continue;
-            }
+            float wx = player_px + dx * world_per_px;
+            float wy = player_py + dy * world_per_px;
+            int mx = (int)floorf(wx / world_per_px);
+            int my = (int)floorf(wy / world_per_px);
 
-            uint32_t idx = (uint32_t)ty * map->width + (uint32_t)tx;
-            uint8_t t = map->tiles[idx];
-            uint8_t m = map->tile_modes[t];
-
-            uint8_t r = 198, g = 172, b = 122, a = 195;
-            if (t == 0) {
-                r = 45;  g = 36;  b = 26;  a = 175;
-            } else if (m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW) {
-                r = 148; g = 114; b = 76;  a = 215;
-            } else if (m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW) {
-                r = 168; g = 134; b = 92;  a = 205;
+            uint32_t c;
+            if (mx < 0 || my < 0 || mx >= s_minimap_full_w || my >= s_minimap_full_h) {
+                c = (255u << 24) | ((uint32_t)map->bg_b << 16) | ((uint32_t)map->bg_g << 8) | map->bg_r;
             } else {
-                int v = (t * 7) & 15;
-                r = (uint8_t)(194 + v);
-                g = (uint8_t)(168 + v);
-                b = (uint8_t)(118 + v);
-                a = 190;
+                c = s_minimap_full[(size_t)my * (size_t)s_minimap_full_w + (size_t)mx];
             }
-
-            rgba[(py * 128 + px) * 4 + 0] = r;
-            rgba[(py * 128 + px) * 4 + 1] = g;
-            rgba[(py * 128 + px) * 4 + 2] = b;
-            rgba[(py * 128 + px) * 4 + 3] = a;
+            uint8_t *o = &rgba[(py * 128 + px) * 4];
+            o[0] = (uint8_t)(c & 0xff);
+            o[1] = (uint8_t)((c >> 8) & 0xff);
+            o[2] = (uint8_t)((c >> 16) & 0xff);
+            o[3] = (uint8_t)((c >> 24) & 0xff);
         }
     }
 
@@ -3288,6 +3344,7 @@ static void render_hud_time(
 void cs2d_render_hud(
     const cs2d_player_t *player,
     const cs2d_game_t   *game,
+    const cs2d_texture_t *tileset_tex,
     int screen_w, int screen_h
 )
 {
@@ -3305,7 +3362,7 @@ void cs2d_render_hud(
     float rcx = 66.0f;
     float rcy = 66.0f;
     if (game && game->map.tiles) {
-        ensure_minimap_texture(bank, &game->map, player);
+        ensure_minimap_texture(bank, &game->map, player, tileset_tex);
     }
     if (bank->tex_hud_radar_adv.id) {
         cs2d_render_sprite_frame(&bank->tex_hud_radar_adv,
@@ -3314,7 +3371,7 @@ void cs2d_render_hud(
     }
     if (bank->tex_minimap.id) {
         cs2d_render_sprite_frame(&bank->tex_minimap, 128, 128, 0,
-                                 rcx, rcy, 128.0f, 128.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.80f, 0);
+                                 rcx, rcy, 128.0f, 128.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0);
     }
     if (bank->tex_hud_radar_ring.id) {
         cs2d_render_sprite_frame(&bank->tex_hud_radar_ring,
@@ -3326,38 +3383,54 @@ void cs2d_render_hud(
                                  rcx, rcy, 128.0f, 128.0f, 0.0f, 0.4f, 0.9f, 0.4f, 0.65f, 0);
     }
 
-    /* Radar Icons (Info_RadarIcon type 81 -> int_settings[0] is direct frame index: 8='A', 9='B') */
-    if (game && game->map.width > 0 && game->map.height > 0 && bank->tex_hud_radar_icons.id) {
-        float px_per_tile = 128.0f / 36.0f;
-        float p_tx = player->pos.x / (float)CS2D_TILE_SIZE;
-        float p_ty = player->pos.y / (float)CS2D_TILE_SIZE;
+    /* Radar blips (TSmartRadar): 16 world px per radar px, clipped to the radar edge */
+    if (game && bank->tex_hud_radar_icons.id) {
+        const float world_per_px = 16.0f;
+        const float clip_r       = 51.0f;
 
+        /* Info_RadarIcon (type 81): int_settings[0] is a direct frame index (8='A', 9='B') */
         for (uint32_t i = 0; i < game->map.entity_count; i++) {
             const cs2d_entity_t *ent = &game->map.entities[i];
-            if (ent->type == CS2D_ENT_INFO_RADARICON) {
-                int icon_f = ent->int_settings[0];
-                float dx = ((float)ent->x - p_tx) * px_per_tile;
-                float dy = ((float)ent->y - p_ty) * px_per_tile;
-                float dist = sqrtf(dx * dx + dy * dy);
-                if (dist > 52.0f) {
-                    dx *= 52.0f / dist;
-                    dy *= 52.0f / dist;
-                }
-                float ir = (ent->int_settings[1] || ent->int_settings[2] || ent->int_settings[3])
-                           ? ((float)ent->int_settings[1] / 255.0f) : 1.0f;
-                float ig = (ent->int_settings[1] || ent->int_settings[2] || ent->int_settings[3])
-                           ? ((float)ent->int_settings[2] / 255.0f) : 0.75f;
-                float ib = (ent->int_settings[1] || ent->int_settings[2] || ent->int_settings[3])
-                           ? ((float)ent->int_settings[3] / 255.0f) : 0.1f;
-                cs2d_render_sprite_frame(&bank->tex_hud_radar_icons, 32, 32, icon_f,
-                                         rcx + dx, rcy + dy, 22.0f, 22.0f, 0.0f,
-                                         ir, ig, ib, 0.90f, 0);
-            }
+            if (ent->type != CS2D_ENT_INFO_RADARICON) continue;
+            int   icon_f = ent->int_settings[0];
+            float dx = ((float)ent->x * CS2D_TILE_SIZE + 16.0f - player->pos.x) / world_per_px;
+            float dy = ((float)ent->y * CS2D_TILE_SIZE + 16.0f - player->pos.y) / world_per_px;
+            float dist = sqrtf(dx * dx + dy * dy);
+            if (dist > clip_r) { dx *= clip_r / dist; dy *= clip_r / dist; }
+            float ir = (ent->int_settings[1] || ent->int_settings[2] || ent->int_settings[3])
+                       ? ((float)ent->int_settings[1] / 255.0f) : 1.0f;
+            float ig = (ent->int_settings[1] || ent->int_settings[2] || ent->int_settings[3])
+                       ? ((float)ent->int_settings[2] / 255.0f) : 0.75f;
+            float ib = (ent->int_settings[1] || ent->int_settings[2] || ent->int_settings[3])
+                       ? ((float)ent->int_settings[3] / 255.0f) : 0.1f;
+            cs2d_render_sprite_frame(&bank->tex_hud_radar_icons, 32, 32, icon_f,
+                                     rcx + dx, rcy + dy, 22.0f, 22.0f, 0.0f,
+                                     ir, ig, ib, 0.90f, 0);
         }
-        /* Local player radar blip at center of radar */
-        cs2d_render_sprite_frame(&bank->tex_hud_radar_icons, 32, 32, 0,
-                                 rcx, rcy, 12.0f, 12.0f, 0.0f,
-                                 1.0f, 1.0f, 1.0f, 0.90f, 0);
+
+        /* Player blips: teammates in team color, the local player red. Enemies are
+         * hidden in team modes (radarhack protection) and shown in Deathmatch. */
+        bool dm = (game->gamemode == CS2D_MODE_DM);
+        for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
+            const cs2d_player_t *p = &game->players[i];
+            if (!p->alive || p->team == CS2D_TEAM_SPEC) continue;
+            bool local = (p->id == player->id);
+            if (!local && !dm && p->team != player->team) continue;
+
+            float dx = (p->pos.x - player->pos.x) / world_per_px;
+            float dy = (p->pos.y - player->pos.y) / world_per_px;
+            float d  = sqrtf(dx * dx + dy * dy);
+            if (d > clip_r) { dx *= clip_r / d; dy *= clip_r / d; }
+
+            float pr, pg, pb;
+            if (local)                         { pr = 1.0f; pg = 0.0f;   pb = 0.0f;   }
+            else if (p->team == CS2D_TEAM_T)   { pr = 1.0f; pg = 0.588f; pb = 0.588f; } /* 0xff9696 */
+            else                               { pr = 0.588f; pg = 0.588f; pb = 1.0f; } /* 0x9696ff */
+            float s = local ? 12.0f : 10.0f;
+            cs2d_render_sprite_frame(&bank->tex_hud_radar_icons, 32, 32, 0,
+                                     rcx + dx, rcy + dy, s, s, 0.0f,
+                                     pr, pg, pb, 0.90f, 0);
+        }
     }
 
     float hud_y = (float)(screen_h - 36);
