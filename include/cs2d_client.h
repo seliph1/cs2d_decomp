@@ -57,6 +57,19 @@ typedef struct {
     float       fade;                         /* 1.0 down to 0.0 */
 } cs2d_chat_line_t;
 
+/* New Game "Map" list (Tgui_ml::Load 0x1400af1d0): the .map files in maps/ grouped under the sys/maptypes.lst titles */
+#define CS2D_MAPLIST_MAX_ROWS  512
+#define CS2D_MAPLIST_MAX_TYPES 32
+typedef struct {
+    char name[64];  /* Map name (lowercase, without ".map") or group title */
+    bool header;    /* Group title row (not selectable) */
+} cs2d_maplist_row_t;
+
+typedef struct {
+    cs2d_maplist_row_t rows[CS2D_MAPLIST_MAX_ROWS];
+    int                count;
+} cs2d_maplist_t;
+
 
 struct cs2d_client {
     cs2d_config_t   config;
@@ -219,7 +232,10 @@ struct cs2d_client {
     bool                srv_lan_mode;
     bool                srv_friendly_fire;
     bool                srv_auto_balance;
-    int                 srv_selected_map;
+    char                srv_selected_map[64];      /* Map name picked in the "Map" tab */
+    cs2d_maplist_t      srv_maplist;               /* Reloaded each time the window opens */
+    bool                srv_maplist_loaded;
+    cs2d_ui_scroll_t    srv_maplist_scroll;
     int                 opt_name_cursor;
     int                 opt_spray_idx;
     int                 opt_move_dir_mode;
@@ -269,6 +285,9 @@ void cs2d_client_start_game(cs2d_client_t *client, const char *map_name);
 
 /* True while a shared UI window (console, Create Server, Options, Server Info, Select Team) captures input */
 bool cs2d_client_any_ui_open(const cs2d_client_t *client);
+
+/* Fill ml from maps_dir (*.map) grouped by the prefixes in types_path (sys/maptypes.lst); returns the map count */
+int cs2d_maplist_load(cs2d_maplist_t *ml, const char *maps_dir, const char *types_path);
 
 /* Open the "Servers" window (Find Servers): loads the cached / favorite / recent lists and starts querying */
 void cs2d_client_open_servers(cs2d_client_t *client);

@@ -376,7 +376,6 @@ static int run_client_app(const char *cmdline)
         if (capture_cmd) {
             /* Capture mode: time update + render including GPU work (excludes the 16ms pacing delay) */
             glFinish();
-            double work_ms = (double)(SDL_GetPerformanceCounter() - current_time) * 1000.0 / (double)freq;
             uint64_t t_fin1 = SDL_GetPerformanceCounter();
             double up_ms  = (double)(t_up1 - t_up0) * 1000.0 / (double)freq;
             double ren_ms = (double)(t_ren1 - t_up1) * 1000.0 / (double)freq;

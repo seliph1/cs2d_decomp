@@ -323,7 +323,8 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
     client->srv_fow_idx         = 0; /* "Off" */
     client->srv_reg_usgn        = true;
     client->srv_auto_balance    = true;
-    client->srv_selected_map    = 4; /* "de_dust2" */
+    /* The original preselects sv_map (0x140a14ec0[0], sys/server.cfg), else the first map of the list */
+    strncpy(client->srv_selected_map, "de_dust2", sizeof(client->srv_selected_map) - 1);
 
     client->opt_gore            = true;
     client->opt_auto_switch     = true;
@@ -2880,9 +2881,133 @@ static void cs2d_client_build_console_ui(cs2d_client_t *client, int screen_w, in
     }
 }
 
+static int maplist_cmp(const void *a, const void *b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/* Append a group: title row, then its maps sorted (Tgui_ml::Load sorts each group, FUN_1408d9e30) */
+static void maplist_add_group(cs2d_maplist_t *ml, const char *title, char **maps, int n)
+{
+    if (n <= 0) return;
+    qsort(maps, (size_t)n, sizeof(maps[0]), maplist_cmp);
+    if (ml->count >= CS2D_MAPLIST_MAX_ROWS) return;
+    snprintf(ml->rows[ml->count].name, sizeof(ml->rows[0].name), "%s", title);
+    ml->rows[ml->count++].header = true;
+    for (int i = 0; i < n && ml->count < CS2D_MAPLIST_MAX_ROWS; i++) {
+        snprintf(ml->rows[ml->count].name, sizeof(ml->rows[0].name), "%s", maps[i]);
+        ml->rows[ml->count++].header = false;
+    }
+}
+
+static char *maplist_trim(char *s)
+{
+    while (*s == ' ' || *s == '\t') s++;
+    size_t len = strlen(s);
+    while (len > 0 && (s[len - 1] == ' ' || s[len - 1] == '\t' || s[len - 1] == '\r' || s[len - 1] == '\n')) {
+        s[--len] = '\0';
+    }
+    return s;
+}
+
+int cs2d_maplist_load(cs2d_maplist_t *ml, const char *maps_dir, const char *types_path)
+{
+    if (!ml) return 0;
+    ml->count = 0;
+
+    /* sys/maptypes.lst (FUN_1401a4610): "<prefix><tab or space><title>", both sides trimmed, empty ones skipped */
+    static char type_prefix[CS2D_MAPLIST_MAX_TYPES][16];
+    static char type_title[CS2D_MAPLIST_MAX_TYPES][64];
+    int ntypes = 0;
+    FILE *f = types_path ? fopen(types_path, "rb") : NULL;
+    if (f) {
+        char line[256];
+        while (ntypes < CS2D_MAPLIST_MAX_TYPES && fgets(line, sizeof(line), f)) {
+            char *sep = strpbrk(line, "\t ");
+            if (!sep) continue;
+            *sep = '\0';
+            char *prefix = maplist_trim(line);
+            char *title  = maplist_trim(sep + 1);
+            if (!prefix[0] || !title[0]) continue;
+            snprintf(type_prefix[ntypes], sizeof(type_prefix[0]), "%s", prefix);
+            snprintf(type_title[ntypes], sizeof(type_title[0]), "%s", title);
+            ntypes++;
+        }
+        fclose(f);
+    }
+
+    /* Tgui_ml::Load: every file of maps/ whose lowercase extension is "map", except temp.map and
+     * autosave.map, stored as Lower(StripExt(name)) */
+    static char names[CS2D_MAPLIST_MAX_ROWS][64];
+    int nnames = 0;
+    char pattern[MAX_PATH];
+    snprintf(pattern, sizeof(pattern), "%s\\*", maps_dir ? maps_dir : "maps");
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if (strcmp(fd.cFileName, "temp.map") == 0 || strcmp(fd.cFileName, "autosave.map") == 0) continue;
+            const char *dot = strrchr(fd.cFileName, '.');
+            if (!dot || _stricmp(dot + 1, "map") != 0) continue;
+            size_t len = (size_t)(dot - fd.cFileName);
+            if (len == 0 || len >= sizeof(names[0]) || nnames >= CS2D_MAPLIST_MAX_ROWS) continue;
+            for (size_t i = 0; i < len; i++) names[nnames][i] = (char)tolower((unsigned char)fd.cFileName[i]);
+            names[nnames][len] = '\0';
+            nnames++;
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+
+    /* "All Maps" view: one group per map type in file order (a map joins the first prefix it starts with),
+     * then the rest under "Other Maps" (sys/language 0182) */
+    static char *group[CS2D_MAPLIST_MAX_ROWS];
+    bool taken[CS2D_MAPLIST_MAX_ROWS] = {0};
+    for (int t = 0; t < ntypes; t++) {
+        int n = 0;
+        size_t plen = strlen(type_prefix[t]);
+        for (int i = 0; i < nnames; i++) {
+            if (!taken[i] && strncmp(names[i], type_prefix[t], plen) == 0) {
+                taken[i] = true;
+                group[n++] = names[i];
+            }
+        }
+        maplist_add_group(ml, type_title[t], group, n);
+    }
+    int n = 0;
+    for (int i = 0; i < nnames; i++) {
+        if (!taken[i]) group[n++] = names[i];
+    }
+    maplist_add_group(ml, "Other Maps", group, n);
+    return nnames;
+}
+
 static void cs2d_client_build_create_server_ui(cs2d_client_t *client, int screen_w, int screen_h)
 {
-    if (!client->create_server_open) return;
+    if (!client->create_server_open) {
+        client->srv_maplist_loaded = false;
+        return;
+    }
+    if (!client->srv_maplist_loaded) {
+        cs2d_maplist_load(&client->srv_maplist, "maps", "sys/maptypes.lst");
+        client->srv_maplist_loaded = true;
+        client->srv_maplist_scroll.top = 0;
+
+        /* Tgui_ml::Load picks the first map of the list when the selection is empty; we also do it when
+         * the selected map is not in maps/ */
+        bool found = false;
+        for (int i = 0; i < client->srv_maplist.count && !found; i++) {
+            const cs2d_maplist_row_t *r = &client->srv_maplist.rows[i];
+            found = !r->header && strcmp(r->name, client->srv_selected_map) == 0;
+        }
+        for (int i = 0; i < client->srv_maplist.count && !found; i++) {
+            const cs2d_maplist_row_t *r = &client->srv_maplist.rows[i];
+            if (!r->header) {
+                snprintf(client->srv_selected_map, sizeof(client->srv_selected_map), "%s", r->name);
+                found = true;
+            }
+        }
+    }
 
     cs2d_ui_context_t *ui = &client->ui;
     float win_w = 460.0f;
@@ -2893,10 +3018,6 @@ static void cs2d_client_build_create_server_ui(cs2d_client_t *client, int screen
     static const char *srv_tabs[] = { "Server", "Map", "Settings", "Bots", "Mods", "More Settings" };
     static const char *gm_opts[]     = { "Standard", "Deathmatch", "Team Deathmatch", "Construction", "Zombies!" };
     static const char *fow_opts[]    = { "Off", "On", "Line of Sight" };
-    static const char *map_names[]   = {
-        "de_aztec", "de_cbble", "de_cs2d", "de_dust", "de_dust2",
-        "de_inferno", "de_nuke", "cs_assault", "cs_italia", "cs_office"
-    };
 
     if (cs2d_ui_window_begin(ui, CS2D_UI_ID("CreateServerWin"), "Create Server",
                              win_x, win_y, win_w, win_h, &client->create_server_open)) {
@@ -2973,60 +3094,64 @@ static void cs2d_client_build_create_server_ui(cs2d_client_t *client, int screen
                         }) {
                             cs2d_ui_text(ui, "Map:", CS2D_FONT_REGULAR, CS2D_UI_RGB(185, 185, 185));
 
-                            CS2D_UI_ELEMENT(ui, CS2D_UI_ID("MapListBox"), {
-                                .layout = {
-                                    .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_GROW(0, 0) },
-                                    .padding   = CS2D_UI_PAD_ALL(2.0f),
-                                    .child_gap = 1.0f,
-                                    .dir       = CS2D_UI_TOP_TO_BOTTOM
-                                },
-                                .bg_color = CS2D_UI_RGBA(22, 22, 22, 248),
-                                .border   = { .width = 1.0f, .color = CS2D_UI_RGB(100, 100, 100) },
-                                .clip     = { .enabled = true }
-                            }) {
-                                cs2d_ui_section_header(ui, CS2D_UI_ID("HdrDE"), "DE - Bomb Defuse");
-                                for (int m = 0; m < 7; m++) {
-                                    cs2d_ui_id_t mid = CS2D_UI_IDI("MapItem", m);
-                                    bool sel = (client->srv_selected_map == m);
-                                    bool hov = cs2d_ui_hovered(ui, mid);
-                                    CS2D_UI_ELEMENT(ui, mid, {
-                                        .layout = {
-                                            .sizing  = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(16.0f) },
-                                            .padding = CS2D_UI_PAD(6, 4, 0, 0),
-                                            .align_y = CS2D_UI_ALIGN_Y_CENTER
-                                        },
-                                        .bg_color = sel ? CS2D_UI_RGBA(70, 70, 70, 240)
-                                                        : (hov ? CS2D_UI_RGBA(42, 42, 42, 220) : CS2D_UI_RGBA(0, 0, 0, 0))
-                                    }) {
-                                        cs2d_ui_text(ui, map_names[m], CS2D_FONT_REGULAR,
-                                                     sel ? CS2D_UI_RGB(255, 220, 0) : CS2D_UI_RGB(190, 190, 190));
-                                    }
-                                    if (cs2d_ui_clicked(ui, mid)) {
-                                        client->srv_selected_map = m;
-                                    }
-                                }
+                            /* Rows that fit (Tgui_ml scrolls in 17 px rows, scrv 0x11). Our headers are 18 px,
+                             * so count 19 px per row to never cut the last one. Fixed height: fills the tab */
+                            const float list_h = 300.0f;
+                            cs2d_ui_rect_t list_box = cs2d_ui_get_box(ui, CS2D_UI_ID("MapListRow"));
+                            int total   = client->srv_maplist.count;
+                            int max_vis = (int)((list_h - 4.0f) / 19.0f);
+                            cs2d_ui_scroll_wheel(ui, &client->srv_maplist_scroll, &list_box, 3, max_vis, total);
+                            cs2d_ui_scroll_clamp(&client->srv_maplist_scroll, max_vis, total);
+                            int first = client->srv_maplist_scroll.top;
+                            int last  = first + max_vis;
+                            if (last > total) last = total;
 
-                                cs2d_ui_section_header(ui, CS2D_UI_ID("HdrCS"), "CS - Hostage Rescue");
-                                for (int m = 7; m < 10; m++) {
-                                    cs2d_ui_id_t mid = CS2D_UI_IDI("MapItem", m);
-                                    bool sel = (client->srv_selected_map == m);
-                                    bool hov = cs2d_ui_hovered(ui, mid);
-                                    CS2D_UI_ELEMENT(ui, mid, {
-                                        .layout = {
-                                            .sizing  = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(16.0f) },
-                                            .padding = CS2D_UI_PAD(6, 4, 0, 0),
-                                            .align_y = CS2D_UI_ALIGN_Y_CENTER
-                                        },
-                                        .bg_color = sel ? CS2D_UI_RGBA(70, 70, 70, 240)
-                                                        : (hov ? CS2D_UI_RGBA(42, 42, 42, 220) : CS2D_UI_RGBA(0, 0, 0, 0))
-                                    }) {
-                                        cs2d_ui_text(ui, map_names[m], CS2D_FONT_REGULAR,
-                                                     sel ? CS2D_UI_RGB(255, 220, 0) : CS2D_UI_RGB(190, 190, 190));
-                                    }
-                                    if (cs2d_ui_clicked(ui, mid)) {
-                                        client->srv_selected_map = m;
+                            CS2D_UI_ELEMENT(ui, CS2D_UI_ID("MapListRow"), {
+                                .layout = {
+                                    .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(list_h) },
+                                    .child_gap = 1.0f,
+                                    .dir       = CS2D_UI_LEFT_TO_RIGHT
+                                }
+                            }) {
+                                CS2D_UI_ELEMENT(ui, CS2D_UI_ID("MapListBox"), {
+                                    .layout = {
+                                        .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_GROW(0, 0) },
+                                        .padding   = CS2D_UI_PAD_ALL(2.0f),
+                                        .child_gap = 1.0f,
+                                        .dir       = CS2D_UI_TOP_TO_BOTTOM
+                                    },
+                                    .bg_color = CS2D_UI_RGBA(22, 22, 22, 248),
+                                    .border   = { .width = 1.0f, .color = CS2D_UI_RGB(100, 100, 100) },
+                                    .clip     = { .enabled = true }
+                                }) {
+                                    for (int m = first; m < last; m++) {
+                                        const cs2d_maplist_row_t *row = &client->srv_maplist.rows[m];
+                                        if (row->header) {
+                                            cs2d_ui_section_header(ui, CS2D_UI_IDI("MapHdr", m), row->name);
+                                            continue;
+                                        }
+                                        cs2d_ui_id_t mid = CS2D_UI_IDI("MapItem", m);
+                                        bool sel = (strcmp(client->srv_selected_map, row->name) == 0);
+                                        bool hov = cs2d_ui_hovered(ui, mid);
+                                        CS2D_UI_ELEMENT(ui, mid, {
+                                            .layout = {
+                                                .sizing  = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(16.0f) },
+                                                .padding = CS2D_UI_PAD(6, 4, 0, 0),
+                                                .align_y = CS2D_UI_ALIGN_Y_CENTER
+                                            },
+                                            .bg_color = sel ? CS2D_UI_RGBA(70, 70, 70, 240)
+                                                            : (hov ? CS2D_UI_RGBA(42, 42, 42, 220) : CS2D_UI_RGBA(0, 0, 0, 0))
+                                        }) {
+                                            cs2d_ui_text(ui, row->name, CS2D_FONT_REGULAR,
+                                                         sel ? CS2D_UI_RGB(255, 220, 0) : CS2D_UI_RGB(190, 190, 190));
+                                        }
+                                        if (cs2d_ui_clicked(ui, mid)) {
+                                            snprintf(client->srv_selected_map, sizeof(client->srv_selected_map), "%s", row->name);
+                                        }
                                     }
                                 }
+                                cs2d_ui_scrollbar(ui, CS2D_UI_ID("MapListScrollbar"), &client->srv_maplist_scroll,
+                                                  max_vis, total, list_h, NULL);
                             }
                         }
 
@@ -3049,7 +3174,7 @@ static void cs2d_client_build_create_server_ui(cs2d_client_t *client, int screen
                                 .bg_color = CS2D_UI_RGBA(22, 22, 22, 248),
                                 .border   = { .width = 1.0f, .color = CS2D_UI_RGB(100, 100, 100) }
                             }) {
-                                cs2d_ui_text(ui, map_names[client->srv_selected_map], CS2D_FONT_REGULAR, CS2D_UI_RGB(190, 190, 190));
+                                cs2d_ui_text(ui, client->srv_selected_map, CS2D_FONT_REGULAR, CS2D_UI_RGB(190, 190, 190));
                             }
                         }
                     }
@@ -3072,9 +3197,9 @@ static void cs2d_client_build_create_server_ui(cs2d_client_t *client, int screen
                 .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(1.0f) } }
             }) {}
 
-            if (cs2d_ui_button(ui, CS2D_UI_ID("BtnSrvStart"), "Start", 76.0f, 19.0f)) {
+            if (cs2d_ui_button(ui, CS2D_UI_ID("BtnSrvStart"), "Start", 76.0f, 19.0f) && client->srv_selected_map[0]) {
                 char cmd[128];
-                snprintf(cmd, sizeof(cmd), "map %s", map_names[client->srv_selected_map]);
+                snprintf(cmd, sizeof(cmd), "map %s", client->srv_selected_map);
                 cs2d_client_console_exec(client, cmd);
                 client->create_server_open = false;
             }

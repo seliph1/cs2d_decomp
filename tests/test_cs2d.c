@@ -1736,8 +1736,8 @@ static bool test_file_transfer(void)
 
     /* The last [252,50,1] chunk of the fun_roleplay list: the 3 sfx/weapons sounds ship with the game */
     static const char *names[6] = {
-        "gfx/c4/map/objects/c4_amaguya.PNG", "sfx/weapons/c4_disarm.wav", "sfx/weapons/nvg.ogg",
-        "sfx/weapons/c4_explode.wav", "gfx/c4/map/texture/light_map/fun_roleplay_dungeon8_1.png", "maps/fun_roleplay.map"
+        "gfx/c4/map/objects/c4_test999.PNG", "sfx/weapons/c4_disarm.wav", "sfx/weapons/nvg.ogg",
+        "sfx/weapons/c4_explode.wav", "gfx/c4/map/texture/light_map/fun_roleplay_dungeon8_X.png", "maps/fun_missing1.map"
     };
     uint8_t chunk[512];
     int cl = 0;
@@ -3833,6 +3833,57 @@ static bool test_sprite_atlas_packer(void)
     return true;
 }
 
+/* =========================================================================
+ * New Game "Map" list (Tgui_ml::Load 0x1400af1d0, sys/maptypes.lst reader FUN_1401a4610)
+ * ========================================================================= */
+static bool test_new_game_maplist(void)
+{
+    printf("\n=== Testing New Game Map List ===\n");
+
+    /* A scratch maps folder: mixed case, skipped names and a non-map file */
+    static const char *files[] = {
+        "de_dust2.map", "DE_Aztec.MAP", "as_snow.map", "cs_office.map", "fun_roleplay.map",
+        "zz.map", "temp.map", "autosave.map", "readme.txt"
+    };
+    const int nfiles = (int)(sizeof(files) / sizeof(files[0]));
+    const char *dir = "tests/tmp_maplist";
+    char path[MAX_PATH];
+    CreateDirectoryA(dir, NULL);
+    for (int i = 0; i < nfiles; i++) {
+        snprintf(path, sizeof(path), "%s/%s", dir, files[i]);
+        FILE *f = fopen(path, "wb");
+        if (f) fclose(f);
+    }
+
+    static cs2d_maplist_t ml;
+    int n = cs2d_maplist_load(&ml, dir, "sys/maptypes.lst");
+
+    for (int i = 0; i < nfiles; i++) {
+        snprintf(path, sizeof(path), "%s/%s", dir, files[i]);
+        DeleteFileA(path);
+    }
+    RemoveDirectoryA(dir);
+
+    /* Groups in sys/maptypes.lst order, each sorted, unknown prefixes last under "Other Maps" (0182) */
+    static const struct { const char *name; bool header; } want[] = {
+        { "AS - Assassination", true }, { "as_snow", false },
+        { "CS - Hostage Rescue", true }, { "cs_office", false },
+        { "DE - Bomb Defuse", true }, { "de_aztec", false }, { "de_dust2", false },
+        { "Other Maps", true }, { "fun_roleplay", false }, { "zz", false }
+    };
+    const int nwant = (int)(sizeof(want) / sizeof(want[0]));
+    if (n != 6 || ml.count != nwant) {
+        TEST_FAIL("Map list", "Wrong map / row count (temp.map, autosave.map and non-.map files are skipped)");
+    }
+    for (int i = 0; i < nwant; i++) {
+        if (strcmp(ml.rows[i].name, want[i].name) != 0 || ml.rows[i].header != want[i].header) {
+            TEST_FAIL("Map list", "Rows differ from the expected grouping");
+        }
+    }
+    TEST_PASS("maps/ grouped by sys/maptypes.lst, lowercase and sorted, rest under \"Other Maps\"");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -3840,7 +3891,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 36;
+    int total = 37;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -3878,6 +3929,7 @@ int main(void)
     if (test_light_engine()) passed++;
     if (test_image_decode()) passed++;
     if (test_sprite_atlas_packer()) passed++;
+    if (test_new_game_maplist()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);
