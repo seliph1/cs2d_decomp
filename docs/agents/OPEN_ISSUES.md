@@ -5,6 +5,38 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **First-frame freeze when a map is set up (measured 2026-10-12):** the first drawn frame costs
+  ~0.1 ms per map entity, because entity sprites are loaded lazily on their first draw
+  (`cs2d_render.c` ~1100, with no image cache in front of it) — 133 ms on `prison_funst3r` (1609
+  entities), 140 ms on `de_dust2`, **1447 ms on `fun_roleplay` (9902)**. `light 0`, `mapshadows 0`
+  and `drawradar 0` do not change it, so it is not the light engine, the map shadows or the radar.
+  The original builds its images at map load, behind the loading screen. Fix: preload the map's
+  entity sprites before the first frame, or spread the work over frames. Numbers: `KNOWLEDGE.md`
+  "Performance".
+  - **Not fully changed by the entity index (2026-10-12):** the passes now skip off-screen entities
+    (`KNOWLEDGE.md` "Performance", `test_entity_culling`), and an `Env_Sprite` with an explicit
+    `ints[0]` / `ints[1]` size is already skipped (and therefore *not loaded*) on the first frame. A
+    *texture sized* `Env_Sprite` / `Env_Image` is unculled on the frame that first draws it, so the preload
+    (or an image-header size probe at index build time, which would let the first frame cull those too) is
+    still owed. The freeze has **not** been re-timed since the culling landed.
+  - **Cache ceiling (found 2026-10-12, not yet fixed):** `CS2D_MAX_SPRITE_CACHE` is **64** and
+    `cs2d_gfx_get_sprite` returns `NULL` once the cache is full (`cs2d_render.c:1115`), so a map with
+    more than 64 distinct `Env_Sprite` / `Env_Image` paths *silently loses* every further sprite.
+    Any preload/limit must therefore also decide what replaces the fixed array (a real image cache,
+    or a greater cap), and the two numbers above (0.1 ms/entity, 1447 ms on `fun_roleplay`) need a
+    re-measure first: with a 64-entry ceiling only 64 loads can ever happen, so the per-entity cost
+    may partly be the failed-lookup path and not image decode. Verify before writing the fix.
+- **Two entity types are still never culled (2026-10-12, `cs2d_render.c` `entity_cull_margin`):**
+  `Env_Object` (417 in `fun_roleplay`) draws its palm / tree leaves at `size * 30 px` offsets plus
+  texture sized flares, and a texture sized `Env_Image` draws at its whole texture size, so neither has a
+  margin the index can know before its image is loaded. Both could use the same trick as `Env_Sprite`
+  (`cs2d_render_entity_learn_size` from `render_env_object_overhead` / the two `Env_Image` branches, using
+  `w = tex->width * size + 2 * size * 30` for the palms). Not measured yet how much they cost on
+  `fun_roleplay`, where the index already dropped the per-frame count from 49,505 to 998.
+- **No frame cap with VSync off:** the original locks its frame at ~65 FPS (`15.384615 ms`,
+  `docs/dump/cs2d/_global/1402f0000.c:2284`) whether VSync is on or off; our loop only does
+  `SDL_Delay(1)` (~1.5 ms), so it runs at 167 FPS and pegs a CPU core. Decide whether to reproduce the
+  original's cap.
 - **Audio:** there is no audio system (material sounds, shots, `Env_Sound`).
 - **Shots:** offline shots have no spread, and the reach of weapons other than the knife and the AK-47
   is not measured.
@@ -155,16 +187,22 @@ of scope, and this is *not* the Wasm port — the phases just happen to be the s
     build, then compare stb_truetype advances string by string and lock the equal ones in a test;
   - keep the raster conventions: white text on opaque black, coverage read from the G channel, and the
     stem-darkening gamma (`pow(a, 0.62)` into `s_gamma_lut`).
-- **Phase 3 — OpenGL 1.x: the big one** (100 % fixed-function, 0 shaders; the call inventory is in KNOWLEDGE
-  "Renderer"). Target **SDL3's `SDL_Renderer`** — `SDL_Texture`, `SDL_RenderGeometry` with per-vertex colour,
-  `SDL_SetTextureBlendMode` for the additive/alpha passes, `SDL_SetRenderTarget` for the light engine buffers,
-  `SDL_RenderReadPixels` for the screenshot path. It keeps a single SDL3 dependency, deletes every `gl*` call
-  and the FBO extension loader in `cs2d_light.c:187-206`, and stays portable later; the alternatives (GL 3.3
-  core + shaders, or gl4es / Regal) are listed in the Web port section below.
-  - the light engine is the hard part: `glBlendFuncSeparate` plus render-to-texture. `SDL_BLENDMODE_MOD` covers
-    the multiply pass, but the separate-alpha case must be checked against the `emu_light.py` traces;
-  - `main_client.c`'s `SDL_GL_SetAttribute` / `SDL_WINDOW_OPENGL` and `cs2d_render_init` / `shutdown` / `resize`
-    become `SDL_CreateRenderer` + a logical size, and `include/cs2d_render.h` loses its unguarded `windows.h`.
+- **Phase 3 — OpenGL 1.x: DONE (2026-10-12) via GL 3.3 core + shaders** (the user chose core 3.3 + shaders
+  over `SDL_Renderer`; see WORKLOG). New `src/cs2d_gl.c` + `include/cs2d_gl.h` own the whole drawing path:
+  the GL 3.3 entry points are loaded from `SDL_GL_GetProcAddress` (opengl32 only exports GL 1.1), one shader
+  does `texture * vertex colour` with an alpha-test `discard` (replacing `glAlphaFunc`), and one streaming
+  VAO/VBO is fed by a batcher. `cs2d_render.c` and `cs2d_light.c` no longer contain a single fixed-function
+  call; the FBO loader kept only the core names. The entry-point inventory is in KNOWLEDGE "Renderer".
+  - **Owed — pixel comparison:** the new core output has not yet been diffed against the *original* client
+    on the same scene (or against the old fixed-function build). Screenshots so far are only checked to be
+    non-black and plausibly coloured (`--capture`, 850x480). This is the verification portão of the phase.
+  - **Light engine on core:** `glBlendFuncSeparate` + render-to-texture are core in 3.3 and the `emu_light.py`
+    trace test still passes, but the on-screen light compositing (`m2d_draw_buffer`, `cs2d_gl_bind_target`)
+    was only eyeballed via a `fun_roleplay` capture — a `light 0..5` / `mapshadows 0..4` screenshot diff is owed.
+  - **Fallback removed:** the compatibility context is gone; a machine without a 3.3 core context fails to
+    start (clear stderr message). Decide later whether to keep a legacy path.
+  - `include/cs2d_render.h` still includes `<windows.h>` (unguarded) — it goes away with the phase 2 GDI+ text
+    engine; `cs2d_gl.h` deliberately does not include it.
 - **Practical note — the `libwinpthread-1.dll` trap (fixed 2026-10-12):** the first build of phase 1 died on
   launch with *"libwinpthread-1.dll não foi encontrado"* (`0xC0000135`). The vendored `stb_image.h` declares
   some of its settings as `__thread` (`STBI_THREAD_LOCAL`: `stbi__g_failure_reason`,
@@ -182,9 +220,9 @@ of scope, and this is *not* the Wasm port — the phases just happen to be the s
   needs a server-side UDP gateway. Evidence: `KNOWLEDGE.md` "Web/Wasm portability" and the `WORKLOG.md` entry of the same
   date (Cline, second opinion). No source file has been changed for it.
 - **Open decisions:**
-  - **Render:** keep the fixed-function code under `-sLEGACY_GL_EMULATION -sGL_FFP_ONLY` (default choice) vs. a shader
-    rewrite of the hot paths (light FBO pass, tilemap) vs. gl4es / Regal. Decided by the in-browser screenshot
-    comparison, not by argument.
+  - **Render:** resolved on the desktop — the renderer is now GL 3.3 core + shaders (`src/cs2d_gl.c`, see the
+    GL 1.x removal section), so `-sLEGACY_GL_EMULATION` / `-sGL_FFP_ONLY` and gl4es / Regal are no longer
+    candidates; the web build targets WebGL2, still to be proven by an in-browser screenshot comparison.
   - **Font metrics:** `stb_truetype`/FreeType must reproduce the `GdipMeasureString` advances that size the HUD, or the
     whole layout drifts. Measure on the desktop first, then compare string by string.
   - **Network:** gateway choice (WebSocket vs. WebTransport over a local UDP socket), where it runs, and how `[229]`

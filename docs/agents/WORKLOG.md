@@ -8,6 +8,117 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Cline — Entity index & view culling (5 sweeps per frame → one typed list per pass)
+
+- **Measured first** (`.map` parse off-line, then the new test): `fun_roleplay` is **360x512 tiles with 9901
+  entities**, and only **22 of them are inside a 27x15 tile view on average** (0.2 % — over all 166,332 camera
+  positions, min 0, max 212). The five map passes (`src/cs2d_render.c`: tile-animation remap, Breakable /
+  DynWall, ground actors, rooftop sprites, rooftop objects) swept all 9901 entities each, so **49,505
+  dispatches per frame for ~20 draws**; `Env_Sound` (769), `Trigger_Delay` (509) and `Trigger_If` (387) were
+  swept five times per frame without drawing anything.
+- **Changed:** `src/cs2d_render.c` "Entity index & view culling": one cached list per pass, **ascending entity
+  index** so the draw order of the original sweep is unchanged, rebuilt only when the map or its entity table
+  changes (`map->entity_table_version`, new in `include/cs2d_types.h`, bumped by the loader in `cs2d_map.c`
+  and by `cs2d_ed_entity_add` / `cs2d_ed_entity_remove`). Entities whose draw box (tile centre ±
+  `cs2d_render_entity_margin` tiles) cannot touch the view are skipped before the string parse, the sprite
+  lookup and the draw. `strs[4]` of `Env_Sprite` is parsed once into the index (was `atoi` per sprite per
+  pass, 3x per frame) and `render_env_sprite_entity` takes the map + entity index now. A texture sized
+  sprite/image reports the size it just drew (`cs2d_render_entity_learn_size`), so it is culled from the
+  second frame on.
+- **Verified:** new `test_entity_culling` in `tests/test_cs2d.c` — pass membership and ascending order,
+  rebuild on `entity_table_version`, the culling invariant ("no entity whose draw box touches the view is
+  dropped") over 17x22 cameras, the learned sprite size, and three real maps. Measured there: `fun_roleplay`
+  9901 entities → 10,357 list entries and **998 considered per frame (49.6x fewer than the 49,505)**, 902 after
+  the sprite sizes are learned; `de_dust2` 1403 → 2,907 entries, 218 considered (vs 7,015);
+  `prison_funst3r` 1608 → 1,651 entries, 311 considered (vs 8,040). Suite 34 / 35 (the only failure is the
+  known `test_file_transfer` "Transfer list" gap).
+- **Left:** the freeze numbers of `OPEN_ISSUES.md` were **not** re-timed. An `Env_Sprite` with an explicit
+  `ints[0]` / `ints[1]` size is now skipped *and not loaded* when it is off screen, even on the first frame,
+  so expect the first frame to be cheaper on maps that size their sprites (which is what the 998 → 902
+  difference after learning shows: those had no explicit size). A texture sized sprite / image is still drawn
+  once before it can be culled, so the preload stays owed. `Env_Object` and texture sized `Env_Image` frames
+  are never culled yet (see `OPEN_ISSUES.md`).
+
+
+
+- **Question (user):** the game ran with less performance than expected with VSync disabled.
+- **Method:** temporary per-section timers in the `main_client.c` loop (events / update / render /
+  `glFinish` / `end_frame` / `SDL_Delay`) plus a native-pacing mode (`CS2D_PERF=<frames>`,
+  `CS2D_PERF_VSYNC=0|1`, `CS2D_PERF_CMD="<console cmd>"`); all of it removed again before the session
+  ended, so the tree only keeps the findings.
+- **Measured (this machine, 850x480, `sys/config.cfg` at its shipped maximum, light 5 / mapshadows 4):**
+  - **VSync OFF:** prison_funst3r 167-176 FPS (5.7-6.1 ms/frame), de_dust2 163-176 FPS,
+    fun_roleplay 72-98 FPS (10.2-14 ms/frame).
+  - **VSync ON:** 59.6 FPS (locked to the 60 Hz panel). The `render` number jumps 4.4 -> 15.2 ms
+    there, but that is the deferred vblank wait landing in the next GL call — `end_frame` still
+    returns in 0.04 ms and there is no stall.
+  - Split at steady state (prison_funst3r, VSync off): events 0.008 | update 0.02 | render 4.4 |
+    `SDL_Delay(1)` 1.49 ms.
+  - **The original locks its own frame at ~65 FPS** (`15.384615 ms` = 1000/65,
+    `docs/dump/cs2d/_global/1402f0000.c:2284`), so our uncapped 167 FPS is *faster* than the original.
+  - `SDL_Delay(1)` costs 1.8 ms and a swap with interval 0 presents in 0.49 ms (2029 FPS) here, so
+    neither the loop delay nor the swap is a cap on this machine.
+- **Real defect found:** the first frame after a map is set up freezes for **~0.1 ms per map entity**
+  (133 ms prison_funst3r / 140 ms de_dust2 / **1447 ms fun_roleplay**, 9902 entities). The cost is
+  entirely inside `cs2d_client_render` and survives `light 0`, `mapshadows 0` and `drawradar 0`, so it
+  is the lazy per-entity sprite load, not the light engine, the map shadows or the radar/minimap.
+- **Method trap for the next session:** the `--capture` harness paces itself with `SDL_Delay(16)` per
+  frame, so its "avg ms/frame" is CPU+GPU work only and its FPS is the harness's, never the game's — two
+  runs of different length gave a false "36.8 FPS" before this was noticed. It also resets the stats at
+  every step, which is why the first-frame freeze never shows up in its output.
+- **Reverted:** a speculative streaming-VBO change in `cs2d_gl.c` (fresh write offset per batch +
+  orphan on wrap). It left the vsync-on frame time unchanged, so the "BufferSubData stall" hypothesis
+  was wrong; kept out rather than keeping an unproven rewrite.
+- **Verified:** `Build Successful!`, `test_cs2d.exe` 33 / 34 (the known `test_file_transfer`
+  "Transfer list" gap). `git status sys/` clean.
+
+
+- **Changed:** the OpenGL swap interval is now a real setting instead of the hard-coded
+  `SDL_GL_SetSwapInterval(1)`. Added `cs2d_render_set_vsync` / `cs2d_render_get_vsync`
+  (`src/cs2d_render.c`, `include/cs2d_render.h`), a `vsync` field in `cs2d_config_t` (`sys/config.cfg`
+  "vsync", default 1, `DAT_140a12960`) and the `vsync [0|1]` console command (a bare `vsync` toggles)
+  in `src/cs2d_client.c`, with a `help` line. `cs2d_client_init` applies the config value at startup.
+- **Verified:** `test_vsync_command` in `tests/test_cs2d.c` (config parse, getters/setters, the command
+  and the bare toggle). Full suite 33 / 34; the only failure is the known `test_file_transfer`
+  "Transfer list" gap (see `OPEN_ISSUES.md`).
+- **Left:** the options menu still does not expose VSync (only the console and `sys/config.cfg` do).
+
+## 2026-10-12 — Cline — GL 1.x removal, phase 3: the GL 3.3 core + shader backend
+
+- **Decision (user):** the fixed-function renderer is replaced by **GL 3.3 core + shaders**, not
+  `SDL_Renderer` (the alternative my plan recommended). One SDL3 dependency is kept; the whole GL 3.3
+  entry-point set is still loaded from `SDL_GL_GetProcAddress` (opengl32.dll only exports GL 1.1).
+- **New `src/cs2d_gl.c` + `include/cs2d_gl.h`:** loads the 3.3 pointers, builds one shader
+  (`frag = texture(u_tex, uv) * vertex colour`, with an alpha-test `discard` that stands in for
+  `glAlphaFunc`) and one streaming VAO/VBO. The public API is a batcher (`cs2d_gl_quad`,
+  `cs2d_gl_quad_rot`, `cs2d_gl_quad_corners`, `cs2d_gl_rect`, `cs2d_gl_rect_grad`, `cs2d_gl_line`,
+  `cs2d_gl_circle`, `cs2d_gl_push_*`), sticky state (`set_blend` 1 alpha / 4 add / 5 mult / none,
+  `set_texture`, `set_alpha_ref`, `scissor`) and the light engine's render targets
+  (`bind_target`/`unbind_target`). A 1x1 white texture makes a textured draw with `tex = 0` a solid
+  colour, so one shader covers everything.
+- **`cs2d_render.c`:** `init` calls `cs2d_gl_load()` and fails cleanly when the context is not 3.3;
+  `resize`/`begin_frame`/`end_frame` drive the backend; the 8 `glBegin` sites (rect, line, circle,
+  sprite, tile frame, text, gradient, rotated FX quad) and the depth + `glAlphaFunc` player-shadow
+  silhouette were rewritten on the batcher (the silhouette is now `cs2d_gl_shadow_mark_begin` /
+  `_mark_end` / `_fill`); the map loop and `cs2d_render_tile_frame` pass the texture per quad instead
+  of binding it, so the tilemap batches into one draw call.
+- **`cs2d_light.c`:** the Max2D layer's `m2d_*` calls push into `cs2d_gl`; the FBO loader lost its
+  `EXT` fallback (FBO/blendFuncSeparate are core now) and no longer carries `glBlendFuncSeparate`
+  (the backend owns blending). **The `s_trace` path is untouched, so the emulator comparison still
+  runs GL-free.**
+- **`main_client.c`:** `SDL_GL_CONTEXT_PROFILE_CORE` 3.3 (keeps 4x MSAA + depth 24); the screenshot
+  reads `GL_RGB` and swaps to BGR (no `GL_BGR_EXT`). `build.bat` compiles `src/cs2d_gl.c` in both gcc
+  lines.
+- **Verified:** `Build Successful!`; `test_cs2d.exe` prints `Tests Passed: 32 / 33` — the only failure
+  is the known `test_file_transfer` "Transfer list" (OPEN_ISSUES). The light engine test still passes
+  its 4 scenes against the original (`_global` trace is GL-free). Screenshots via `--capture`
+  render real content: `map prison_funst3r` -> 850x480, 68002 distinct colours, mean (27.2, 32.6, 50.5);
+  `map fun_roleplay;light 5` -> 18010 colours, mean (34.5, 30.7, 24.3) (frame time rises to ~43 ms with
+  the light engine on, as expected). No `cs2d_gl` missing-entry-point or shader-compile errors on stdout.
+- **Left:** a screenshot diff of the new core output against the *original* client on the same scene is
+  still owed (OPEN_ISSUES); the FX `glBlendFunc` dead code in weapon-select was removed, and the
+  `windows.h` in `include/cs2d_render.h` still waits for phase 2 (the GDI+ text engine).
+
 ## 2026-10-12 — Cline — Removing the GDI+ dependency, phase 1: image decoding
 - **Changed:** new `src/cs2d_image.c` + `include/cs2d_image.h` decode every asset (BMP / PNG / ICO) with the
   vendored public-domain `third_party/stb_image.h`; `build.bat` compiles it, adds `-Ithird_party` and no longer

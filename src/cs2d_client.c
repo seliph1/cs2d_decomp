@@ -340,6 +340,7 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
     cs2d_render_set_shadow_intensity(client->config.shadows);
     cs2d_render_set_player_shadows(client->config.playershadows);
     cs2d_render_set_item_shadows(client->config.itemshadows);
+    cs2d_render_set_vsync(client->config.vsync);
     apply_light_config(client);
     cs2d_binds_defaults(&client->binds);
     cs2d_binds_load(&client->binds, "sys/controls.cfg");
@@ -1888,6 +1889,7 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         cs2d_client_console_print(client, 220, 220, 220, "shadows [0..100]    - Set shadow opacity (0 = disabled)");
         cs2d_client_console_print(client, 220, 220, 220, "playershadows [0|1] - Toggle player & hostage drop shadows");
         cs2d_client_console_print(client, 220, 220, 220, "itemshadows [0|1]   - Toggle ground item & projectile shadows");
+        cs2d_client_console_print(client, 220, 220, 220, "vsync [0|1]         - Toggle vertical sync (OpenGL swap interval)");
         cs2d_client_console_print(client, 220, 220, 220, "tp <tx> <ty>        - Teleport player to tile (tx, ty) (see: pos)");
         cs2d_client_console_print(client, 220, 220, 220, "hp <val> / armor <v>- Set player health / armor (money <val>, team <t|ct>)");
         cs2d_client_console_print(client, 220, 220, 220, "bot_add [t|ct]      - Spawn a bot (bot_kill to remove bots)");
@@ -2060,6 +2062,12 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         cs2d_render_set_item_shadows(en);
         client->config.itemshadows = en;
         cs2d_client_console_print(client, 170, 170, 170, "Item shadows: %s", en ? "ENABLED" : "DISABLED");
+    } else if (_stricmp(cmd, "vsync") == 0) {
+        /* sys/config.cfg "vsync": the OpenGL swap interval (DAT_140a12960) */
+        bool en = (n >= 2) ? (atoi(arg1) != 0) : !cs2d_render_get_vsync();
+        cs2d_render_set_vsync(en);
+        client->config.vsync = en;
+        cs2d_client_console_print(client, 170, 170, 170, "VSync: %s", en ? "ENABLED" : "DISABLED");
     } else if (_stricmp(cmd, "light") == 0 || _stricmp(cmd, "mapshadows") == 0) {
         /* Settings of sys/config.cfg: light 0..5 (light engine quality, 0 = off), mapshadows 0..4 */
         int *val = _stricmp(cmd, "light") == 0 ? &client->config.light : &client->config.mapshadows;

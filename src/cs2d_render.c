@@ -1,4 +1,5 @@
 #include "cs2d_render.h"
+#include "cs2d_gl.h"
 #include "cs2d_light.h"
 #include "cs2d_dynobj.h"
 #include "cs2d_weapons.h"
@@ -73,6 +74,7 @@ static bool s_shadows_enabled   = true;
 static int  s_shadow_intensity  = 50;   /* "shadows" (0..100, default 50, DAT_140a14f7b) */
 static bool s_player_shadows    = true; /* "playershadows" (0|1, default 1, DAT_140ddf184) */
 static bool s_item_shadows      = true; /* "itemshadows" (0|1, default 1, DAT_140ddf183) */
+static bool s_vsync             = true; /* "vsync" (0|1, default 1, DAT_140a12960) */
 
 /* Player cast shadow offset in px, set from the map's sun angle by cs2d_render_map_ex */
 static float s_player_shadow_dx = 3.62f;
@@ -464,14 +466,17 @@ bool cs2d_render_init(SDL_Window *window, int width, int height)
     }
 
     SDL_GL_MakeCurrent(window, g_gl_ctx);
-    SDL_GL_SetSwapInterval(1);
+    cs2d_render_set_vsync(s_vsync);
 
-    cs2d_render_resize(width, height);
+    /* Load the GL 3.3 entry points and build the shader/batcher backend (cs2d_gl.c) */
+    if (!cs2d_gl_load()) {
+        SDL_GL_DestroyContext(g_gl_ctx);
+        g_gl_ctx = NULL;
+        return false;
+    }
 
     glEnable(GL_MULTISAMPLE);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    cs2d_render_resize(width, height);
 
     /* Automatically initialize the global CS2D graphics bank now that GL context is active */
     g_gfx_bank.initialized = false;
@@ -484,6 +489,7 @@ void cs2d_render_shutdown(SDL_Window *window)
 {
     (void)window;
     cs2d_gfx_bank_free(&g_gfx_bank);
+    cs2d_gl_shutdown();
     if (g_gl_ctx) {
         SDL_GL_DestroyContext(g_gl_ctx);
         g_gl_ctx = NULL;
@@ -503,23 +509,18 @@ void cs2d_render_resize(int width, int height)
 {
     g_viewport_w = width;
     g_viewport_h = height;
-
-    glViewport(0, 0, width, height);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glOrtho(0.0, (double)width, (double)height, 0.0, -1.0, 1.0);
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
+    cs2d_gl_viewport(width, height);
 }
 
 void cs2d_render_begin_frame(void)
 {
+    cs2d_gl_begin();
     glClear(GL_COLOR_BUFFER_BIT);
-    glLoadIdentity();
 }
 
 void cs2d_render_end_frame(SDL_Window *window)
 {
+    cs2d_gl_end();
     if (window) {
         SDL_GL_SwapWindow(window);
     }
@@ -1158,40 +1159,32 @@ const cs2d_texture_t *cs2d_render_get_projectile_texture(uint8_t type)
 
 void cs2d_render_rect(float x, float y, float w, float h, float r, float g, float b, float a, bool fill)
 {
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDisable(GL_TEXTURE_2D);
-    glColor4f(r, g, b, a);
-    glBegin(fill ? GL_QUADS : GL_LINE_LOOP);
-        glVertex2f(x, y);
-        glVertex2f(x + w, y);
-        glVertex2f(x + w, y + h);
-        glVertex2f(x, y + h);
-    glEnd();
+    /* The original forces the alpha blend here (glBlendFunc is reset before every rect) */
+    cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+    if (fill) {
+        cs2d_gl_rect(x, y, w, h, r, g, b, a);
+        return;
+    }
+    cs2d_gl_set_texture(0);
+    cs2d_gl_vertex_t v[4];
+    float xs[4] = { x, x + w, x + w, x };
+    float ys[4] = { y, y, y + h, y + h };
+    for (int i = 0; i < 4; i++) {
+        v[i].x = xs[i]; v[i].y = ys[i]; v[i].u = 0.0f; v[i].v = 0.0f;
+        v[i].r = r; v[i].g = g; v[i].b = b; v[i].a = a;
+    }
+    cs2d_gl_push_line_loop(v, 4);
 }
 
 void cs2d_render_line(float x1, float y1, float x2, float y2, float r, float g, float b, float a)
 {
-    glDisable(GL_TEXTURE_2D);
-    glColor4f(r, g, b, a);
-    glBegin(GL_LINES);
-        glVertex2f(x1, y1);
-        glVertex2f(x2, y2);
-    glEnd();
+    /* No blend change: the caller may have set the additive blend (fx tracer) */
+    cs2d_gl_line(x1, y1, x2, y2, r, g, b, a);
 }
 
 void cs2d_render_circle(float cx, float cy, float radius, float r, float g, float b, float a, bool fill)
 {
-    glDisable(GL_TEXTURE_2D);
-    glColor4f(r, g, b, a);
-    glBegin(fill ? GL_TRIANGLE_FAN : GL_LINE_LOOP);
-    if (fill) glVertex2f(cx, cy);
-    int segments = 24;
-    for (int i = 0; i <= segments; i++) {
-        float theta = 2.0f * 3.1415926f * (float)i / (float)segments;
-        glVertex2f(cx + cosf(theta) * radius, cy + sinf(theta) * radius);
-    }
-    glEnd();
+    cs2d_gl_circle(cx, cy, radius, r, g, b, a, fill);
 }
 
 void cs2d_render_sprite_frame(
@@ -1233,42 +1226,13 @@ void cs2d_render_sprite_frame(
         v1 = (float)((row + 1) * cell_h) / (float)tex->height;
     }
 
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, tex->id);
-
     /* CS2D Blend Modes: 3/4 = Light/Additive, 5/6 = Shade, 0 = Alpha */
-    if (blend_mode == 3 || blend_mode == 4) {
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-    } else {
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    bool additive = (blend_mode == 3 || blend_mode == 4);
+    cs2d_gl_set_blend(additive ? CS2D_GL_BLEND_ADD : CS2D_GL_BLEND_ALPHA);
+    cs2d_gl_quad_rot(tex->id, x, y, draw_w, draw_h, u0, v0, u1, v1, angle_deg, r, g, b, a);
+    if (additive) {
+        cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
     }
-
-    glColor4f(r, g, b, a);
-
-    glPushMatrix();
-    glTranslatef(x, y, 0.0f);
-    if (angle_deg != 0.0f) {
-        glRotatef(angle_deg, 0.0f, 0.0f, 1.0f);
-    }
-
-    float half_w = draw_w * 0.5f;
-    float half_h = draw_h * 0.5f;
-
-    glBegin(GL_QUADS);
-        glTexCoord2f(u0, v0); glVertex2f(-half_w, -half_h);
-        glTexCoord2f(u1, v0); glVertex2f( half_w, -half_h);
-        glTexCoord2f(u1, v1); glVertex2f( half_w,  half_h);
-        glTexCoord2f(u0, v1); glVertex2f(-half_w,  half_h);
-    glEnd();
-
-    glPopMatrix();
-
-    if (blend_mode == 3 || blend_mode == 4) {
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    }
-
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glDisable(GL_TEXTURE_2D);
 }
 
 void cs2d_render_sprite(
@@ -1485,13 +1449,8 @@ void cs2d_render_player(
         float player_a = (player->armor == 206) ? 0.2f : 1.0f;
         float shadow_a = player_a * ((float)s_shadow_intensity * 0.01f);
         float dx = s_player_shadow_dx, dy = s_player_shadow_dy;
-        glClear(GL_DEPTH_BUFFER_BIT);
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_ALWAYS);
-        glDepthMask(GL_TRUE);
-        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-        glEnable(GL_ALPHA_TEST);
-        glAlphaFunc(GL_GEQUAL, 0.5f);
+        /* Pass 1 marks the texels with alpha >= 0.5 in the depth buffer only (colour writes off) */
+        cs2d_gl_shadow_mark_begin();
         if (draw_legs) {
             cs2d_render_sprite_frame(&bank->tex_legs, 32, 32, leg_frame, lx + dx, ly + dy, 32.0f, 32.0f, leg_ang,
                                      1.0f, 1.0f, 1.0f, 1.0f, 0);
@@ -1503,17 +1462,10 @@ void cs2d_render_player(
         if (held_tex) {
             cs2d_render_sprite(held_tex, wx + dx, wy + dy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
         }
-        glDisable(GL_ALPHA_TEST);
-        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        cs2d_gl_shadow_mark_end();
 
         /* Pass 2: the cleared depth is 1.0 and sprites sit at z 0, so GL_EQUAL keeps only the marked pixels */
-        glDepthFunc(GL_EQUAL);
-        glDepthMask(GL_FALSE);
-        cs2d_render_rect(sx + dx - 48.0f, sy + dy - 48.0f, 96.0f, 96.0f, 0.0f, 0.0f, 0.0f, shadow_a, true);
-        glEnable(GL_TEXTURE_2D);
-        glDepthMask(GL_TRUE);
-        glDepthFunc(GL_LESS);
-        glDisable(GL_DEPTH_TEST);
+        cs2d_gl_shadow_fill(sx + dx - 48.0f, sy + dy - 48.0f, 96.0f, 96.0f, 0.0f, 0.0f, 0.0f, shadow_a);
     }
 
     /* 1. Walking legs */
@@ -1583,6 +1535,7 @@ static void draw_tile_frame(
     int tile_src, int cols,
     int frame_idx, uint8_t mod,
     float rx, float ry,
+    float size,
     float alpha,
     const uint8_t *rgb    /* Tile color (modifier 0x80) or NULL for white */
 )
@@ -1642,16 +1595,11 @@ static void draw_tile_frame(
         tu[3] = u0; tv[3] = v1;
     }
 
-    float x1 = rx + (float)CS2D_TILE_SIZE;
-    float y1 = ry + (float)CS2D_TILE_SIZE;
-
-    glColor4f(cr * shade, cg * shade, cb * shade, alpha);
-    glBegin(GL_QUADS);
-        glTexCoord2f(tu[0], tv[0]); glVertex2f(rx, ry);
-        glTexCoord2f(tu[1], tv[1]); glVertex2f(x1, ry);
-        glTexCoord2f(tu[2], tv[2]); glVertex2f(x1, y1);
-        glTexCoord2f(tu[3], tv[3]); glVertex2f(rx, y1);
-    glEnd();
+    float x1 = rx + size;
+    float y1 = ry + size;
+    float xy[8] = { rx, ry, x1, ry, x1, y1, rx, y1 };
+    float uv[8] = { tu[0], tv[0], tu[1], tv[1], tu[2], tv[2], tu[3], tv[3] };
+    cs2d_gl_quad_corners(tileset_tex->id, xy, uv, cr * shade, cg * shade, cb * shade, alpha);
 }
 
 void cs2d_render_tile_frame(const cs2d_texture_t *tileset_tex, uint8_t frame, uint8_t mod, const uint8_t *rgb,
@@ -1661,16 +1609,8 @@ void cs2d_render_tile_frame(const cs2d_texture_t *tileset_tex, uint8_t frame, ui
     int cols = tileset_tex->width / CS2D_TILE_SIZE;
     uint8_t color[3];
     for (int i = 0; i < 3; i++) color[i] = (uint8_t)((float)(rgb ? rgb[i] : 255) * tint);
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, tileset_tex->id);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glPushMatrix();
-    glTranslatef(x, y, 0.0f);
-    glScalef(size / (float)CS2D_TILE_SIZE, size / (float)CS2D_TILE_SIZE, 1.0f);
-    draw_tile_frame(tileset_tex, CS2D_TILE_SIZE, cols, frame, mod, 0.0f, 0.0f, alpha, color);
-    glPopMatrix();
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glDisable(GL_TEXTURE_2D);
+    cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+    draw_tile_frame(tileset_tex, CS2D_TILE_SIZE, cols, frame, mod, x, y, size, alpha, color);
 }
 
 #define CS2D_SHADOW_CHUNK_TILES     16
@@ -2624,11 +2564,13 @@ static void render_env_object_overhead(const cs2d_map_t *map, const cs2d_gfx_ban
 
 static void render_env_sprite_entity(
     cs2d_gfx_bank_t *bank,
-    const cs2d_entity_t *ent,
+    const cs2d_map_t *map,
+    uint32_t index,
     float cam_x, float cam_y,
     uint32_t tick_ms
 )
 {
+    const cs2d_entity_t *ent = &map->entities[index];
     if (!bank || !ent->str_settings[0][0]) return;
 
     int blend_mode = ent->int_settings[9];
@@ -2641,6 +2583,9 @@ static void render_env_sprite_entity(
 
     float w = (ent->int_settings[0] > 0) ? (float)ent->int_settings[0] : (float)tex->width;
     float h = (ent->int_settings[1] > 0) ? (float)ent->int_settings[1] : (float)tex->height;
+
+    /* The size of a texture sized sprite is only known now: it can be culled from the next frame on */
+    cs2d_render_entity_learn_size(map, (int)index, (int)w, (int)h, ent->int_settings[2], ent->int_settings[3]);
 
     /* Te.draw 0x140272254..0x1402722c5: (x*32) - cam_x + x_off + (w/2) */
     float sx = (float)(ent->x * CS2D_TILE_SIZE + ent->int_settings[2]) + w * 0.5f - cam_x;
@@ -2708,6 +2653,234 @@ static void render_waving_flag(const cs2d_texture_t *t, float x, float y, uint32
     cs2d_render_scissor_end();
 }
 
+/* ------------------------------------------------------------------------------------------------------------
+ * Entity index & view culling (performance)
+ *
+ * The map passes below used to sweep every map entity once per pass. Measured on fun_roleplay (360x512 tiles,
+ * 9901 entities, of which 22 are inside a 27x15 tile view on average - 0.2 %): 5 sweeps x 9901 = 49505
+ * dispatches per frame for ~20 entities that are actually drawn, and the entity array is ~8 MB, so every sweep
+ * is a cache-hostile walk. Env_Sound (769), Trigger_Delay (509) and Trigger_If (387) are swept five times per
+ * frame without drawing anything.
+ *
+ * This index is built once per map (and whenever the entity table changes, map->entity_table_version: map
+ * load, cs2d_ed_entity_add / _remove) and holds one list per pass, ascending by entity index, so the draw
+ * order of the original passes is preserved exactly. Entities whose draw box cannot touch the view rectangle
+ * are skipped before any string parse, sprite lookup or draw call.
+ * ------------------------------------------------------------------------------------------------------------ */
+typedef struct {
+    const cs2d_map_t *map;
+    uint32_t          width, height, entity_count, table_version;
+    int              *pass[CS2D_EPASS_COUNT];   /* ascending entity indices */
+    int               pass_n[CS2D_EPASS_COUNT];
+    int               pass_cap[CS2D_EPASS_COUNT];
+    uint8_t          *margin;                   /* per entity: half extent in tiles, 0 = never culled */
+    uint8_t          *sprite_layer;             /* Env_Sprite strs[4] parsed once (1 = under the players) */
+} cs2d_entity_index_t;
+
+static cs2d_entity_index_t s_entity_index;
+
+/*
+ * How far the draw of an entity can reach from its tile centre, in tiles (0 = unknown here, never culled).
+ * `margin_for_size` turns an image size in px into that margin - the rotated box (32 * 1.42 / 2 = 23 px for
+ * a 32x32 cell) plus a 2 tile safety margin. `entity_cull_margin` is the per-type table, derived from the
+ * draw code of each type:
+ *  - 32x32 sprites at the tile centre (Env_Decal rotation, Env_Item <= 64x32 weapon sprite + 1 px shadow,
+ *    Info_Hostage legs + 48x48 shadow, Env_NPC 32x32 cells, Trigger_Use buttons.bmp, bomb spot decals):
+ *    23 px -> 1 tile; plus the <= 10 px offsets of Info_CTF_Flag / Info_Dom_Point -> 2.
+ *  - Env_Breakable / Func_DynWall are drawn as their own 32x32 tile at (x * 32, y * 32) -> 1, 2 for safety.
+ *  - Env_Sprite: ints[0] / ints[1] are the size when > 0 (render_env_sprite_entity), ints[2] / ints[3] the
+ *    offset; a sprite without an explicit size takes the size of its texture, which is only known once the
+ *    image is loaded, so it starts unculled and is culled from the second frame on (the draw path calls
+ *    cs2d_render_entity_learn_size with the size it just used).
+ *  - Env_Image draws at its texture size, Env_Object at "size * 30 px" leaf offsets plus texture sized
+ *    flares (render_env_object_ground / _overhead): both unknown here -> never culled.
+ */
+static uint8_t margin_for_size(int w, int h, int offx, int offy)
+{
+    int off = abs(offx) > abs(offy) ? abs(offx) : abs(offy);
+    float half = 0.5f * (float)(w > h ? w : h) * 1.42f;
+    return (uint8_t)(((int)(half + (float)off) / CS2D_TILE_SIZE) + 2);
+}
+
+static uint8_t entity_cull_margin(const cs2d_entity_t *ent)
+{
+    switch (ent->type) {
+        case CS2D_ENT_INFO_HOSTAGE:
+        case CS2D_ENT_INFO_BOMBSPOT:
+        case CS2D_ENT_INFO_CTF_FLAG:
+        case CS2D_ENT_INFO_DOM_POINT:
+        case CS2D_ENT_ENV_ITEM:
+        case CS2D_ENT_ENV_DECAL:
+        case CS2D_ENT_ENV_BREAKABLE:
+        case CS2D_ENT_FUNC_DYNWALL:
+        case CS2D_ENT_ENV_NPC:
+        case CS2D_ENT_TRIGGER_USE:
+            return 2;
+        case CS2D_ENT_ENV_SPRITE:
+            /* ints[0] / ints[1] are the size when > 0; the texture size is learned on the first draw
+             * (cs2d_render_entity_learn_size), until then the sprite is not culled */
+            if (ent->int_settings[0] <= 0 || ent->int_settings[1] <= 0) return 0;
+            return margin_for_size(ent->int_settings[0], ent->int_settings[1],
+                                   ent->int_settings[2], ent->int_settings[3]);
+        default:
+            return 0;
+    }
+}
+
+static const int s_pass_anim_types[]        = { CS2D_ENT_INFO_ANIMATION, -1 };
+static const int s_pass_solid_types[]       = { CS2D_ENT_ENV_BREAKABLE, CS2D_ENT_FUNC_DYNWALL, -1 };
+static const int s_pass_ground_types[]      = { CS2D_ENT_TRIGGER_USE, CS2D_ENT_INFO_BOMBSPOT, CS2D_ENT_ENV_DECAL,
+                                                CS2D_ENT_ENV_OBJECT, CS2D_ENT_ENV_ITEM, CS2D_ENT_INFO_CTF_FLAG,
+                                                CS2D_ENT_INFO_DOM_POINT, CS2D_ENT_INFO_HOSTAGE, CS2D_ENT_ENV_NPC,
+                                                CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_IMAGE, -1 };
+static const int s_pass_roof_sprite_types[] = { CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_IMAGE, -1 };
+static const int s_pass_roof_object_types[] = { CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_OBJECT, -1 };
+
+/* The types each map pass below draws. A new case in one of those switches has to be added here too. */
+static const int *const s_pass_types[CS2D_EPASS_COUNT] = {
+    s_pass_anim_types, s_pass_solid_types, s_pass_ground_types, s_pass_roof_sprite_types, s_pass_roof_object_types
+};
+
+static void entity_index_clear(void)
+{
+    for (int p = 0; p < CS2D_EPASS_COUNT; p++) {
+        free(s_entity_index.pass[p]);
+        s_entity_index.pass[p] = NULL;
+        s_entity_index.pass_n[p] = 0;
+        s_entity_index.pass_cap[p] = 0;
+    }
+    free(s_entity_index.margin);
+    s_entity_index.margin = NULL;
+    free(s_entity_index.sprite_layer);
+    s_entity_index.sprite_layer = NULL;
+    s_entity_index.map = NULL;
+    s_entity_index.entity_count = 0;
+}
+
+static void entity_index_build(const cs2d_map_t *map)
+{
+    entity_index_clear();
+
+    uint8_t in_pass[CS2D_EPASS_COUNT][256];
+    memset(in_pass, 0, sizeof(in_pass));
+    for (int p = 0; p < CS2D_EPASS_COUNT; p++) {
+        for (const int *t = s_pass_types[p]; *t >= 0; t++) in_pass[p][(uint8_t)*t] = 1;
+    }
+
+    if (map->entity_count > 0) {
+        s_entity_index.margin = (uint8_t *)calloc(map->entity_count, 1);
+        s_entity_index.sprite_layer = (uint8_t *)calloc(map->entity_count, 1);
+    }
+
+    for (uint32_t i = 0; i < map->entity_count; i++) {
+        const cs2d_entity_t *ent = &map->entities[i];
+        uint8_t type = (uint8_t)ent->type;
+        if (s_entity_index.margin) {
+            s_entity_index.margin[i] = entity_cull_margin(ent);
+            s_entity_index.sprite_layer[i] = (uint8_t)(atoi(ent->str_settings[4]) == 1);
+        }
+        for (int p = 0; p < CS2D_EPASS_COUNT; p++) {
+            if (!in_pass[p][type]) continue;
+            if (s_entity_index.pass_n[p] + 1 > s_entity_index.pass_cap[p]) {
+                int cap = s_entity_index.pass_cap[p] ? s_entity_index.pass_cap[p] * 2 : 256;
+                int *list = (int *)realloc(s_entity_index.pass[p], (size_t)cap * sizeof(int));
+                if (!list) continue;
+                s_entity_index.pass[p] = list;
+                s_entity_index.pass_cap[p] = cap;
+            }
+            s_entity_index.pass[p][s_entity_index.pass_n[p]++] = (int)i;
+        }
+    }
+
+    s_entity_index.map = map;
+    s_entity_index.width = map->width;
+    s_entity_index.height = map->height;
+    s_entity_index.entity_count = map->entity_count;
+    s_entity_index.table_version = map->entity_table_version;
+}
+
+/* The lists above are only rebuilt when the map or its entity table changes, so the callers of the passes do
+ * not have to know about them */
+void cs2d_render_entity_index_prepare(const cs2d_map_t *map)
+{
+    if (!map || !map->tiles) return;
+    if (s_entity_index.map == map && s_entity_index.width == map->width &&
+        s_entity_index.height == map->height && s_entity_index.entity_count == map->entity_count &&
+        s_entity_index.table_version == map->entity_table_version) {
+        return;
+    }
+    entity_index_build(map);
+}
+
+int cs2d_render_entity_margin(const cs2d_map_t *map, int index)
+{
+    if (!map || index < 0 || (uint32_t)index >= map->entity_count) return 0;
+    cs2d_render_entity_index_prepare(map);
+    return (s_entity_index.map == map && s_entity_index.margin) ? (int)s_entity_index.margin[index] : 0;
+}
+
+bool cs2d_render_entity_visible(const cs2d_map_t *map, int index, float cam_x, float cam_y,
+                                int screen_w, int screen_h)
+{
+    if (!map || index < 0 || (uint32_t)index >= map->entity_count) return false;
+    int margin = cs2d_render_entity_margin(map, index);
+    if (margin <= 0) return true;   /* size unknown here: always drawn (see entity_cull_margin) */
+
+    const cs2d_entity_t *ent = &map->entities[index];
+    float cx = (float)(ent->x * CS2D_TILE_SIZE + CS2D_TILE_SIZE / 2);
+    float cy = (float)(ent->y * CS2D_TILE_SIZE + CS2D_TILE_SIZE / 2);
+    float m = (float)(margin * CS2D_TILE_SIZE);
+    return cx + m >= cam_x && cy + m >= cam_y &&
+           cx - m <= cam_x + (float)screen_w && cy - m <= cam_y + (float)screen_h;
+}
+
+void cs2d_render_entity_learn_size(const cs2d_map_t *map, int index, int w, int h, int offx, int offy)
+{
+    if (!map || !s_entity_index.margin || s_entity_index.map != map) return;
+    if (index < 0 || (uint32_t)index >= s_entity_index.entity_count) return;
+    uint8_t m = margin_for_size(w, h, offx, offy);
+    if (m > s_entity_index.margin[index]) s_entity_index.margin[index] = m;
+}
+
+const int *cs2d_render_entity_pass_list(const cs2d_map_t *map, cs2d_entity_pass_t pass, int *out_n)
+{
+    if (out_n) *out_n = 0;
+    if (!map || pass < 0 || pass >= CS2D_EPASS_COUNT) return NULL;
+    cs2d_render_entity_index_prepare(map);
+    if (s_entity_index.map != map) return NULL;
+    if (out_n) *out_n = s_entity_index.pass_n[pass];
+    return s_entity_index.pass[pass];
+}
+
+int cs2d_render_entity_pass_total(const cs2d_map_t *map, cs2d_entity_pass_t pass)
+{
+    int n = 0;
+    cs2d_render_entity_pass_list(map, pass, &n);
+    return n;
+}
+
+int cs2d_render_entity_pass_count(const cs2d_map_t *map, cs2d_entity_pass_t pass,
+                                  float cam_x, float cam_y, int screen_w, int screen_h)
+{
+    int n = 0;
+    const int *list = cs2d_render_entity_pass_list(map, pass, &n);
+    if (!list) return 0;
+    int drawn = 0;
+    for (int k = 0; k < n; k++) {
+        if (cs2d_render_entity_visible(map, list[k], cam_x, cam_y, screen_w, screen_h)) drawn++;
+    }
+    return drawn;
+}
+
+/* Env_Sprite strs[4] == "1": drawn in the ground pass instead of the overhead one (cached by the index) */
+static bool entity_sprite_is_ground(const cs2d_map_t *map, uint32_t i)
+{
+    if (s_entity_index.map == map && s_entity_index.sprite_layer && i < s_entity_index.entity_count) {
+        return s_entity_index.sprite_layer[i] != 0;
+    }
+    return atoi(map->entities[i].str_settings[4]) == 1;
+}
+
 void cs2d_render_map_ex(
     const cs2d_map_t     *map,
     const cs2d_texture_t *tileset_tex,
@@ -2741,19 +2914,19 @@ void cs2d_render_map_ex(
     int cols = has_tileset ? (tileset_tex->width / tile_src) : 1;
     if (cols < 1) cols = 1;
 
-    /* Build tile animation remap table */
+    /* Build tile animation remap table (index list: Info_Animation entities only, ascending) */
     uint8_t anim_remap[256];
     for (int i = 0; i < 256; i++) anim_remap[i] = (uint8_t)i;
-    for (uint32_t i = 0; i < map->entity_count; i++) {
-        const cs2d_entity_t *e = &map->entities[i];
-        if (e->type == CS2D_ENT_INFO_ANIMATION) {
-            int start_f = e->int_settings[0];
-            int end_f   = e->int_settings[1];
-            int speed   = e->int_settings[2] > 0 ? e->int_settings[2] : 200;
-            if (start_f >= 0 && end_f > start_f && end_f < 256) {
-                int span = (end_f - start_f) + 1;
-                anim_remap[start_f] = (uint8_t)(start_f + ((tick_ms / (uint32_t)speed) % (uint32_t)span));
-            }
+    int anim_n = 0;
+    const int *anim_list = cs2d_render_entity_pass_list(map, CS2D_EPASS_ANIM, &anim_n);
+    for (int k = 0; k < anim_n; k++) {
+        const cs2d_entity_t *e = &map->entities[anim_list[k]];
+        int start_f = e->int_settings[0];
+        int end_f   = e->int_settings[1];
+        int speed   = e->int_settings[2] > 0 ? e->int_settings[2] : 200;
+        if (start_f >= 0 && end_f > start_f && end_f < 256) {
+            int span = (end_f - start_f) + 1;
+            anim_remap[start_f] = (uint8_t)(start_f + ((tick_ms / (uint32_t)speed) % (uint32_t)span));
         }
     }
 
@@ -2766,10 +2939,7 @@ void cs2d_render_map_ex(
                          1.0f, true);
     }
 
-    if (has_tileset) {
-        glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, tileset_tex->id);
-    }
+    cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
 
     /* Pass 1: Render base tiles and tile overlays (per cs2d_spec_map_format.txt section 4).
      * Blended tiles (Ttileblend) are drawn afterwards from the blend atlas, with the same rotation and brightness */
@@ -2805,30 +2975,33 @@ void cs2d_render_map_ex(
                     }
                 }
                 const uint8_t *rgb = ((mod & 0xc0) == 0x80 && map->tile_data) ? &map->tile_data[idx * 4] : NULL;
-                draw_tile_frame(tileset_tex, tile_src, cols, tile_idx, mod, rx, ry, 1.0f, rgb);
+                draw_tile_frame(tileset_tex, tile_src, cols, tile_idx, mod, rx, ry, (float)CS2D_TILE_SIZE, 1.0f, rgb);
             }
         }
     }
     if (blended_n > 0) {
         tileblend_upload(blend);
         if (blend->atlas.id) {
-            glBindTexture(GL_TEXTURE_2D, blend->atlas.id);
             for (size_t i = 0; i < blended_n; i += 3) {
                 int tx = blended[i], ty = blended[i + 1];
                 draw_tile_frame(&blend->atlas, tile_src, TILEBLEND_ATLAS_COLS, blended[i + 2],
                                 map->modifiers[(size_t)ty * map->width + (size_t)tx],
-                                (float)(tx * CS2D_TILE_SIZE) - cam_x, (float)(ty * CS2D_TILE_SIZE) - cam_y, 1.0f, NULL);
+                                (float)(tx * CS2D_TILE_SIZE) - cam_x, (float)(ty * CS2D_TILE_SIZE) - cam_y,
+                                (float)CS2D_TILE_SIZE, 1.0f, NULL);
             }
         }
-        glBindTexture(GL_TEXTURE_2D, tileset_tex->id);
     }
 
     /* Pass 1b: Render Env_Breakable (type 25) and Func_DynWall (type 71) using map tileset (Te.draw 0x140272808 & 0x140273858) */
     if (has_tileset) {
-        for (uint32_t i = 0; i < map->entity_count; i++) {
+        int solid_n = 0;
+        const int *solid_list = cs2d_render_entity_pass_list(map, CS2D_EPASS_SOLID, &solid_n);
+        for (int k = 0; k < solid_n; k++) {
+            uint32_t i = (uint32_t)solid_list[k];
             const cs2d_entity_t *ent = &map->entities[i];
             if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
-            if (ent->type == CS2D_ENT_ENV_BREAKABLE || ent->type == CS2D_ENT_FUNC_DYNWALL) {
+            if (!cs2d_render_entity_visible(map, (int)i, cam_x, cam_y, screen_w, screen_h)) continue;
+            {
                 int tile_f = ent->int_settings[0];
                 if (tile_f >= 0 && tile_f <= (int)map->tile_count) {
                     float rx = (float)(ent->x * CS2D_TILE_SIZE) - cam_x;
@@ -2839,17 +3012,20 @@ void cs2d_render_map_ex(
                     float alpha = 1.0f - fabsf(trans);
                     if (alpha < 0.1f) alpha = 1.0f;
                     if (alpha > 1.0f) alpha = 1.0f;
-                    draw_tile_frame(tileset_tex, tile_src, cols, anim_remap[(uint8_t)tile_f], 0, rx, ry, alpha, NULL);
+                    draw_tile_frame(tileset_tex, tile_src, cols, anim_remap[(uint8_t)tile_f], 0, rx, ry,
+                                    (float)CS2D_TILE_SIZE, alpha, NULL);
                 }
             }
         }
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glDisable(GL_TEXTURE_2D);
     }
 
-    /* Pass 3: Ground Entities & Actors (below players) */
+    /* Pass 3: Ground Entities & Actors (below players). The index list holds the types of the switch below,
+     * ascending by entity index, so the draw order is the original sweep's */
     int bombspot_idx = 0;
-    for (uint32_t i = 0; i < map->entity_count; i++) {
+    int ground_n = 0;
+    const int *ground_list = cs2d_render_entity_pass_list(map, CS2D_EPASS_GROUND, &ground_n);
+    for (int k = 0; k < ground_n; k++) {
+        uint32_t i = (uint32_t)ground_list[k];
         const cs2d_entity_t *ent = &map->entities[i];
         /* Hidden / open / broken by a trigger; a CTF flag base keeps its glow while the flag is away */
         if (ent->type == CS2D_ENT_TRIGGER_USE) {
@@ -2857,6 +3033,7 @@ void cs2d_render_map_ex(
             continue;
         }
         if (map->entity_state[i] && ent->type != CS2D_ENT_INFO_CTF_FLAG) continue;
+        if (!cs2d_render_entity_visible(map, (int)i, cam_x, cam_y, screen_w, screen_h)) continue;
         float ex = (float)(ent->x * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_x;
         float ey = (float)(ent->y * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_y;
 
@@ -2979,8 +3156,8 @@ void cs2d_render_map_ex(
             }
             case CS2D_ENT_ENV_SPRITE: {
                 /* Ground pass Env_Sprite (when strs[4] == "1", i.e. covered by player) */
-                if (atoi(ent->str_settings[4]) == 1) {
-                    render_env_sprite_entity(bank, ent, cam_x, cam_y, tick_ms);
+                if (entity_sprite_is_ground(map, i)) {
+                    render_env_sprite_entity(bank, map, i, cam_x, cam_y, tick_ms);
                 }
                 break;
             }
@@ -2989,6 +3166,8 @@ void cs2d_render_map_ex(
                 if (ent->int_settings[2] == 0 && bank && ent->str_settings[0][0]) {
                     const cs2d_texture_t *itex = cs2d_gfx_get_sprite(bank, ent->str_settings[0], false);
                     if (itex && itex->id) {
+                        cs2d_render_entity_learn_size(map, (int)i, itex->width, itex->height,
+                                                       ent->int_settings[0], ent->int_settings[1]);
                         float ix = (float)(ent->x * CS2D_TILE_SIZE + ent->int_settings[0]) + itex->width * 0.5f - cam_x;
                         float iy = (float)(ent->y * CS2D_TILE_SIZE + ent->int_settings[1]) + itex->height * 0.5f - cam_y;
                         cs2d_render_sprite(itex, ix, iy, (float)itex->width, (float)itex->height, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
@@ -3027,14 +3206,18 @@ void cs2d_render_map_overhead(
     uint32_t tick_ms = GetTickCount();
 
     /* Pass 1: Non-additive rooftop sprites & overhead images (shaded by Layer 1..5 rooftop shadows) */
-    for (uint32_t i = 0; i < map->entity_count; i++) {
+    int roof_n = 0;
+    const int *roof_list = cs2d_render_entity_pass_list(map, CS2D_EPASS_ROOF_SPRITE, &roof_n);
+    for (int k = 0; k < roof_n; k++) {
+        uint32_t i = (uint32_t)roof_list[k];
         const cs2d_entity_t *ent = &map->entities[i];
         if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
+        if (!cs2d_render_entity_visible(map, (int)i, cam_x, cam_y, screen_w, screen_h)) continue;
         switch (ent->type) {
             case CS2D_ENT_ENV_SPRITE: {
-                if (atoi(ent->str_settings[4]) == 0 &&
+                if (!entity_sprite_is_ground(map, i) &&
                     ent->int_settings[9] != 3 && ent->int_settings[9] != 4) {
-                    render_env_sprite_entity(bank, ent, cam_x, cam_y, tick_ms);
+                    render_env_sprite_entity(bank, map, i, cam_x, cam_y, tick_ms);
                 }
                 break;
             }
@@ -3042,6 +3225,8 @@ void cs2d_render_map_overhead(
                 if (ent->int_settings[2] != 0 && ent->str_settings[0][0]) {
                     const cs2d_texture_t *itex = cs2d_gfx_get_sprite(bank, ent->str_settings[0], false);
                     if (itex && itex->id) {
+                        cs2d_render_entity_learn_size(map, (int)i, itex->width, itex->height,
+                                                       ent->int_settings[0], ent->int_settings[1]);
                         float ix = (float)(ent->x * CS2D_TILE_SIZE + ent->int_settings[0]) + itex->width * 0.5f - cam_x;
                         float iy = (float)(ent->y * CS2D_TILE_SIZE + ent->int_settings[1]) + itex->height * 0.5f - cam_y;
                         cs2d_render_sprite(itex, ix, iy, (float)itex->width, (float)itex->height, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
@@ -3063,15 +3248,19 @@ void cs2d_render_map_overhead(
 
     /* Pass 3: Te.draw(2) Env_Object palms, trees, alarms and street lights (0x140271ee0, p3 == 2) */
     float age = env_object_age(tick_ms);
-    for (uint32_t i = 0; i < map->entity_count; i++) {
+    int objects_n = 0;
+    const int *objects_list = cs2d_render_entity_pass_list(map, CS2D_EPASS_ROOF_OBJECT, &objects_n);
+    for (int k = 0; k < objects_n; k++) {
+        uint32_t i = (uint32_t)objects_list[k];
         const cs2d_entity_t *ent = &map->entities[i];
         if (map->entity_state[i]) continue; /* Hidden / open / broken by a trigger */
+        if (!cs2d_render_entity_visible(map, (int)i, cam_x, cam_y, screen_w, screen_h)) continue;
 
         switch (ent->type) {
             case CS2D_ENT_ENV_SPRITE: {
-                if (atoi(ent->str_settings[4]) == 0 &&
+                if (!entity_sprite_is_ground(map, i) &&
                     (ent->int_settings[9] == 3 || ent->int_settings[9] == 4)) {
-                    render_env_sprite_entity(bank, ent, cam_x, cam_y, tick_ms);
+                    render_env_sprite_entity(bank, map, i, cam_x, cam_y, tick_ms);
                 }
                 break;
             }
@@ -3209,6 +3398,19 @@ void cs2d_render_set_item_shadows(bool enabled)
 bool cs2d_render_get_item_shadows(void)
 {
     return s_item_shadows;
+}
+
+void cs2d_render_set_vsync(bool enabled)
+{
+    s_vsync = enabled;
+    if (g_gl_ctx) {
+        SDL_GL_SetSwapInterval(enabled ? 1 : 0);
+    }
+}
+
+bool cs2d_render_get_vsync(void)
+{
+    return s_vsync;
 }
 
 /* Builds the full-map minimap image (2 px per tile) once per map, box-averaging
@@ -3793,7 +3995,6 @@ void cs2d_render_weapon_select(const cs2d_player_t *player, const struct cs2d_in
             x += (float)(int)(s * 155.0f);
         } else {
             float y = head_y;
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE);
             for (int k = 0; k < CS2D_SLOT_COUNT; k++) {
                 uint8_t w = player->inventory[k];
                 if (w == CS2D_WEP_NONE || cs2d_weapon_hud_slot(w) != slot) continue;
@@ -3801,7 +4002,6 @@ void cs2d_render_weapon_select(const cs2d_player_t *player, const struct cs2d_in
                 cs2d_render_rect(x, y, (float)(int)(s * 10.0f), (float)(int)(s * 10.0f),
                                  100.0f / 255.0f, 50.0f / 255.0f, 0.0f, 1.0f, true);
             }
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             float g = (y == head_y) ? 0.0f : 50.0f / 255.0f;
             cs2d_render_sprite_frame(&bank->tex_hud_slotheads, 10, 10, slot - 1, x + 5.0f * s, head_y + 5.0f * s,
                                      10.0f * s, 10.0f * s, 0.0f, 100.0f / 255.0f, g, 0.0f, 1.0f, 4);
@@ -4160,20 +4360,8 @@ void cs2d_render_text_scaled_ex(cs2d_font_id_t font_id, float x, float y, const 
     float rw = (float)e->tex_w * scale_x;
     float rh = (float)e->tex_h;
 
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, e->tex_id);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glColor4f(r, g, b, a);
-
-    glBegin(GL_QUADS);
-    glTexCoord2f(0.0f, 0.0f); glVertex2f(rx,      ry);
-    glTexCoord2f(1.0f, 0.0f); glVertex2f(rx + rw, ry);
-    glTexCoord2f(1.0f, 1.0f); glVertex2f(rx + rw, ry + rh);
-    glTexCoord2f(0.0f, 1.0f); glVertex2f(rx,      ry + rh);
-    glEnd();
-
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glDisable(GL_TEXTURE_2D);
+    cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+    cs2d_gl_quad(e->tex_id, rx, ry, rw, rh, 0.0f, 0.0f, 1.0f, 1.0f, r, g, b, a);
 }
 
 void cs2d_render_text_measure(cs2d_font_id_t font_id, const char *text, float *out_w, float *out_h)
@@ -4245,29 +4433,18 @@ void cs2d_render_gradient_rect(
     float r_bot, float g_bot, float b_bot, float a_bot
 )
 {
-    glDisable(GL_TEXTURE_2D);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glBegin(GL_QUADS);
-    glColor4f(r_top, g_top, b_top, a_top);
-    glVertex2f(x,     y);
-    glVertex2f(x + w, y);
-    glColor4f(r_bot, g_bot, b_bot, a_bot);
-    glVertex2f(x + w, y + h);
-    glVertex2f(x,     y + h);
-    glEnd();
+    cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+    cs2d_gl_rect_grad(x, y, w, h, r_top, g_top, b_top, a_top, r_bot, g_bot, b_bot, a_bot);
 }
 
 void cs2d_render_scissor_begin(int x, int y, int w, int h)
 {
-    if (w < 0) w = 0;
-    if (h < 0) h = 0;
-    glEnable(GL_SCISSOR_TEST);
-    glScissor(x, g_viewport_h - (y + h), w, h);
+    cs2d_gl_scissor(x, y, w, h);
 }
 
 void cs2d_render_scissor_end(void)
 {
-    glDisable(GL_SCISSOR_TEST);
+    cs2d_gl_scissor_off();
 }
 
 
@@ -4479,21 +4656,9 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
             float u1 = (bx + ox + half) / gw, v1 = (by + oy + half) / gh;
             float hs = (p->size + (1.0f - t) * 4.0f) * 0.5f; /* Grows while it fades */
 
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, tileset_tex->id);
-            glColor4f(1.0f, 1.0f, 1.0f, t);
-            glPushMatrix();
-            glTranslatef(sx, sy, 0.0f);
-            glRotatef(p->rot, 0.0f, 0.0f, 1.0f);
-            glBegin(GL_QUADS);
-                glTexCoord2f(u0, v0); glVertex2f(-hs, -hs);
-                glTexCoord2f(u1, v0); glVertex2f( hs, -hs);
-                glTexCoord2f(u1, v1); glVertex2f( hs,  hs);
-                glTexCoord2f(u0, v1); glVertex2f(-hs,  hs);
-            glEnd();
-            glPopMatrix();
-            glBindTexture(GL_TEXTURE_2D, 0);
-            glDisable(GL_TEXTURE_2D);
+            cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+            cs2d_gl_quad_rot(tileset_tex->id, sx, sy, hs * 2.0f, hs * 2.0f, u0, v0, u1, v1, p->rot,
+                             1.0f, 1.0f, 1.0f, t);
         } else if (p->kind == CS2D_FX_FRAGMENT && bank) {
             cs2d_render_sprite_frame(&bank->tex_fragments, 32, 32, p->frame, sx, sy, p->size, p->size,
                                      p->rot, p->r, p->g, p->b, t, 0);
@@ -4504,9 +4669,9 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
             cs2d_render_sprite_frame(&bank->tex_flare_x, 0, 0, 0, sx, sy, p->size * 1.7f, p->size * 2.9f,
                                      p->rot, 1.0f, 1.0f, 1.0f, t, 3);
         } else if (p->kind == CS2D_FX_TRACER) {
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+            cs2d_gl_set_blend(CS2D_GL_BLEND_ADD);
             cs2d_render_line(sx, sy, p->x2 - cam_x, p->y2 - cam_y, 1.0f, 0.9f, 0.4f, 0.6f * t);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
         } else if (p->kind == CS2D_FX_GLOWDOT && bank) {
             cs2d_render_sprite_frame(&bank->tex_glowdot, 0, 0, 0, sx, sy, p->size + 1.0f, p->size + 1.0f,
                                      0.0f, p->r, p->g, p->b, t, 3);
@@ -4542,5 +4707,4 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
                                      p->rot, p->r, p->g, p->b, 0.7f * t, 3);
         }
     }
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 }

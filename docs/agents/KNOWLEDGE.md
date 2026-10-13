@@ -891,21 +891,29 @@ original binaries, so nothing in this section is evidence about `CS2D.exe`. Tool
     `SDL_GetPerformanceCounter` delta (`:327-331`); the web needs a mainloop callback instead.
   - Tests are GL-free (pure functions only: `tests/test_cs2d.c:2405-2448`, `:3103-3116`) and already are the CI entry
     point (`.github/workflows/build.yml`, `windows-latest` + MSYS2 + SDL3).
-- **Renderer (measured call inventory in `src/`):** 100 % fixed-function, **0 shaders** (`glCreateShader`,
-  `glUseProgram`, `glUniform` = 0). Top calls: `glVertex2f` 36, `glBindTexture` 29, `glTexParameteri` 23,
-  `glTexCoord2f` 22, `glDisable`/`glEnable` 19/17, `glBlendFunc` 16, `glBegin`/`glEnd` 13/13, `glColor4f` 11,
-  `glTexImage2D` 7, `glMatrixMode` 6, `glPushMatrix`/`glPopMatrix` 5/5, `glOrtho` 2, `glRotatef` 2, `glScalef` 1,
-  `glAlphaFunc` 1, `glReadPixels` 1. Enums that need attention on the web: `GL_TEXTURE_2D` 85, `GL_QUADS` 9,
-  `GL_ALPHA_TEST` 2, `GL_MULTISAMPLE` 3, `GL_BGR_EXT` 1 (screenshot only), `GL_CLAMP_TO_EDGE` 10,
-  `GL_LINEAR_MIPMAP_LINEAR` + `GL_TEXTURE_MAX_LEVEL` (mipmapped atlases).
-  - One GL context (`cs2d_render.c:551`) and `SDL_GL_SetSwapInterval(1)` (`:557`). Extension functions are loaded with
-    `SDL_GL_GetProcAddress` only for FBO + `glBlendFuncSeparate`, with an EXT fallback and a `gl_ready()` guard
-    (`cs2d_light.c:164-206`) — FBO and `blendFuncSeparate` are core in WebGL 1/2.
-  - Emscripten documents exactly this case: `-sLEGACY_GL_EMULATION` gives "Emulation of older Desktop OpenGL API
-    features", and `-sGL_FFP_ONLY` is for code that "will not use the programmable pipeline/shaders at all"
-    (emscripten.org/docs/porting/multimedia_and_graphics/OpenGL-support.html). The layer is `src/lib/libglemu.js`
-    (`assert(LEGACY_GL_EMULATION, …)`, immediate-mode setup, FFP shader generation from the tex-env). The same page names
-    **gl4es** and **Regal** as alternatives if a legacy feature is missing.
+- **Renderer (as of 2026-10-12): GL 3.3 core + shaders — 0 fixed-function, 1 shader program.** The old
+  fixed-function inventory (`glBegin`/`glEnd` 13, `glVertex2f` 36, `glMatrixMode`/`glOrtho`/`glPushMatrix`,
+  `glColor4f`, `glAlphaFunc`, `GL_QUADS`, `GL_ALPHA_TEST`) is gone; `src/cs2d_render.c` and `src/cs2d_light.c`
+  contain no fixed-function call. `src/cs2d_gl.c` loads the GL 3.3 entry points from `SDL_GL_GetProcAddress`
+  (opengl32.dll only exports GL 1.1) and owns the drawing path:
+  - one shader: `frag = texture(u_tex, uv) * vertex colour`, with `discard` when `u_alpha_ref >= 0` — the
+    replacement for `glAlphaFunc`, used by the player day-shadow silhouette (`cs2d_gl_shadow_*`);
+  - one streaming VAO/VBO; the batcher flushes on a texture/blend/alpha/scissor/target change.
+    `cs2d_gl_set_blend` maps to `glBlendFuncSeparate` pairs: alpha (SRC_ALPHA/ONE_MINUS_SRC_ALPHA,
+    ONE/ONE_MINUS_SRC_ALPHA), additive (SRC_ALPHA/ONE, ZERO/ONE), multiply (ZERO/SRC_COLOR, ZERO/ONE), none.
+    A 1x1 white texture makes `tex = 0` a solid colour, so one shader covers everything;
+  - the render targets: `cs2d_gl_bind_target`/`unbind_target` (colour-only FBO, saved viewport + CPU ortho)
+    for the light engine's main/buffer passes.
+  Still on linked GL 1.1–1.3 calls (all core in 3.3): texture management (`glGenTextures`/`glTexImage2D` +
+  hand-built mipmaps/`GL_LINEAR_MIPMAP_LINEAR`), `glScissor`, `glDepthFunc`/`glDepthMask`/`glColorMask`,
+  `glClear`, `glViewport`, `glGetIntegerv`, `glReadPixels` (the screenshot reads `GL_RGB` and swaps to BGR,
+  no `GL_BGR_EXT`). One GL context (`cs2d_render_init`); the swap interval is VSync, applied by
+  `cs2d_render_set_vsync` from `sys/config.cfg` "vsync" (default 1); core profile 3.3 +
+  4x MSAA + depth 24.
+  - Emscripten: because the renderer is now shader-based, `-sLEGACY_GL_EMULATION` / `-sGL_FFP_ONLY` are no
+    longer required for it; WebGL2 covers FBO + `blendFuncSeparate` + shaders.
+  - GL-free trace: the light engine (`cs2d_light.c`) keeps its `s_trace` path, so `emu_light.py` and the
+    suite's "light engine" comparison still run with no window (the 4 scenes pass).
 - **Image decoding is portable as of 2026-10-12; only the text engine still uses GDI+.** The image half of
   the paragraph that used to sit here was 11 `gdiplus.dll` functions (`GdipCreateBitmapFromFile`,
   `GdipCreateBitmapFromStream`, `GdipGetImageWidth` / `GdipGetImageHeight`, `GdipBitmapGetPixel`,
@@ -963,4 +971,59 @@ original binaries, so nothing in this section is evidence about `CS2D.exe`. Tool
   UDP socket.
 - **Keyboard focus:** `SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT` (SDL 3.2.0+) binds keyboard input to the canvas and "should
   be set before creating a window".
+
+## Performance (measured 2026-10-12, desktop, 850x480)
+
+Measured on this machine with `sys/config.cfg` at its shipped maximum (`light 5`, `mapshadows 4`,
+`shadows 50`). Method: temporary per-section timers in the `main_client.c` loop (events / update /
+render / `glFinish` / `end_frame` / `SDL_Delay`) plus a native-pacing mode that ran N frames and
+printed the split; the instrumentation was removed again (see `WORKLOG.md`).
+
+| scene (entities) | VSync OFF | VSync ON |
+|---|---|---|
+| `prison_funst3r` (1609) | 167-176 FPS, 5.7-6.1 ms/frame | 59.6 FPS |
+| `de_dust2` (1404) | 163-176 FPS | — |
+| `fun_roleplay` (9902) | 72-98 FPS, 10.2-14 ms/frame | — |
+
+- Steady-state split (`prison_funst3r`, VSync off): events 0.008 | update 0.02 | render 4.4 |
+  `SDL_Delay(1)` 1.49 ms; `end_frame` (flush + `SDL_GL_SwapWindow`) 0.03-0.05 ms.
+- **The original locks its own frame at ~65 FPS** (`15.384615 ms` = 1000/65, `Delay()` inside the wait
+  loop of `docs/dump/cs2d/_global/1402f0000.c:2284`), VSync or not. An uncapped 167 FPS is therefore
+  *faster* than the original; our VSync-off build has **no frame cap at all**, so it pegs a core.
+- With VSync **on**, `render` reports 15.2 ms instead of 4.4 ms: that is the vblank wait, which the
+  driver defers to the next GL call (the swap itself returns in 0.04 ms), not a CPU stall inside the
+  renderer. A measurement must not read that as a renderer regression.
+- `SDL_Delay(1)` costs 1.8 ms and a swap with interval 0 presents in 0.49 ms (2029 FPS) on this
+  machine, so neither the loop's delay nor the swap is a cap here (SDL3 uses a high-resolution
+  waitable timer; the old 15.6 ms `Sleep` granularity does not apply).
+- **First frame after a map is set up freezes for ~0.1 ms per map entity** — 133 ms `prison_funst3r`,
+  140 ms `de_dust2`, **1447 ms `fun_roleplay`**. The cost is inside `cs2d_client_render` and is not
+  affected by `light 0`, `mapshadows 0` or `drawradar 0`: it is the lazy per-entity sprite load
+  (`cs2d_render.c` ~1100, no image cache in front of it). The original builds its images at map load,
+  behind the loading screen.
+- **Tooling trap:** the `--capture` harness paces itself with `SDL_Delay(16)` per frame, so its
+  "avg ms/frame" is CPU+GPU work only and its FPS is the harness's, never the game's; it also resets
+  the stats at every step, so the first-frame freeze never appears in its output. To measure real
+  pacing, run without `--capture` (see `WORKLOG.md` for the removed temporary mode, or add a new one).
+- **Sprite cache ceiling:** `cs2d_gfx_get_sprite` (`cs2d_render.c:1103`) is a fixed 64-entry array
+  (`CS2D_MAX_SPRITE_CACHE`, `include/cs2d_render.h:11`) keyed by (path, maskMode), and returns `NULL`
+  when full (`:1115`) — the entity is then simply not drawn. Lookup is a linear `_stricmp` scan, so
+  the failed-lookup path is at most 64 string compares per entity (cheap); the two numbers above
+  therefore need a re-measure with the load time counted explicitly before the freeze is attributed
+  to image decode.
+- **Entity index & view culling (added 2026-10-12, `src/cs2d_render.c` "Entity index & view culling"):**
+  measured with a `.map` parse: `fun_roleplay` is 360x512 tiles (184,320) with 9901 entities (`22`=2112
+  Env_Sprite, `71`=1907 Func_DynWall, `23`=769 Env_Sound, `93`=659 Trigger_Use, `33`=561 Env_Light, …) and
+  only **22 entities are inside a 27x15 tile view on average** (0.2 %; min 0, max 212, over all 166,332
+  camera positions). `prison_funst3r` (125x230, 1608 entities) sees 27, `de_dust2` (101x88, 1403) 81. The five
+  map passes therefore dispatched **5 x entity_count = 49,505** entities per frame for ~20 draws. They now
+  walk one cached list per pass (ascending entity index, so the draw order is the original sweep's) and skip
+  entities whose draw box (tile centre ± the margin) cannot touch the view. Margins: 2 tiles for the 32x32 /
+  tile-aligned types (hostage, bomb spot, both flags, item, decal, Breakable, DynWall, NPC, Use button, and
+  32 x 1.42 / 2 = 23 px in general), `margin_for_size(w, h, offx, offy)` for an `Env_Sprite` with an explicit
+  `ints[0]` / `ints[1]` size, 0 = never culled for `Env_Object` and texture sized `Env_Image`. A texture sized
+  `Env_Sprite` / `Env_Image` is still drawn on the first frame and reports the size it used
+  (`cs2d_render_entity_learn_size`), so it is culled from the second frame on. `test_entity_culling` holds the
+  numbers: fun_roleplay 9901 → 10,357 list entries, **998 considered per frame** (902 once the sprite sizes
+  are learned) instead of 49,505; de_dust2 218 instead of 7015.
 

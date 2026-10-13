@@ -2452,6 +2452,236 @@ static bool test_shadow_chunks(void)
 }
 
 /* ---------------------------------------------------------------------------
+ * Entity Index & View Culling (src/cs2d_render.c "Entity index & view culling")
+ * ---------------------------------------------------------------------------
+ * The five map passes used to sweep every map entity each (fun_roleplay: 5 x 9901 = 49505 dispatches per
+ * frame for ~20 entities on screen). They now walk one cached list per pass - ascending entity index, so the
+ * draw order is the original sweep's - and skip entities whose draw box cannot touch the view. These cases
+ * lock in both halves: a list has to hold every entity of its pass exactly once, and no entity whose box
+ * touches the view may be dropped.
+ */
+static bool test_entity_culling(void)
+{
+    printf("\n=== Testing the Entity Index & View Culling ===\n");
+
+    static cs2d_map_t map;   /* static: too big for the stack */
+    memset(&map, 0, sizeof(map));
+    map.width = 16;
+    map.height = 16;
+    map.tiles = (uint8_t *)calloc(16u * 16u, 1);
+
+    static const struct { uint8_t type; int x, y, w, h; } spec[] = {
+        { CS2D_ENT_INFO_HOSTAGE,    5,   5,  0,  0 },  /* 0 */
+        { CS2D_ENT_ENV_SOUND,       5,   5,  0,  0 },  /* 1: no pass draws it */
+        { CS2D_ENT_ENV_SPRITE,      5,   5,  0,  0 },  /* 2: texture sized (size learned on draw) */
+        { CS2D_ENT_FUNC_DYNWALL,   15,  15,  0,  0 },  /* 3 */
+        { CS2D_ENT_INFO_ANIMATION,  1,   1,  0,  0 },  /* 4 */
+        { CS2D_ENT_ENV_SPRITE,      5,   5, 64, 64 },  /* 5: explicit 64x64 size */
+        { CS2D_ENT_ENV_BREAKABLE,   2,   2,  0,  0 },  /* 6 */
+        { CS2D_ENT_ENV_OBJECT,      5,   5,  0,  0 },  /* 7 */
+        { CS2D_ENT_ENV_DECAL,     100, 100,  0,  0 }   /* 8: far outside the view */
+    };
+    int n = (int)(sizeof(spec) / sizeof(spec[0]));
+    for (int i = 0; i < n; i++) {
+        map.entities[i].type = (cs2d_entity_type_t)spec[i].type;
+        map.entities[i].x = spec[i].x;
+        map.entities[i].y = spec[i].y;
+        map.entities[i].int_settings[0] = spec[i].w;
+        map.entities[i].int_settings[1] = spec[i].h;
+    }
+    map.entity_count = (uint32_t)n;
+
+    /* 1. Membership: anim 1, Breakable/DynWall 2, ground 5 (bomb spots, decals, ground images/objects,
+     *    items, flags, hostages, NPCs, buttons, sprites), rooftop sprites 2, rooftop objects 3 */
+    static const struct { cs2d_entity_pass_t pass; int want; } pass_want[] = {
+        { CS2D_EPASS_ANIM,        1 },
+        { CS2D_EPASS_SOLID,       2 },
+        { CS2D_EPASS_GROUND,      5 },
+        { CS2D_EPASS_ROOF_SPRITE, 2 },
+        { CS2D_EPASS_ROOF_OBJECT, 3 }
+    };
+    for (int p = 0; p < CS2D_EPASS_COUNT; p++) {
+        int got = 0;
+        const int *list = cs2d_render_entity_pass_list(&map, pass_want[p].pass, &got);
+        if (got != pass_want[p].want) {
+            TEST_FAIL("Entity Index", "wrong pass membership");
+            free(map.tiles);
+            return false;
+        }
+        for (int k = 0; k < got; k++) {
+            if (k > 0 && list[k] <= list[k - 1]) {
+                TEST_FAIL("Entity Index", "pass list is not ascending (draw order)");
+                free(map.tiles);
+                return false;
+            }
+        }
+    }
+    TEST_PASS("Entity index: one ascending list per pass, every typed entity exactly once");
+
+    /* 2. The entity table version invalidates the index */
+    map.entities[0].type = CS2D_ENT_ENV_SOUND;   /* hostage -> sound: leaves the ground pass */
+    map.entity_table_version++;
+    if (cs2d_render_entity_pass_total(&map, CS2D_EPASS_GROUND) != 4) {
+        TEST_FAIL("Entity Index", "entity_table_version did not rebuild the index");
+        free(map.tiles);
+        return false;
+    }
+    map.entities[0].type = CS2D_ENT_INFO_HOSTAGE;
+    map.entity_table_version++;
+    TEST_PASS("Entity index: rebuilt when map->entity_table_version changes");
+
+    /* 3. Culling: the box is the tile centre +- margin tiles tested against [cam, cam + screen]; a 64x64
+     *    sprite is 45 / 32 + 2 = 3 tiles, a 32x32 one 22 / 32 + 2 = 2 */
+    const int sw = 850, sh = 480;
+    if (cs2d_render_entity_margin(&map, 5) != 3 || cs2d_render_entity_margin(&map, 8) != 2) {
+        TEST_FAIL("Entity Culling", "unexpected draw margin");
+        free(map.tiles);
+        return false;
+    }
+    if (!cs2d_render_entity_visible(&map, 5, 0.0f, 0.0f, sw, sh) ||
+        !cs2d_render_entity_visible(&map, 8, 2800.0f, 2800.0f, sw, sh)) {
+        TEST_FAIL("Entity Culling", "an entity inside the view was dropped");
+        free(map.tiles);
+        return false;
+    }
+    if (cs2d_render_entity_visible(&map, 8, 0.0f, 0.0f, sw, sh)) {
+        TEST_FAIL("Entity Culling", "a far entity was not dropped");
+        free(map.tiles);
+        return false;
+    }
+    /* Whatever the camera: an entity whose box touches the view stays visible */
+    for (int cx = -600; cx <= 4200; cx += 313) {
+        for (int cy = -600; cy <= 4200; cy += 227) {
+            for (int i = 0; i < n; i++) {
+                int m = cs2d_render_entity_margin(&map, i);
+                if (m <= 0) continue;
+                float px = (float)(map.entities[i].x * 32 + 16), py = (float)(map.entities[i].y * 32 + 16);
+                float mm = (float)(m * 32);
+                if (px + mm < (float)cx || py + mm < (float)cy ||
+                    px - mm > (float)(cx + sw) || py - mm > (float)(cy + sh)) continue;
+                if (!cs2d_render_entity_visible(&map, i, (float)cx, (float)cy, sw, sh)) {
+                    TEST_FAIL("Entity Culling", "entity whose box touches the view was dropped");
+                    free(map.tiles);
+                    return false;
+                }
+            }
+        }
+    }
+    TEST_PASS("Entity culling: no entity whose draw box touches the view is dropped (17x22 cameras)");
+
+    /* 4. A texture sized sprite stays unculled until its draw reports the size, then it is culled */
+    if (cs2d_render_entity_margin(&map, 2) != 0 ||
+        !cs2d_render_entity_visible(&map, 2, 4000.0f, 4000.0f, sw, sh)) {
+        TEST_FAIL("Entity Culling", "texture sized sprite culled before its size is known");
+        free(map.tiles);
+        return false;
+    }
+    cs2d_render_entity_learn_size(&map, 2, 32, 32, 0, 0);
+    if (cs2d_render_entity_margin(&map, 2) != 2 ||
+        cs2d_render_entity_visible(&map, 2, 4000.0f, 4000.0f, sw, sh) ||
+        !cs2d_render_entity_visible(&map, 2, 100.0f, 100.0f, sw, sh)) {
+        TEST_FAIL("Entity Culling", "learned sprite size did not cull the sprite");
+        free(map.tiles);
+        return false;
+    }
+    TEST_PASS("Entity culling: a 32x32 sprite is culled from the second frame on (size learned on draw)");
+
+    /* 5. Real maps: every entity of a pass's types appears exactly once, ascending, and the passes consider
+     *    far fewer entities than the five full sweeps they replaced */
+    static const int set_anim[]        = { CS2D_ENT_INFO_ANIMATION, -1 };
+    static const int set_solid[]       = { CS2D_ENT_ENV_BREAKABLE, CS2D_ENT_FUNC_DYNWALL, -1 };
+    static const int set_ground[]      = { CS2D_ENT_TRIGGER_USE, CS2D_ENT_INFO_BOMBSPOT, CS2D_ENT_ENV_DECAL,
+                                           CS2D_ENT_ENV_OBJECT, CS2D_ENT_ENV_ITEM, CS2D_ENT_INFO_CTF_FLAG,
+                                           CS2D_ENT_INFO_DOM_POINT, CS2D_ENT_INFO_HOSTAGE, CS2D_ENT_ENV_NPC,
+                                           CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_IMAGE, -1 };
+    static const int set_roof_sprite[] = { CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_IMAGE, -1 };
+    static const int set_roof_object[] = { CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_OBJECT, -1 };
+    static const int *const sets[CS2D_EPASS_COUNT] = { set_anim, set_solid, set_ground, set_roof_sprite,
+                                                       set_roof_object };
+    static const char *const map_paths[] = { "maps/fun_roleplay.map", "maps/de_dust2.map",
+                                             "maps/prison_funst3r.map" };
+    static cs2d_map_t rmap;   /* static: too big for the stack */
+    for (int mi = 0; mi < 3; mi++) {
+        memset(&rmap, 0, sizeof(rmap));
+        if (!cs2d_map_load_file(&rmap, map_paths[mi])) {
+            TEST_FAIL("Entity Culling", "Failed to load a test map");
+            free(map.tiles);
+            return false;
+        }
+        int per_type_total = 0;
+        int list_total = 0;
+        for (int p = 0; p < CS2D_EPASS_COUNT; p++) {
+            int want = 0;
+            for (uint32_t i = 0; i < rmap.entity_count; i++) {
+                for (const int *t = sets[p]; *t >= 0; t++) {
+                    if ((int)rmap.entities[i].type == *t) { want++; break; }
+                }
+            }
+            int got = 0;
+            const int *list = cs2d_render_entity_pass_list(&rmap, (cs2d_entity_pass_t)p, &got);
+            if (got != want) {
+                TEST_FAIL("Entity Culling", "pass list does not match the map's entity types");
+                cs2d_map_free(&rmap);
+                free(map.tiles);
+                return false;
+            }
+            for (int k = 1; k < got; k++) {
+                if (list[k] <= list[k - 1]) {
+                    TEST_FAIL("Entity Culling", "pass list is not ascending on a real map");
+                    cs2d_map_free(&rmap);
+                    free(map.tiles);
+                    return false;
+                }
+            }
+            per_type_total += want;
+            list_total += got;
+        }
+        int considered = 0;
+        for (int p = 0; p < CS2D_EPASS_COUNT; p++) {
+            considered += cs2d_render_entity_pass_count(&rmap, (cs2d_entity_pass_t)p, 0.0f, 0.0f, sw, sh);
+        }
+        printf("   %-28s %5u entities -> %6d list entries, %5d considered at camera (0,0) (5 sweeps = %u)\n",
+               map_paths[mi], rmap.entity_count, list_total, considered, rmap.entity_count * 5);
+        /* The index replaces the five full sweeps with fewer typed entries, and one frame now considers
+         * fewer entities than a single sweep would */
+        if (per_type_total >= (int)rmap.entity_count * 5 || considered >= (int)rmap.entity_count) {
+            TEST_FAIL("Entity Culling", "index does not reduce the entities swept per frame");
+            cs2d_map_free(&rmap);
+            free(map.tiles);
+            return false;
+        }
+        if (mi == 0) {
+            /* A texture sized Env_Sprite / Env_Image learns its size on the first draw (the 32x32 cells of
+             * sprites.bmp): simulate it, which is what every frame from the second on uses */
+            for (uint32_t i = 0; i < rmap.entity_count; i++) {
+                const cs2d_entity_t *e = &rmap.entities[i];
+                if (e->type == CS2D_ENT_ENV_SPRITE && e->int_settings[0] <= 0) {
+                    cs2d_render_entity_learn_size(&rmap, (int)i, 32, 32, e->int_settings[2], e->int_settings[3]);
+                } else if (e->type == CS2D_ENT_ENV_IMAGE) {
+                    cs2d_render_entity_learn_size(&rmap, (int)i, 64, 64, e->int_settings[0], e->int_settings[1]);
+                }
+            }
+            int after = 0;
+            for (int p = 0; p < CS2D_EPASS_COUNT; p++) {
+                after += cs2d_render_entity_pass_count(&rmap, (cs2d_entity_pass_t)p, 0.0f, 0.0f, sw, sh);
+            }
+            printf("   %-28s           learned sprite sizes -> %d considered\n", map_paths[mi], after);
+            if (after >= considered || after > 1000) {
+                TEST_FAIL("Entity Culling", "learned sprite sizes do not shrink the per-frame work");
+                cs2d_map_free(&rmap);
+                free(map.tiles);
+                return false;
+            }
+        }
+        cs2d_map_free(&rmap);
+    }
+    TEST_PASS("Entity culling: real maps keep every typed entity once and consider far fewer of them");
+
+    free(map.tiles);
+    return true;
+}
+
+/* ---------------------------------------------------------------------------
  * In-game Chat, Server Messages (@C) & Opcode 240
  * --------------------------------------------------------------------------- */
 static bool test_chat_and_server_messages(void)
@@ -3404,6 +3634,75 @@ static bool test_image_decode(void)
 
 
 
+/*
+ * ============================================================================
+ * VSync console command (sys/config.cfg "vsync", DAT_140a12960)
+ * ============================================================================
+ */
+static bool test_vsync_command(void)
+{
+    printf("\n=== Testing VSync command ===\n");
+
+    /* 1. Config loading: sys/config.cfg ships "vsync 1" (enabled by default) */
+    cs2d_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    if (!cs2d_config_load(&cfg, "sys/config.cfg")) {
+        TEST_FAIL("VSync Config", "Failed to load sys/config.cfg");
+        return false;
+    }
+    if (!cfg.vsync) {
+        TEST_FAIL("VSync Config", "Expected vsync=1 from sys/config.cfg");
+        return false;
+    }
+    TEST_PASS("sys/config.cfg vsync parameter (vsync 1) parsed");
+
+    /* 2. Render getter/setter (no GL context in the test build, state only) */
+    cs2d_render_set_vsync(false);
+    if (cs2d_render_get_vsync()) {
+        TEST_FAIL("VSync Getters/Setters", "Failed to disable vsync");
+        return false;
+    }
+    cs2d_render_set_vsync(true);
+    if (!cs2d_render_get_vsync()) {
+        TEST_FAIL("VSync Getters/Setters", "Failed to enable vsync");
+        return false;
+    }
+    TEST_PASS("VSync getters & setters verified");
+
+    /* 3. Interactive console command */
+    cs2d_client_t *cli = (cs2d_client_t *)calloc(1, sizeof(cs2d_client_t));
+    if (!cli) {
+        TEST_FAIL("VSync Command", "Failed to allocate client");
+        return false;
+    }
+    cli->config.vsync = true;
+    cs2d_render_set_vsync(true);
+
+    cs2d_client_console_exec(cli, "vsync 0");
+    if (cs2d_render_get_vsync() || cli->config.vsync) {
+        TEST_FAIL("VSync Command", "vsync 0 failed");
+        free(cli);
+        return false;
+    }
+    cs2d_client_console_exec(cli, "vsync 1");
+    if (!cs2d_render_get_vsync() || !cli->config.vsync) {
+        TEST_FAIL("VSync Command", "vsync 1 failed");
+        free(cli);
+        return false;
+    }
+    /* No argument: the command toggles (enabled -> disabled) */
+    cs2d_client_console_exec(cli, "vsync");
+    if (cs2d_render_get_vsync() || cli->config.vsync) {
+        TEST_FAIL("VSync Command", "bare 'vsync' should toggle off");
+        free(cli);
+        return false;
+    }
+    TEST_PASS("Console command vsync [0|1] and bare toggle verified");
+    free(cli);
+    return true;
+}
+
+
 int main(void)
 {
     printf("============================================================\n");
@@ -3411,7 +3710,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 33;
+    int total = 35;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -3438,9 +3737,11 @@ int main(void)
     if (test_weapon_select()) passed++;
     if (test_buy_menu()) passed++;
     if (test_shadow_chunks()) passed++;
+    if (test_entity_culling()) passed++;
     if (test_chat_and_server_messages()) passed++;
     if (test_projectiles_and_fields()) passed++;
     if (test_item_and_player_shadows()) passed++;
+    if (test_vsync_command()) passed++;
     if (test_scoreboard()) passed++;
     if (test_tile_blending()) passed++;
     if (test_hud_action_progress_bar()) passed++;

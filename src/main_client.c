@@ -65,8 +65,16 @@ static void save_gl_screenshot_bmp(const char *filepath, int w, int h)
     if (!pixels) return;
 
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
-    /* 0x80E0 = GL_BGR_EXT */
-    glReadPixels(0, 0, w, h, 0x80E0, GL_UNSIGNED_BYTE, pixels);
+    /* GL_BGR_EXT is gone in a core profile: read RGB and swap to the BGR byte order a BMP wants */
+    glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+    for (int y = 0; y < h; y++) {
+        uint8_t *row = pixels + (size_t)y * (size_t)row_stride;
+        for (int x = 0; x < w; x++) {
+            uint8_t tmp = row[x * 3 + 0];
+            row[x * 3 + 0] = row[x * 3 + 2];
+            row[x * 3 + 2] = tmp;
+        }
+    }
 
     FILE *f = fopen(filepath, "wb");
     if (f) {
@@ -189,6 +197,12 @@ static int run_client_app(const char *cmdline)
         fprintf(stderr, "[CS2D SDL3] SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
+
+    /* GL 3.3 core profile (the renderer is a shader/batcher backend now, see cs2d_gl.c) */
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
 
     SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);

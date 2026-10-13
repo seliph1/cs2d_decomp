@@ -295,6 +295,9 @@ bool cs2d_map_load_file(cs2d_map_t *map, const char *filepath)
         }
     }
 
+    /* The entity table was replaced: invalidate the renderer's entity index (cs2d_render.c) */
+    map->entity_table_version++;
+
     free(buffer);
     return true;
 }
@@ -434,6 +437,7 @@ void cs2d_map_free(cs2d_map_t *map)
     map->width = 0;
     map->height = 0;
     map->entity_count = 0;
+    map->entity_table_version++;   /* cs2d_render.c entity index */
 }
 
 uint8_t cs2d_map_get_tile(const cs2d_map_t *map, uint32_t tx, uint32_t ty)

@@ -342,6 +342,7 @@ int cs2d_ed_entity_add(cs2d_map_t *map, int type, int x, int y)
     e->x    = x;
     e->y    = y;
     map->entity_state[map->entity_count] = 0;
+    map->entity_table_version++;   /* cs2d_render.c entity index */
     return (int)map->entity_count++;
 }
 
@@ -351,6 +352,7 @@ void cs2d_ed_entity_remove(cs2d_map_t *map, int index)
     memmove(&map->entities[index], &map->entities[index + 1],
             (map->entity_count - (uint32_t)index - 1) * sizeof(cs2d_entity_t));
     map->entity_count--;
+    map->entity_table_version++;   /* cs2d_render.c entity index */
 }
 
 bool cs2d_ed_new_map(cs2d_map_t *map, uint32_t w, uint32_t h, const char *tileset)

@@ -351,6 +351,8 @@ typedef struct {
     uint8_t       entity_state[CS2D_MAX_ENTITIES];
     uint32_t      entity_state_version;  /* Bumped on every state change (render caches) */
     uint32_t      entity_solid_version;  /* Bumped when a DynWall / Breakable changes (shadow map) */
+    uint32_t      entity_table_version;  /* Bumped when the entity table itself changes (map load,
+                                          * cs2d_ed_entity_add / _remove): the renderer's entity index cache */
     uint8_t      *base_collision;        /* Tile-only collision; entity overlays are applied on top */
     uint8_t      *object_collision;      /* Building overlay (cs2d_dynobj.c), applied over the entities; 0 = none */
     uint8_t      *object_shadow;         /* 1 where a solid building casts a wall shadow (shadow map) */

@@ -28,6 +28,7 @@ bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
     cfg->itemshadows = true;
     cfg->mapshadows = 4;
     cfg->light = 5;
+    cfg->vsync = true;   /* VSync is enabled by default (Changelog 1.0.1.0) */
 
     FILE *f = fopen(filepath, "r");
     if (!f) return false;
@@ -79,6 +80,8 @@ bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
                 cfg->mapshadows = atoi(val);
             } else if (strcmp(key, "light") == 0) {
                 cfg->light = atoi(val);
+            } else if (strcmp(key, "vsync") == 0) {
+                cfg->vsync = (atoi(val) != 0);
             }
         }
     }

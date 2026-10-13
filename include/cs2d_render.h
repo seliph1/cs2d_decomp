@@ -322,8 +322,47 @@ void  cs2d_render_set_player_shadows(bool enabled);
 bool  cs2d_render_get_player_shadows(void);
 void  cs2d_render_set_item_shadows(bool enabled);
 bool  cs2d_render_get_item_shadows(void);
+
+/* Vertical sync (OpenGL swap interval): sys/config.cfg "vsync" (DAT_140a12960) */
+void  cs2d_render_set_vsync(bool enabled);
+bool  cs2d_render_get_vsync(void);
 void  cs2d_render_ensure_shadow_chunks(const cs2d_map_t *map);
 void  cs2d_render_get_shadow_chunk_info(int *out_chunks_x, int *out_chunks_y, int *out_dirty_count);
 void  cs2d_render_clear_shadow_dirty_test(void);
+
+/*
+ * Entity index + view culling (performance, see KNOWLEDGE.md "Performance").
+ * The map passes used to sweep every map entity per pass (5 sweeps per frame); on fun_roleplay
+ * (360x512 tiles, 9901 entities) that is 49k dispatches for ~20 entities actually on screen.
+ * cs2d_render keeps a cached index (one list per pass, ascending entity index so the draw order is
+ * unchanged) and drops entities whose draw box cannot touch the view rectangle.
+ */
+typedef enum {
+    CS2D_EPASS_ANIM = 0,    /* Info_Animation (8): tile animation remap table */
+    CS2D_EPASS_SOLID,       /* Env_Breakable (25) / Func_DynWall (71) tiles (Te.draw 0x140272808) */
+    CS2D_EPASS_GROUND,      /* Te.draw(0)/(1): bomb spots, decals, ground images/objects, items, flags,
+                             * hostages, NPCs, trigger buttons, ground Env_Sprite */
+    CS2D_EPASS_ROOF_SPRITE, /* Te.draw(2): non-additive rooftop Env_Sprite / Env_Image */
+    CS2D_EPASS_ROOF_OBJECT, /* Te.draw(2): Env_Object palms / trees / lamps and layer 3+4 sprites */
+    CS2D_EPASS_COUNT
+} cs2d_entity_pass_t;
+
+/* Builds (or reuses) the index for this map; called by the map passes themselves, exposed for tests */
+void cs2d_render_entity_index_prepare(const cs2d_map_t *map);
+/* Entities the pass would consider at this camera (before the per-type state filters) */
+int  cs2d_render_entity_pass_count(const cs2d_map_t *map, cs2d_entity_pass_t pass,
+                                   float cam_x, float cam_y, int screen_w, int screen_h);
+/* Total entities the pass holds (index size, camera independent) */
+int  cs2d_render_entity_pass_total(const cs2d_map_t *map, cs2d_entity_pass_t pass);
+/* The pass list (ascending entity indices; NULL when there is none) and its length in *out_n */
+const int *cs2d_render_entity_pass_list(const cs2d_map_t *map, cs2d_entity_pass_t pass, int *out_n);
+/* Culling decision for one entity at one camera: entities whose box cannot touch the view are dropped */
+bool cs2d_render_entity_visible(const cs2d_map_t *map, int index, float cam_x, float cam_y,
+                                int screen_w, int screen_h);
+/* Half extent of the entity's draw in tiles (0 = its size is unknown here, so it is never culled) */
+int  cs2d_render_entity_margin(const cs2d_map_t *map, int index);
+/* The draw path reports the size it just used for an image whose size was unknown (Env_Sprite / Env_Image,
+ * whose draw size is their texture): the margin can only grow, so it never cuts something already drawn */
+void cs2d_render_entity_learn_size(const cs2d_map_t *map, int index, int w, int h, int offx, int offy);
 
 #endif /* CS2D_RENDER_H */

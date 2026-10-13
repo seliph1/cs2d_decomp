@@ -7,6 +7,7 @@
  */
 #include "cs2d_light.h"
 #include "cs2d_render.h"
+#include "cs2d_gl.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
 #include <math.h>
@@ -166,11 +167,14 @@ typedef void (APIENTRY *PFN_BindFramebuffer)(GLenum, GLuint);
 typedef void (APIENTRY *PFN_FramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
 typedef GLenum (APIENTRY *PFN_CheckFramebufferStatus)(GLenum);
 typedef void (APIENTRY *PFN_DeleteFramebuffers)(GLsizei, const GLuint *);
-typedef void (APIENTRY *PFN_BlendFuncSeparate)(GLenum, GLenum, GLenum, GLenum);
 #define LGL_FRAMEBUFFER         0x8D40
 #define LGL_COLOR_ATTACHMENT0   0x8CE0
 #define LGL_FRAMEBUFFER_COMPLETE 0x8CD5
 
+/*
+ * FBO entry points are core in 3.3, but opengl32.dll only exports GL 1.1, so they still come
+ * from SDL_GL_GetProcAddress. The drawing itself goes through cs2d_gl (cs2d_gl_ready gates it).
+ */
 static struct {
     bool tried, ok;
     PFN_GenFramebuffers        GenFramebuffers;
@@ -178,13 +182,12 @@ static struct {
     PFN_FramebufferTexture2D   FramebufferTexture2D;
     PFN_CheckFramebufferStatus CheckFramebufferStatus;
     PFN_DeleteFramebuffers     DeleteFramebuffers;
-    PFN_BlendFuncSeparate      BlendFuncSeparate;
 } G;
 
 static bool gl_ready(void)
 {
     if (s_trace) return false;
-    if (!SDL_GL_GetCurrentContext()) return false;
+    if (!cs2d_gl_ready()) return false;
     if (!G.tried) {
         G.tried = true;
         G.GenFramebuffers        = (PFN_GenFramebuffers)SDL_GL_GetProcAddress("glGenFramebuffers");
@@ -192,14 +195,6 @@ static bool gl_ready(void)
         G.FramebufferTexture2D   = (PFN_FramebufferTexture2D)SDL_GL_GetProcAddress("glFramebufferTexture2D");
         G.CheckFramebufferStatus = (PFN_CheckFramebufferStatus)SDL_GL_GetProcAddress("glCheckFramebufferStatus");
         G.DeleteFramebuffers     = (PFN_DeleteFramebuffers)SDL_GL_GetProcAddress("glDeleteFramebuffers");
-        if (!G.GenFramebuffers) {
-            G.GenFramebuffers        = (PFN_GenFramebuffers)SDL_GL_GetProcAddress("glGenFramebuffersEXT");
-            G.BindFramebuffer        = (PFN_BindFramebuffer)SDL_GL_GetProcAddress("glBindFramebufferEXT");
-            G.FramebufferTexture2D   = (PFN_FramebufferTexture2D)SDL_GL_GetProcAddress("glFramebufferTexture2DEXT");
-            G.CheckFramebufferStatus = (PFN_CheckFramebufferStatus)SDL_GL_GetProcAddress("glCheckFramebufferStatusEXT");
-            G.DeleteFramebuffers     = (PFN_DeleteFramebuffers)SDL_GL_GetProcAddress("glDeleteFramebuffersEXT");
-        }
-        G.BlendFuncSeparate = (PFN_BlendFuncSeparate)SDL_GL_GetProcAddress("glBlendFuncSeparate");
         G.ok = G.GenFramebuffers && G.BindFramebuffer && G.FramebufferTexture2D && G.CheckFramebufferStatus;
     }
     return G.ok;
@@ -218,34 +213,21 @@ static void load_images(void)
 /* SDL renderer blend modes of the TSDLRenderMax2DDriver (SetBlend 0x14031afe0): 1/3 BLEND, 2 NONE, 4 ADD, 5 MOD */
 static void gl_apply_blend(void)
 {
-    glEnable(GL_BLEND);
     switch (M.blend) {
-        case 2:
-            glDisable(GL_BLEND);
-            break;
-        case 4:
-            if (G.BlendFuncSeparate) G.BlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ZERO, GL_ONE);
-            else glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-            break;
-        case 5:
-            if (G.BlendFuncSeparate) G.BlendFuncSeparate(GL_ZERO, GL_SRC_COLOR, GL_ZERO, GL_ONE);
-            else glBlendFunc(GL_ZERO, GL_SRC_COLOR);
-            break;
-        default:
-            if (G.BlendFuncSeparate) G.BlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-            else glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            break;
+        case 2:  cs2d_gl_set_blend(CS2D_GL_BLEND_NONE);  break;
+        case 4:  cs2d_gl_set_blend(CS2D_GL_BLEND_ADD);   break;
+        case 5:  cs2d_gl_set_blend(CS2D_GL_BLEND_MULT);  break;
+        default: cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA); break;
     }
 }
 
 static int clamp255(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
 
 /* SetColor clamps to 0..255 (TSDLRenderMax2DDriver.SetColor 0x14031b170); the alpha reaches the vertices */
-static void gl_color(void)
-{
-    glColor4ub((GLubyte)clamp255(M.r), (GLubyte)clamp255(M.g), (GLubyte)clamp255(M.b),
-               (GLubyte)clamp255((int)(M.alpha * 255.0f)));
-}
+static float col_r(void) { return (float)clamp255(M.r) / 255.0f; }
+static float col_g(void) { return (float)clamp255(M.g) / 255.0f; }
+static float col_b(void) { return (float)clamp255(M.b) / 255.0f; }
+static float col_a(void) { return (float)clamp255((int)(M.alpha * 255.0f)) / 255.0f; }
 
 /* Max2D matrix: ix = cos * sx, iy = -sin * sy, jx = sin * sx, jy = cos * sy */
 static void xform(float px, float py, float tx, float ty, float *ox, float *oy)
@@ -303,16 +285,18 @@ static void m2d_rect(float x, float y, float w, float h)
     if (s_trace) { tracef("rect %.3f %.3f %.3f %.3f", x, y, w, h); return; }
     if (!gl_ready()) return;
     float px[4] = {0.0f, w, w, 0.0f}, py[4] = {0.0f, 0.0f, h, h};
-    glDisable(GL_TEXTURE_2D);
     gl_apply_blend();
-    gl_color();
-    glBegin(GL_QUADS);
+    cs2d_gl_set_texture(0);
+    cs2d_gl_vertex_t q[4];
     for (int i = 0; i < 4; i++) {
         float vx, vy;
         xform(px[i], py[i], x + M.ox, y + M.oy, &vx, &vy);
-        glVertex2f(vx, vy);
+        q[i].x = vx; q[i].y = vy; q[i].u = 0.0f; q[i].v = 0.0f;
+        q[i].r = col_r(); q[i].g = col_g(); q[i].b = col_b(); q[i].a = col_a();
     }
-    glEnd();
+    cs2d_gl_vertex_t tri[6];
+    tri[0] = q[0]; tri[1] = q[1]; tri[2] = q[2]; tri[3] = q[0]; tri[4] = q[2]; tri[5] = q[3];
+    cs2d_gl_push_triangles(tri, 6);
 }
 
 static const cs2d_texture_t *img_tex(const light_image_t *im)
@@ -344,22 +328,20 @@ static void gl_textured_quad(const light_image_t *im, int frame, float x0, float
     if (!img_tex(im)->id) return;
     float u0, v0, u1, v1, fw, fh;
     image_uv(im, frame, &u0, &v0, &u1, &v1, &fw, &fh);
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, img_tex(im)->id);
     gl_apply_blend();
-    gl_color();
     float px[4] = {x0, x1, x1, x0}, py[4] = {y0, y0, y1, y1};
     float pu[4] = {u0, u1, u1, u0}, pv[4] = {v0, v0, v1, v1};
-    glBegin(GL_QUADS);
+    cs2d_gl_vertex_t q[4];
     for (int i = 0; i < 4; i++) {
         float vx, vy;
         xform(px[i], py[i], tx, ty, &vx, &vy);
-        glTexCoord2f(pu[i], pv[i]);
-        glVertex2f(vx, vy);
+        q[i].x = vx; q[i].y = vy; q[i].u = pu[i]; q[i].v = pv[i];
+        q[i].r = col_r(); q[i].g = col_g(); q[i].b = col_b(); q[i].a = col_a();
     }
-    glEnd();
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glDisable(GL_TEXTURE_2D);
+    cs2d_gl_set_texture(img_tex(im)->id);
+    cs2d_gl_vertex_t tri[6];
+    tri[0] = q[0]; tri[1] = q[1]; tri[2] = q[2]; tri[3] = q[0]; tri[4] = q[2]; tri[5] = q[3];
+    cs2d_gl_push_triangles(tri, 6);
 }
 
 static void m2d_image(int img, float x, float y, int frame)
@@ -434,16 +416,16 @@ static void m2d_poly(const float *xy, int n)
     if (!gl_ready() || n < 3) return;
     int idx[96];
     int tris = triangulate(xy, n, idx);
-    glDisable(GL_TEXTURE_2D);
     gl_apply_blend();
-    gl_color();
-    glBegin(GL_TRIANGLES);
+    cs2d_gl_set_texture(0);
+    cs2d_gl_vertex_t v[96 * 3];
     for (int i = 0; i < tris * 3; i++) {
         float vx, vy;
         xform(xy[idx[i] * 2], xy[idx[i] * 2 + 1], M.ox, M.oy, &vx, &vy);
-        glVertex2f(vx, vy);
+        v[i].x = vx; v[i].y = vy; v[i].u = 0.0f; v[i].v = 0.0f;
+        v[i].r = col_r(); v[i].g = col_g(); v[i].b = col_b(); v[i].a = col_a();
     }
-    glEnd();
+    cs2d_gl_push_triangles(v, tris * 3);
 }
 
 /*
@@ -463,28 +445,24 @@ static void m2d_textured_poly(int img, const float *xyuv, int n)
     if (!gl_ready() || n < 3 || !img_tex(im)->id) return;
     float u0, v0, u1, v1, fw, fh;
     image_uv(im, 0, &u0, &v0, &u1, &v1, &fw, &fh);
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, img_tex(im)->id);
     gl_apply_blend();
-    gl_color();
-    glBegin(GL_TRIANGLES);
+    cs2d_gl_set_texture(img_tex(im)->id);
     for (int pass = 0; pass < 2; pass++) {
         for (int k = 0; k + 2 < n; k++) {
             int tri[3] = {0, k + 1, k + 2};
+            cs2d_gl_vertex_t v[3];
             for (int i = 0; i < 3; i++) {
                 const float *p = &xyuv[tri[i] * 4];
-                glTexCoord2f(u0 + (u1 - u0) * p[2], v0 + (v1 - v0) * p[3]);
-                glVertex2f(p[0] + M.ox, p[1] + M.oy);
+                v[i].x = p[0] + M.ox; v[i].y = p[1] + M.oy;
+                v[i].u = u0 + (u1 - u0) * p[2]; v[i].v = v0 + (v1 - v0) * p[3];
+                v[i].r = col_r(); v[i].g = col_g(); v[i].b = col_b(); v[i].a = col_a();
             }
+            cs2d_gl_push_triangles(v, 3);
         }
     }
-    glEnd();
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glDisable(GL_TEXTURE_2D);
 }
 
 /* ---- buffers (SmartImageBuffer: BindBuffer 0x1400a4940, Clear 0x140055430, UnBindBuffer 0x140089100) ---- */
-static GLint s_saved_viewport[4];
 
 static bool gl_make_target(GLuint *fbo, GLuint *tex, int w, int h)
 {
@@ -517,16 +495,7 @@ static void m2d_bind(int target, int size_w, int size_h)
     if (s_trace) { char nm[16]; buffer_name(target, nm, sizeof(nm)); tracef("bind %s", nm); return; }
     if (!gl_ready()) return;
     GLuint fbo = target == 0 ? s_main_fbo : s_buf[target - 1].fbo;
-    glGetIntegerv(GL_VIEWPORT, s_saved_viewport);
-    G.BindFramebuffer(LGL_FRAMEBUFFER, fbo);
-    glViewport(0, 0, size_w, size_h);
-    glMatrixMode(GL_PROJECTION);
-    glPushMatrix();
-    glLoadIdentity();
-    glOrtho(0.0, (double)size_w, (double)size_h, 0.0, -1.0, 1.0);
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glLoadIdentity();
+    cs2d_gl_bind_target(fbo, size_w, size_h);
 }
 
 static void m2d_clear(int r, int g, int b, float a, bool traced_args)
@@ -539,6 +508,7 @@ static void m2d_clear(int r, int g, int b, float a, bool traced_args)
         return;
     }
     if (!gl_ready()) return;
+    cs2d_gl_flush();
     /* SetClsColor stores the alpha as (byte)(int)a (TSDLRenderMax2DDriver.SetClsColor 0x14031b220) */
     glClearColor((float)clamp255(r) / 255.0f, (float)clamp255(g) / 255.0f, (float)clamp255(b) / 255.0f,
                  (float)((int)a & 0xff) / 255.0f);
@@ -551,12 +521,7 @@ static void m2d_unbind(void)
     if (s_trace) { char nm[16]; buffer_name(M.target, nm, sizeof(nm)); tracef("unbind %s", nm); M.target = -1; return; }
     M.target = -1;
     if (!gl_ready()) return;
-    glMatrixMode(GL_PROJECTION);
-    glPopMatrix();
-    glMatrixMode(GL_MODELVIEW);
-    glPopMatrix();
-    G.BindFramebuffer(LGL_FRAMEBUFFER, 0);
-    glViewport(s_saved_viewport[0], s_saved_viewport[1], s_saved_viewport[2], s_saved_viewport[3]);
+    cs2d_gl_unbind_target();
 }
 
 /* DrawBuffer / DrawBufferRect: the render target stretched to (w, h) at (x, y) */
@@ -572,19 +537,10 @@ static void m2d_draw_buffer(int target, float x, float y, float w, float h, bool
     if (!gl_ready()) return;
     GLuint tex = target == 0 ? s_main_tex : s_buf[target - 1].tex;
     if (!tex) return;
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, tex);
     gl_apply_blend();
-    gl_color();
     /* GL render targets are bottom-up: v = 1 is the top row */
-    glBegin(GL_QUADS);
-    glTexCoord2f(0.0f, 1.0f); glVertex2f(x + M.ox, y + M.oy);
-    glTexCoord2f(1.0f, 1.0f); glVertex2f(x + w + M.ox, y + M.oy);
-    glTexCoord2f(1.0f, 0.0f); glVertex2f(x + w + M.ox, y + h + M.oy);
-    glTexCoord2f(0.0f, 0.0f); glVertex2f(x + M.ox, y + h + M.oy);
-    glEnd();
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glDisable(GL_TEXTURE_2D);
+    cs2d_gl_quad(tex, x + M.ox, y + M.oy, w, h, 0.0f, 1.0f, 1.0f, 0.0f,
+                 col_r(), col_g(), col_b(), col_a());
 }
 
 static void m2d_marker(const char *what)
@@ -595,11 +551,10 @@ static void m2d_marker(const char *what)
 /* Back to the state the rest of our renderer expects */
 static void gl_restore(void)
 {
-    if (s_trace || !SDL_GL_GetCurrentContext()) return;
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDisable(GL_TEXTURE_2D);
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+    if (s_trace || !cs2d_gl_ready()) return;
+    cs2d_gl_flush();
+    cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+    cs2d_gl_set_texture(0);
 }
 
 /* ------------------------------------------------------------------------------------------------------------
