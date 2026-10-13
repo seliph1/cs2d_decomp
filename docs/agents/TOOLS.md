@@ -128,6 +128,14 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 | `gen_occlusion_table.py CS2D.exe` | Runs `DrawTilesFloor` on the 256 neighbour patterns and prints the occlusion table pasted into `src/cs2d_light.c` |
 | `lua/*.lua` | Dedicated Lua probes; output lines start with `BP` / `WP` / `PD` / `JL` |
 
+Performance (GPU cost), see `KNOWLEDGE.md` "Performance" (2026-10-13):
+
+| Script | What it does |
+|---|---|
+| `perf_gpu_matrix.ps1 -Out <file> [-CaseList @('name:key=val,…')]` | Steady-state GPU: launches our client on a map and samples the Task-Manager counter `\GPU Engine(*)\Utilization Percentage` (`engtype_3D`) for its pid, next to its CPU. Each case rewrites the given `sys/config.cfg` keys and the file is restored from `sys/config.cfg.perfbak` at the end. `-CaseList` defaults to the four shipped/light-off/VSync cases |
+| `perf_gpu_frames.ps1 -Label <name> [-Msaa 0] [-Menu] [-Frames 600] [-DrawCalls] [-Config 'key=val,…']` | GPU **ms per frame**: runs `perf_frames.sh` (a known 636-frame `--capture` run) and divides the sampled GPU busy time by the frames. `-Menu` measures the main menu instead of a map, `-Msaa 0` sets `CS2D_MSAA=0`, `-DrawCalls` sets `CS2D_DRAWCALLS=1` (the client then prints `[gl] draws/frame=… verts/frame=… tex_switch/frame=… max_batch=…` on exit, see `src/cs2d_gl.h`), `-Config` applies a `sys/config.cfg` override for the run only (backed up as `sys/config.cfg.perfbak` and restored) |
+| `perf_frames.sh [frames] [map]` | The `--capture:"map <map>;!wait <frames>"` invocation `perf_gpu_frames.ps1` wraps (`-` = no map). Runs from Git Bash so the spaces in the capture string survive |
+
 Lua probes:
 
 | Probe | What it does |

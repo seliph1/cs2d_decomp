@@ -86,6 +86,22 @@ void cs2d_gl_push_lines(const cs2d_gl_vertex_t *verts, int count);
 void cs2d_gl_push_line_loop(const cs2d_gl_vertex_t *verts, int count);
 void cs2d_gl_push_fan(const cs2d_gl_vertex_t *verts, int count);
 
+/* --- batch statistics (draw calls) ------------------------------------------------------
+ * A "draw call" is one submitted glDrawArrays, i.e. one fragment of the batch. The batcher
+ * splits on a texture switch, a primitive-mode switch (triangles/lines/fan), an alpha-reference
+ * change or a full 65536-vertex batch, so these counters say what limits batching on a frame.
+ * They are only read by CS2D_DRAWCALLS in main_client.c; nothing in the renderer depends on them. */
+typedef struct {
+    unsigned draws;          /* submitted batches (glDrawArrays calls) */
+    unsigned tex_switches;   /* texture changes that flushed the pending batch */
+    unsigned mode_switches;  /* primitive-mode changes that flushed the pending batch */
+    unsigned overflows;      /* batches flushed because they were full */
+    unsigned long long verts;/* vertices submitted */
+    int      max_batch;      /* largest batch (in vertices) seen since the reset */
+} cs2d_gl_stats_t;
+void cs2d_gl_stats_reset(void);
+cs2d_gl_stats_t cs2d_gl_stats_read(void);
+
 /* Axis-aligned textured quad: (x, y) top-left, (w, h) size, UV rectangle (u0, v0)-(u1, v1) */
 void cs2d_gl_quad(unsigned int tex_id, float x, float y, float w, float h, float u0, float v0, float u1, float v1,
                   float r, float g, float b, float a);

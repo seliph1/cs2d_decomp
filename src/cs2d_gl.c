@@ -84,6 +84,9 @@ static void    (GLAPIENTRY *pBlendFuncSeparate)(GLenum, GLenum, GLenum, GLenum) 
 #define CS2D_GL_BATCH_MAX 65536
 static cs2d_gl_vertex_t s_verts[CS2D_GL_BATCH_MAX];
 
+/* Batcher statistics (CS2D_DRAWCALLS): what limits batching on a frame, see cs2d_gl.h */
+static cs2d_gl_stats_t s_stats;
+
 static struct {
     bool     loaded;
     GLuint   prog;
@@ -253,6 +256,9 @@ static void gl3_flush(void)
         S.count = 0;
         return;
     }
+    if (S.count > s_stats.max_batch) s_stats.max_batch = S.count;
+    s_stats.draws++;
+    s_stats.verts += (unsigned long long)S.count;
     pUseProgram(S.prog);
     pUniformMatrix4fv(S.u_proj, 1, GL_FALSE, S.proj);
     pUniform1i(S.u_tex, 0);
@@ -270,6 +276,7 @@ static void gl3_flush(void)
 static void gl3_set_texture_id(GLuint tex_id)
 {
     if (tex_id == S.tex) return;
+    if (S.count > 0) s_stats.tex_switches++;
     gl3_flush();
     S.tex = tex_id;
 }
@@ -278,10 +285,14 @@ static void gl3_push(GLenum mode, const cs2d_gl_vertex_t *verts, int count)
 {
     if (!S.loaded) return;
     if (S.mode != mode) {
+        if (S.count > 0) s_stats.mode_switches++;
         gl3_flush();
         S.mode = mode;
     }
-    if (S.count + count > CS2D_GL_BATCH_MAX) gl3_flush();
+    if (S.count + count > CS2D_GL_BATCH_MAX) {
+        s_stats.overflows++;
+        gl3_flush();
+    }
     memcpy(&s_verts[S.count], verts, (size_t)count * sizeof(cs2d_gl_vertex_t));
     S.count += count;
 }
@@ -422,6 +433,16 @@ void cs2d_gl_end(void)
 void cs2d_gl_flush(void)
 {
     gl3_flush();
+}
+
+void cs2d_gl_stats_reset(void)
+{
+    memset(&s_stats, 0, sizeof(s_stats));
+}
+
+cs2d_gl_stats_t cs2d_gl_stats_read(void)
+{
+    return s_stats;
 }
 
 void cs2d_gl_bind_target(unsigned int fbo, int width, int height)

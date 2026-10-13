@@ -8,6 +8,7 @@
 #include <ctype.h>
 #include "cs2d_client.h"
 #include "cs2d_render.h"
+#include "cs2d_gl.h"
 
 static cs2d_client_t g_client;
 static bool          g_running = true;
@@ -210,8 +211,20 @@ static int run_client_app(const char *cmdline)
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4);
+
+    /* MSAA: 4x by default (rotated sprite edges; gfx also builds 2-level alpha-weighted mipmaps).
+     * CS2D_MSAA=0 creates the context without a multisample buffer instead; that is the axis the
+     * per-frame GPU cost is measured on (docs/agents/KNOWLEDGE.md "Performance", 2026-10-13).
+     * The original's dump shows no multisample request. */
+    int msaa_samples = 4;
+    {
+        const char *msaa_env = getenv("CS2D_MSAA");
+        if (msaa_env && msaa_env[0] == '0') msaa_samples = 0;
+    }
+    if (msaa_samples > 0) {
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, msaa_samples);
+    }
 
     SDL_Window *window = SDL_CreateWindow(
         "CS2D - Reconstructed Client (SDL3)",
@@ -256,6 +269,13 @@ static int run_client_app(const char *cmdline)
 
     uint64_t freq = SDL_GetPerformanceFrequency();
     uint64_t last_time = SDL_GetPerformanceCounter();
+
+    /* Dev tool: CS2D_DRAWCALLS=1 reports what the batcher did on the last frame (see cs2d_gl.h).
+     * One line at exit, so a scripted run (tools/agent/perf_gpu_frames.ps1 -DrawCalls) can read it. */
+    bool gl_stats = (getenv("CS2D_DRAWCALLS") != NULL);
+    unsigned long long stats_draws = 0, stats_verts = 0, stats_tex = 0, stats_mode = 0, stats_over = 0;
+    int stats_max_batch = 0;
+    cs2d_gl_stats_reset();
 
     int frame_count = 0;
     SDL_Event event;
@@ -434,9 +454,27 @@ static int run_client_app(const char *cmdline)
             }
         }
         cs2d_render_end_frame(window);
+        if (gl_stats) {
+            cs2d_gl_stats_t st = cs2d_gl_stats_read();
+            stats_draws += st.draws;
+            stats_verts += st.verts;
+            stats_tex   += st.tex_switches;
+            stats_mode  += st.mode_switches;
+            stats_over  += st.overflows;
+            if (st.max_batch > stats_max_batch) stats_max_batch = st.max_batch;
+            cs2d_gl_stats_reset();
+        }
         frame_count++;
 
         SDL_Delay((auto_screenshot || capture_cmd) ? 16 : 1);
+    }
+
+    if (gl_stats && frame_count > 0) {
+        printf("[gl] frames=%d draws/frame=%.1f verts/frame=%.0f | tex_switch/frame=%.1f "
+               "mode_switch/frame=%.1f overflow/frame=%.2f | max_batch=%d\n",
+               frame_count, (double)stats_draws / (double)frame_count, (double)stats_verts / (double)frame_count,
+               (double)stats_tex / (double)frame_count, (double)stats_mode / (double)frame_count,
+               (double)stats_over / (double)frame_count, stats_max_batch);
     }
 
     SDL_StopTextInput(window);

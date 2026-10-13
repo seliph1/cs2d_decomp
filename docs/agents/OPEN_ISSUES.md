@@ -33,10 +33,34 @@ the same one.
   (`cs2d_render_entity_learn_size` from `render_env_object_overhead` / the two `Env_Image` branches, using
   `w = tex->width * size + 2 * size * 30` for the palms). Not measured yet how much they cost on
   `fun_roleplay`, where the index already dropped the per-frame count from 49,505 to 998.
-- **No frame cap with VSync off:** the original locks its frame at ~65 FPS (`15.384615 ms`,
-  `docs/dump/cs2d/_global/1402f0000.c:2284`) whether VSync is on or off; our loop only does
-  `SDL_Delay(1)` (~1.5 ms), so it runs at 167 FPS and pegs a CPU core. Decide whether to reproduce the
-  original's cap.
+- **No frame cap with VSync off (measured 2026-10-13):** the original locks its frame at ~65 FPS
+  (`15.384615 ms`, `docs/dump/cs2d/_global/1402f0000.c:2284`) whether VSync is on or off; our loop only
+  does `SDL_Delay(1)` (~1.5 ms), so it runs at 167 FPS and pegs a CPU core. Measured on `fun_roleplay`:
+  VSync ON 22.7 % GPU / 36 % CPU, VSync OFF **42-46 % GPU / 81-114 % CPU** (the CPU past one core).
+  Decide whether to reproduce the original's cap; it is the biggest lever for the GPU number the user
+  sees whenever VSync is off. Numbers: `KNOWLEDGE.md` "Performance" (2026-10-13).
+- **GPU per frame, not yet optimised (measured 2026-10-13):** a drawn `fun_roleplay` frame costs
+  **2.0-2.5 ms of GPU** (main menu: 0.24 ms, so the cost is the world pass, not the present path):
+  ~40 % of the steady-state load is the light engine + map shadows (`light 5 mapshadows 4`); MSAA 4x is
+  within the run-to-run spread but costs ~1.1 ms of CPU per frame (`CS2D_MSAA=0` in `src/main_client.c`
+  turns it off). Still unattributed, so measure before optimising:
+  - **draw calls per frame (measured 2026-10-13):** `fun_roleplay` issues **699 draw calls/frame for
+    32,557 vertices** (average batch 47 vertices ≈ 12 quads; max batch 6,210, so the 65,536-vertex
+    budget is never hit). **320** of those calls are texture switches — each `Env_Sprite` /
+    `Env_Image` is its own `gfx/...` file — and the light engine is the largest single block (273
+    calls and 256 texture switches disappear with `light 0`). The remaining ~360 are blend toggles
+    and explicit target flushes (primitive-mode switches are 0). **The batcher is already a
+    SpriteBatch and the tileset already rides it** (one call for the whole visible tile grid), so the
+    next win is the same one LÖVE documents for `SpriteBatch` + atlas: **pack the entity/light sprite
+    set into atlases** (they are small BMP/PNG files) so that *adjacent* draws of different sprites
+    share one texture. Reordering the draws to group by state is **not** an option: the sprite passes
+    follow the original's painter's order. Numbers: `KNOWLEDGE.md` "Performance" (2026-10-13);
+    re-measure with `perf_gpu_frames.ps1 -DrawCalls`.
+  - **the radar's unconditional upload** — `ensure_minimap_texture` (`cs2d_render.c:3481`) builds a
+    128x128 RGBA buffer in a nested loop and calls `glTexImage2D` (new storage) on **every frame**, from
+    the HUD draw at `cs2d_render.c:3643`; the minimap only changes when the player moves a tile;
+  - **per-entity sprite draws** (up to ~1000 considered per frame on `fun_roleplay` after the entity
+    index) and the per-entity margin decisions in `cs2d_render.c`.
 - **Audio:** there is no audio system (material sounds, shots, `Env_Sound`).
 - **Shots:** offline shots have no spread, and the reach of weapons other than the knife and the AK-47
   is not measured.

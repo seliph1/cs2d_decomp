@@ -8,6 +8,36 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-13 — Cline — Why our client uses ~20 % GPU where the original uses 0.6 %
+
+- **Question (user):** Task Manager shows ~20 % GPU on `fun_roleplay` for our client, 0.6 % for the
+  original. Reproduced first: while our client ran, the whole desktop's `engtype_3D` total was
+  **17.85 %**, of which **17.76 %** was our pid — the attribution is not a Task-Manager artifact.
+- **Method:** the counter Task Manager itself uses, `\GPU Engine(*)\Utilization Percentage`
+  (`engtype_3D`, per pid), sampled once a second. Two new tools: `tools/agent/perf_gpu_matrix.ps1`
+  (steady state, rewrites `sys/config.cfg` per case and restores it) and
+  `tools/agent/perf_gpu_frames.ps1` + `tools/agent/perf_frames.sh` (a `--capture:"map …;!wait 600"`
+  run = 636 frames, so GPU busy time / frames gives ms of GPU per frame). New `CS2D_MSAA` env gate in
+  `src/main_client.c` (default unchanged: 4x) is the axis one of the runs compares.
+- **Measured** (850x480, `fun_roleplay`, shipped `light 5 mapshadows 4 shadows 50`): **22.7 % GPU
+  with VSync on** (13.8 % with every light setting off), **42-46 % with VSync off** where the CPU
+  goes past one core; per frame **0.24 ms** (main menu) against **2.0-2.5 ms** (drawn map; MSAA 4x vs
+  `CS2D_MSAA=0` is inside the run-to-run spread, MSAA does cost ~1.1 ms of CPU). The original's 0.6 %
+  is ~0.1 ms of GPU per frame, so our world frame is 20-40x heavier in GPU terms.
+- **Conclusion:** the cost is in the world pass (the menu proves the present path is cheap), ~40 % of
+  it is the light engine + map shadows, and VSync OFF additionally removes any frame cap (the
+  original locks 65 FPS). Numbers: `KNOWLEDGE.md` "Performance".
+- **Then attributed the draw calls** (`CS2D_DRAWCALLS=1`): `fun_roleplay` = **699 calls/frame for
+  32,557 vertices** (avg batch 47 verts), of which **320 are texture switches** (one `gfx/...` file per
+  `Env_Sprite`/`Env_Image`) and 273 calls + 256 switches belong to the light engine; the tileset grid
+  already goes out in **one** call (max batch 6,210 verts, 0 overflows). The remaining ~360 calls are
+  blend toggles and target flushes. Same conclusion as LÖVE's `SpriteBatch` documentation: batching
+  needs a shared image, so the next win is atlasing the sprite set — grouping by state is not an
+  option because the sprite order is the original's painter's order. Tool: `perf_gpu_frames.ps1
+  -DrawCalls [-Config 'key=val,…']`.
+- **Left (moved to `OPEN_ISSUES.md`):** decide the frame cap, and re-measure before optimising the
+  batcher/radar.
+
 ## 2026-10-12 — Cline — Entity index & view culling (5 sweeps per frame → one typed list per pass)
 
 - **Measured first** (`.map` parse off-line, then the new test): `fun_roleplay` is **360x512 tiles with 9901

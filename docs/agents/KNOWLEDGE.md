@@ -1027,3 +1027,84 @@ printed the split; the instrumentation was removed again (see `WORKLOG.md`).
   numbers: fun_roleplay 9901 → 10,357 list entries, **998 considered per frame** (902 once the sprite sizes
   are learned) instead of 49,505; de_dust2 218 instead of 7015.
 
+### GPU cost of a frame (measured 2026-10-13, same machine, 850x480 from `res 850x480`)
+
+Metric: the counter Task Manager uses, `\GPU Engine(*)\Utilization Percentage`, filtered to our
+`cs2d_client.exe` pid and `engtype_3D` (so it is the same number the user sees), plus a run with a
+known frame count so it can be converted to ms of GPU time per frame. Tools:
+`tools/agent/perf_gpu_matrix.ps1` (steady state, config matrix) and
+`tools/agent/perf_gpu_frames.ps1` + `perf_frames.sh` (`--capture:"map <map>;!wait 600"` = 636 frames,
+GPU busy / frames). Both restore `sys/config.cfg`.
+
+Steady state, normal loop, `fun_roleplay`, VSync as noted, 4-5 one-second samples:
+
+| settings | GPU(3D) avg (max) | GPU ms/frame at 60 FPS | CPU |
+|---|---|---|---|
+| `light 5 mapshadows 4 shadows 50 vsync 1` (shipped) | **22.7%** (25.5%) | ~3.8 ms | 36 % |
+| `light 0 mapshadows 0 shadows 0 vsync 1` | **13.8%** (18.2%) | ~2.3 ms | 21 % |
+| `light 5 mapshadows 4 shadows 50 vsync 0` | **42.3%** (43.6%) | CPU bound | 114 % |
+| `light 0 mapshadows 0 shadows 0 vsync 0` | **45.7%** | CPU bound | 81 % |
+
+Frame-count-controlled runs (`fun_roleplay`, shipped settings, GPU busy / 636 frames):
+
+| scene | GPU ms/frame | CPU ms/frame (client's own report) |
+|---|---|---|
+| main menu (no map) | **0.24** | — |
+| `fun_roleplay`, MSAA 4x | 2.22 / 2.48 (two runs) | 8.6 / 11.1 |
+| `fun_roleplay`, `CS2D_MSAA=0` | 2.02 | 7.5 |
+
+Reading, and what it rules out:
+
+- **The cost is the world pass, not the present path**: the menu frame (window shown, HUD drawn,
+  swap every frame) costs 0.24 ms of GPU — a fully drawn `fun_roleplay` frame costs 2-2.5 ms.
+- **The light engine + map shadows are ~40 % of the steady-state GPU load** (22.7 % → 13.8 % with
+  every light setting off) and ~15 points of CPU (36 % → 21 %).
+- **MSAA 4x is not the main cost**: 2.22/2.48 ms with 4x against 2.02 ms without is inside the
+  run-to-run spread; it does save ~1.1 ms of *CPU* per frame. `CS2D_MSAA=0` (new, `src/main_client.c`)
+  is the axis to re-measure on.
+- **VSync OFF has no frame cap at all** (main loop `SDL_Delay(1)`), so the GPU% nearly doubles and the
+  CPU goes past one core; the original locks ~65 FPS either way. This is the single biggest lever if
+  the user runs with VSync off, and it is invisible with VSync on.
+- **The original's 0.6 % is ~0.1 ms of GPU per frame** (0.6 % x 16.7 ms), i.e. our drawn frame is
+  **20-40x heavier in GPU terms** even at the same frame rate. What is not attributed yet: the number
+  of draw calls per frame (the batcher flushes on every texture/mode change, so one call per distinct
+  sprite), the radar's unconditional 128x128 `glTexImage2D` every frame
+  (`ensure_minimap_texture`, `cs2d_render.c:3542`, called from the HUD draw at `:3643`), and the
+  per-entity sprite draws themselves. Measure those before optimising.
+
+### Batcher statistics / draw calls per frame (measured 2026-10-13)
+
+`CS2D_DRAWCALLS=1` (`src/main_client.c`, counts in `src/cs2d_gl.c`) prints what the batcher did,
+averaged over the run (`tools/agent/perf_gpu_frames.ps1 -DrawCalls`, `-Config 'key=val,…'` to also
+change a setting):
+
+| scene / setting | draws/frame | verts/frame | tex_switch/frame | mode_switch | max batch | GPU ms/frame |
+|---|---|---|---|---|---|---|
+| main menu (no map) | 22.0 | 138 | 21.0 | 0 | 12 | 0.24-0.26 |
+| `fun_roleplay`, `light 5 mapshadows 4` | **699.4** | 32,557 | **320.0** | 0 | 6,210 | 2.30-2.48 |
+| `fun_roleplay`, `light 0 mapshadows 0` | **426.2** | 14,348 | 63.6 | 0 | 3,312 | 1.74 |
+
+Reading:
+
+- **The batcher is already a LÖVE-style SpriteBatch, and the tileset already uses it**: one
+  streaming 65,536-vertex VBO, one `glDrawArrays` per flush, and the flush happens only on a texture
+  change, a primitive-mode change, an alpha-reference change or a full batch. The 32x32 tiles are one
+  texture with per-frame UVs, so the whole visible tile grid goes out in **one** call (`max_batch`
+  6,210 vertices = ~1,000 quads); `overflow/frame` is 0, so the vertex budget is never the limit.
+- **What limits it is a state change per sprite, not geometry**: 699 calls for only 32,557 vertices is
+  an **average batch of 47 vertices (~12 quads)**. 320 of those 699 calls are texture switches —
+  every `Env_Sprite` / `Env_Image` is its own `gfx/...` file, so consecutive sprites of different
+  files cannot merge. That is the same limitation LÖVE documents: a SpriteBatch only merges quads that
+  share the underlying image, which is why it wants an atlas.
+- **The light engine is the largest single block**: turning it off removes 273 of the 699 calls and
+  256 of the 320 texture switches (`light 0` vs the shipped settings above). Its passes draw from
+  several distinct images (room map, roof layers, occlusion, blur, stripes) with many small quads,
+  and its FBO binds flush the batch.
+- **The remaining ~360 calls (light off: 426 calls vs 64 texture switches) are not texture switches
+  either, and primitive-mode switches are 0** — they are blend-mode toggles (additive sprites) and the
+  explicit flushes of the light/target path, i.e. one call per state change again.
+- **Draw order cannot simply be sorted for batching**: the sprite passes follow the original's sweep
+  order (painter's order), so reordering to group by state would change what covers what. Only
+  *adjacent* same-state draws can merge — which is exactly what atlasing the sprite set buys, without
+  touching the order.
+
