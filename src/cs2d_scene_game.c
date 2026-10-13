@@ -1702,10 +1702,14 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
                                             roundf(client->cam_x), roundf(client->cam_y));
         }
     }
+    uint64_t freq = SDL_GetPerformanceFrequency();
+    uint64_t t0 = SDL_GetPerformanceCounter();
     cs2d_light_frame(&client->game.map, (int)roundf(client->cam_x), (int)roundf(client->cam_y), light_dt);
+    uint64_t t1 = SDL_GetPerformanceCounter();
 
     /* 1. Map Pass 0 & 1 (background, tileset, tile modifiers, ground entities, items, hostages) */
     cs2d_render_map_ex(&client->game.map, &client->tex_tileset, client->cam_x, client->cam_y, screen_w, screen_h);
+    uint64_t t2 = SDL_GetPerformanceCounter();
     bool tg = team_game(client);
     int  me = client->local_player_id;
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_GROUND, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
@@ -1737,10 +1741,12 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
 
     /* Breakable debris and explosions */
     cs2d_render_fx(&client->fx, &client->game.map, &client->tex_tileset, client->cam_x, client->cam_y);
+    uint64_t t3 = SDL_GetPerformanceCounter();
 
     /* 3. Map Pass 2 (Overhead entities: Env_Sprite, Env_Image over players, Env_Object trees/lamps, Shadow Map) */
     cs2d_render_map_overhead(&client->game.map, client->cam_x, client->cam_y, screen_w, screen_h);
     cs2d_light_draw_buffer();  /* DrawLayer2: the light buffer over the world, before the HUD */
+    uint64_t t4 = SDL_GetPerformanceCounter();
 
     /* 4. In-Game HUD (hud_nums.bmp, hud_symbols.bmp, hud_radar_advanced.png) */
     const cs2d_player_t *local_pl = &client->game.players[client->local_player_id];
@@ -1761,6 +1767,16 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
         cs2d_render_weapon_select(local_pl, &client->invsel, sel_x);
     } else {
         render_spectator_hud(client, screen_w, screen_h);
+    }
+    uint64_t t5 = SDL_GetPerformanceCounter();
+    static int g_print_render_pass = 0;
+    if (++g_print_render_pass == 60) {
+        printf("[game_render breakdown] light_frame=%.2fms map_pass01=%.2fms actors=%.2fms overhead=%.2fms hud=%.2fms\n",
+               (double)(t1 - t0)*1000.0/(double)freq,
+               (double)(t2 - t1)*1000.0/(double)freq,
+               (double)(t3 - t2)*1000.0/(double)freq,
+               (double)(t4 - t3)*1000.0/(double)freq,
+               (double)(t5 - t4)*1000.0/(double)freq);
     }
     if (client->build_menu_open) {
         if (local_pl->alive) render_build_menu(client);

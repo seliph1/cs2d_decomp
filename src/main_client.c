@@ -365,18 +365,30 @@ static int run_client_app(const char *cmdline)
         if (delta_time > 0.05f) delta_time = 0.05f;
 
         /* Update */
+        uint64_t t_up0 = SDL_GetPerformanceCounter();
         cs2d_client_update(&g_client, delta_time);
+        uint64_t t_up1 = SDL_GetPerformanceCounter();
 
         /* Render */
         cs2d_render_begin_frame();
         cs2d_client_render(&g_client, g_client.config.window_width, g_client.config.window_height);
+        uint64_t t_ren1 = SDL_GetPerformanceCounter();
         if (capture_cmd) {
             /* Capture mode: time update + render including GPU work (excludes the 16ms pacing delay) */
             glFinish();
             double work_ms = (double)(SDL_GetPerformanceCounter() - current_time) * 1000.0 / (double)freq;
+            uint64_t t_fin1 = SDL_GetPerformanceCounter();
+            double up_ms  = (double)(t_up1 - t_up0) * 1000.0 / (double)freq;
+            double ren_ms = (double)(t_ren1 - t_up1) * 1000.0 / (double)freq;
+            double gpu_ms = (double)(t_fin1 - t_ren1) * 1000.0 / (double)freq;
+            double work_ms = (double)(t_fin1 - current_time) * 1000.0 / (double)freq;
             frame_ms_sum += work_ms;
             frame_ms_count++;
             if (work_ms > frame_ms_max) frame_ms_max = work_ms;
+            if (frame_count == capture_frame - 1) {
+                printf("[profile] frame %d: total=%.2f ms (update=%.2f ms, render_cpu=%.2f ms, glFinish_gpu=%.2f ms)\n",
+                       frame_count, work_ms, up_ms, ren_ms, gpu_ms);
+            }
         }
         if (auto_screenshot && frame_count == 45) {
             save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot.bmp",
