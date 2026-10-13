@@ -5,27 +5,15 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
-- **First-frame freeze when a map is set up (measured 2026-10-12):** the first drawn frame costs
-  ~0.1 ms per map entity, because entity sprites are loaded lazily on their first draw
-  (`cs2d_render.c` ~1100, with no image cache in front of it) — 133 ms on `prison_funst3r` (1609
-  entities), 140 ms on `de_dust2`, **1447 ms on `fun_roleplay` (9902)**. `light 0`, `mapshadows 0`
-  and `drawradar 0` do not change it, so it is not the light engine, the map shadows or the radar.
-  The original builds its images at map load, behind the loading screen. Fix: preload the map's
-  entity sprites before the first frame, or spread the work over frames. Numbers: `KNOWLEDGE.md`
-  "Performance".
-  - **Not fully changed by the entity index (2026-10-12):** the passes now skip off-screen entities
-    (`KNOWLEDGE.md` "Performance", `test_entity_culling`), and an `Env_Sprite` with an explicit
-    `ints[0]` / `ints[1]` size is already skipped (and therefore *not loaded*) on the first frame. A
-    *texture sized* `Env_Sprite` / `Env_Image` is unculled on the frame that first draws it, so the preload
-    (or an image-header size probe at index build time, which would let the first frame cull those too) is
-    still owed. The freeze has **not** been re-timed since the culling landed.
-  - **Cache ceiling (found 2026-10-12, not yet fixed):** `CS2D_MAX_SPRITE_CACHE` is **64** and
-    `cs2d_gfx_get_sprite` returns `NULL` once the cache is full (`cs2d_render.c:1115`), so a map with
-    more than 64 distinct `Env_Sprite` / `Env_Image` paths *silently loses* every further sprite.
-    Any preload/limit must therefore also decide what replaces the fixed array (a real image cache,
-    or a greater cap), and the two numbers above (0.1 ms/entity, 1447 ms on `fun_roleplay`) need a
-    re-measure first: with a 64-entry ceiling only 64 loads can ever happen, so the per-entity cost
-    may partly be the failed-lookup path and not image decode. Verify before writing the fix.
+- **First-frame freeze when a map is set up (RESOLVED 2026-10-13):** resolved by preloading
+  and packing map entity sprites into atlas pages at map load (`game_load_map`, `cs2d_gfx_atlas_load_map`).
+  The 1447 ms freeze on `fun_roleplay` was transferred to load time (172.35 ms in `game_load_map` to load,
+  decode, dilate and pack 156 sprites into 2 atlas pages of 2048x2048), reducing the first drawn frame
+  time from 1447 ms to **7.7 ms** (187x improvement).
+- **Cache ceiling (RESOLVED 2026-10-13):** the fixed 64-entry array `CS2D_MAX_SPRITE_CACHE` was replaced
+  with a dynamically resized sprite cache (`sprite_cache`) backed by map texture atlas pages. Maps with
+  >64 distinct entity sprites (`fun_roleplay` has 157 distinct sprite/mask pairs) keep every sprite without
+  silently dropping any. Verified by regression test `test_sprite_atlas_packer`.
 - **Two entity types are still never culled (2026-10-12, `cs2d_render.c` `entity_cull_margin`):**
   `Env_Object` (417 in `fun_roleplay`) draws its palm / tree leaves at `size * 30 px` offsets plus
   texture sized flares, and a texture sized `Env_Image` draws at its whole texture size, so neither has a
@@ -40,22 +28,14 @@ the same one.
   Decide whether to reproduce the original's cap; it is the biggest lever for the GPU number the user
   sees whenever VSync is off. Numbers: `KNOWLEDGE.md` "Performance" (2026-10-13).
 - **GPU per frame, not yet optimised (measured 2026-10-13):** a drawn `fun_roleplay` frame costs
-  **2.0-2.5 ms of GPU** (main menu: 0.24 ms, so the cost is the world pass, not the present path):
+  **1.75 ms of GPU with light** (down from 1.91-2.48 ms before entity atlasing; 1.32 ms with `light 0 mapshadows 0`):
   ~40 % of the steady-state load is the light engine + map shadows (`light 5 mapshadows 4`); MSAA 4x is
   within the run-to-run spread but costs ~1.1 ms of CPU per frame (`CS2D_MSAA=0` in `src/main_client.c`
-  turns it off). Still unattributed, so measure before optimising:
-  - **draw calls per frame (measured 2026-10-13):** `fun_roleplay` issues **699 draw calls/frame for
-    32,557 vertices** (average batch 47 vertices ≈ 12 quads; max batch 6,210, so the 65,536-vertex
-    budget is never hit). **320** of those calls are texture switches — each `Env_Sprite` /
-    `Env_Image` is its own `gfx/...` file — and the light engine is the largest single block (273
-    calls and 256 texture switches disappear with `light 0`). The remaining ~360 are blend toggles
-    and explicit target flushes (primitive-mode switches are 0). **The batcher is already a
-    SpriteBatch and the tileset already rides it** (one call for the whole visible tile grid), so the
-    next win is the same one LÖVE documents for `SpriteBatch` + atlas: **pack the entity/light sprite
-    set into atlases** (they are small BMP/PNG files) so that *adjacent* draws of different sprites
-    share one texture. Reordering the draws to group by state is **not** an option: the sprite passes
-    follow the original's painter's order. Numbers: `KNOWLEDGE.md` "Performance" (2026-10-13);
-    re-measure with `perf_gpu_frames.ps1 -DrawCalls`.
+  turns it off). Still unattributed or pending optimization:
+  - **light engine draw calls & texture switches:** 273 calls and 256 texture switches disappear
+    with `light 0`; packing the light engine's internal texture set (room map, roof layers, occlusion,
+    blur, stripes) remains the next atlasing target. Entity sprites (`Env_Sprite` / `Env_Image`) are
+    already atlased (2026-10-13).
   - **the radar's unconditional upload** — `ensure_minimap_texture` (`cs2d_render.c:3481`) builds a
     128x128 RGBA buffer in a nested loop and calls `glTexImage2D` (new storage) on **every frame**, from
     the HUD draw at `cs2d_render.c:3643`; the minimap only changes when the player moves a tile;

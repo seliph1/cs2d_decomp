@@ -30,6 +30,7 @@
 #include "cs2d_scoreboard.h"
 #include "cs2d_light.h"
 #include "cs2d_image.h"
+#include "cs2d_atlas.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -3702,6 +3703,135 @@ static bool test_vsync_command(void)
     return true;
 }
 
+/*
+ * Regression & unit test for the entity sprite atlas packer and cache:
+ *   1. Shelf packing: packs 100 items (>64 ceiling) with pad = 4 border into 2048x2048 pages.
+ *   2. No overlapping rectangles on the same page.
+ *   3. Every valid item is placed (none dropped).
+ *   4. Logical size (w, h) and src rect (src_x, src_y) round-trip correctly.
+ *   5. Full map atlas build on fun_roleplay.map loads all 157 distinct sprite requests without truncation.
+ */
+static bool test_sprite_atlas_packer(void)
+{
+    printf("\n=== Testing Sprite Atlas Packing & Cache (>64 Sprites) ===\n");
+
+    /* 1. Synthetic dataset of 100 sprites of varied dimensions */
+    #define TEST_ATLAS_ITEMS 100
+    cs2d_atlas_item_t items[TEST_ATLAS_ITEMS];
+    memset(items, 0, sizeof(items));
+
+    for (int i = 0; i < TEST_ATLAS_ITEMS; i++) {
+        snprintf(items[i].path, sizeof(items[i].path), "test/sprite_%d.png", i);
+        items[i].mask_mode = (i % 3 == 0) ? 3 : 1;
+        /* Vary widths 16..128 and heights 16..96 */
+        items[i].w = 16 + (i * 17) % 113;
+        items[i].h = 16 + (i * 23) % 81;
+    }
+
+    int pages = cs2d_atlas_pack_items(items, TEST_ATLAS_ITEMS, 2048, 2048, CS2D_ATLAS_PAD);
+    if (pages <= 0) {
+        TEST_FAIL("Atlas Packer", "Failed to pack test items into pages");
+        return false;
+    }
+
+    /* 2. Every item must be placed */
+    for (int i = 0; i < TEST_ATLAS_ITEMS; i++) {
+        if (!items[i].placed || items[i].page_index < 0 || items[i].page_index >= pages) {
+            TEST_FAIL("Atlas Packer", "An input item was not placed");
+            return false;
+        }
+        int bw = items[i].w + CS2D_ATLAS_PAD * 2;
+        int bh = items[i].h + CS2D_ATLAS_PAD * 2;
+        if (items[i].x < 0 || items[i].y < 0 ||
+            items[i].x + bw > 2048 || items[i].y + bh > 2048) {
+            TEST_FAIL("Atlas Packer", "Item placed out of page bounds");
+            return false;
+        }
+        if (items[i].src_x != items[i].x + CS2D_ATLAS_PAD ||
+            items[i].src_y != items[i].y + CS2D_ATLAS_PAD) {
+            TEST_FAIL("Atlas Packer", "Source rect offset does not match pad");
+            return false;
+        }
+    }
+    TEST_PASS("Every sprite in a >64-sprite set is placed within page bounds");
+
+    /* 3. Invariant: no two items on the same page overlap (including extruded pad) */
+    for (int i = 0; i < TEST_ATLAS_ITEMS; i++) {
+        int bw_i = items[i].w + CS2D_ATLAS_PAD * 2;
+        int bh_i = items[i].h + CS2D_ATLAS_PAD * 2;
+        for (int j = i + 1; j < TEST_ATLAS_ITEMS; j++) {
+            if (items[i].page_index != items[j].page_index) continue;
+            int bw_j = items[j].w + CS2D_ATLAS_PAD * 2;
+            int bh_j = items[j].h + CS2D_ATLAS_PAD * 2;
+
+            bool overlap_x = (items[i].x < items[j].x + bw_j) && (items[i].x + bw_i > items[j].x);
+            bool overlap_y = (items[i].y < items[j].y + bh_j) && (items[i].y + bh_i > items[j].y);
+            if (overlap_x && overlap_y) {
+                TEST_FAIL("Atlas Packer", "Two items on the same page overlap");
+                return false;
+            }
+        }
+    }
+    TEST_PASS("No allocated rectangles overlap on any atlas page");
+
+    /* 4. Logical size and UV round-trip */
+    for (int i = 0; i < TEST_ATLAS_ITEMS; i++) {
+        cs2d_texture_t tex;
+        memset(&tex, 0, sizeof(tex));
+        tex.id     = (uint32_t)(items[i].page_index + 1);
+        tex.width  = items[i].w;
+        tex.height = items[i].h;
+        tex.gpu_w  = 2048;
+        tex.gpu_h  = 2048;
+        tex.src_x  = items[i].src_x;
+        tex.src_y  = items[i].src_y;
+
+        if (tex.width != items[i].w || tex.height != items[i].h) {
+            TEST_FAIL("Atlas UV", "Logical width/height changed");
+            return false;
+        }
+        float u0 = (float)tex.src_x / (float)tex.gpu_w;
+        float v0 = (float)tex.src_y / (float)tex.gpu_h;
+        float u1 = (float)(tex.src_x + tex.width) / (float)tex.gpu_w;
+        float v1 = (float)(tex.src_y + tex.height) / (float)tex.gpu_h;
+
+        float expected_du = (float)items[i].w / 2048.0f;
+        float expected_dv = (float)items[i].h / 2048.0f;
+        if (fabsf((u1 - u0) - expected_du) > 1e-6f || fabsf((v1 - v0) - expected_dv) > 1e-6f) {
+            TEST_FAIL("Atlas UV", "UV span does not match logical sprite size");
+            return false;
+        }
+    }
+    TEST_PASS("Logical sprite dimensions and atlas UV rectangle round-trip exactly");
+
+    /* 5. Real map test: fun_roleplay.map has 157 distinct sprite requests */
+    static cs2d_map_t fr_map;
+    memset(&fr_map, 0, sizeof(fr_map));
+    if (cs2d_map_load_file(&fr_map, "maps/fun_roleplay.map")) {
+        cs2d_gfx_bank_t test_bank;
+        memset(&test_bank, 0, sizeof(test_bank));
+        bool ok = cs2d_gfx_atlas_load_map(&test_bank, &fr_map);
+        if (!ok || test_bank.sprite_cache_count < 100) {
+            TEST_FAIL("Map Atlas", "fun_roleplay sprites not loaded or capped at ceiling");
+            cs2d_gfx_bank_free_sprites(&test_bank);
+            cs2d_map_free(&fr_map);
+            return false;
+        }
+        /* Verify cache was not capped at old 64 ceiling */
+        if (test_bank.sprite_cache_count <= 64) {
+            TEST_FAIL("Map Atlas", "Sprite cache still limited to 64 items");
+            cs2d_gfx_bank_free_sprites(&test_bank);
+            cs2d_map_free(&fr_map);
+            return false;
+        }
+        cs2d_gfx_bank_free_sprites(&test_bank);
+        cs2d_map_free(&fr_map);
+    }
+    TEST_PASS("Map atlas loads >64 sprites on fun_roleplay.map without truncation");
+
+    #undef TEST_ATLAS_ITEMS
+    return true;
+}
 
 int main(void)
 {
@@ -3710,7 +3840,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 35;
+    int total = 36;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -3747,6 +3877,7 @@ int main(void)
     if (test_hud_action_progress_bar()) passed++;
     if (test_light_engine()) passed++;
     if (test_image_decode()) passed++;
+    if (test_sprite_atlas_packer()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

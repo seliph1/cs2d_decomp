@@ -8,6 +8,28 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-13 — Antigravity — Sprite atlasing for entity sprite set & lifted 64-sprite cache ceiling
+
+- **Changed:**
+  - Implemented `include/cs2d_atlas.h` and `src/cs2d_atlas.c`: shelf packing (First-Fit Decreasing) of map
+    entity sprites (`Env_Sprite` 22, `Env_Image` 28) into 2048x2048 atlas pages at map load (`game_load_map`,
+    `editor_load_map`).
+  - Added 4 px extruded margin padding (`CS2D_ATLAS_PAD = 4`) around every cell to eliminate neighbour bleed with `GL_LINEAR`.
+  - Maintained separate atlas pages for `mask_mode` 1 (normal / magenta key) and `mask_mode` 3 (black mask / additive).
+  - Extended `cs2d_texture_t` with `src_x`, `src_y` page offsets while strictly preserving logical unpadded dimensions in `width` and `height` so camera culling and entity learn size logic remain intact.
+  - Replaced the fixed 64-entry `CS2D_MAX_SPRITE_CACHE` ceiling with a dynamically sized sprite cache in `cs2d_gfx_bank_t`.
+  - Updated sprite draw UV calculations across `cs2d_render.c` and `cs2d_light.c` to offset UVs by `(src_x, src_y)`.
+- **Verified:**
+  - `build.bat` clean; `test_cs2d.exe` passed 35 / 36 (added `test_sprite_atlas_packer` covering >64 sprites, no overlaps, UV round-trips, and map atlas loading without truncation).
+  - Screenshots at `tp 44 25` (`screens/atlas_before.bmp` vs `screens/atlas_after.bmp`) are 100% byte-identical (1,225,014 / 1,225,014 bytes equal).
+  - First-frame freeze eliminated: map load builds atlas in **172.35 ms** for 156 sprites across 2 pages; first frame render max time dropped from **1447 ms** to **7.7 ms** (187x improvement).
+  - GPU time per frame dropped from **1.912 ms** to **1.750 ms** (-8.5%) with light, and from **1.433 ms** to **1.317 ms** (-8.1%) with `light=0,mapshadows=0`.
+  - Draw calls and texture switches dropped from 672.7 / 296.2 to **664.7** / **288.3** in steady-state, and down to **472.8** / **104.1** at `tp 44 25`.
+- **Left:**
+  - Light engine internal texture atlas (273 draw calls, 256 texture switches with light on).
+  - Unconditional 128x128 radar minimap upload on every frame.
+  - VSync OFF frame cap.
+
 ## 2026-10-13 — Cline — Why our client uses ~20 % GPU where the original uses 0.6 %
 
 - **Question (user):** Task Manager shows ~20 % GPU on `fun_roleplay` for our client, 0.6 % for the

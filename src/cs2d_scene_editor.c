@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "cs2d_light.h"
+#include "cs2d_atlas.h"
 
 /*
  * Editor scene: the map editor (GUI built by FUN_1401a85f0, loop FUN_1402bf960, CS2D.exe).
@@ -109,6 +110,7 @@ static bool editor_load_map(cs2d_client_t *client, const char *name)
     client->editor_map = loaded;
     snprintf(client->editor_map_name, sizeof(client->editor_map_name), "%s", name);
     editor_load_tileset(client, false);
+    cs2d_gfx_atlas_load_map(cs2d_render_get_gfx_bank(), &client->editor_map);
     client->editor_cam_x = 0.0f;
     client->editor_cam_y = 0.0f;
     cs2d_client_console_print(client, 170, 170, 170, "editor: map '%s' (%ux%u, tileset: %s)",

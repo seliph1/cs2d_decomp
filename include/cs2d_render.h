@@ -8,24 +8,42 @@
 
 typedef struct SDL_Window SDL_Window;
 
-#define CS2D_MAX_SPRITE_CACHE 64
-
+/*
+ * Central design decision:
+ * In a heterogeneous sprite atlas, tex->width and tex->height remain the sprite's
+ * unpadded logical dimensions (required for view-culling margins and learn_size),
+ * while tex->id points to the shared OpenGL texture atlas page.
+ * tex->gpu_w and tex->gpu_h store the page dimensions (e.g. 2048x2048),
+ * and tex->src_x and tex->src_y store the pixel coordinates of the unpadded sprite
+ * inside the atlas page (after the extruded pad border).
+ * For standalone textures, src_x = 0, src_y = 0.
+ */
 typedef struct {
-    uint32_t id;       /* OpenGL Texture ID */
+    uint32_t id;       /* OpenGL Texture ID (or atlas page ID) */
     int      width;    /* Logical unpadded image width */
     int      height;   /* Logical unpadded image height */
-    int      gpu_w;    /* Actual GPU texture width (with per-cell padding) */
-    int      gpu_h;    /* Actual GPU texture height (with per-cell padding) */
+    int      gpu_w;    /* Actual GPU texture width (with per-cell padding or page width) */
+    int      gpu_h;    /* Actual GPU texture height (with per-cell padding or page height) */
     int      cell_w;   /* Cell width when built as a padded cell atlas (0 = single frame) */
     int      cell_h;   /* Cell height when built as a padded cell atlas (0 = single frame) */
     int      pad;      /* Per-side pixel border extruded around each cell */
+    int      src_x;    /* Pixel offset X within GPU texture / atlas page */
+    int      src_y;    /* Pixel offset Y within GPU texture / atlas page */
 } cs2d_texture_t;
 
 typedef struct {
     char           path[128];
     int            mask_mode;
     cs2d_texture_t tex;
+    bool           is_atlas;
 } cs2d_sprite_cache_entry_t;
+
+typedef struct {
+    uint32_t id;
+    int      width;
+    int      height;
+    int      mask_mode;
+} cs2d_atlas_page_t;
 
 /*
  * Complete CS2D Graphics Asset Bank (reconstructed from Tgfx descriptors
@@ -108,9 +126,13 @@ typedef struct {
     uint32_t                  minimap_w;
     uint32_t                  minimap_h;
 
-    /* Dynamic Cache for Env_Sprite (22) and Env_Image (28) */
-    cs2d_sprite_cache_entry_t sprite_cache[CS2D_MAX_SPRITE_CACHE];
-    int                       sprite_cache_count;
+    /* Dynamic Cache for Env_Sprite (22) and Env_Image (28), and Atlas Pages */
+    cs2d_sprite_cache_entry_t *sprite_cache;
+    int                        sprite_cache_count;
+    int                        sprite_cache_cap;
+    cs2d_atlas_page_t         *atlas_pages;
+    int                        atlas_page_count;
+    int                        atlas_page_cap;
 } cs2d_gfx_bank_t;
 
 /* Initialize OpenGL rendering on an SDL3 window (with 4x MSAA) */
@@ -143,9 +165,17 @@ void cs2d_render_build_helper(int ptx, int pty, int tx, int ty, bool ok, float c
 /* Load and manage global/client CS2D graphics bank */
 bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank);
 void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank);
+void cs2d_gfx_bank_free_sprites(cs2d_gfx_bank_t *bank);
 cs2d_gfx_bank_t *cs2d_render_get_gfx_bank(void);
 const cs2d_texture_t *cs2d_gfx_get_sprite(cs2d_gfx_bank_t *bank, const char *rel_path, bool black_mask);
 const cs2d_texture_t *cs2d_render_get_projectile_texture(uint8_t type);
+
+/* Image processing & atlas page upload helpers */
+void cs2d_render_apply_mask_mode(uint32_t *rgba, int count, bool has_embedded_alpha, int mask_mode);
+void cs2d_render_dilate_transparent(uint32_t *rgba, int w, int h, int cell_w, int cell_h);
+uint32_t *cs2d_render_downsample_2x(const uint32_t *src, int src_w, int src_h, int *out_w, int *out_h);
+uint32_t cs2d_render_upload_atlas_page(const uint32_t *rgba, int w, int h);
+bool cs2d_render_has_context(void);
 
 /* Texture loading (supports CS2D maskMode 0=opaque, 1=black key, 2=magenta/alpha, 3=luminance-to-alpha, plus padded cell atlases) */
 bool cs2d_texture_load_grid(cs2d_texture_t *tex, const char *filepath, int mask_mode, int cell_w, int cell_h);

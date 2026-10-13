@@ -315,10 +315,10 @@ static void image_uv(const light_image_t *im, int frame, float *u0, float *v0, f
     float gw = (float)(t->gpu_w ? t->gpu_w : t->width), gh = (float)(t->gpu_h ? t->gpu_h : t->height);
     int pad = t->pad, sx = cw + pad * 2, sy = ch + pad * 2;
     if (t->cell_w <= 0) { sx = cw; sy = ch; pad = 0; }
-    *u0 = (float)(col * sx + pad) / gw;
-    *v0 = (float)(row * sy + pad) / gh;
-    *u1 = (float)(col * sx + pad + cw) / gw;
-    *v1 = (float)(row * sy + pad + ch) / gh;
+    *u0 = (float)(t->src_x + col * sx + pad) / gw;
+    *v0 = (float)(t->src_y + row * sy + pad) / gh;
+    *u1 = (float)(t->src_x + col * sx + pad + cw) / gw;
+    *v1 = (float)(t->src_y + row * sy + pad + ch) / gh;
     *fw = (float)cw;
     *fh = (float)ch;
 }

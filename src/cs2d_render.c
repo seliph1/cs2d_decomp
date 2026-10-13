@@ -19,6 +19,11 @@ static int             g_viewport_w = 850;
 static int             g_viewport_h = 480;
 static cs2d_gfx_bank_t g_gfx_bank;
 
+bool cs2d_render_has_context(void)
+{
+    return g_gl_ctx != NULL;
+}
+
 /*
  * Image files are decoded by the portable asset decoder (src/cs2d_image.c). GDI+ is no longer part
  * of that path: the only thing still starting gdiplus.dll is the TrueType text engine further down.
@@ -110,7 +115,7 @@ static void set_player_shadow_offset(const cs2d_map_t *map)
  *   mask_mode == 3: Grayscale luminance-to-alpha mask (0.21*R + 0.72*G + 0.07*B -> A, RGB = 255,255,255)
  *                   (shadowmap.bmp, decals.bmp, flare1.bmp, flare3.bmp, fragments.bmp, blood.bmp)
  */
-static void apply_cs2d_mask_mode(uint32_t *rgba, int total_px, bool has_embedded_alpha, int mask_mode)
+void cs2d_render_apply_mask_mode(uint32_t *rgba, int total_px, bool has_embedded_alpha, int mask_mode)
 {
     for (int i = 0; i < total_px; i++) {
         uint32_t px = rgba[i];
@@ -161,7 +166,7 @@ static void apply_cs2d_mask_mode(uint32_t *rgba, int total_px, bool has_embedded
  * Prevents magenta (255,0,255) or black (0,0,0) color fringes when rotated
  * or scaled sprites are sampled with GL_LINEAR bilinear filtering.
  */
-static void dilate_transparent_rgb(uint32_t *rgba, int w, int h, int cell_w, int cell_h)
+void cs2d_render_dilate_transparent(uint32_t *rgba, int w, int h, int cell_w, int cell_h)
 {
     if (!rgba || w <= 0 || h <= 0) return;
 
@@ -231,7 +236,7 @@ static void dilate_transparent_rgb(uint32_t *rgba, int w, int h, int cell_w, int
  * Alpha-weighted 2x2 box downsampler for generating clean mipmap levels
  * without dark/transparent border bleeding.
  */
-static uint32_t *downsample_rgba_2x(const uint32_t *src, int src_w, int src_h, int *out_w, int *out_h)
+uint32_t *cs2d_render_downsample_2x(const uint32_t *src, int src_w, int src_h, int *out_w, int *out_h)
 {
     int dst_w = (src_w > 1) ? (src_w / 2) : 1;
     int dst_h = (src_h > 1) ? (src_h / 2) : 1;
@@ -312,8 +317,8 @@ static void upload_rgba_to_texture(
     int cell_w, int cell_h
 )
 {
-    apply_cs2d_mask_mode(rgba, w * h, has_embedded_alpha, mask_mode);
-    dilate_transparent_rgb(rgba, w, h, cell_w, cell_h);
+    cs2d_render_apply_mask_mode(rgba, w * h, has_embedded_alpha, mask_mode);
+    cs2d_render_dilate_transparent(rgba, w, h, cell_w, cell_h);
     if (s_capture && !s_capture->px) {
         s_capture->px = (uint32_t *)malloc((size_t)w * (size_t)h * 4);
         if (s_capture->px) {
@@ -378,11 +383,11 @@ static void upload_rgba_to_texture(
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)gpu_w, (GLsizei)gpu_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, upload_buf);
 
         int m1_w = 0, m1_h = 0;
-        uint32_t *mip1 = (gpu_w >= 4 && gpu_h >= 4) ? downsample_rgba_2x(upload_buf, gpu_w, gpu_h, &m1_w, &m1_h) : NULL;
+        uint32_t *mip1 = (gpu_w >= 4 && gpu_h >= 4) ? cs2d_render_downsample_2x(upload_buf, gpu_w, gpu_h, &m1_w, &m1_h) : NULL;
         if (mip1) {
             glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA, (GLsizei)m1_w, (GLsizei)m1_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, mip1);
             int m2_w = 0, m2_h = 0;
-            uint32_t *mip2 = (m1_w >= 4 && m1_h >= 4) ? downsample_rgba_2x(mip1, m1_w, m1_h, &m2_w, &m2_h) : NULL;
+            uint32_t *mip2 = (m1_w >= 4 && m1_h >= 4) ? cs2d_render_downsample_2x(mip1, m1_w, m1_h, &m2_w, &m2_h) : NULL;
             if (mip2) {
                 glTexImage2D(GL_TEXTURE_2D, 2, GL_RGBA, (GLsizei)m2_w, (GLsizei)m2_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, mip2);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 2);
@@ -411,6 +416,44 @@ static void upload_rgba_to_texture(
     tex->cell_w = (pad > 0) ? cell_w : 0;
     tex->cell_h = (pad > 0) ? cell_h : 0;
     tex->pad    = pad;
+    tex->src_x  = 0;
+    tex->src_y  = 0;
+}
+
+uint32_t cs2d_render_upload_atlas_page(const uint32_t *rgba, int w, int h)
+{
+    if (!rgba || w <= 0 || h <= 0 || !g_gl_ctx) return 0;
+
+    GLuint tid = 0;
+    glGenTextures(1, &tid);
+    glBindTexture(GL_TEXTURE_2D, tid);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+
+    int m1_w = 0, m1_h = 0;
+    uint32_t *mip1 = (w >= 4 && h >= 4) ? cs2d_render_downsample_2x(rgba, w, h, &m1_w, &m1_h) : NULL;
+    if (mip1) {
+        glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA, (GLsizei)m1_w, (GLsizei)m1_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, mip1);
+        int m2_w = 0, m2_h = 0;
+        uint32_t *mip2 = (m1_w >= 4 && m1_h >= 4) ? cs2d_render_downsample_2x(mip1, m1_w, m1_h, &m2_w, &m2_h) : NULL;
+        if (mip2) {
+            glTexImage2D(GL_TEXTURE_2D, 2, GL_RGBA, (GLsizei)m2_w, (GLsizei)m2_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, mip2);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 2);
+            free(mip2);
+        } else {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 1);
+        }
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        free(mip1);
+    } else {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    }
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return (uint32_t)tid;
 }
 
 /* Applies the CS2D mask mode to a decoded image and uploads it (the pixels are modified in place) */
@@ -1094,10 +1137,38 @@ void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank)
     cs2d_texture_free(&bank->tex_pointer);
     cs2d_texture_free(&bank->tex_minimap);
 
-    for (int i = 0; i < bank->sprite_cache_count; i++) {
-        cs2d_texture_free(&bank->sprite_cache[i].tex);
-    }
+    cs2d_gfx_bank_free_sprites(bank);
     memset(bank, 0, sizeof(*bank));
+}
+
+void cs2d_gfx_bank_free_sprites(cs2d_gfx_bank_t *bank)
+{
+    if (!bank) return;
+
+    if (bank->atlas_pages) {
+        for (int i = 0; i < bank->atlas_page_count; i++) {
+            if (bank->atlas_pages[i].id && g_gl_ctx) {
+                GLuint tid = (GLuint)bank->atlas_pages[i].id;
+                glDeleteTextures(1, &tid);
+            }
+        }
+        free(bank->atlas_pages);
+        bank->atlas_pages = NULL;
+    }
+    bank->atlas_page_count = 0;
+    bank->atlas_page_cap = 0;
+
+    if (bank->sprite_cache) {
+        for (int i = 0; i < bank->sprite_cache_count; i++) {
+            if (!bank->sprite_cache[i].is_atlas) {
+                cs2d_texture_free(&bank->sprite_cache[i].tex);
+            }
+        }
+        free(bank->sprite_cache);
+        bank->sprite_cache = NULL;
+    }
+    bank->sprite_cache_count = 0;
+    bank->sprite_cache_cap = 0;
 }
 
 const cs2d_texture_t *cs2d_gfx_get_sprite(cs2d_gfx_bank_t *bank, const char *rel_path, bool black_mask)
@@ -1106,17 +1177,27 @@ const cs2d_texture_t *cs2d_gfx_get_sprite(cs2d_gfx_bank_t *bank, const char *rel
 
     int mask_mode = black_mask ? 3 : 1;
     for (int i = 0; i < bank->sprite_cache_count; i++) {
-        if (_stricmp(bank->sprite_cache[i].path, rel_path) == 0 &&
-            bank->sprite_cache[i].mask_mode == mask_mode) {
+        if (bank->sprite_cache[i].mask_mode == mask_mode &&
+            _stricmp(bank->sprite_cache[i].path, rel_path) == 0) {
             return bank->sprite_cache[i].tex.id ? &bank->sprite_cache[i].tex : NULL;
         }
     }
 
-    if (bank->sprite_cache_count >= CS2D_MAX_SPRITE_CACHE) return NULL;
+    /* Expand dynamic sprite cache capacity when needed (lifts the 64-sprite cache ceiling) */
+    if (bank->sprite_cache_count >= bank->sprite_cache_cap) {
+        int new_cap = bank->sprite_cache_cap ? bank->sprite_cache_cap * 2 : 256;
+        cs2d_sprite_cache_entry_t *new_cache = (cs2d_sprite_cache_entry_t *)realloc(
+            bank->sprite_cache, (size_t)new_cap * sizeof(cs2d_sprite_cache_entry_t));
+        if (!new_cache) return NULL;
+        bank->sprite_cache = new_cache;
+        bank->sprite_cache_cap = new_cap;
+    }
 
     cs2d_sprite_cache_entry_t *entry = &bank->sprite_cache[bank->sprite_cache_count++];
+    memset(entry, 0, sizeof(*entry));
     snprintf(entry->path, sizeof(entry->path), "%s", rel_path);
     entry->mask_mode = mask_mode;
+    entry->is_atlas  = false;
 
     if (!cs2d_texture_load_ex(&entry->tex, rel_path, mask_mode)) {
         char alt[160];
@@ -1215,15 +1296,17 @@ void cs2d_render_sprite_frame(
     if (tex->pad > 0 && tex->cell_w == cell_w && tex->cell_h == cell_h && tex->gpu_w > 0 && tex->gpu_h > 0) {
         int stride_x = cell_w + tex->pad * 2;
         int stride_y = cell_h + tex->pad * 2;
-        u0 = (float)(col * stride_x + tex->pad) / (float)tex->gpu_w;
-        v0 = (float)(row * stride_y + tex->pad) / (float)tex->gpu_h;
-        u1 = (float)(col * stride_x + tex->pad + cell_w) / (float)tex->gpu_w;
-        v1 = (float)(row * stride_y + tex->pad + cell_h) / (float)tex->gpu_h;
+        u0 = (float)(tex->src_x + col * stride_x + tex->pad) / (float)tex->gpu_w;
+        v0 = (float)(tex->src_y + row * stride_y + tex->pad) / (float)tex->gpu_h;
+        u1 = (float)(tex->src_x + col * stride_x + tex->pad + cell_w) / (float)tex->gpu_w;
+        v1 = (float)(tex->src_y + row * stride_y + tex->pad + cell_h) / (float)tex->gpu_h;
     } else {
-        u0 = (float)(col * cell_w) / (float)tex->width;
-        v0 = (float)(row * cell_h) / (float)tex->height;
-        u1 = (float)((col + 1) * cell_w) / (float)tex->width;
-        v1 = (float)((row + 1) * cell_h) / (float)tex->height;
+        float gw = (float)(tex->gpu_w > 0 ? tex->gpu_w : tex->width);
+        float gh = (float)(tex->gpu_h > 0 ? tex->gpu_h : tex->height);
+        u0 = (float)(tex->src_x + col * cell_w) / gw;
+        v0 = (float)(tex->src_y + row * cell_h) / gh;
+        u1 = (float)(tex->src_x + (col + 1) * cell_w) / gw;
+        v1 = (float)(tex->src_y + (row + 1) * cell_h) / gh;
     }
 
     /* CS2D Blend Modes: 3/4 = Light/Additive, 5/6 = Shade, 0 = Alpha */
@@ -2716,6 +2799,14 @@ static uint8_t entity_cull_margin(const cs2d_entity_t *ent)
         case CS2D_ENT_ENV_NPC:
         case CS2D_ENT_TRIGGER_USE:
             return 2;
+        case CS2D_ENT_ENV_OBJECT: {
+            /* Palms & trees have radius around tile center proportional to size string (max ~150-200px) */
+            float sz = ent->str_settings[0][0] ? (float)atof(ent->str_settings[0]) : 1.0f;
+            if (sz < 0.1f) sz = 1.0f;
+            if (sz > 4.0f) sz = 4.0f;
+            int radius_px = (int)(sz * 70.0f) + 32;
+            return (uint8_t)((radius_px / CS2D_TILE_SIZE) + 2);
+        }
         case CS2D_ENT_ENV_SPRITE:
             /* ints[0] / ints[1] are the size when > 0; the texture size is learned on the first draw
              * (cs2d_render_entity_learn_size), until then the sprite is not culled */
@@ -3493,6 +3584,17 @@ static void ensure_minimap_texture(cs2d_gfx_bank_t *bank, const cs2d_map_t *map,
     float player_px = player ? player->pos.x : ((float)map->width * CS2D_TILE_SIZE * 0.5f);
     float player_py = player ? player->pos.y : ((float)map->height * CS2D_TILE_SIZE * 0.5f);
 
+    static float s_last_player_px = -9999.0f, s_last_player_py = -9999.0f;
+    static const cs2d_map_t *s_last_minimap_map = NULL;
+    if (s_last_minimap_map == map && bank->tex_minimap.id != 0 &&
+        fabsf(player_px - s_last_player_px) < 0.5f &&
+        fabsf(player_py - s_last_player_py) < 0.5f) {
+        return;
+    }
+    s_last_player_px = player_px;
+    s_last_player_py = player_py;
+    s_last_minimap_map = map;
+
     /* The original radar draws the minimap at scale * 0.0625 world px per radar px
      * (16 world px = half a tile = one full-map minimap px) -> 2 radar px per tile. */
     const float world_per_px = 16.0f;
@@ -3532,14 +3634,16 @@ static void ensure_minimap_texture(cs2d_gfx_bank_t *bank, const cs2d_map_t *map,
         bank->tex_minimap.id     = gl_id;
         bank->tex_minimap.width  = 128;
         bank->tex_minimap.height = 128;
+        glBindTexture(GL_TEXTURE_2D, bank->tex_minimap.id);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 128, 128, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    } else {
+        glBindTexture(GL_TEXTURE_2D, bank->tex_minimap.id);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 128, 128, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     }
-
-    glBindTexture(GL_TEXTURE_2D, bank->tex_minimap.id);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 128, 128, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 

@@ -9,6 +9,7 @@
 #include <string.h>
 #include <math.h>
 #include "cs2d_light.h"
+#include "cs2d_atlas.h"
 #include <SDL3/SDL.h>
 
 /*
@@ -407,6 +408,7 @@ static bool game_load_map(cs2d_client_t *client, const char *map_name)
     cs2d_texture_load_tileset(&client->tex_tileset, client->game.map.tileset);
     cs2d_render_invalidate_shadows();
     cs2d_light_load_map(&client->game.map);
+    cs2d_gfx_atlas_load_map(cs2d_render_get_gfx_bank(), &client->game.map);
     cs2d_game_start_round(&client->game);
 
     /* Entity logic: offline the client runs it (round start fires every Trigger_Start);

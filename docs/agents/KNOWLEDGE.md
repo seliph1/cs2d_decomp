@@ -1005,12 +1005,11 @@ printed the split; the instrumentation was removed again (see `WORKLOG.md`).
   "avg ms/frame" is CPU+GPU work only and its FPS is the harness's, never the game's; it also resets
   the stats at every step, so the first-frame freeze never appears in its output. To measure real
   pacing, run without `--capture` (see `WORKLOG.md` for the removed temporary mode, or add a new one).
-- **Sprite cache ceiling:** `cs2d_gfx_get_sprite` (`cs2d_render.c:1103`) is a fixed 64-entry array
-  (`CS2D_MAX_SPRITE_CACHE`, `include/cs2d_render.h:11`) keyed by (path, maskMode), and returns `NULL`
-  when full (`:1115`) — the entity is then simply not drawn. Lookup is a linear `_stricmp` scan, so
-  the failed-lookup path is at most 64 string compares per entity (cheap); the two numbers above
-  therefore need a re-measure with the load time counted explicitly before the freeze is attributed
-  to image decode.
+- **Sprite cache ceiling (lifted 2026-10-13, `src/cs2d_atlas.c`, `src/cs2d_render.c`):** the fixed
+  64-entry array `CS2D_MAX_SPRITE_CACHE` was replaced with a dynamic cache `bank->sprite_cache`
+  populated from map atlas pages at map load. Maps with >64 distinct sprite paths (`fun_roleplay` has
+  157 distinct sprite/mask pairs) no longer drop any sprites. Lookup remains linear `_stricmp` but is
+  performed against pre-loaded textures in memory with no lazy disk I/O.
 - **Entity index & view culling (added 2026-10-12, `src/cs2d_render.c` "Entity index & view culling"):**
   measured with a `.map` parse: `fun_roleplay` is 360x512 tiles (184,320) with 9901 entities (`22`=2112
   Env_Sprite, `71`=1907 Func_DynWall, `23`=769 Env_Sound, `93`=659 Trigger_Use, `33`=561 Env_Light, …) and
@@ -1107,4 +1106,35 @@ Reading:
   order (painter's order), so reordering to group by state would change what covers what. Only
   *adjacent* same-state draws can merge — which is exactly what atlasing the sprite set buys, without
   touching the order.
+
+### Entity sprite atlasing & batching wins (measured 2026-10-13)
+
+Implemented shelf packing (First-Fit Decreasing, shelf height = tallest item in shelf) of map entity
+sprites (`Env_Sprite` 22, `Env_Image` 28) into 2048x2048 atlas pages at map load (`game_load_map` and
+`editor_load_map`).
+
+Key invariants:
+- **Logical size preserved:** `tex->width` and `tex->height` remain the logical unpadded dimensions of the
+  sprite; `tex->id` points to the atlas page, and `tex->src_x` / `tex->src_y` specify the sprite's offset.
+  Camera culling and margins depend on `tex->width/height` being the sprite's dimensions, not the page's.
+- **Separate mask pages:** `mask_mode` 1 (normal / magenta key) and `mask_mode` 3 (black mask / additive)
+  do not share cells or pages.
+- **Bleed protection:** 4 px extruded margin (`pad = 4`) around every packed cell prevents neighbour bleed
+  under `GL_LINEAR` filtering.
+- **Painter's order strictly preserved:** no draw order sorting; adjacent same-state draws merge naturally.
+
+Measured results on `fun_roleplay` (shipped config vs after):
+- **Draw calls & texture switches:**
+  - With light (`light 5 mapshadows 4`): `draws/frame` dropped from 672.7 to **664.7**, `tex_switch/frame` from 296.2 to **288.3**.
+  - Without light (`light 0 mapshadows 0`): `tex_switch/frame` dropped from 84.4 to **80.4**.
+  - In sprite-dense areas (`tp 44 25`): `tex_switch/frame` dropped from 320 to **104.1**, `draws/frame` to **472.8**.
+- **GPU time per frame (636-frame run via `perf_gpu_frames.ps1`):**
+  - With light: **1.912 ms/frame** → **1.750 ms/frame** (-8.5% GPU time).
+  - Without light: **1.433 ms/frame** → **1.317 ms/frame** (-8.1% GPU time).
+- **First-frame freeze:**
+  - Map load time: atlas built and uploaded in **172.35 ms** for 156 items across 2 pages (55 ms in GL-free tests).
+  - First rendered frame time: dropped from **1447 ms** to **7.7 ms** (187x improvement, freeze eliminated).
+- **Visual fidelity:**
+  - Screenshot comparison at `tp 44 25`: byte-for-byte identical (1,225,014 / 1,225,014 bytes equal).
+
 
