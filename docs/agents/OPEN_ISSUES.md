@@ -137,6 +137,27 @@ the same one.
   - The sprite / obstacle queues (Env_Sprite, palm / tree leaves, alarms) are not covered by the emulator test (the scene
     file does not carry them); they were checked on screenshots only.
 
+## Web port (Emscripten) — not started
+- **Decision (2026-10-12):** viable for the C99 client; the render/font backend is the deciding risk and online play
+  needs a server-side UDP gateway. Evidence: `KNOWLEDGE.md` "Web/Wasm portability" and the `WORKLOG.md` entry of the same
+  date (Cline, second opinion). No source file has been changed for it.
+- **Open decisions:**
+  - **Render:** keep the fixed-function code under `-sLEGACY_GL_EMULATION -sGL_FFP_ONLY` (default choice) vs. a shader
+    rewrite of the hot paths (light FBO pass, tilemap) vs. gl4es / Regal. Decided by the in-browser screenshot
+    comparison, not by argument.
+  - **Font metrics:** `stb_truetype`/FreeType must reproduce the `GdipMeasureString` advances that size the HUD, or the
+    whole layout drifts. Measure on the desktop first, then compare string by string.
+  - **Network:** gateway choice (WebSocket vs. WebTransport over a local UDP socket), where it runs, and how `[229]`
+    latency and the LAN scan (impossible in a browser) are reported.
+  - **Assets:** which set goes into `--preload-file` (the minimum referenced is ~4.1 MB of `gfx` + fonts + one map +
+    `sys/config.cfg`/`controls.cfg`); the CJK fonts (16 MB) are the main candidate for on-demand loading.
+  - **CI:** a separate `ubuntu-latest` + emsdk job (`.github/workflows/build.yml` is Windows-only today).
+- **Obstacles inside the tree:** the two fixed `maps\*.map` scans (`cs2d_client.c:2121`, `cs2d_scene_editor.c:140`), the
+  Windows-hardcoded harness paths (`main_client.c:348`), the case sensitivity of 356 asset names (111 under `gfx/`, 245
+  under `sys/`), and the blocking `while (g_running)` main loop (`main_client.c:248`) that SDL3 replaces with a mainloop.
+- **Phase 0 (cheapest, do first):** `emcc` build of the Win32-free core + `tests/test_cs2d.c` with `-sUSE_ZLIB=1`, run
+  under Node, to measure portability before touching `cs2d_render.c` (`feat/emscripten-poc` branch).
+
 ## Verification debt
 - **Original + our client, one session:** not re-run after the latest join/leave fix (the session ended
   in a BSOD). Run `twoplayer_probe.lua` with the original firing next to our client and check the remote

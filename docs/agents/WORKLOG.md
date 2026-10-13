@@ -8,6 +8,30 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Cline — Web/Emscripten port feasibility (second opinion, docs only)
+- **Changed:** these three shared-memory docs only (`WORKLOG.md`, `KNOWLEDGE.md`, `OPEN_ISSUES.md`). No source, build
+  or asset file was touched.
+- **Question:** is an Emscripten/WebAssembly port viable? This is the *second* opinion the DeepSeek entry below
+  (2026-10-12, "Web/Emscripten feasibility report") asked for; an independent session re-measured the tree instead of
+  re-labelling the first report. Same overall verdict, now with numbers.
+- **Verified (measured, not estimated, `src/` + `include/`):** the platform surface is small and concentrated —
+  **no threading** (`SDL_CreateThread`/`pthread`/`CreateThread`/`Sleep` = 0), **no audio at all** (no
+  `SDL_Audio`/`Mix_`/`PlaySound`; only `cfg->sound_volume` at `cs2d_config.c:15,59` and the wav/ogg transfer filters at
+  `cs2d_transfer.c:131`), stdio-only file I/O (`fopen` 21, `fwrite` 29, `fclose` 31, `_mkdir` 1 in 13 files), directory
+  listing only for `maps\*.map` (`cs2d_client.c:2121`, `cs2d_scene_editor.c:140`), UDP-only sockets in 3 files,
+  `GetTickCount` 31 uses, `VK_*` 13 codes, ~118 SDL references over 25.5k lines, and **0 shader calls** — the renderer is
+  100% OpenGL 1.x fixed-function. Per-file lists, asset weights and the toolchain citations are in `KNOWLEDGE.md`
+  "Web/Wasm portability".
+- **Verdict:** viable for the C99 client; the deciding risk is the **render/font backend**, not the game logic.
+  Emscripten documents exactly the mode we need (`-sLEGACY_GL_EMULATION` + `-sGL_FFP_ONLY`, "your code will not use the
+  programmable pipeline/shaders at all"), and names gl4es / Regal as fallbacks. Online play needs a **server-side UDP
+  gateway**: "Direct UDP communication is not available in browsers" and the documented POSIX-socket proxy is itself
+  "slow" and aimed at test infrastructure. The original `CS2D.exe` is not a port target (Emscripten compiles source,
+  not PE).
+- **Left:** the phases and the open decisions are in `OPEN_ISSUES.md` "Web port (Emscripten)". Phase 0 (emcc build of
+  the Win32-free core + `test_cs2d.exe` under Node) is the next step and runs in a separate context. Any structural work
+  goes on `feat/emscripten-poc`, never `master` (parallel session, merge risk).
+
 ## 2026-10-12 — Claude Code — Light engine (TSmartLighting)
 - **Changed:** new `src/cs2d_light.c` ports the original light engine: day shadows of walls, obstacles, high walls and
   room roofs along the sun, player silhouettes, Env_Room / Env_Light / Env_LightStripe, toning, per-light buffers with

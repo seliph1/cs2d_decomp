@@ -865,3 +865,75 @@ Source: REA / dump `docs/dump/cs2d/TSmartRadar.c`, `TSmartMinimap.c`, `_global/1
   `TSmartMinimap` overlay, and tile rotation/brightness are not applied to the radar minimap (2 px/tile makes them
   negligible).
 
+## Web/Wasm portability (Emscripten)
+
+Source: our own tree (`src/`, `include/`, the asset folders) and the toolchain's official documentation — **not** the
+original binaries, so nothing in this section is evidence about `CS2D.exe`. Toolchain facts are quoted with their URL.
+
+- **What would be ported:** Emscripten compiles source code, not PE. The target is our 48 files / 25,553 lines
+  (`src/` + `include/`, two gcc lines in `build.bat`), never `CS2D.exe` (BlitzMax + GDI+ + DirectX) or the dedicated.
+- **Platform surface (measured, `src/` + `include/`):**
+  - `windows.h` / `winsock2.h` include sites: `cs2d_bind.c:2`, `cs2d_ui.c:3`, `main_client.c:1-2`, plus headers —
+    `include/cs2d_render.h:4` (unguarded), `include/cs2d_client.h:4-7` (`_WIN32`), `include/cs2d_serverlist.h:4`
+    (**unguarded `winsock2.h`**). Transitively 7 files include `cs2d_client.h` (which pulls `cs2d_render.h:10` and
+    `cs2d_serverlist.h:16`), plus `cs2d_light.c`, `cs2d_render.c`, `cs2d_scoreboard.c`.
+  - Win32 calls: `GetTickCount` 31 (double-click and caret blink in `cs2d_ui.c:112,1639,1871,1916,1942,1955,1986`),
+    `socket`/`sendto`/`recvfrom`/`ioctlsocket`/`setsockopt`/`WSAStartup` 24, `FindFirstFileA`/`FindNextFileA`/`FindClose`
+    6, `MultiByteToWideChar` 5, `LoadLibraryA` 2 (gdiplus, shlwapi), `CreateDirectoryA` 1.
+  - Sockets live in exactly 3 files: `cs2d_client.c:587` (`AF_INET, SOCK_DGRAM, IPPROTO_UDP`), `cs2d_scene_game.c`,
+    `cs2d_serverlist.c:301-322` (FIONBIO + `SO_BROADCAST` LAN scan) with `recvfrom` at `:393`. **No TCP anywhere.**
+  - `VK_*` codes (13 distinct, ~31 uses) are the game's key identifiers and leak into UI/binds (`cs2d_bind.c:100-104`).
+  - No threading (`SDL_CreateThread`/`pthread`/`CreateThread` = 0), no `Sleep`/`system`/`popen`/`fork`; `getenv` twice
+    (`cs2d_client.c:35,526`, `CS2D_NET_LOG`).
+  - SDL references: `main_client.c` 54, `cs2d_client.c` 29, `cs2d_light.c` 14, `cs2d_ui.c` 10, `cs2d_render.c` 10,
+    `cs2d_scene_game.c` 1 (~118 total).
+  - Main loop is blocking: `while (g_running)` + `SDL_PollEvent` (`main_client.c:248`) with a clamped
+    `SDL_GetPerformanceCounter` delta (`:327-331`); the web needs a mainloop callback instead.
+  - Tests are GL-free (pure functions only: `tests/test_cs2d.c:2405-2448`, `:3103-3116`) and already are the CI entry
+    point (`.github/workflows/build.yml`, `windows-latest` + MSYS2 + SDL3).
+- **Renderer (measured call inventory in `src/`):** 100 % fixed-function, **0 shaders** (`glCreateShader`,
+  `glUseProgram`, `glUniform` = 0). Top calls: `glVertex2f` 36, `glBindTexture` 29, `glTexParameteri` 23,
+  `glTexCoord2f` 22, `glDisable`/`glEnable` 19/17, `glBlendFunc` 16, `glBegin`/`glEnd` 13/13, `glColor4f` 11,
+  `glTexImage2D` 7, `glMatrixMode` 6, `glPushMatrix`/`glPopMatrix` 5/5, `glOrtho` 2, `glRotatef` 2, `glScalef` 1,
+  `glAlphaFunc` 1, `glReadPixels` 1. Enums that need attention on the web: `GL_TEXTURE_2D` 85, `GL_QUADS` 9,
+  `GL_ALPHA_TEST` 2, `GL_MULTISAMPLE` 3, `GL_BGR_EXT` 1 (screenshot only), `GL_CLAMP_TO_EDGE` 10,
+  `GL_LINEAR_MIPMAP_LINEAR` + `GL_TEXTURE_MAX_LEVEL` (mipmapped atlases).
+  - One GL context (`cs2d_render.c:551`) and `SDL_GL_SetSwapInterval(1)` (`:557`). Extension functions are loaded with
+    `SDL_GL_GetProcAddress` only for FBO + `glBlendFuncSeparate`, with an EXT fallback and a `gl_ready()` guard
+    (`cs2d_light.c:164-206`) — FBO and `blendFuncSeparate` are core in WebGL 1/2.
+  - Emscripten documents exactly this case: `-sLEGACY_GL_EMULATION` gives "Emulation of older Desktop OpenGL API
+    features", and `-sGL_FFP_ONLY` is for code that "will not use the programmable pipeline/shaders at all"
+    (emscripten.org/docs/porting/multimedia_and_graphics/OpenGL-support.html). The layer is `src/lib/libglemu.js`
+    (`assert(LEGACY_GL_EMULATION, …)`, immediate-mode setup, FFP shader generation from the tex-env). The same page names
+    **gl4es** and **Regal** as alternatives if a legacy feature is missing.
+- **GDI+ is the only image decoder and the only text engine:** 19 functions resolved from `gdiplus.dll`
+  (`cs2d_render.c:43-69`, `:4007-4024`): bitmap from file / stream / scan0, `GdipBitmapGetPixel`,
+  `GdipGetImageGraphicsContext`, `GdipGraphicsClear`, private font collection + `GdipPrivateAddFontFile`,
+  `GdipCreateFontFamilyFromName`, `GdipCreateFont`, `GdipCreateSolidFill`, `GdipDrawString`, `GdipMeasureString` and the
+  string-format helpers. The functions to replace are `upload_gdiplus_bitmap` (`:428`), `load_image_via_gdiplus` (`:467`),
+  `load_ico_largest_frame` (`:490`) and the font block (`:4007-4024`). Today there is no non-Windows fallback.
+- **File system:** stdio only (`fopen`/`fread`/`fwrite`/`fclose`, one `_mkdir`, in 13 files); writes at
+  `cs2d_editor.c:242`, `cs2d_map.c:315`, `cs2d_transfer.c:518`, `main_client.c:71` (BMP screenshot). Emscripten backs
+  libc I/O with its own FS and adds IDBFS for persistence (`-lidbfs.js` + `SDL_EMSCRIPTEN_PERSISTENT_PATH`,
+  auto-persist). **Case matters:** 111 files under `gfx/` and 245 under `sys/` have uppercase letters in their names
+  (e.g. `gfx/c4/.../Kitchen table.png`, with spaces) versus 0 under `maps/`, so `CASE_INSENSITIVE_FS=1` ("like Windows
+  and macOS") is needed. SDL 3.4.2 (installed locally; `SDL_platform_defines.h:230-237` defines
+  `SDL_PLATFORM_EMSCRIPTEN`) already provides `SDL_EnumerateDirectory` / `SDL_GlobDirectory` to replace the two
+  `FindFirstFileA` sites.
+- **Assets:** `gfx/` 761 files / 31.15 MB (408 png, 317 bmp, 13 jpg, 5 ttf, 13 inf, 1 ttc), `sfx/` 241 / 11.31 MB
+  (unused: there is no audio), `maps/` 82 / 2.67 MB (average 33.3 KB), `sys/` 352 / 7.46 MB. Fonts: `liberationsans.ttf`
+  350 KB, `sourcesans.ttf` 148 KB, `thai.ttf` 113 KB, plus the CJK set `chinese.ttc` 5.2 MB + `japanese.ttf` 6.0 MB +
+  `korean.ttf` 4.7 MB. 98 distinct `gfx/...` literal paths exist in `src/`, 83 of them on disk, 4.10 MB in total; the
+  other 15 are `%s`/`%d` templates. Some literals do not exist at all (`gfx/player/zombie.bmp`,
+  `gfx/weapons/reload.bmp`, `silencer.bmp`, `m4a1s.bmp`) and fail silently, so a preload list must be generated from
+  disk, not from the code.
+- **Networking constraint (quoted):** "Direct UDP communication is not available in browsers"; "Emscripten does not
+  provide a C/C++ API for interacting with WebRTC" / "WebTransport"
+  (emscripten.org/docs/porting/networking.html). The supported route is the POSIX-socket proxy
+  (`-lwebsocket.js -sPROXY_POSIX_SOCKETS -pthread -sPROXY_TO_PTHREAD`), which "can be slow" and is "mostly useful for
+  developing testing infrastructure and debugging"; `NODERAWSOCKETS` is Node-only, and WebTransport is HTTP/3/QUIC and
+  needs an HTTP/3 server. Consequence: keep the CS2D bytes identical and carry them through a gateway that owns a local
+  UDP socket.
+- **Keyboard focus:** `SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT` (SDL 3.2.0+) binds keyboard input to the canvas and "should
+  be set before creating a window".
+
