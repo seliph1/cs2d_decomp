@@ -29,6 +29,7 @@
 #include "cs2d_bind.h"
 #include "cs2d_scoreboard.h"
 #include "cs2d_light.h"
+#include "cs2d_image.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -3327,6 +3328,81 @@ static bool test_light_engine(void)
     TEST_PASS("Light buffer, floor occlusion and light color = the original's draw calls (4 scenes)");
     return true;
 }
+/*
+ * Portable asset decoder (src/cs2d_image.c), the replacement for the GDI+ image path.
+ *
+ * The reference clips were produced by an independent decoder: Pillow for PNG and ICO, and a plain
+ * BMP reader for BMP, because Pillow drops the reserved 4th byte of a 32-bit BI_RGB BMP while GDI+
+ * and stb_image both read it as alpha. The clip is FNV-1a 32 over the R,G,B,A bytes in row-major
+ * order, i.e. exactly the byte order the GL uploader consumes.
+ */
+static uint32_t image_clip(const cs2d_image_t *img)
+{
+    uint32_t h = 2166136261u;
+    const uint8_t *p = (const uint8_t *)img->rgba;
+    size_t n = (size_t)img->width * (size_t)img->height * 4u;
+    for (size_t i = 0; i < n; i++) {
+        h ^= p[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static bool image_case(const char *path, bool ico, int w, int h, uint32_t clip, bool alpha)
+{
+    cs2d_image_t img;
+    char msg[256];
+
+    if (!(ico ? cs2d_image_load_ico(&img, path) : cs2d_image_load(&img, path))) {
+        TEST_FAIL("Image decode", path);
+    }
+    if (img.width != w || img.height != h) {
+        snprintf(msg, sizeof(msg), "%s: %dx%d, reference %dx%d", path, img.width, img.height, w, h);
+        cs2d_image_free(&img);
+        TEST_FAIL("Image decode", msg);
+    }
+    uint32_t got = image_clip(&img);
+    if (got != clip) {
+        snprintf(msg, sizeof(msg), "%s: RGBA clip 0x%08X, reference 0x%08X", path, got, clip);
+        cs2d_image_free(&img);
+        TEST_FAIL("Image decode", msg);
+    }
+    if (img.has_embedded_alpha != alpha) {
+        snprintf(msg, sizeof(msg), "%s: has_embedded_alpha=%d, reference %d",
+                 path, (int)img.has_embedded_alpha, (int)alpha);
+        cs2d_image_free(&img);
+        TEST_FAIL("Image decode", msg);
+    }
+    cs2d_image_free(&img);
+    return true;
+}
+
+static bool test_image_decode(void)
+{
+    printf("\n=== Testing the portable asset decoder (PNG / palette / 24-32-bit BMP / ICO) ===\n");
+
+    /* 8-bit RGBA and 8-bit palette PNG: 207 + 46 of the 408 shipped PNGs are those two */
+    if (!image_case("gfx/buildings.png", false, 128, 128, 0x5809970Eu, true)) return false;
+    if (!image_case("gfx/hud_radar_icons.png", false, 256, 96, 0x0AB00448u, true)) return false;
+    /* 4-bit palette PNG (gfx/lighting/gfx_shadowmap.png) */
+    if (!image_case("gfx/lighting/gfx_shadowmap.png", false, 192, 32, 0x607C04D8u, false)) return false;
+    /* PNG data inside a .bmp file: the format must come from the bytes, never the extension */
+    if (!image_case("gfx/hud_symbols.bmp", false, 832, 64, 0x5519C4D7u, false)) return false;
+    /* 32-bit BI_RGB BMP: its 4th byte is read as alpha (GDI+ and stb do; Pillow does not) */
+    if (!image_case("gfx/player/ct1.bmp", false, 64, 96, 0xFB4A2522u, true)) return false;
+    /* 24-bit BMP, and the 8-bit palette BMP the hand-rolled fast path rejects */
+    if (!image_case("gfx/decals.bmp", false, 576, 128, 0x254B591Cu, false)) return false;
+    if (!image_case("gfx/flare3.bmp", false, 95, 95, 0xD9404558u, false)) return false;
+    /* magenta-keyed 24-bit BMP (gfx/pointer.bmp) */
+    if (!image_case("gfx/pointer.bmp", false, 92, 92, 0x5AFD1F7Cu, false)) return false;
+    /* .ico container: the frame that gets used is the 256x256 PNG-compressed one inside cs2d.ico */
+    if (!image_case("cs2d.ico", true, 256, 256, 0x5AD0F698u, true)) return false;
+
+    TEST_PASS("9 assets decode to the reference RGBA (PNG, palette, 24/32-bit BMP, ICO)");
+    return true;
+}
+
+
 
 int main(void)
 {
@@ -3335,7 +3411,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 32;
+    int total = 33;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -3369,6 +3445,7 @@ int main(void)
     if (test_tile_blending()) passed++;
     if (test_hud_action_progress_bar()) passed++;
     if (test_light_engine()) passed++;
+    if (test_image_decode()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

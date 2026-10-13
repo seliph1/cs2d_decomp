@@ -8,6 +8,33 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
+## 2026-10-12 — Cline — Removing the GDI+ dependency, phase 1: image decoding
+- **Changed:** new `src/cs2d_image.c` + `include/cs2d_image.h` decode every asset (BMP / PNG / ICO) with the
+  vendored public-domain `third_party/stb_image.h`; `build.bat` compiles it, adds `-Ithird_party` and no longer
+  links `-lgdi32`. `cs2d_render.c` lost the `GdipCreateBitmapFromFile` / `GdipCreateBitmapFromStream` /
+  `GdipGetImageWidth` / `GdipGetImageHeight` / `GdipBitmapGetPixel` / `GdipDisposeImage` bindings and the
+  `shlwapi` `SHCreateMemStream` trick used for `.ico` (`upload_gdiplus_bitmap` → `upload_decoded_image`,
+  `load_image_via_gdiplus` → `load_image_portable`, `load_ico_largest_frame` rewritten on `cs2d_image`). The
+  hand-rolled 24/32-bit BMP fast path, the mask modes and the transparent-RGB dilation are untouched, so no
+  uploaded pixel changes. GDI+ now only starts for the TrueType text engine.
+- **Verified:** `Build Successful`; `test_cs2d.exe` prints `Tests Passed: 32 / 33`, the single failure being the
+  already known `test_file_transfer` "Transfer list" (OPEN_ISSUES). New `test_image_decode` decodes 9 assets
+  covering 8-bit RGBA / 8-bit palette / 4-bit palette PNG, PNG-data-inside-`.bmp`, 24-bit, 32-bit and 8-bit
+  palette BMP and the `cs2d.ico` container, and matches an independent decode byte for byte (FNV-1a clip over
+  R,G,B,A). `objdump -p test_cs2d.exe` now lists only KERNEL32, msvcrt, OPENGL32, libwinpthread-1, SDL3 and
+  WS2_32 — no gdi32.
+- **Regression found and fixed in the same session:** the first build of this change died on launch with
+  *"libwinpthread-1.dll não foi encontrado"* (`0xC0000135`). Cause: the vendored `stb_image.h` keeps some
+  settings in `__thread` (`STBI_THREAD_LOCAL`), and GCC implements `__thread` on MinGW through emutls, whose
+  runtime is built on the winpthreads API — `objdump -p` showed the exe importing `pthread_once` /
+  `pthread_mutex_*` / `pthread_key_*` / `pthread_getspecific` from `libwinpthread-1.dll`. A scan of `src/` +
+  `include/` + `tests/` found no `__thread` / `thread_local` anywhere else, so the import was new. Fix:
+  `#define STBI_NO_THREAD_LOCALS` before the `stb_image.h` include (single-threaded client, never calls
+  `stbi_set_*_thread`). After rebuilding, both executables import only KERNEL32 / msvcrt / OPENGL32 / SDL3 /
+  WS2_32, and `test_cs2d.exe` runs correctly with `PATH` reduced to `%SystemRoot%`.
+- **Left:** the text engine is the last GDI+ user and the GL 1.x side is untouched; both are planned in
+  OPEN_ISSUES "GL 1.x / GDI+ removal". `third_party/` is new and must be committed with the sources.
+
 ## 2026-10-12 — Cline — Web/Emscripten port feasibility (second opinion, docs only)
 - **Changed:** these three shared-memory docs only (`WORKLOG.md`, `KNOWLEDGE.md`, `OPEN_ISSUES.md`). No source, build
   or asset file was touched.

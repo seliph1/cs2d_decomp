@@ -137,6 +137,46 @@ the same one.
   - The sprite / obstacle queues (Env_Sprite, palm / tree leaves, alarms) are not covered by the emulator test (the scene
     file does not carry them); they were checked on screenshots only.
 
+## GL 1.x / GDI+ removal (started 2026-10-12, independent of the Wasm port)
+Goal: drop the two Windows-only backends the renderer still depends on. The UDP network layer is explicitly out
+of scope, and this is *not* the Wasm port — the phases just happen to be the same work the port needs.
+- **Phase 1 — image decoding: DONE (2026-10-12).** `src/cs2d_image.c` + `third_party/stb_image.h` replaced
+  `GdipCreateBitmapFromFile` / `GdipCreateBitmapFromStream` / `GdipBitmapGetPixel` / `GdipDisposeImage` and the
+  `shlwapi` `SHCreateMemStream` trick for `.ico`; `build.bat` no longer links `-lgdi32`. Locked by
+  `test_image_decode` (9 assets, FNV-1a clip vs an independent decode); the measured format inventory is in
+  KNOWLEDGE "Image decoding is portable".
+- **Phase 2 — text: the last GDI+ user** (`cs2d_render.c` font block; sizes, flags and hint mode are in
+  KNOWLEDGE "Still GDI+ today"). Replace with the already vendored `third_party/stb_truetype.h`:
+  - put it in an isolated, GL-free module (`src/cs2d_font.c`) so measurement can be unit-tested with no window;
+  - **the risk is metrics, not pixels:** every HUD and dialog measurement goes through
+    `cs2d_render_text_width_ex` / `cs2d_render_text_prefix_width`, so the stb advances must equal the
+    `GdipMeasureString` bounding box (including the measure-trailing-spaces flag) or the whole layout drifts;
+  - measure before switching: dump `<font, string, bbox>` for a corpus of real UI strings from the *current*
+    build, then compare stb_truetype advances string by string and lock the equal ones in a test;
+  - keep the raster conventions: white text on opaque black, coverage read from the G channel, and the
+    stem-darkening gamma (`pow(a, 0.62)` into `s_gamma_lut`).
+- **Phase 3 — OpenGL 1.x: the big one** (100 % fixed-function, 0 shaders; the call inventory is in KNOWLEDGE
+  "Renderer"). Target **SDL3's `SDL_Renderer`** — `SDL_Texture`, `SDL_RenderGeometry` with per-vertex colour,
+  `SDL_SetTextureBlendMode` for the additive/alpha passes, `SDL_SetRenderTarget` for the light engine buffers,
+  `SDL_RenderReadPixels` for the screenshot path. It keeps a single SDL3 dependency, deletes every `gl*` call
+  and the FBO extension loader in `cs2d_light.c:187-206`, and stays portable later; the alternatives (GL 3.3
+  core + shaders, or gl4es / Regal) are listed in the Web port section below.
+  - the light engine is the hard part: `glBlendFuncSeparate` plus render-to-texture. `SDL_BLENDMODE_MOD` covers
+    the multiply pass, but the separate-alpha case must be checked against the `emu_light.py` traces;
+  - `main_client.c`'s `SDL_GL_SetAttribute` / `SDL_WINDOW_OPENGL` and `cs2d_render_init` / `shutdown` / `resize`
+    become `SDL_CreateRenderer` + a logical size, and `include/cs2d_render.h` loses its unguarded `windows.h`.
+- **Practical note — the `libwinpthread-1.dll` trap (fixed 2026-10-12):** the first build of phase 1 died on
+  launch with *"libwinpthread-1.dll não foi encontrado"* (`0xC0000135`). The vendored `stb_image.h` declares
+  some of its settings as `__thread` (`STBI_THREAD_LOCAL`: `stbi__g_failure_reason`,
+  `stbi__vertically_flip_on_load_local`, `stbi__unpremultiply_on_load_local`, `stbi__de_iphone_flag_local`),
+  and GCC implements `__thread` on MinGW through **emutls**, whose runtime is built on the winpthreads API.
+  `objdump -p` showed the exe importing `pthread_once` / `pthread_mutex_{init,lock,unlock}` /
+  `pthread_key_create` / `pthread_getspecific` / `pthread_setspecific` from `libwinpthread-1.dll`, which is
+  not shipped next to the executables. Fix: `#define STBI_NO_THREAD_LOCALS` before the `stb_image.h` include
+  (single-threaded client, never calls `stbi_set_*_thread`). Both exes now import only KERNEL32 / msvcrt /
+  OPENGL32 / SDL3 / WS2_32 — no extra DLL has to be shipped, and this is where alternative decoders
+  (SDL_image, FreeType, a future JPEG decoder) have to be checked too.
+
 ## Web port (Emscripten) — not started
 - **Decision (2026-10-12):** viable for the C99 client; the render/font backend is the deciding risk and online play
   needs a server-side UDP gateway. Evidence: `KNOWLEDGE.md` "Web/Wasm portability" and the `WORKLOG.md` entry of the same

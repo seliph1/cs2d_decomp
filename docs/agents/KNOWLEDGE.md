@@ -906,12 +906,39 @@ original binaries, so nothing in this section is evidence about `CS2D.exe`. Tool
     (emscripten.org/docs/porting/multimedia_and_graphics/OpenGL-support.html). The layer is `src/lib/libglemu.js`
     (`assert(LEGACY_GL_EMULATION, …)`, immediate-mode setup, FFP shader generation from the tex-env). The same page names
     **gl4es** and **Regal** as alternatives if a legacy feature is missing.
-- **GDI+ is the only image decoder and the only text engine:** 19 functions resolved from `gdiplus.dll`
-  (`cs2d_render.c:43-69`, `:4007-4024`): bitmap from file / stream / scan0, `GdipBitmapGetPixel`,
-  `GdipGetImageGraphicsContext`, `GdipGraphicsClear`, private font collection + `GdipPrivateAddFontFile`,
-  `GdipCreateFontFamilyFromName`, `GdipCreateFont`, `GdipCreateSolidFill`, `GdipDrawString`, `GdipMeasureString` and the
-  string-format helpers. The functions to replace are `upload_gdiplus_bitmap` (`:428`), `load_image_via_gdiplus` (`:467`),
-  `load_ico_largest_frame` (`:490`) and the font block (`:4007-4024`). Today there is no non-Windows fallback.
+- **Image decoding is portable as of 2026-10-12; only the text engine still uses GDI+.** The image half of
+  the paragraph that used to sit here was 11 `gdiplus.dll` functions (`GdipCreateBitmapFromFile`,
+  `GdipCreateBitmapFromStream`, `GdipGetImageWidth` / `GdipGetImageHeight`, `GdipBitmapGetPixel`,
+  `GdipDisposeImage`, plus the `shlwapi` `SHCreateMemStream` used for the `.ico`). `src/cs2d_image.c` now
+  decodes every asset with the vendored public-domain `third_party/stb_image.h`; `cs2d_render.c` only applies
+  the mask mode and uploads. Measured facts it had to cover:
+  - 408 `gfx/**/*.png`: 207 are 8-bit RGBA, 148 8-bit RGB, 46 8-bit palette, 2 grey+alpha, 1 4-bit palette
+    (`gfx/lighting/gfx_shadowmap.png`), 1 interlaced, 2 16-bit RGBA and 1 whose IHDR bit depth is 0; those
+    five odd ones all live under `gfx/c4/`, which the client never loads.
+  - 317 BMPs: 144 are 32-bit BI_RGB, 124 24-bit BI_RGB, 48 8-bit palette — and **`gfx/hud_symbols.bmp` is
+    not a BMP at all: its bytes start with the PNG signature** (`89 50 4E 47`). The container therefore has
+    to be sniffed from the bytes, never from the extension.
+  - The 4th byte of a 32-bit BI_RGB BMP is alpha for both GDI+ and stb_image, so `has_embedded_alpha`
+    reflects whatever is in there (`gfx/player/ct1.bmp`: 0 with a handful of 33 / 106 / 165 / 208).
+    **Pillow drops that byte and forces A = 255**, so it is not a usable reference for those files; the BMP
+    reference in `test_image_decode` comes from a direct reader instead.
+  - `cs2d.ico` holds 9 frames; the one used is the 256x256 32-bit frame, which is **PNG-compressed inside
+    the ICO**. Frames are therefore picked by area, instead of asking GDI+ to choose.
+  - No JPEG decoder is needed yet: the 13 `gfx/backgrounds/*.jpg` are referenced nowhere in `src/` (only the
+    `gfx/backgrounds/` extension filter of `cs2d_transfer.c:136` mentions the folder).
+  - `test_image_decode` locks 9 assets (PNG, palette, 24/32-bit BMP, ICO) against an independent decode:
+    FNV-1a over the R,G,B,A bytes in row-major order, which is the byte order the GL uploader consumes.
+  - **MinGW trap when adding any decoder:** `stb_image.h` keeps some settings in `__thread`
+    (`STBI_THREAD_LOCAL`). GCC implements `__thread` through emutls, whose runtime is built on winpthreads,
+    so linking it silently adds a `libwinpthread-1.dll` import that is *not* shipped next to the exes — the
+    program then dies with `0xC0000135` ("libwinpthread-1.dll was not found") before `main()`. `cs2d_image.c`
+    compiles it with `STBI_NO_THREAD_LOCALS`; after that both exes import only KERNEL32, msvcrt, OPENGL32,
+    SDL3 and WS2_32. Check the same thing for every future vendored decoder / rasterizer.
+- **Still GDI+ today — the TrueType text engine** (`cs2d_render.c` font block): `GdipCreateFont` at
+  13 / 10 / 13-bold / 15 px Liberation Sans and 18 px Source Sans Pro Black (unit 2 = pixels),
+  `GdipSetTextRenderingHint(4)` (unhinted anti-alias), `GdipMeasureString`, `GdipDrawString` and string format
+  flags `0x0800 | 0x1000 | 0x4000` (measure trailing spaces, no wrap, no clip). The plan is to replace it with
+  the already vendored `third_party/stb_truetype.h`, comparing advances string by string first.
 - **File system:** stdio only (`fopen`/`fread`/`fwrite`/`fclose`, one `_mkdir`, in 13 files); writes at
   `cs2d_editor.c:242`, `cs2d_map.c:315`, `cs2d_transfer.c:518`, `main_client.c:71` (BMP screenshot). Emscripten backs
   libc I/O with its own FS and adds IDBFS for persistence (`-lidbfs.js` + `SDL_EMSCRIPTEN_PERSISTENT_PATH`,

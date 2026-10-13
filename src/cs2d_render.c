@@ -18,7 +18,13 @@ static int             g_viewport_w = 850;
 static int             g_viewport_h = 480;
 static cs2d_gfx_bank_t g_gfx_bank;
 
-/* Minimal GDI+ Flat API bindings for loading PNG/BMP tilesets & sprites without external dependencies */
+/*
+ * Image files are decoded by the portable asset decoder (src/cs2d_image.c). GDI+ is no longer part
+ * of that path: the only thing still starting gdiplus.dll is the TrueType text engine further down.
+ */
+#include "cs2d_image.h"
+
+/* Minimal GDI+ Flat API bindings — still used by the TrueType text engine (see the font block) */
 typedef int GpStatus;
 typedef void GpBitmap;
 typedef void GpImage;
@@ -32,38 +38,19 @@ typedef struct {
 } GdiplusStartupInput;
 
 typedef GpStatus (WINAPI *PFN_GdiplusStartup)(ULONG_PTR *token, const GdiplusStartupInput *input, void *output);
-typedef GpStatus (WINAPI *PFN_GdipCreateBitmapFromFile)(const WCHAR *filename, GpBitmap **bitmap);
-typedef GpStatus (WINAPI *PFN_GdipGetImageWidth)(GpImage *image, UINT *width);
-typedef GpStatus (WINAPI *PFN_GdipGetImageHeight)(GpImage *image, UINT *height);
-typedef GpStatus (WINAPI *PFN_GdipBitmapGetPixel)(GpBitmap *bitmap, INT x, INT y, ARGB *color);
-typedef GpStatus (WINAPI *PFN_GdipDisposeImage)(GpImage *image);
 
-static HMODULE                      g_gdiplus_mod = NULL;
-static ULONG_PTR                    g_gdiplus_token = 0;
-static PFN_GdiplusStartup           pGdiplusStartup = NULL;
-static PFN_GdipCreateBitmapFromFile pGdipCreateBitmapFromFile = NULL;
-static PFN_GdipGetImageWidth        pGdipGetImageWidth = NULL;
-static PFN_GdipGetImageHeight       pGdipGetImageHeight = NULL;
-static PFN_GdipBitmapGetPixel       pGdipBitmapGetPixel = NULL;
-static PFN_GdipDisposeImage         pGdipDisposeImage = NULL;
+static HMODULE            g_gdiplus_mod = NULL;
+static ULONG_PTR          g_gdiplus_token = 0;
+static PFN_GdiplusStartup pGdiplusStartup = NULL;
 
 static bool init_gdiplus_once(void)
 {
-    if (g_gdiplus_mod && pGdipCreateBitmapFromFile) return true;
+    if (pGdiplusStartup) return true;
     g_gdiplus_mod = LoadLibraryA("gdiplus.dll");
     if (!g_gdiplus_mod) return false;
 
-    pGdiplusStartup           = (PFN_GdiplusStartup)(void *)GetProcAddress(g_gdiplus_mod, "GdiplusStartup");
-    pGdipCreateBitmapFromFile = (PFN_GdipCreateBitmapFromFile)(void *)GetProcAddress(g_gdiplus_mod, "GdipCreateBitmapFromFile");
-    pGdipGetImageWidth        = (PFN_GdipGetImageWidth)(void *)GetProcAddress(g_gdiplus_mod, "GdipGetImageWidth");
-    pGdipGetImageHeight       = (PFN_GdipGetImageHeight)(void *)GetProcAddress(g_gdiplus_mod, "GdipGetImageHeight");
-    pGdipBitmapGetPixel       = (PFN_GdipBitmapGetPixel)(void *)GetProcAddress(g_gdiplus_mod, "GdipBitmapGetPixel");
-    pGdipDisposeImage         = (PFN_GdipDisposeImage)(void *)GetProcAddress(g_gdiplus_mod, "GdipDisposeImage");
-
-    if (!pGdiplusStartup || !pGdipCreateBitmapFromFile || !pGdipGetImageWidth ||
-        !pGdipGetImageHeight || !pGdipBitmapGetPixel || !pGdipDisposeImage) {
-        return false;
-    }
+    pGdiplusStartup = (PFN_GdiplusStartup)(void *)GetProcAddress(g_gdiplus_mod, "GdiplusStartup");
+    if (!pGdiplusStartup) return false;
 
     GdiplusStartupInput input = { 1, NULL, FALSE, FALSE };
     if (pGdiplusStartup(&g_gdiplus_token, &input, NULL) != 0) {
@@ -424,121 +411,44 @@ static void upload_rgba_to_texture(
     tex->pad    = pad;
 }
 
-/* Converts a decoded GDI+ bitmap to RGBA, uploads it and disposes the bitmap */
-static bool upload_gdiplus_bitmap(cs2d_texture_t *tex, GpBitmap *bmp, int mask_mode, int cell_w, int cell_h)
+/* Applies the CS2D mask mode to a decoded image and uploads it (the pixels are modified in place) */
+static bool upload_decoded_image(cs2d_texture_t *tex, cs2d_image_t *img, int mask_mode, int cell_w, int cell_h)
 {
-    UINT w = 0, h = 0;
-    pGdipGetImageWidth((GpImage *)bmp, &w);
-    pGdipGetImageHeight((GpImage *)bmp, &h);
-    if (w == 0 || h == 0) {
-        pGdipDisposeImage((GpImage *)bmp);
-        return false;
-    }
-
-    uint32_t *rgba = (uint32_t *)malloc((size_t)w * (size_t)h * 4);
-    if (!rgba) {
-        pGdipDisposeImage((GpImage *)bmp);
-        return false;
-    }
-
-    uint8_t min_a = 255, max_a = 0;
-    for (UINT y = 0; y < h; y++) {
-        for (UINT x = 0; x < w; x++) {
-            ARGB argb = 0;
-            pGdipBitmapGetPixel(bmp, (INT)x, (INT)y, &argb);
-            uint8_t a = (uint8_t)((argb >> 24) & 0xFF);
-            uint8_t r = (uint8_t)((argb >> 16) & 0xFF);
-            uint8_t g = (uint8_t)((argb >> 8) & 0xFF);
-            uint8_t b = (uint8_t)(argb & 0xFF);
-            if (a < min_a) min_a = a;
-            if (a > max_a) max_a = a;
-            rgba[y * w + x] = ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)r;
-        }
-    }
-
-    pGdipDisposeImage((GpImage *)bmp);
-
-    bool has_embedded_alpha = (min_a < 255 && max_a > 0);
-    upload_rgba_to_texture(tex, rgba, (int)w, (int)h, has_embedded_alpha, mask_mode, cell_w, cell_h);
-    free(rgba);
+    if (!img || !img->rgba || img->width <= 0 || img->height <= 0) return false;
+    upload_rgba_to_texture(tex, img->rgba, img->width, img->height,
+                           img->has_embedded_alpha, mask_mode, cell_w, cell_h);
     return true;
 }
 
-static bool load_image_via_gdiplus(cs2d_texture_t *tex, const char *filepath, int mask_mode, int cell_w, int cell_h)
+/*
+ * Loader for everything that is not a hand-rolled 24/32-bit BMP: PNG tilesets and sprites, paletted
+ * BMPs such as gfx/flare3.bmp, and gfx/hud_symbols.bmp, which is PNG data inside a .bmp file.
+ */
+static bool load_image_portable(cs2d_texture_t *tex, const char *filepath, int mask_mode, int cell_w, int cell_h)
 {
-    if (!init_gdiplus_once()) return false;
+    cs2d_image_t img;
+    if (!cs2d_image_load(&img, filepath)) return false;
 
-    WCHAR wpath[MAX_PATH];
-    if (MultiByteToWideChar(CP_ACP, 0, filepath, -1, wpath, MAX_PATH) == 0) {
-        return false;
-    }
-
-    GpBitmap *bmp = NULL;
-    if (pGdipCreateBitmapFromFile(wpath, &bmp) != 0 || !bmp) {
-        return false;
-    }
-    return upload_gdiplus_bitmap(tex, bmp, mask_mode, cell_w, cell_h);
+    bool ok = upload_decoded_image(tex, &img, mask_mode, cell_w, cell_h);
+    cs2d_image_free(&img);
+    return ok;
 }
 
-typedef GpStatus (WINAPI *PFN_GdipCreateBitmapFromStream)(IStream *stream, GpBitmap **bitmap);
-typedef IStream *(WINAPI *PFN_SHCreateMemStream)(const BYTE *data, UINT size);
-
 /*
- * Loads the largest frame of a .ico file (e.g. the 256x256 PNG frame of cs2d.ico used as the
- * main menu logo). GdipCreateBitmapFromFile would pick one of the small frames instead.
+ * Loads the largest frame of a .ico file (the 256x256 logo frame of cs2d.ico is what the original
+ * menu shows; GdipCreateBitmapFromFile used to pick one of the 16x16 / 32x32 frames instead).
  */
 static bool load_ico_largest_frame(cs2d_texture_t *tex, const char *filepath, int mask_mode)
 {
-    if (!init_gdiplus_once()) return false;
-
-    FILE *f = fopen(filepath, "rb");
-    if (!f) return false;
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    uint8_t *data = (size > 6) ? (uint8_t *)malloc((size_t)size) : NULL;
-    bool ok = data && fread(data, 1, (size_t)size, f) == (size_t)size;
-    fclose(f);
-    if (!ok) {
-        free(data);
-        return false;
+    cs2d_image_t img;
+    if (!cs2d_image_load_ico(&img, filepath)) {
+        /* Not an icon container after all: let the general decoder sniff the bytes */
+        return load_image_portable(tex, filepath, mask_mode, 0, 0);
     }
 
-    /* ICONDIR: reserved(2) type(2) count(2), then 16-byte ICONDIRENTRY records (0 means 256 px) */
-    uint16_t count = (uint16_t)(data[4] | (data[5] << 8));
-    uint32_t best_px = 0, best_off = 0, best_len = 0;
-    for (uint16_t i = 0; i < count && 6u + ((uint32_t)i + 1u) * 16u <= (uint32_t)size; i++) {
-        const uint8_t *e = data + 6 + i * 16;
-        uint32_t ew  = e[0] ? e[0] : 256;
-        uint32_t len = (uint32_t)e[8]  | ((uint32_t)e[9]  << 8) | ((uint32_t)e[10] << 16) | ((uint32_t)e[11] << 24);
-        uint32_t off = (uint32_t)e[12] | ((uint32_t)e[13] << 8) | ((uint32_t)e[14] << 16) | ((uint32_t)e[15] << 24);
-        if (ew > best_px && off + len <= (uint32_t)size) {
-            best_px  = ew;
-            best_off = off;
-            best_len = len;
-        }
-    }
-
-    /* Only PNG-compressed frames are decoded from memory; others fall back to GDI+'s own choice */
-    static const uint8_t png_sig[8] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n' };
-    HMODULE shlwapi = LoadLibraryA("shlwapi.dll");
-    PFN_SHCreateMemStream pSHCreateMemStream = shlwapi
-        ? (PFN_SHCreateMemStream)(void *)GetProcAddress(shlwapi, "SHCreateMemStream") : NULL;
-    PFN_GdipCreateBitmapFromStream pGdipCreateBitmapFromStream =
-        (PFN_GdipCreateBitmapFromStream)(void *)GetProcAddress(g_gdiplus_mod, "GdipCreateBitmapFromStream");
-
-    ok = false;
-    if (best_len >= 8 && memcmp(data + best_off, png_sig, 8) == 0 &&
-        pSHCreateMemStream && pGdipCreateBitmapFromStream) {
-        IStream *stream = pSHCreateMemStream(data + best_off, best_len);
-        GpBitmap *bmp = NULL;
-        if (stream && pGdipCreateBitmapFromStream(stream, &bmp) == 0 && bmp) {
-            ok = upload_gdiplus_bitmap(tex, bmp, mask_mode, 0, 0);
-        }
-        if (stream) stream->lpVtbl->Release(stream);
-    }
-    free(data);
-    return ok ? true : load_image_via_gdiplus(tex, filepath, mask_mode, 0, 0);
+    bool ok = upload_decoded_image(tex, &img, mask_mode, 0, 0);
+    cs2d_image_free(&img);
+    return ok;
 }
 
 bool cs2d_render_init(SDL_Window *window, int width, int height)
@@ -631,8 +541,8 @@ bool cs2d_texture_load_grid(cs2d_texture_t *tex, const char *filepath, int mask_
     }
     if (nread != 54 || header[0] != 'B' || header[1] != 'M') {
         fclose(f);
-        /* Not a raw BMP (e.g. PNG tileset or gfx/hud_symbols.bmp): load via GDI+ */
-        return load_image_via_gdiplus(tex, filepath, mask_mode, cell_w, cell_h);
+        /* Not a raw BMP (e.g. PNG tileset or gfx/hud_symbols.bmp): portable decoder */
+        return load_image_portable(tex, filepath, mask_mode, cell_w, cell_h);
     }
 
     int width = *(int32_t *)&header[18];
@@ -642,7 +552,8 @@ bool cs2d_texture_load_grid(cs2d_texture_t *tex, const char *filepath, int mask_
 
     if (width <= 0 || height == 0 || (bpp != 24 && bpp != 32)) {
         fclose(f);
-        return load_image_via_gdiplus(tex, filepath, mask_mode, cell_w, cell_h);
+        /* Paletted (gfx/flare3.bmp), 16-bit or RLE-compressed BMP: portable decoder */
+        return load_image_portable(tex, filepath, mask_mode, cell_w, cell_h);
     }
 
     bool flip_y = (height > 0);
