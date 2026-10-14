@@ -75,7 +75,7 @@ int cs2d_radar_collect(const cs2d_game_t *game, const cs2d_player_t *local, cons
         const cs2d_player_t *p = &game->players[i];
         if (p->id == 0 || !p->alive || p->health <= 0 || p->team == CS2D_TEAM_SPEC) continue;
         int t = (int)p->team;
-        bool flag = carries(p, CS2D_WEP_REDFLAG) || carries(p, CS2D_WEP_BLUEFLAG);
+        bool flag = p->has_flag;
         if (!(t == my_team || (t > 1 && my_team > 1) || flag || !env->team_game)) continue;
         float x = (float)(int)p->pos.x, y = (float)(int)p->pos.y;
         uint32_t c;

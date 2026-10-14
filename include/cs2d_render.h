@@ -261,6 +261,8 @@ void cs2d_render_map_floor(const cs2d_map_t *map, const cs2d_texture_t *tileset_
                            float cam_x, float cam_y, int screen_w, int screen_h);
 void cs2d_render_map_walls(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
                            float cam_x, float cam_y, int screen_w, int screen_h);
+/* Waving Info_CTF_Flag flags at home, over the wall tiles */
+void cs2d_render_map_flags(const cs2d_map_t *map, float cam_x, float cam_y, int screen_w, int screen_h);
 
 void cs2d_render_map(
     const cs2d_map_t *map,

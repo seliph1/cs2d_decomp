@@ -303,10 +303,9 @@ static void draw_player(sb_ctx_t *c, const cs2d_player_t *p, int x, int y, int w
         }
         draw_icon(sym, sym_cell, 12, icon_x, (float)(y + 3), L->icon, 4);
     } else {
-        bool has_bomb = false, has_flag = false;
+        bool has_bomb = false, has_flag = p->has_flag;
         for (int i = 0; i < CS2D_SLOT_COUNT; i++) {
             if (p->inventory[i] == CS2D_WEP_BOMB) has_bomb = true;
-            if (p->inventory[i] == CS2D_WEP_REDFLAG || p->inventory[i] == CS2D_WEP_BLUEFLAG) has_flag = true;
         }
         if (p->team == CS2D_TEAM_VIP) {
             /* The VIP, seen by CTs and the VIP */

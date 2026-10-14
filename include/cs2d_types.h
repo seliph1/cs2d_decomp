@@ -255,6 +255,7 @@ typedef struct {
     bool        has_defuse_kit;
     bool        has_nightvision;
     bool        has_gasmask;
+    bool        has_flag;            /* Tpl.flag: carries the enemy CTF flag (Titem.give 70 / 71, not an inventory item) */
     bool        is_vip;
     bool        is_planting;
     bool        is_defusing;

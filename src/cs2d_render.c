@@ -3345,6 +3345,28 @@ void cs2d_render_map_ex(
     render_map_pass01(map, tileset_tex, cam_x, cam_y, screen_w, screen_h, true);
 }
 
+/* Info_CTF_Flag (15) at home: the waving flag (item 70 red for ints[0] = 0, 71 blue for 1) at (x * 32 + 26, y * 32),
+ * drawn after the wall tiles so its pole is not hidden by the wall above the base (screenshot comparison) */
+void cs2d_render_map_flags(const cs2d_map_t *map, float cam_x, float cam_y, int screen_w, int screen_h)
+{
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    if (!map || !bank) return;
+    uint32_t tick_ms = GetTickCount();
+    int n = 0;
+    const int *list = cs2d_render_entity_pass_list(map, CS2D_EPASS_GROUND, &n);
+    for (int k = 0; k < n; k++) {
+        int i = list[k];
+        const cs2d_entity_t *ent = &map->entities[i];
+        if (ent->type != CS2D_ENT_INFO_CTF_FLAG || map->entity_state[i]) continue;
+        if (!cs2d_render_entity_visible(map, i, cam_x, cam_y, screen_w, screen_h)) continue;
+        const cs2d_texture_t *ftex = (ent->int_settings[0] == 0) ? &bank->tex_redflag : &bank->tex_blueflag;
+        if (!ftex->id) continue;
+        float ex = (float)(ent->x * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_x;
+        float ey = (float)(ent->y * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_y;
+        render_waving_flag(ftex, ex + 10.0f, ey - 16.0f, tick_ms);
+    }
+}
+
 void cs2d_render_map_floor(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
                            float cam_x, float cam_y, int screen_w, int screen_h)
 {
@@ -3501,10 +3523,9 @@ static void render_map_pass01(const cs2d_map_t *map, const cs2d_texture_t *tiles
                  * (0.8) or 1 without it.
                  */
                 if (bank) {
+                    /* The waving flag itself is drawn over the walls by cs2d_render_map_flags */
                     bool is_red = (ent->int_settings[0] == 0);
                     bool home = (map->entity_state[i] == 0);
-                    const cs2d_texture_t *ftex = is_red ? &bank->tex_redflag : &bank->tex_blueflag;
-                    if (home && ftex->id) render_waving_flag(ftex, ex + 10.0f, ey - 16.0f, tick_ms);
                     if (bank->tex_flare1.id) {
                         cs2d_render_sprite_frame(&bank->tex_flare1, 32, 32, 0, ex, ey, 32.0f, 32.0f,
                                                  (float)(tick_ms / 15), is_red ? 1.0f : 0.0f, 0.0f,

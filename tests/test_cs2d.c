@@ -2775,7 +2775,8 @@ static bool test_radar_icons(void)
         p->health = 100;
         p->pos.x = pl[i].x;
         p->pos.y = pl[i].y;
-        if (pl[i].item) p->owned[pl[i].item] = 1;
+        if (pl[i].item == CS2D_WEP_REDFLAG) p->has_flag = true; /* Tpl.flag, not an inventory item */
+        else if (pl[i].item) p->owned[pl[i].item] = 1;
     }
 
     static cs2d_ground_item_t items[4];

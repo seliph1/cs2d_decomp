@@ -665,6 +665,11 @@ void cs2d_scene_game_apply_entity_state(cs2d_client_t *client, int tx, int ty, u
         const cs2d_entity_t *e = &map->entities[i];
         if (e->x == tx && e->y == ty && map->entity_state[i] != state) {
             cs2d_ents_set_state(&client->ents, (int)i, state);
+            /* Tee.run (0x1401ee9xx) on an Info_CTF_Flag back home (state 0): "Red / Blue Flag returned" */
+            if (e->type == CS2D_ENT_INFO_CTF_FLAG && state == 0) {
+                if (e->int_settings[0] == 0)      cs2d_client_center_msg(client, 255, 25, 0, "Red Flag returned");
+                else if (e->int_settings[0] == 1) cs2d_client_center_msg(client, 50, 150, 255, "Blue Flag returned");
+            }
             return;
         }
     }
@@ -1754,15 +1759,6 @@ static void render_chat(cs2d_client_t *client, int screen_w, int screen_h)
 }
 
 
-/* Item 70 / 71 in the inventory: the player carries a flag (Titem.give sets Tpl.flag) */
-static bool carries_flag(const cs2d_player_t *p)
-{
-    for (int i = 0; i < CS2D_SLOT_COUNT; i++) {
-        if (p->inventory[i] == CS2D_WEP_REDFLAG || p->inventory[i] == CS2D_WEP_BLUEFLAG) return true;
-    }
-    return false;
-}
-
 /*
  * Tpl.draw (0x140121xxx, self->flag == 1): the flag on the carrier's back, 7 px behind along the aim, rotated
  * by the weapon angle + 160 at scale 0.8. A Terrorist carries the blue flag, everybody else the red one.
@@ -1770,7 +1766,7 @@ static bool carries_flag(const cs2d_player_t *p)
 static void render_carried_flag(const cs2d_player_t *p, float cam_x, float cam_y)
 {
     cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
-    if (!bank || !carries_flag(p)) return;
+    if (!bank || !p->has_flag) return;
     const cs2d_texture_t *t = (p->team == CS2D_TEAM_T) ? &bank->tex_blueflag : &bank->tex_redflag;
     if (!t->id) return;
     double a = (double)p->angle * 0.017453292519943295;
@@ -2049,7 +2045,8 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     /* Wall tiles over the players (cs2d_draw_map_layer(..., 4) after Tpl.drawAll, 0x140290310) */
     cs2d_render_map_walls(&client->game.map, &client->tex_tileset, client->cam_x, client->cam_y, screen_w, screen_h);
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_WALL, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
-    /* Carried flags over the walls and buildings, as in the original (screenshot comparison) */
+    /* Base and carried flags over the walls and buildings (screenshot comparison) */
+    cs2d_render_map_flags(&client->game.map, client->cam_x, client->cam_y, screen_w, screen_h);
     for (int i = 1; i <= CS2D_MAX_PLAYERS; i++)
         if (client->game.players[i].alive) render_carried_flag(&client->game.players[i], client->cam_x, client->cam_y);
 

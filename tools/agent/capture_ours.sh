@@ -25,5 +25,5 @@ CS2D_NET_LOG=1 timeout "$T" ./cs2d_client.exe "--capture:connect 127.0.0.1 36980
 sleep 2
 taskkill //F //IM cs2d_dedicated.exe >/dev/null 2>&1
 cp "$OUT/server.cfg.bak" sys/server.cfg; cp "$OUT/recentlyjoined.lst.bak" sys/recentlyjoined.lst
-grep -E "^(BP|WP|PD|JL) |rror" "$OUT/ded_$TAG.log"
+grep -E "^(BP|WP|PD|JL|CP) |rror" "$OUT/ded_$TAG.log"
 grep "\[console\]" "$OUT/cli_$TAG.log" | tail -8

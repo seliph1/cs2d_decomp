@@ -633,6 +633,38 @@ static void add_ground_item(cs2d_client_t *client, uint16_t id, uint8_t type, in
     slot->reserve = reserve;
 }
 
+/*
+ * Titem.give (FUN_14020ce60) case 0x46 / 0x47: a player touches a flag ([25] collect, type 70 red / 71 blue). The
+ * enemy team takes it (Tpl.flag = 1, sys/language 0707 / 0708 in the team color, 0709 to the carrier); the owner
+ * team returns it, which the server reports with [31] (cs2d_scene_game_apply_entity_state: "... Flag returned").
+ * The money bonus of a return is not shown here: [252] / [53] carry the money. Proxy: ctf_probe.lua, collect
+ * [25, 1, 47, 71, ...] then [31, 20, 17, 1] when a Terrorist takes the CT flag on ctf_cs2dfortress.
+ */
+static void collect_flag(cs2d_client_t *client, int pid, uint8_t type)
+{
+    cs2d_player_t *p = &client->game.players[pid];
+    bool red = (type == CS2D_WEP_REDFLAG);
+    if (red ? p->team < CS2D_TEAM_CT : p->team != CS2D_TEAM_T) return;
+    p->has_flag = true;
+    char line[96];
+    snprintf(line, sizeof(line), red ? "Red Flag taken by %s" : "Blue Flag taken by %s", p->name);
+    if (red) cs2d_client_center_msg(client, 255, 25, 0, line);
+    else     cs2d_client_center_msg(client, 50, 150, 255, line);
+    if (pid == client->local_player_id) cs2d_client_center_msg(client, 0, 255, 0, "You have the flag! Bring it to your base!");
+}
+
+/* FUN_1401f8350 ([24] drop) for item 70 / 71: the carrier loses Tpl.flag; sys/language 0704 / 0705 */
+static void drop_flag(cs2d_client_t *client, int pid, uint8_t type)
+{
+    cs2d_player_t *p = &client->game.players[pid];
+    bool red = (type == CS2D_WEP_REDFLAG);
+    if (p->has_flag && (red ? p->team >= CS2D_TEAM_CT : p->team == CS2D_TEAM_T)) p->has_flag = false;
+    char line[96];
+    snprintf(line, sizeof(line), red ? "Red Flag dropped by %s" : "Blue Flag dropped by %s", p->name);
+    if (red) cs2d_client_center_msg(client, 255, 25, 0, line);
+    else     cs2d_client_center_msg(client, 50, 150, 255, line);
+}
+
 bool cs2d_strip_center_tag(char *text)
 {
     if (!text) return false;
@@ -1470,6 +1502,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         p->armor  = r[10];
                         p->alive  = true;
                         p->health = 100;
+                        p->has_flag = false; /* Tpl reset at round start; captures clear it too (FUN_140199580) */
                         if (pid != client->local_player_id) {
                             cs2d_player_give_weapon(p, r[9]);
                         }
@@ -1519,7 +1552,8 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 int16_t  res  = (int16_t)(buffer[pos + 7] | (buffer[pos + 8] << 8));
                 bool taken = true;
                 if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
-                    taken = cs2d_player_add_collected(&client->game.players[pid], type, clip, res);
+                    if (type == CS2D_WEP_REDFLAG || type == CS2D_WEP_BLUEFLAG) collect_flag(client, pid, type);
+                    else taken = cs2d_player_add_collected(&client->game.players[pid], type, clip, res);
                 }
                 if (taken) remove_ground_item(client, iid); /* A partly taken grenade stack stays (FUN_14020ce60) */
                 pos += 10;
@@ -1539,7 +1573,10 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 uint8_t type = buffer[pos + 2];
                 int16_t clip = (int16_t)(buffer[pos + 3] | (buffer[pos + 4] << 8));
                 int16_t res  = (int16_t)(buffer[pos + 5] | (buffer[pos + 6] << 8));
-                if (pid > 0 && pid <= CS2D_MAX_PLAYERS) cs2d_player_strip_weapon(&client->game.players[pid], type);
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
+                    if (type == CS2D_WEP_REDFLAG || type == CS2D_WEP_BLUEFLAG) drop_flag(client, pid, type);
+                    else cs2d_player_strip_weapon(&client->game.players[pid], type);
+                }
                 add_ground_item(client, (uint16_t)(buffer[pos + 8] | (buffer[pos + 9] << 8)), type,
                                 buffer[pos + 10] | (buffer[pos + 11] << 8), buffer[pos + 12] | (buffer[pos + 13] << 8),
                                 clip, res);

@@ -10,6 +10,14 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-14 — Claude Code — CTF flags: carried flag, drop / take / return messages, draw over walls
+- **Changed:** `Tpl.flag` is `cs2d_player_t.has_flag` (Titem.give 70 / 71 sets it, it is not an inventory item): `[25]`
+  of a flag sets it with the 0707 / 0708 / 0709 messages, `[24]` clears it with 0704 / 0705, `[31]` of a CTF base back
+  to state 0 shows "... Flag returned". Radar, scoreboard and the carried-flag sprite read it. The waving base flag
+  (`cs2d_render_map_flags`) and the carried flag are drawn after the wall tiles.
+- **Verified:** proxy capture with `tools/agent/lua/ctf_probe.lua` on ctf_cs2dfortress (screenshots: flag on the back,
+  dropped flag on the ground, message); build, 43 / 43 tests.
+
 ## 2026-10-14 — Claude Code — World draw order (light buffer last) and Env_Sprite layer
 - **Changed:** `game_render` follows `FUN_140281fd0` again: CPU shadow chunks before the players, `DrawLightsColorList`
   after them, the light buffer (day shadows of walls / buildings / DynWalls) last, over players and Tp 5/7/6. The
@@ -47,15 +55,3 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
   (parent id, persistent window registry) closes a child when its parent closes; the editor Color window opened from
   Entity Properties uses it.
 - **Verified:** build, test_ui_layout (41 / 41). Not run in the client.
-
-## 2026-10-14 — Claude — Editor entity helpers
-- **Changed:** zones, Env_Light radius, LightStripe, Teleport line and trigger links are drawn only on hover / Space
-  (Te.drawineditor + Ted_tr.drawat).
-
-- 2026-10-14: weather (rain/snow) drawn after light buffer; Env_Room suppresses weather spawn like Info_NoWeather (user request, not REA-verified).
-- 2026-10-14 (Claude): smoke grenade cloud ported from Tp 0x1b (sgsmoke.bmp x4, dark grey) instead of white disc + puffs.
-- 2026-10-14 (Claude): Gen_Weather fog spawned 60x too often; gated on the 1 s tick (DAT_140ddf540). Test added.
-- 2026-10-14 (Claude): walls drawn after players (cs2d_render_map_floor / cs2d_render_map_walls); smoke/gas fields after players, before walls.
-- 2026-10-14 (Claude): smoke grenade = Tp 0x20 puffs every 100 ms (particles >= 3 path), over walls.
-- 2026-10-14 (Claude): HE thrown sprite he.bmp; gas grenade = green Tp 3 puffs per 100 ms, over shadows.
-- 2026-10-14 (Claude): molotov fire = Tp 14 flames (Tpro.draw_ground 0x49); removed invented field discs.

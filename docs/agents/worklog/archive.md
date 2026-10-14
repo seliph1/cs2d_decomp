@@ -1,5 +1,14 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-14 — Claude — Editor entity helpers
+- **Changed:** zones, Env_Light radius, LightStripe, Teleport line and trigger links are drawn only on hover / Space
+  (Te.drawineditor + Ted_tr.drawat).
+
+- 2026-10-14: weather (rain/snow) drawn after light buffer; Env_Room suppresses weather spawn like Info_NoWeather (user request, not REA-verified).
+- 2026-10-14 (Claude): smoke grenade cloud ported from Tp 0x1b (sgsmoke.bmp x4, dark grey) instead of white disc + puffs.
+- 2026-10-14 (Claude): Gen_Weather fog spawned 60x too often; gated on the 1 s tick (DAT_140ddf540). Test added.
+- 2026-10-14 (Claude): walls drawn after players (cs2d_render_map_floor / cs2d_render_map_walls); smoke/gas fields after players, before walls.
+
 ## 2026-10-14 — Claude — Info_Storm wind and Info_Quake screen shake
 - **Changed:** `cs2d_gen.c`: wind from Te.setup case 9 added to Tp 3 / 14; `gen.shake` (Info_Quake, cs2d_draw_world
   0x140290310) + `cs2d_gen_shake_offset`, applied to the camera for the world draw in `game_render`.
