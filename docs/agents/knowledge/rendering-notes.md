@@ -44,3 +44,4 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 - Draw (`DrawLoadingScreen` 0x1401d1610, `DrawWindow` 0x14012bee0): window 350x200 centered, title + 0-3 dots,
   step text 0xbc centered at bar_center-42; bar frame 204x14 0x40, 202x12 black, fill 200*p x10 0x3c, edges 0x60/0x20.
   Ours: `cs2d_render_loadscreen` (no menu background / corner images yet).
+- Draw order (cs2d_draw_world 0x140290310): floor, map layer 3 (prop layer 2 = obstacles), Tp 3, Tpl.drawAll, Tpro.draw_flying, Tp 4, map layer 4 (prop layer 3 = walls, tile height 32), Tdo walls, Te pass 2, overwall, Tp 5/7/6. Walls cover the players. Tp 0x1b (smoke cloud) is created in list 7 (Tp.Create), i.e. after the walls; screenshots of CS2D.exe confirm the smoke is over the walls.

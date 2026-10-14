@@ -1199,8 +1199,6 @@ bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank)
     cs2d_texture_load_ex(&bank->tex_wave,      "gfx/sprites/wave.bmp",      3);
     cs2d_texture_load_ex(&bank->tex_snowflake, "gfx/sprites/snowflake.bmp", 3);
     cs2d_texture_load_ex(&bank->tex_raindrop,  "gfx/sprites/raindrop.bmp",  3);
-    if (!cs2d_texture_load_ex(&bank->tex_sgsmoke, "incbindata/sgsmoke.bmp", 3))
-        cs2d_texture_load_ex(&bank->tex_sgsmoke, "gfx/incbindata/sgsmoke.bmp", 3);
     for (int i = 0; i < 4; i++) {
         /* Gray puffs on black, tinted by the particle colour: luminance mask (our choice of mode) */
         char path[64];
@@ -1301,7 +1299,6 @@ void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank)
     cs2d_texture_free(&bank->tex_wave);
     cs2d_texture_free(&bank->tex_snowflake);
     cs2d_texture_free(&bank->tex_raindrop);
-    cs2d_texture_free(&bank->tex_sgsmoke);
     for (int i = 0; i < 4; i++) cs2d_texture_free(&bank->tex_smokepuff[i]);
     cs2d_texture_free(&bank->tex_explosion);
     cs2d_texture_free(&bank->tex_flare_x);
@@ -1405,8 +1402,9 @@ const cs2d_texture_t *cs2d_render_get_projectile_texture(uint8_t type)
     switch (type) {
         case CS2D_WEP_ROCKETLAUNCHER: t = &bank->tex_proj_rocket; break;
         case CS2D_WEP_RPG7:           t = &bank->tex_proj_rpg; break;
-        case CS2D_WEP_GRENADELAUNCHER:
-        case CS2D_WEP_HE:             t = &bank->tex_proj_grenade; break;
+        case CS2D_WEP_GRENADELAUNCHER: t = &bank->tex_proj_grenade; break;
+        /* Tpro.draw_ground / draw_flying: the held image of the type (0x1409f3ce8[typ]), gfx/weapons/he.bmp */
+        case CS2D_WEP_HE:             t = &bank->tex_weapons[CS2D_WEP_HE]; break;
         case CS2D_WEP_FLASHBANG:      t = &bank->tex_proj_flashbang; break;
         case CS2D_WEP_SMOKE:          t = &bank->tex_proj_smokegrenade; break;
         case CS2D_WEP_FLARE:          t = &bank->tex_proj_flare; break;
@@ -3233,41 +3231,19 @@ static void render_decals(const cs2d_map_t *map, const cs2d_gfx_bank_t *bank,
     }
 }
 
-void cs2d_render_map_ex(
-    const cs2d_map_t     *map,
-    const cs2d_texture_t *tileset_tex,
-    float cam_x, float cam_y,
-    int screen_w, int screen_h
-)
+/* g_prop_layer 3 (g_tile_height 32): wall tiles, drawn by cs2d_draw_map_layer(..., 4) after Tpl.drawAll
+ * (cs2d_draw_world 0x140290310); obstacles (layer 2) stay with the floor pass */
+static bool is_wall_tile(const cs2d_map_t *map, uint8_t tile)
 {
-    if (!map || !map->tiles) return;
+    uint8_t m = map->tile_modes[tile];
+    return m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW;
+}
 
-    /* Snap camera to integer pixels matching CS2D.exe 0x140ddf06c / 0x140ddf068 */
-    cam_x = roundf(cam_x);
-    cam_y = roundf(cam_y);
+enum { TILES_ALL, TILES_NO_WALLS, TILES_WALLS };
 
-    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
-    uint32_t tick_ms = GetTickCount();
-
-    set_player_shadow_offset(map);
-
-    int start_tx = (int)(cam_x / CS2D_TILE_SIZE) - 1;
-    int end_tx   = (int)((cam_x + screen_w) / CS2D_TILE_SIZE) + 1;
-    int start_ty = (int)(cam_y / CS2D_TILE_SIZE) - 1;
-    int end_ty   = (int)((cam_y + screen_h) / CS2D_TILE_SIZE) + 1;
-
-    if (start_tx < 0) start_tx = 0;
-    if (start_ty < 0) start_ty = 0;
-    if ((uint32_t)end_tx > map->width) end_tx = (int)map->width;
-    if ((uint32_t)end_ty > map->height) end_ty = (int)map->height;
-
-    bool has_tileset = (tileset_tex && tileset_tex->id != 0 && tileset_tex->width >= 32);
-    int tile_src = (map->use_64x64_tiles == 1) ? 64 : 32;
-    int cols = has_tileset ? (tileset_tex->width / tile_src) : 1;
-    if (cols < 1) cols = 1;
-
+static void build_anim_remap(const cs2d_map_t *map, uint32_t tick_ms, uint8_t anim_remap[256])
+{
     /* Build tile animation remap table (index list: Info_Animation entities only, ascending) */
-    uint8_t anim_remap[256];
     for (int i = 0; i < 256; i++) anim_remap[i] = (uint8_t)i;
     int anim_n = 0;
     const int *anim_list = cs2d_render_entity_pass_list(map, CS2D_EPASS_ANIM, &anim_n);
@@ -3282,18 +3258,18 @@ void cs2d_render_map_ex(
         }
     }
 
-    /* Fill map background color (map->bg_r, map->bg_g, map->bg_b) behind transparent tiles */
-    if (map->bg_r != 0 || map->bg_g != 0 || map->bg_b != 0) {
-        cs2d_render_rect(0.0f, 0.0f, (float)screen_w, (float)screen_h,
-                         (float)map->bg_r / 255.0f,
-                         (float)map->bg_g / 255.0f,
-                         (float)map->bg_b / 255.0f,
-                         1.0f, true);
-    }
+}
 
-    cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+static void draw_map_tiles(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex, float cam_x, float cam_y,
+                           int start_tx, int start_ty, int end_tx, int end_ty, uint32_t tick_ms,
+                           const uint8_t anim_remap[256], int filter)
+{
+    bool has_tileset = (tileset_tex && tileset_tex->id != 0 && tileset_tex->width >= 32);
+    int tile_src = (map->use_64x64_tiles == 1) ? 64 : 32;
+    int cols = has_tileset ? (tileset_tex->width / tile_src) : 1;
+    if (cols < 1) cols = 1;
 
-    /* Pass 1: Render base tiles and tile overlays (per cs2d_spec_map_format.txt section 4).
+    /* Render base tiles and tile overlays (per cs2d_spec_map_format.txt section 4).
      * Blended tiles (Ttileblend) are drawn afterwards from the blend atlas, with the same rotation and brightness */
     tileblend_source_t *blend = has_tileset ? tileblend_find(tileset_tex->id) : NULL;
     tilefx_prepare(map, blend, has_tileset ? tileset_tex->id : 0, tile_src);
@@ -3310,6 +3286,7 @@ void cs2d_render_map_ex(
             float rx = (float)(tx * CS2D_TILE_SIZE) - cam_x;
             float ry = (float)(ty * CS2D_TILE_SIZE) - cam_y;
 
+            if (filter != TILES_ALL && is_wall_tile(map, map->tiles[idx]) != (filter == TILES_WALLS)) continue;
             if (has_tileset) {
                 int cell = tileblend_cell(blend, map, tx, ty, tile_src);
                 if (cell >= 0) {
@@ -3352,6 +3329,93 @@ void cs2d_render_map_ex(
             }
         }
     }
+
+}
+
+static void render_map_pass01(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
+                              float cam_x, float cam_y, int screen_w, int screen_h, bool walls);
+
+void cs2d_render_map_ex(
+    const cs2d_map_t     *map,
+    const cs2d_texture_t *tileset_tex,
+    float cam_x, float cam_y,
+    int screen_w, int screen_h
+)
+{
+    render_map_pass01(map, tileset_tex, cam_x, cam_y, screen_w, screen_h, true);
+}
+
+void cs2d_render_map_floor(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
+                           float cam_x, float cam_y, int screen_w, int screen_h)
+{
+    render_map_pass01(map, tileset_tex, cam_x, cam_y, screen_w, screen_h, false);
+}
+
+void cs2d_render_map_walls(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
+                           float cam_x, float cam_y, int screen_w, int screen_h)
+{
+    if (!map || !map->tiles) return;
+    cam_x = roundf(cam_x);
+    cam_y = roundf(cam_y);
+    int start_tx = (int)(cam_x / CS2D_TILE_SIZE) - 1, end_tx = (int)((cam_x + screen_w) / CS2D_TILE_SIZE) + 1;
+    int start_ty = (int)(cam_y / CS2D_TILE_SIZE) - 1, end_ty = (int)((cam_y + screen_h) / CS2D_TILE_SIZE) + 1;
+    if (start_tx < 0) start_tx = 0;
+    if (start_ty < 0) start_ty = 0;
+    if ((uint32_t)end_tx > map->width) end_tx = (int)map->width;
+    if ((uint32_t)end_ty > map->height) end_ty = (int)map->height;
+    uint32_t tick_ms = GetTickCount();
+    uint8_t anim_remap[256];
+    build_anim_remap(map, tick_ms, anim_remap);
+    cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+    draw_map_tiles(map, tileset_tex, cam_x, cam_y, start_tx, start_ty, end_tx, end_ty, tick_ms, anim_remap, TILES_WALLS);
+}
+
+static void render_map_pass01(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
+                              float cam_x, float cam_y, int screen_w, int screen_h, bool walls)
+{
+    if (!map || !map->tiles) return;
+
+    /* Snap camera to integer pixels matching CS2D.exe 0x140ddf06c / 0x140ddf068 */
+    cam_x = roundf(cam_x);
+    cam_y = roundf(cam_y);
+
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    uint32_t tick_ms = GetTickCount();
+
+    set_player_shadow_offset(map);
+
+    int start_tx = (int)(cam_x / CS2D_TILE_SIZE) - 1;
+    int end_tx   = (int)((cam_x + screen_w) / CS2D_TILE_SIZE) + 1;
+    int start_ty = (int)(cam_y / CS2D_TILE_SIZE) - 1;
+    int end_ty   = (int)((cam_y + screen_h) / CS2D_TILE_SIZE) + 1;
+
+    if (start_tx < 0) start_tx = 0;
+    if (start_ty < 0) start_ty = 0;
+    if ((uint32_t)end_tx > map->width) end_tx = (int)map->width;
+    if ((uint32_t)end_ty > map->height) end_ty = (int)map->height;
+
+    bool has_tileset = (tileset_tex && tileset_tex->id != 0 && tileset_tex->width >= 32);
+    int tile_src = (map->use_64x64_tiles == 1) ? 64 : 32;
+    int cols = has_tileset ? (tileset_tex->width / tile_src) : 1;
+    if (cols < 1) cols = 1;
+
+    uint8_t anim_remap[256];
+    build_anim_remap(map, tick_ms, anim_remap);
+
+    /* Fill map background color (map->bg_r, map->bg_g, map->bg_b) behind transparent tiles */
+    if (map->bg_r != 0 || map->bg_g != 0 || map->bg_b != 0) {
+        cs2d_render_rect(0.0f, 0.0f, (float)screen_w, (float)screen_h,
+                         (float)map->bg_r / 255.0f,
+                         (float)map->bg_g / 255.0f,
+                         (float)map->bg_b / 255.0f,
+                         1.0f, true);
+    }
+
+    cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+
+    /* Pass 1: base tiles and overlays; the walls wait for cs2d_render_map_walls when deferred */
+    draw_map_tiles(map, tileset_tex, cam_x, cam_y, start_tx, start_ty, end_tx, end_ty, tick_ms, anim_remap,
+                   walls ? TILES_ALL : TILES_NO_WALLS);
 
     /* Pass 1a: Env_Decal on top of its tile, before any entity */
     if (bank && bank->tex_decals.id) render_decals(map, bank, cam_x, cam_y, screen_w, screen_h);

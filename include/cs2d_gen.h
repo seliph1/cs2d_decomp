@@ -30,7 +30,8 @@ typedef enum {
     CS2D_GEN_LAYER_FLOOR   = 0, /* Tp lists 1 / 2: drawn on the floor before the players */
     CS2D_GEN_LAYER_TOP     = 1, /* Tp list 5 */
     CS2D_GEN_LAYER_FOG     = 2, /* Tp list 7 */
-    CS2D_GEN_LAYER_WEATHER = 3  /* Tp list 6 (screen space) */
+    CS2D_GEN_LAYER_WEATHER = 3, /* Tp list 6 (screen space) */
+    CS2D_GEN_LAYER_SMOKE   = 4  /* Smoke grenade puffs: over the light buffer, like rain (screenshots of CS2D.exe) */
 } cs2d_gen_layer_t;
 
 typedef struct {
@@ -87,6 +88,17 @@ void cs2d_gen_update(cs2d_gen_t *g, const cs2d_map_t *map, float cam_x, float ca
                      float half_w, float half_h, float dt);
 
 /* One 60 Hz step (cs2d_gen_update calls it; exposed for the tests) */
+/* Smoke grenade puff (Tpro.draw_ground case 0x35, particles setting >= 3): Tp 0x20, which shares Tp 3's
+ * creation and update; one per 100 ms tick while the grenade lies on the ground */
+void cs2d_gen_smoke_grenade_puff(cs2d_gen_t *g, float x, float y);
+
+/* Gas grenade puff (Tpro.draw_ground case 0x48, particles >= 3): a green Tp 3 per 100 ms tick */
+void cs2d_gen_gas_grenade_puff(cs2d_gen_t *g, float x, float y);
+
+/* Molotov fire (Tpro.draw_ground case 0x49, particles >= 3): one 60 Hz frame of flames, a Tp 14 half of
+ * the time, up to 40 px from the centre */
+void cs2d_gen_molotov_flame(cs2d_gen_t *g, float x, float y);
+
 void cs2d_gen_step(cs2d_gen_t *g, const cs2d_map_t *map, float cam_x, float cam_y, float half_w, float half_h);
 
 /* Whether the screen centre lies in an Info_NoWeather zone (ints[0] x ints[1] tiles from the entity) */

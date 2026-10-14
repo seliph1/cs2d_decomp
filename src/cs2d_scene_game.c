@@ -1813,33 +1813,6 @@ static void render_ground_items(const cs2d_client_t *client)
     }
 }
 
-/* Ambient fields (fire, gas, smoke) over the players: the smoke cloud is a Tp 0x1b, drawn by Tp.draw
- * after Tpl.draw, so it hides whoever stands in it */
-static void render_fields(const cs2d_client_t *client)
-{
-    float cx = roundf(client->cam_x), cy = roundf(client->cam_y);
-    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
-
-    for (int i = 0; i < CS2D_MAX_FIELDS; i++) {
-        const cs2d_field_t *f = &client->projectiles.fields[i];
-        if (!f->active) continue;
-        float fx = f->x - cx, fy = f->y - cy;
-        if (f->type == CS2D_FIELD_FIRE) {
-            cs2d_render_circle(fx, fy, f->radius, 1.0f, 0.35f, 0.05f, 0.25f, true);
-        } else if (f->type == CS2D_FIELD_GAS) {
-            cs2d_render_circle(fx, fy, f->radius, 0.2f, 0.85f, 0.1f, 0.25f, true);
-        } else if (f->type == CS2D_FIELD_SMOKE && bank) {
-            /* Tp 0x1b draw: sgsmoke at scale 4, ALPHABLEND, grey Rand(50,70); fades out after 30 s */
-            float a = f->lifetime / CS2D_SMOKE_FADE_SECONDS;
-            if (a > 1.0f) a = 1.0f;
-            float w = (float)bank->tex_sgsmoke.width * 4.0f, h = (float)bank->tex_sgsmoke.height * 4.0f;
-            cs2d_render_sprite_frame(&bank->tex_sgsmoke, 0, 0, 0, fx, fy, w, h, f->rot,
-                                     f->shade, f->shade, f->shade, a, 0);
-        }
-    }
-
-}
-
 /* Projectiles resting on ground (glist in CS2D.exe) */
 static void render_projectiles_ground(const cs2d_client_t *client)
 {
@@ -2041,7 +2014,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     uint64_t t1 = SDL_GetPerformanceCounter();
 
     /* 1. Map Pass 0 & 1 (background, tileset, tile modifiers, ground entities, items, hostages) */
-    cs2d_render_map_ex(&client->game.map, &client->tex_tileset, client->cam_x, client->cam_y, screen_w, screen_h);
+    cs2d_render_map_floor(&client->game.map, &client->tex_tileset, client->cam_x, client->cam_y, screen_w, screen_h);
     uint64_t t2 = SDL_GetPerformanceCounter();
     bool tg = team_game(client);
     int  me = client->local_player_id;
@@ -2069,13 +2042,16 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
             else if (p->current_weapon == CS2D_WEP_DEAGLE) wtex = &client->tex_deagle;
 
             cs2d_render_player(p, stex, wtex, client->cam_x, client->cam_y);
-            render_carried_flag(p, client->cam_x, client->cam_y);
         }
     }
     cs2d_light_draw_color();   /* DrawLightsColorList: additive light color after the players (FUN_140281fd0) */
     render_projectiles_flying(client);
-    render_fields(client);
+    /* Wall tiles over the players (cs2d_draw_map_layer(..., 4) after Tpl.drawAll, 0x140290310) */
+    cs2d_render_map_walls(&client->game.map, &client->tex_tileset, client->cam_x, client->cam_y, screen_w, screen_h);
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_WALL, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
+    /* Carried flags over the walls and buildings, as in the original (screenshot comparison) */
+    for (int i = 1; i <= CS2D_MAX_PLAYERS; i++)
+        if (client->game.players[i].alive) render_carried_flag(&client->game.players[i], client->cam_x, client->cam_y);
 
     /* Breakable debris and explosions */
     cs2d_render_fx(&client->fx, &client->game.map, &client->tex_tileset, client->cam_x, client->cam_y);
@@ -2090,6 +2066,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     /* DrawLayer2: the light buffer (day shadows of walls, obstacles and buildings) multiplied over the whole world,
      * players included, last in FUN_140281fd0 */
     cs2d_light_draw_buffer();
+    cs2d_render_gen(&client->gen, CS2D_GEN_LAYER_SMOKE, client->cam_x, client->cam_y, screen_w, screen_h);
     /* Rain and snow (Tp list 6) over the light buffer, so the day shadows do not darken them */
     cs2d_render_gen(&client->gen, CS2D_GEN_LAYER_WEATHER, client->cam_x, client->cam_y, screen_w, screen_h);
     cs2d_render_gen_flash(&client->gen, screen_w, screen_h);

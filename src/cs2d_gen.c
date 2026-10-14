@@ -368,6 +368,48 @@ static bool move(cs2d_gen_t *g, cs2d_gen_particle_t *p, const cs2d_map_t *map, f
     }
 }
 
+void cs2d_gen_smoke_grenade_puff(cs2d_gen_t *g, float x, float y)
+{
+    if (!g) return;
+    cs2d_gen_particle_t *p = create(g, 3, x, y);
+    p->sx   = rnd(g, 1.4f, 1.9f);
+    p->a    = rnd(g, 1.5f, 2.0f);
+    p->rots = rnd(g, -0.5f, 0.5f);
+    p->fx   = rnd(g, -0.2f, 0.2f);
+    p->fy   = rnd(g, -0.2f, 0.2f);
+    /* Tp.Create puts 0x20 in list 2 (floor), but the original draws the cloud over the walls, the players
+     * and the day shadows (screenshots of CS2D.exe, 2026-10-14) */
+    p->layer = CS2D_GEN_LAYER_SMOKE;
+}
+
+void cs2d_gen_gas_grenade_puff(cs2d_gen_t *g, float x, float y)
+{
+    if (!g) return;
+    cs2d_gen_particle_t *p = create(g, 3, x, y);
+    p->sx   = rnd(g, 2.0f, 2.9f);
+    p->a    = rnd(g, 0.6f, 0.8f);
+    p->rots = rnd(g, -0.5f, 0.5f);
+    p->fx   = rnd(g, -0.8f, 0.8f);
+    p->fy   = rnd(g, -0.8f, 0.8f);
+    p->r    = (float)rand_i(g, 0, 30);
+    p->g    = (float)rand_i(g, 100, 200);
+    p->b    = (float)rand_i(g, 0, 30);
+    p->layer = CS2D_GEN_LAYER_SMOKE; /* Same layer as the smoke grenade's cloud */
+}
+
+void cs2d_gen_molotov_flame(cs2d_gen_t *g, float x, float y)
+{
+    if (!g) return;
+    float ang = (float)rand_i(g, 360, 1) * 0.017453292f;
+    float d = (float)rand_i(g, 40, 1);
+    if (rand_i(g, 1, 2) != 1) return;
+    cs2d_gen_particle_t *p = create(g, 14, x + sinf(ang) * d, y - cosf(ang) * d); /* List 5 */
+    p->sx = rnd(g, 0.1f, 0.3f);
+    p->fx = rnd(g, -0.5f, 0.5f);
+    p->fy = rnd(g, -0.5f, 0.5f);
+    p->a  = rnd(g, 0.8f, 1.3f);
+}
+
 void cs2d_gen_step(cs2d_gen_t *g, const cs2d_map_t *map, float cam_x, float cam_y, float half_w, float half_h)
 {
     if (!g || !map) return;

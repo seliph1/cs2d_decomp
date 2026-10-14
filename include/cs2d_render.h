@@ -110,7 +110,6 @@ typedef struct {
     cs2d_texture_t            tex_wave;          /* gfx/sprites/wave.bmp (32x32, maskMode 3; Tp type 1) */
     cs2d_texture_t            tex_snowflake;     /* gfx/sprites/snowflake.bmp (64x64, maskMode 3; Tp type 19) */
     cs2d_texture_t            tex_raindrop;      /* gfx/sprites/raindrop.bmp (32x32, maskMode 3; Tp type 20) */
-    cs2d_texture_t            tex_sgsmoke;       /* incbindata/sgsmoke.bmp (34x34, midhandle; 0x140a0e730) smoke grenade cloud */
     cs2d_texture_t            tex_smokepuff[4];  /* incbindata/smokepuff0..3.bmp (32x32, midhandle; 0x140a0e738) */
     cs2d_texture_t            tex_bspot_a;       /* gfx/sprites/bspot_a.png */
     cs2d_texture_t            tex_bspot_b;       /* gfx/sprites/bspot_b.png */
@@ -255,6 +254,13 @@ void cs2d_render_map_ex(
     float cam_x, float cam_y,
     int screen_w, int screen_h
 );
+
+/* The same without the wall tiles, and the wall tiles alone: the game draws the walls after the players
+ * (cs2d_draw_map_layer(..., 4) follows Tpl.drawAll in cs2d_draw_world 0x140290310) */
+void cs2d_render_map_floor(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
+                           float cam_x, float cam_y, int screen_w, int screen_h);
+void cs2d_render_map_walls(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
+                           float cam_x, float cam_y, int screen_w, int screen_h);
 
 void cs2d_render_map(
     const cs2d_map_t *map,

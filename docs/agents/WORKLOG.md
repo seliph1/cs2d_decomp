@@ -55,3 +55,7 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - 2026-10-14: weather (rain/snow) drawn after light buffer; Env_Room suppresses weather spawn like Info_NoWeather (user request, not REA-verified).
 - 2026-10-14 (Claude): smoke grenade cloud ported from Tp 0x1b (sgsmoke.bmp x4, dark grey) instead of white disc + puffs.
 - 2026-10-14 (Claude): Gen_Weather fog spawned 60x too often; gated on the 1 s tick (DAT_140ddf540). Test added.
+- 2026-10-14 (Claude): walls drawn after players (cs2d_render_map_floor / cs2d_render_map_walls); smoke/gas fields after players, before walls.
+- 2026-10-14 (Claude): smoke grenade = Tp 0x20 puffs every 100 ms (particles >= 3 path), over walls.
+- 2026-10-14 (Claude): HE thrown sprite he.bmp; gas grenade = green Tp 3 puffs per 100 ms, over shadows.
+- 2026-10-14 (Claude): molotov fire = Tp 14 flames (Tpro.draw_ground 0x49); removed invented field discs.
