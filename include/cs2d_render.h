@@ -248,6 +248,12 @@ void cs2d_render_map(
     int screen_w, int screen_h
 );
 
+/* Map floor shadows pass (CPU shadow chunks when light == 0; drawn before players) */
+void cs2d_render_map_shadows(
+    const cs2d_map_t *map,
+    float cam_x, float cam_y
+);
+
 /* Map overhead pass (Pass 2: Env_Sprite above players, Env_Object trees/palms/lamps, Env_Light coronas) */
 void cs2d_render_map_overhead(
     const cs2d_map_t *map,

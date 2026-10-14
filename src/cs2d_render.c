@@ -3112,7 +3112,6 @@ void cs2d_render_map_ex(
 
     /* Pass 3: Ground Entities & Actors (below players). The index list holds the types of the switch below,
      * ascending by entity index, so the draw order is the original sweep's */
-    int bombspot_idx = 0;
     int ground_n = 0;
     const int *ground_list = cs2d_render_entity_pass_list(map, CS2D_EPASS_GROUND, &ground_n);
     for (int k = 0; k < ground_n; k++) {
@@ -3129,16 +3128,9 @@ void cs2d_render_map_ex(
         float ey = (float)(ent->y * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_y;
 
         switch (ent->type) {
-            case CS2D_ENT_INFO_BOMBSPOT: {
-                /* Draw authentic bombspot A / B decal on floor */
-                const cs2d_texture_t *btex = (bombspot_idx == 0) ?
-                    (bank ? &bank->tex_bspot_a : NULL) : (bank ? &bank->tex_bspot_b : NULL);
-                bombspot_idx++;
-                if (btex && btex->id) {
-                    cs2d_render_sprite(btex, ex, ey, (float)btex->width, (float)btex->height, 0.0f, 1.0f, 1.0f, 1.0f, 0.85f);
-                }
+            case CS2D_ENT_INFO_BOMBSPOT:
+                /* Info_BombSpot (5): original CS2D does not render any decals on the map floor; icons appear on radar only */
                 break;
-            }
             case CS2D_ENT_ENV_DECAL: {
                 /* Env_Decal (24): ints[0]=frame (0..71) in gfx/decals.bmp, ints[1..3]=r,g,b, ints[4]=rot, strs[0]=alpha */
                 if (bank && bank->tex_decals.id) {
@@ -3273,10 +3265,24 @@ void cs2d_render_map_ex(
 }
 
 /*
- * Reconstructed from 0x140262750..0x140262885 & Te.draw(2) (0x140271ee0, p3 == 2):
+ * Renders CPU shadow chunks (used when light engine is off, light == 0) onto the map floor.
+ * Must be rendered before players so shadows sit underneath player bodies.
+ */
+void cs2d_render_map_shadows(const cs2d_map_t *map, float cam_x, float cam_y)
+{
+    if (!map) return;
+    if (s_shadows_enabled && !cs2d_light_active()) {
+        cam_x = roundf(cam_x);
+        cam_y = roundf(cam_y);
+        ensure_shadow_chunks(map);
+        render_shadow_chunks(map, cam_x, cam_y);
+    }
+}
+
+/*
+ * Map Overhead Entity Pass (Pass 2):
  *   1. Non-additive rooftop sprites (dustroof.png, roof_edge1.png, dome.png, Env_Image)
- *   2. Unified Sun-Angle & Multi-Layer Room Shadow/Lighting Map (s_room_shadow_tex)
- *   3. Env_Object palms, trees, alarms and street lights (Sink / Toilet are on the ground pass) & additive flares
+ *   2. Env_Object palms, trees, alarms and street lights (Sink / Toilet are on the ground pass) & additive flares
  */
 void cs2d_render_map_overhead(
     const cs2d_map_t *map,
@@ -3330,14 +3336,7 @@ void cs2d_render_map_overhead(
         }
     }
 
-    /* Pass 2: Unified Sun-Angle & Multi-Layer Room Shadow/Lighting Overlay (0x140262750..0x14026286f) */
-    /* The light engine draws the day shadows in its buffer (cs2d_light.c); this map is only for light 0 */
-    if (s_shadows_enabled && !cs2d_light_active()) {
-        ensure_shadow_chunks(map);
-        render_shadow_chunks(map, cam_x, cam_y);
-    }
-
-    /* Pass 3: Te.draw(2) Env_Object palms, trees, alarms and street lights (0x140271ee0, p3 == 2) */
+    /* Pass 2: Te.draw(2) Env_Object palms, trees, alarms and street lights (0x140271ee0, p3 == 2) */
     float age = env_object_age(tick_ms);
     int objects_n = 0;
     const int *objects_list = cs2d_render_entity_pass_list(map, CS2D_EPASS_ROOF_OBJECT, &objects_n);

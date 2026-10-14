@@ -34,9 +34,10 @@ Our client must be able to play on the original dedicated server without the ser
    regression case to `tests/test_cs2d.c`. For example, `test_entities_prison` uses the fixture
    `tests/data/prison_funst3r_triggers.txt`, and `test_player_physics` and `test_breakables` use values
    measured on the original.
-3. **Record what you learned** in `docs/agents/KNOWLEDGE.md`: protocol layouts, addresses, measured
-   numbers. Add a dated line to `docs/agents/WORKLOG.md` for each work session, and keep
-   `docs/agents/OPEN_ISSUES.md` current. These files are the shared memory between agents. Read them
+3. **Record what you learned** in the matching topic file of `docs/agents/knowledge/` (index:
+   `docs/agents/KNOWLEDGE.md`): protocol layouts, addresses, measured numbers. Add a dated line to `docs/agents/WORKLOG.md` for each work session, and keep
+   `docs/agents/OPEN_ISSUES.md` current. These files are the shared memory between agents. **Context budget:** read the index and only the
+   topic files you need, never `knowledge/*` or `worklog/archive.md` in full; keep entries terse. Read them
    before starting.
 4. **Never run the dedicated server online.** Always pass `-offline`; without it, the server registers
    on the public U.S.G.N. serverlist.
@@ -75,7 +76,7 @@ Our client must be able to play on the original dedicated server without the ser
 | `third_party/` | Vendored single-header libraries (`stb_image.h`, `stb_truetype.h`) — `-Ithird_party` in `build.bat` |
 | `docs/` | Scraped references (`cs2d_entities_db`, `cs2d_help_db`, `cs2d_gfx_descriptors.json`) |
 | `docs/dump/` | Ghidra decompilation of `CS2D.exe`, one file per BlitzMax class (git-ignored, client only) |
-| `docs/agents/` | **Shared agent memory**: `TOOLS.md`, `KNOWLEDGE.md`, `WORKLOG.md`, `OPEN_ISSUES.md` |
+| `docs/agents/` | **Shared agent memory**: `TOOLS.md`, `KNOWLEDGE.md` (index) + `knowledge/<topic>.md`, `WORKLOG.md` (5 newest) + `worklog/archive.md`, `OPEN_ISSUES.md` |
 | `cs2d_netcode_codes.txt` | Opcode names from the dedicated (`recv N name`) |
 | `cs2d_spec_map_format.txt` | `.map` format notes |
 | `gfx/ sfx/ maps/ sys/ incbindata/` | Original game data (assets the reimplementation loads) |
@@ -94,7 +95,8 @@ test_cs2d.exe        :: must print "Tests Passed: N / N"
 
 ## Workflow that works
 
-1. **Read the shared memory:** `docs/agents/KNOWLEDGE.md` and `OPEN_ISSUES.md`.
+1. **Read the shared memory:** the `docs/agents/KNOWLEDGE.md` index, the topic files for your area, and the
+   relevant part of `OPEN_ISSUES.md`.
 2. **Find the original code in the Ghidra dump, then confirm with REA.** For the client, start with
    `docs/dump/` (class-named, git-ignored): `tools/agent/dumpgrep.sh Tpl::move`, `-f <Class>`, or
    `-l '<regex>'` (see `docs/agents/TOOLS.md`). The dump has no `cs2d_dedicated.exe`, and its pseudo-C is a
@@ -108,4 +110,4 @@ test_cs2d.exe        :: must print "Tests Passed: N / N"
    - `tools/agent/dumpops.py` decodes the capture.
 4. **Implement it, then run our client** against the same server with `tools/agent/capture_ours.sh`,
    and compare the proxy logs and screenshots.
-5. **Add a test, update `KNOWLEDGE.md`, `WORKLOG.md` and `OPEN_ISSUES.md`.**
+5. **Add a test, update the `knowledge/` topic file, `WORKLOG.md` and `OPEN_ISSUES.md`.**

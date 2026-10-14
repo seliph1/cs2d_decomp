@@ -114,9 +114,9 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 | `drive_orig.ps1 -Steps "a;b;c"` | Input for the original window: `focus`, `tap:K`, `down:K`, `up:K`, `wait:ms`, `mouse:x:y` (client coords), `click:n:ms`, `ldown`, `lup`, `wheel:n` (notches, negative = down), `vk:hex[:up]`, `shot:C:/path.png` |
 | `dumpgrep.sh <addr \| name> / -f <Class> / -l <regex>` | Looks up functions in the Ghidra dump `docs/dump` (see above) |
 | `peptr.py <exe> <hexaddr…>` | Finds 8-byte pointers to an address inside the PE (vtables) |
-| `initarrays.py <objdump listing> <start> <end> <global…>` | Recovers arrays the init code fills with straight-line stores (`mov [base+off], imm` or a `lea` constant): prints `global +offset value`. Used for the editor's entity tables (KNOWLEDGE "Map editor") |
+| `initarrays.py <objdump listing> <start> <end> <global…>` | Recovers arrays the init code fills with straight-line stores (`mov [base+off], imm` or a `lea` constant): prints `global +offset value`. Used for the editor's entity tables (`knowledge/map-editor.md`) |
 | `bbscope.py <exe> <Class>` | Prints a BlitzMax class's fields (name, type tag, offset), globals and methods from its debug scope (e.g. `Tdo`, `Tpl`, `Te`) |
-| `weapontables.py <objdump listing> <exe> <global…>` | Recovers the per-weapon tables of `init_weapons` (`0x140230000..0x140236000`), which `initarrays.py` cannot follow because each store is indexed by the current id `DAT_140ddf57c`: prints `global id:value …`. Used for the Buy menu stats and the muzzle offsets (KNOWLEDGE "Buy menu") |
+| `weapontables.py <objdump listing> <exe> <global…>` | Recovers the per-weapon tables of `init_weapons` (`0x140230000..0x140236000`), which `initarrays.py` cannot follow because each store is indexed by the current id `DAT_140ddf57c`: prints `global id:value …`. Used for the Buy menu stats and the muzzle offsets (`knowledge/buy-menu.md`) |
 | `bbstr.py <exe> <hexaddr…>` | Prints the BlitzMax string objects at those addresses: decodes the `bbs__` literals of the dump. Feed it the `lea` targets of a range: `objdump -d -M intel --start-address=… --stop-address=… CS2D.exe \| grep -o "# 0x140a[0-9a-f]*"`. `--array <pointer global> <i or $> <n>` reads a static BBArray (arrays filled at runtime point to `bbEmptyArray`: use `initarrays.py`) |
 | `map_grid.c` | Prints the collision or mode grid around a tile |
 | `emu_cs2d.py` | Library: runs single `CS2D.exe` functions in Unicorn (`pip install unicorn pefile`) with the Max2D primitives (SetColor, SetBlend, DrawRect, DrawImage, DrawPoly, buffers, ...) replaced by recorders. Win64 calls with 8-byte stack slots; unhooked code runs for real |
@@ -128,7 +128,7 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 | `gen_occlusion_table.py CS2D.exe` | Runs `DrawTilesFloor` on the 256 neighbour patterns and prints the occlusion table pasted into `src/cs2d_light.c` |
 | `lua/*.lua` | Dedicated Lua probes; output lines start with `BP` / `WP` / `PD` / `JL` |
 
-Performance (GPU cost), see `KNOWLEDGE.md` "Performance" (2026-10-13):
+Performance (GPU cost), see `knowledge/performance.md` (2026-10-13):
 
 | Script | What it does |
 |---|---|
