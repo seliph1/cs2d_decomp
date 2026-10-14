@@ -4214,6 +4214,8 @@ void cs2d_client_build_ui(cs2d_client_t *client, int screen_w, int screen_h)
     );
     client->ui_wheel_delta = 0;
 
+    /* Editor sidebar/windows first: the client windows (console, options, ...) open on top of them */
+    if (client->scene == CS2D_SCENE_EDITOR) cs2d_scene_editor_build_ui(client, screen_w, screen_h);
     cs2d_client_build_team_menu_ui(client, screen_w, screen_h);
     cs2d_client_build_server_info_ui(client, screen_w, screen_h);
     cs2d_client_build_console_ui(client, screen_w, screen_h);
@@ -4222,7 +4224,6 @@ void cs2d_client_build_ui(cs2d_client_t *client, int screen_w, int screen_h)
     cs2d_client_build_servers_ui(client, screen_w, screen_h);
     cs2d_client_build_connect_ip_ui(client, screen_w, screen_h);
     cs2d_client_build_download_ui(client, screen_w, screen_h);
-    if (client->scene == CS2D_SCENE_EDITOR) cs2d_scene_editor_build_ui(client, screen_w, screen_h);
 
     cs2d_ui_end_layout(&client->ui);
 }

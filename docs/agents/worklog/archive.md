@@ -1,5 +1,27 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-13 — Antigravity — Dynamic map list in New Game (Create Server) from maps/ directory
+
+- **Changed:**
+  - Replaced the hardcoded 10-map list in Create Server ("New Game") with a dynamic directory scanner
+    (`cs2d_maplist_load` in `src/cs2d_client.c`, declared in `include/cs2d_client.h`).
+  - Faithfully ported the original BlitzMax map scanner logic (`Tgui_ml::Load` 0x1400af1d0 and `FUN_1401a4610`):
+    - Reads map prefix categories from `sys/maptypes.lst` (e.g. `as_`, `cs_`, `de_`, `dm_`, `ctf_`, etc.).
+    - Scans `maps/*.map`, filters out `temp.map` and `autosave.map`, lowercases and strips extension.
+    - Groups maps under their respective section header in `maptypes.lst` order, sorted alphabetically per group.
+    - Remaining maps without matching prefixes are grouped under "Other Maps" (`sys/language` entry 0182).
+  - Integrated `cs2d_ui_scrollbar` with fixed 300px list container height and mouse wheel scrolling support.
+  - Selected map is stored by name (`srv_selected_map`), synced with Map Cycle view, and used for console `map <name>` execution.
+  - Fixed duplicate `work_ms` declaration in `src/main_client.c`.
+  - Added test `test_new_game_maplist` to `tests/test_cs2d.c` validating grouping, sorting, exclusions, and headers against `sys/maptypes.lst`.
+- **Verified:**
+  - `build.bat` compiles `test_cs2d.exe` and `cs2d_client.exe` cleanly.
+  - `test_cs2d.exe` regression suite: all **37 / 37** tests passing.
+- **Left:**
+  - Map cycle editing (add/remove from cycle).
+
+- 2026-10-13: chat input starting with '/' runs the rest as a console command (cs2d_client_handle_console_key); not yet checked against the original.
+
 ## 2026-10-13 — Antigravity — Sprite atlasing for entity sprite set & lifted 64-sprite cache ceiling
 
 - **Changed:**

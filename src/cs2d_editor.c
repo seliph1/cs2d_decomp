@@ -374,3 +374,43 @@ bool cs2d_ed_new_map(cs2d_map_t *map, uint32_t w, uint32_t h, const char *tilese
     }
     return true;
 }
+
+/* --- Display Settings (sys/editor.cfg) --- */
+
+const char *const cs2d_ed_disp_keys[CS2D_ED_DISP_COUNT] = {
+    "editor_minimap", "editor_grid", "editor_shadows", "editor_entities", "editor_entitygraphics", "editor_gameplayview"
+};
+/* sys/language 0443..0447, 0898 */
+const char *const cs2d_ed_disp_labels[CS2D_ED_DISP_COUNT] = {
+    "Minimap", "Grid", "Shadows", "Entities", "Entity Graphics/FX", "In-game scale/view"
+};
+
+bool cs2d_ed_disp_load(bool flags[CS2D_ED_DISP_COUNT], const char *path)
+{
+    static const bool defaults[CS2D_ED_DISP_COUNT] = { true, true, true, false, true, true };
+    memcpy(flags, defaults, sizeof(defaults));
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        char key[64];
+        int value;
+        if (sscanf(line, "%63s %d", key, &value) != 2) continue;
+        for (int i = 0; i < CS2D_ED_DISP_COUNT; i++) {
+            if (strcmp(key, cs2d_ed_disp_keys[i]) == 0) flags[i] = value != 0;
+        }
+    }
+    fclose(f);
+    return true;
+}
+
+/* FUN_1402b7570: a comment line, then "<key> <0|1>" per flag (WriteLine: CRLF) */
+bool cs2d_ed_disp_save(const bool flags[CS2D_ED_DISP_COUNT], const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    fputs("// CS2D Editor Configuration\r\n", f);
+    for (int i = 0; i < CS2D_ED_DISP_COUNT; i++) fprintf(f, "%s %d\r\n",cs2d_ed_disp_keys[i], flags[i] ? 1 : 0);
+    fclose(f);
+    return true;
+}

@@ -84,6 +84,22 @@ int         cs2d_ed_entity_at(const cs2d_map_t *map, int x, int y);   /* Index o
 int         cs2d_ed_entity_add(cs2d_map_t *map, int type, int x, int y); /* New index or -1 */
 void        cs2d_ed_entity_remove(cs2d_map_t *map, int index);
 
+/* Display Settings (sys/editor.cfg, written by FUN_1402b7570): flags in checkbox order */
+enum {
+    CS2D_ED_DISP_MINIMAP,        /* editor_minimap (0x140a14cd4) */
+    CS2D_ED_DISP_GRID,           /* editor_grid (0x140a14cd0): grid lines, G toggles it */
+    CS2D_ED_DISP_SHADOWS,        /* editor_shadows (0x140a14ccc): map shadows */
+    CS2D_ED_DISP_ENTITIES,       /* editor_entities (0x140a14cc8): entity icons outside the Entities mode */
+    CS2D_ED_DISP_ENTITYGFX,      /* editor_entitygraphics (0x140a14cc4) */
+    CS2D_ED_DISP_GAMEPLAYVIEW,   /* editor_gameplayview (0x140a14cc0) */
+    CS2D_ED_DISP_COUNT
+};
+extern const char *const cs2d_ed_disp_keys[CS2D_ED_DISP_COUNT];
+extern const char *const cs2d_ed_disp_labels[CS2D_ED_DISP_COUNT];
+/* Missing file or keys keep the defaults (1 1 1 0 1 1, the shipped sys/editor.cfg) */
+bool cs2d_ed_disp_load(bool flags[CS2D_ED_DISP_COUNT], const char *path);
+bool cs2d_ed_disp_save(const bool flags[CS2D_ED_DISP_COUNT], const char *path);
+
 /* Editor scene state (sidebar widgets and windows of FUN_1401a85f0) */
 #define CS2D_ED_MAX_FILES 512
 typedef struct {
@@ -121,6 +137,10 @@ typedef struct {
     char  files[CS2D_ED_MAX_FILES][64];
     int   file_count;
     cs2d_ui_scroll_t file_scroll;
+
+    bool  disp[CS2D_ED_DISP_COUNT];      /* Active display settings */
+    bool  disp_open;                     /* Display Settings window */
+    bool  disp_edit[CS2D_ED_DISP_COUNT]; /* Its checkboxes (applied by Okay) */
 } cs2d_ed_state_t;
 
 /* Blank map of w x h tiles (tile 0, no modifiers, no entities) on a tileset */

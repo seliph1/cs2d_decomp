@@ -54,3 +54,9 @@ Source: REA `FUN_1401a85f0` (GUI builder), `FUN_1402bf960` (editor loop), `FUN_1
   - `Te.drawineditor 0x14026a260`: `incbindata/shadow.bmp` at scale 1.2 in black, gui_icons frame 9 in the type
     color (additive), a pulsing shadow at scale 0.8, the short label in the small font at (+19, +21), zones as an
     additive yellow 10 % square; hovering shows the full name.
+- **Display Settings** (icon frame 10, built at `1401a0000.c` ~L4885): `Tgui_win` (155, 5) 300x220, label "Display:"
+  (16, 32), six `Tgui_chk` at (100, 32 + 20 i), Okay (74, 184) / Cancel (184, 184) 100 wide. Opening reloads
+  `sys/editor.cfg` into the checkboxes; Okay writes it (`FUN_1402b7570`, CRLF) and executes it. Flags: minimap
+  `0x140a14cd4`, grid `cd0` (G toggles, unsaved), shadows `ccc`, entities `cc8` (`Te.drawineditor` only with it or
+  in the Entities mode), entitygraphics `cc4` (Te.draw on `DAT_140ddf418 == 4`), gameplayview `cc0` (fixed 850x480
+  camera/`g_xform_mode`). Ours wires grid / shadows / entities; minimap, entity graphics and gameplay view are saved only.

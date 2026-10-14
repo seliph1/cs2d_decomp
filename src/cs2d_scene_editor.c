@@ -210,6 +210,7 @@ static void editor_enter(cs2d_client_t *client)
     }
     client->editor_cam_x = 0.0f;
     client->editor_cam_y = 0.0f;
+    cs2d_ed_disp_load(ed->disp, "sys/editor.cfg");
 
     cs2d_texture_load_grid(&s_tex_icons, "gfx/gui_icons.bmp", 3, 16, 16);
     cs2d_texture_load_ex(&s_tex_shade, "gfx/gui_shade.bmp", 3);
@@ -225,11 +226,12 @@ static void editor_leave(cs2d_client_t *client)
     cs2d_map_free(&client->editor_map);
     memset(&client->editor_map, 0, sizeof(client->editor_map));
     client->editor.file_open = client->editor.tileprop_open = client->editor.color_open = false;
+    client->editor.disp_open = false;
 }
 
 static bool editor_window_open(const cs2d_ed_state_t *ed)
 {
-    return ed->tileprop_open || ed->color_open || ed->file_open;
+    return ed->tileprop_open || ed->color_open || ed->file_open || ed->disp_open;
 }
 
 /* Pointer over the sidebar or an editor window (the map does not react then) */
@@ -430,6 +432,16 @@ static bool editor_sidebar_click(cs2d_client_t *client, float mx, float my, int 
             case 2: editor_open_file_window(client, false); break;
             case 3: editor_open_file_window(client, true); break;
             case 0: cs2d_client_set_scene(client, CS2D_SCENE_LOBBY); break;
+            case 10:
+                /* Toggles the window; opening reloads sys/editor.cfg into the checkboxes (FUN_1402bf960) */
+                ed->disp_open = !ed->disp_open;
+                if (ed->disp_open) {
+                    if (!cs2d_ed_disp_load(ed->disp, "sys/editor.cfg")) {
+                        cs2d_client_console_print(client, 255, 0, 0, "ERROR: failed to load 'sys/editor.cfg'");
+                    }
+                    memcpy(ed->disp_edit, ed->disp, sizeof(ed->disp));
+                }
+                break;
             default:
                 cs2d_client_console_print(client, 255, 220, 0, "editor: '%s' is not reconstructed yet", s_icons_row1[i].tip);
                 break;
@@ -580,23 +592,24 @@ static void editor_render(cs2d_client_t *client, int screen_w, int screen_h)
     cs2d_render_rect(0.0f, 0.0f, (float)screen_w, (float)screen_h, 0.0f, 0.0f, 0.0f, 1.0f, true);
     cs2d_render_map_ex(map, &client->editor_tileset, cam_x, cam_y, screen_w, screen_h);
     /* The editor loop (FUN_1402bf960) draws the map like the game (FUN_140281fd0), Te.draw layer 2 included */
-    cs2d_render_map_shadows(map, cam_x, cam_y);
+    if (ed->disp[CS2D_ED_DISP_SHADOWS]) cs2d_render_map_shadows(map, cam_x, cam_y);
     cs2d_render_map_overhead(map, cam_x, cam_y, screen_w, screen_h);
 
-    /* Grid: yellow at 25 % on every tile edge of the map */
+    /* Grid (editor_grid): yellow at 25 % on every tile edge of the map */
     float map_w = (float)(map->width * CS2D_TILE_SIZE), map_h = (float)(map->height * CS2D_TILE_SIZE);
-    for (uint32_t tx = 0; tx <= map->width; tx++) {
+    for (uint32_t tx = 0; ed->disp[CS2D_ED_DISP_GRID] && tx <= map->width; tx++) {
         float x = (float)(tx * CS2D_TILE_SIZE) - cam_x;
         if (x < 0.0f || x > (float)screen_w) continue;
         cs2d_render_rect(x, fmaxf(-cam_y, 0.0f), 1.0f, fminf(map_h - cam_y, (float)screen_h), 1.0f, 1.0f, 0.0f, 0.25f, true);
     }
-    for (uint32_t ty = 0; ty <= map->height; ty++) {
+    for (uint32_t ty = 0; ed->disp[CS2D_ED_DISP_GRID] && ty <= map->height; ty++) {
         float y = (float)(ty * CS2D_TILE_SIZE) - cam_y;
         if (y < 0.0f || y > (float)screen_h) continue;
         cs2d_render_rect(fmaxf(-cam_x, 0.0f), y, fminf(map_w - cam_x, (float)screen_w), 1.0f, 1.0f, 1.0f, 0.0f, 0.25f, true);
     }
 
-    draw_entities(client, screen_w, screen_h);
+    /* Te.drawineditor runs with editor_entities 1 or in the Entities mode */
+    if (ed->disp[CS2D_ED_DISP_ENTITIES] || ed->mode == CS2D_ED_MODE_ENTITIES) draw_entities(client, screen_w, screen_h);
 
     int tx, ty;
     if (!pointer_blocked(client) && hovered_tile(client, &tx, &ty)) {
@@ -725,6 +738,36 @@ static void build_color_window(cs2d_client_t *client)
     cs2d_ui_window_end(ui);
 }
 
+/* Display Settings: Tgui_win (155, 5) 300x220; label (16, 32), checkboxes (100, 32 + 20 i), Okay (74, 184), Cancel (184, 184) */
+static void build_disp_window(cs2d_client_t *client)
+{
+    cs2d_ed_state_t *ed = &client->editor;
+    cs2d_ui_context_t *ui = &client->ui;
+    const float wx = 155.0f, wy = 5.0f;
+    if (!cs2d_ui_window_begin(ui, CS2D_UI_ID("EdDispWin"), "Display Settings", wx, wy, 300.0f, 220.0f, &ed->disp_open)) return;
+    label_at(ui, wx + 16.0f, wy + 32.0f, "Display:");
+    for (int i = 0; i < CS2D_ED_DISP_COUNT; i++) {
+        ED_AT(ui, wx + 100.0f, wy + 32.0f + 20.0f * (float)i) {
+            cs2d_ui_checkbox(ui, CS2D_UI_IDI("EdDispChk", i), cs2d_ed_disp_labels[i], &ed->disp_edit[i]);
+        }
+    }
+    ED_AT(ui, wx + 74.0f, wy + 184.0f) {
+        /* Okay: write sys/editor.cfg, then execute it (FUN_1402b7570, FUN_1401bf780) */
+        if (cs2d_ui_button(ui, CS2D_UI_ID("EdDispOk"), "Okay", 100.0f, 20.0f)) {
+            if (!cs2d_ed_disp_save(ed->disp_edit, "sys/editor.cfg")) {
+                cs2d_client_console_print(client, 255, 0, 0, "ERROR: failed to write 'sys/editor.cfg'");
+            }
+            memcpy(ed->disp, ed->disp_edit, sizeof(ed->disp));
+            cs2d_render_invalidate_shadows();
+            ed->disp_open = false;
+        }
+    }
+    ED_AT(ui, wx + 184.0f, wy + 184.0f) {
+        if (cs2d_ui_button(ui, CS2D_UI_ID("EdDispCancel"), "Cancel", 100.0f, 20.0f)) ed->disp_open = false;
+    }
+    cs2d_ui_window_end(ui);
+}
+
 /* Load / Save Map: Tgui_win (155, 5) (w - 160) x (h - 10); list (16, 25), name box (16, h - 71) */
 static void build_file_window(cs2d_client_t *client, int screen_w, int screen_h)
 {
@@ -818,10 +861,12 @@ void cs2d_scene_editor_build_ui(cs2d_client_t *client, int screen_w, int screen_
     if (ed->tileprop_open) build_tileprop_window(client);
     if (ed->color_open) build_color_window(client);
     if (ed->file_open) build_file_window(client, screen_w, screen_h);
+    if (ed->disp_open) build_disp_window(client);
 
     ed->pointer_on_ui = rect_has_pointer(client, CS2D_UI_ID("EdTilePropWin")) && ed->tileprop_open;
     ed->pointer_on_ui |= rect_has_pointer(client, CS2D_UI_ID("EdColorWin")) && ed->color_open;
     ed->pointer_on_ui |= rect_has_pointer(client, CS2D_UI_ID("EdFileWin")) && ed->file_open;
+    ed->pointer_on_ui |= rect_has_pointer(client, CS2D_UI_ID("EdDispWin")) && ed->disp_open;
 }
 
 /* Drawn over the UI windows: tile picture, color preview / sliders / palette, map list, tooltip */
@@ -912,6 +957,10 @@ static void editor_handle_key(cs2d_client_t *client, int key, bool pressed)
         case 'A': case 'a': case VK_LEFT:  client->key_left    = pressed; break;
         case 'D': case 'd': case VK_RIGHT: client->key_right   = pressed; break;
         case VK_SHIFT:                     client->key_walk    = pressed; break;
+        case 'G': case 'g':
+            /* KeyHit(G) flips editor_grid without saving it (FUN_1402bf960) */
+            if (pressed && !editor_window_open(ed)) ed->disp[CS2D_ED_DISP_GRID] = !ed->disp[CS2D_ED_DISP_GRID];
+            break;
         case VK_DELETE:
             /* Delete the entity under the pointer (the original uses its context menu; not reconstructed) */
             if (pressed && ed->ent_hover >= 0) {
@@ -975,6 +1024,7 @@ static void editor_handle_escape(cs2d_client_t *client)
     cs2d_ed_state_t *ed = &client->editor;
     if (ed->color_open)    { ed->color_open = false; return; }
     if (ed->file_open)     { ed->file_open = false; return; }
+    if (ed->disp_open)     { ed->disp_open = false; return; }
     if (ed->tileprop_open) { ed->tileprop_open = false; return; }
     /* "Quit Editor" (sys/language 0426); the unsaved-map confirmation (0497) is not reconstructed yet */
     cs2d_client_set_scene(client, CS2D_SCENE_LOBBY);

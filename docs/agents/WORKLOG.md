@@ -10,6 +10,11 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-13 — Claude — Editor Display Settings window, console over editor UI
+- Client windows (console, ...) now build after the editor UI, so they draw on top of it.
+- Display Settings window (`build_disp_window`), `sys/editor.cfg` load/save (`cs2d_ed_disp_*`), grid / shadows / entities gated; G toggles the grid.
+- Verified: build, tests (`test_editor` cfg byte round trip). The `--capture` `!mouse` clicks did not reach the editor sidebar (Load Map did not open either), so no screenshot yet.
+
 ## 2026-10-13 — Claude — Gen_Particles / Gen_Sprites / Gen_Weather / Gen_FX + Info_NoWeather
 
 - **Changed:** new `src/cs2d_gen.c` (+ `include/cs2d_gen.h`): spawn rules of `Te.draw` pass 2 and the `Tp` types
@@ -50,24 +55,3 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
   - `build.bat` compiles `test_cs2d.exe` and `cs2d_client.exe` without warnings or errors.
   - `test_cs2d.exe` regression suite: **37 / 37** tests passing.
 
-## 2026-10-13 — Antigravity — Dynamic map list in New Game (Create Server) from maps/ directory
-
-- **Changed:**
-  - Replaced the hardcoded 10-map list in Create Server ("New Game") with a dynamic directory scanner
-    (`cs2d_maplist_load` in `src/cs2d_client.c`, declared in `include/cs2d_client.h`).
-  - Faithfully ported the original BlitzMax map scanner logic (`Tgui_ml::Load` 0x1400af1d0 and `FUN_1401a4610`):
-    - Reads map prefix categories from `sys/maptypes.lst` (e.g. `as_`, `cs_`, `de_`, `dm_`, `ctf_`, etc.).
-    - Scans `maps/*.map`, filters out `temp.map` and `autosave.map`, lowercases and strips extension.
-    - Groups maps under their respective section header in `maptypes.lst` order, sorted alphabetically per group.
-    - Remaining maps without matching prefixes are grouped under "Other Maps" (`sys/language` entry 0182).
-  - Integrated `cs2d_ui_scrollbar` with fixed 300px list container height and mouse wheel scrolling support.
-  - Selected map is stored by name (`srv_selected_map`), synced with Map Cycle view, and used for console `map <name>` execution.
-  - Fixed duplicate `work_ms` declaration in `src/main_client.c`.
-  - Added test `test_new_game_maplist` to `tests/test_cs2d.c` validating grouping, sorting, exclusions, and headers against `sys/maptypes.lst`.
-- **Verified:**
-  - `build.bat` compiles `test_cs2d.exe` and `cs2d_client.exe` cleanly.
-  - `test_cs2d.exe` regression suite: all **37 / 37** tests passing.
-- **Left:**
-  - Map cycle editing (add/remove from cycle).
-
-- 2026-10-13: chat input starting with '/' runs the rest as a console command (cs2d_client_handle_console_key); not yet checked against the original.

@@ -1919,6 +1919,14 @@ static bool test_editor(void)
         TEST_FAIL("Editor .inf", "tile mode table");
     }
 
+    /* Display Settings: the shipped sys/editor.cfg (written by the original) reads and saves back byte for byte */
+    bool disp[CS2D_ED_DISP_COUNT];
+    const char *cfg_tmp = "test_editor_tmp.cfg";
+    bool cfg_ok = cs2d_ed_disp_load(disp, "sys/editor.cfg") && disp[CS2D_ED_DISP_GRID] && !disp[CS2D_ED_DISP_ENTITIES] &&
+                  cs2d_ed_disp_save(disp, cfg_tmp) && file_bytes_equal("sys/editor.cfg", cfg_tmp);
+    remove(cfg_tmp);
+    if (!cfg_ok) TEST_FAIL("Editor display settings", "sys/editor.cfg round trip");
+
     /* The map writer keeps original maps byte for byte, colored tiles (fy_shipment: 700) included */
     static const char *maps[3] = { "maps/fy_shipment.map", "maps/de_dust2.map", "maps/de_aztec.map" };
     const char *map_tmp = "test_editor_tmp.map";
