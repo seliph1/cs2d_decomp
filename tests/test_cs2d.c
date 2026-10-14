@@ -35,6 +35,7 @@
 #include "cs2d_tilefx.h"
 #include "cs2d_gen.h"
 #include "cs2d_hudtxt.h"
+#include "cs2d_hostage.h"
 #include "cs2d_hudmen.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
@@ -2910,7 +2911,7 @@ static bool test_entity_culling(void)
     map.tiles = (uint8_t *)calloc(16u * 16u, 1);
 
     static const struct { uint8_t type; int x, y, w, h; } spec[] = {
-        { CS2D_ENT_INFO_HOSTAGE,    5,   5,  0,  0 },  /* 0 */
+        { CS2D_ENT_ENV_NPC,         5,   5,  0,  0 },  /* 0 (hostages are drawn from cs2d_hostage) */
         { CS2D_ENT_ENV_SOUND,       5,   5,  0,  0 },  /* 1: no pass draws it */
         { CS2D_ENT_ENV_SPRITE,      5,   5,  0,  0 },  /* 2: texture sized (size learned on draw) */
         { CS2D_ENT_FUNC_DYNWALL,   15,  15,  0,  0 },  /* 3 */
@@ -2931,7 +2932,7 @@ static bool test_entity_culling(void)
     map.entity_count = (uint32_t)n;
 
     /* 1. Membership: anim 1, Breakable/DynWall 2, ground 4 (bomb spots, ground images/objects,
-     *    items, flags, hostages, NPCs, buttons, sprites), rooftop sprites 2, rooftop objects 3, decals 1 */
+     *    items, flags, NPCs, buttons, sprites), rooftop sprites 2, rooftop objects 3, decals 1 */
     static const struct { cs2d_entity_pass_t pass; int want; } pass_want[] = {
         { CS2D_EPASS_ANIM,        1 },
         { CS2D_EPASS_SOLID,       2 },
@@ -2959,14 +2960,14 @@ static bool test_entity_culling(void)
     TEST_PASS("Entity index: one ascending list per pass, every typed entity exactly once");
 
     /* 2. The entity table version invalidates the index */
-    map.entities[0].type = CS2D_ENT_ENV_SOUND;   /* hostage -> sound: leaves the ground pass */
+    map.entities[0].type = CS2D_ENT_ENV_SOUND;   /* NPC -> sound: leaves the ground pass */
     map.entity_table_version++;
     if (cs2d_render_entity_pass_total(&map, CS2D_EPASS_GROUND) != 3) {
         TEST_FAIL("Entity Index", "entity_table_version did not rebuild the index");
         free(map.tiles);
         return false;
     }
-    map.entities[0].type = CS2D_ENT_INFO_HOSTAGE;
+    map.entities[0].type = CS2D_ENT_ENV_NPC;
     map.entity_table_version++;
     TEST_PASS("Entity index: rebuilt when map->entity_table_version changes");
 
@@ -3035,7 +3036,7 @@ static bool test_entity_culling(void)
     static const int set_anim[]        = { CS2D_ENT_INFO_ANIMATION, -1 };
     static const int set_solid[]       = { CS2D_ENT_ENV_BREAKABLE, CS2D_ENT_FUNC_DYNWALL, -1 };
     static const int set_ground[]      = { CS2D_ENT_TRIGGER_USE, CS2D_ENT_INFO_BOMBSPOT, CS2D_ENT_ENV_OBJECT, CS2D_ENT_ENV_ITEM, CS2D_ENT_INFO_CTF_FLAG,
-                                           CS2D_ENT_INFO_DOM_POINT, CS2D_ENT_INFO_HOSTAGE, CS2D_ENT_ENV_NPC,
+                                           CS2D_ENT_INFO_DOM_POINT, CS2D_ENT_ENV_NPC,
                                            CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_IMAGE, -1 };
     static const int set_roof_sprite[] = { CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_IMAGE, -1 };
     static const int set_roof_object[] = { CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_OBJECT, -1 };
@@ -4694,6 +4695,79 @@ static bool test_game_menu(void)
     return true;
 }
 
+/*
+ * Hostages (Thostage, cs2d_hostage.c): round start spawns from Info_Hostage (cs_office: 4, ids 1..4 in entity
+ * order), the join snapshot [252,7,2] record layout, Thostage.use money / follow, [29] kinds and the client
+ * movement of Thostage.draw (4 px per frame per axis, stops within 4 px of the target tile centre).
+ */
+static bool test_hostages(void)
+{
+    printf("\n--- Testing hostages ---\n");
+    static cs2d_map_t map;
+    static cs2d_hostage_world_t w;
+    memset(&map, 0, sizeof(map));
+    if (!cs2d_map_load_file(&map, "maps/cs_office.map")) { TEST_FAIL("Hostages", "cs_office.map"); return false; }
+    cs2d_hostages_spawn_from_map(&w, &map);
+    cs2d_hostage_t *h1 = cs2d_hostages_get(&w, 1), *h4 = cs2d_hostages_get(&w, 4);
+    if (!h1 || !h4 || cs2d_hostages_get(&w, 5) || h1->x != 3 * 32 + 16 || h1->y != 5 * 32 + 16 ||
+        h4->x != 18 * 32 + 16 || h4->y != 3 * 32 + 16 || h1->health != 100 || h1->tx != -1) {
+        TEST_FAIL("Hostages", "round start spawn from Info_Hostage");
+        return false;
+    }
+    if (cs2d_hostages_at_tile(&w, 3, 6) != cs2d_hostages_get(&w, 2) || cs2d_hostages_at_tile(&w, 4, 6)) {
+        TEST_FAIL("Hostages", "use ray tile lookup");
+        return false;
+    }
+
+    /* Snapshot: count 2, {id, health, look, follow, x u16, y u16} */
+    const uint8_t snap[] = { 2, 3, 80, 5, 0, 0x30, 0x01, 0x50, 0x00,  7, 0, 2, 4, 0x10, 0x00, 0x10, 0x00 };
+    int pos = 0;
+    if (!cs2d_hostages_read_snapshot(&w, snap, (int)sizeof(snap), &pos) || pos != (int)sizeof(snap)) {
+        TEST_FAIL("Hostages", "snapshot length");
+        return false;
+    }
+    cs2d_hostage_t *h3 = cs2d_hostages_get(&w, 3);
+    if (cs2d_hostages_get(&w, 1) || !h3 || h3->health != 80 || h3->look != 5 || h3->x != 304.0f || h3->y != 80.0f ||
+        h3->tx != 9 || h3->ty != 2 || cs2d_hostages_at_tile(&w, 0, 0) /* id 7 has health 0 */) {
+        TEST_FAIL("Hostages", "snapshot record");
+        return false;
+    }
+
+    /* Thostage.use: CT only, $150 on the first use, capped at 16000; release clears follow */
+    static cs2d_player_t pl[CS2D_MAX_PLAYERS + 1];
+    memset(pl, 0, sizeof(pl));
+    pl[2].team = CS2D_TEAM_CT; pl[2].alive = true; pl[2].health = 100; pl[2].money = 15900;
+    pl[2].pos.x = 304.0f; pl[2].pos.y = 300.0f;
+    pl[1].team = CS2D_TEAM_T;
+    if (cs2d_hostages_use(&w, 3, &pl[1], 1, false) || h3->follow != 0 ||
+        !cs2d_hostages_use(&w, 3, &pl[2], 2, false) || pl[2].money != 16000 || h3->follow != 2 ||
+        cs2d_hostages_use(&w, 3, &pl[2], 2, false) || cs2d_hostages_use(&w, 3, &pl[2], 2, true) || h3->follow != 0) {
+        TEST_FAIL("Hostages", "Thostage.use");
+        return false;
+    }
+
+    /* [29] kind 0: a target makes the hostage follow; it walks 4 px per frame on each axis and faces the follower */
+    h3->follow = 2;
+    if (cs2d_hostages_net_message(&w, 3, 0, 9, 4) != 0) { TEST_FAIL("Hostages", "[29] kind 0"); return false; }
+    cs2d_hostages_update(&w, pl, 1.0f);
+    if (h3->y != 84.0f || h3->x != 304.0f || fabsf(h3->rot - 180.0f) > 0.01f) {
+        TEST_FAIL("Hostages", "movement step / facing");
+        return false;
+    }
+    for (int i = 0; i < 100; i++) cs2d_hostages_update(&w, pl, 1.0f);
+    if (h3->y != 140.0f) { TEST_FAIL("Hostages", "stops within 4 px of the tile centre (144)"); return false; }
+    pl[2].alive = false;
+    cs2d_hostages_update(&w, pl, 1.0f);
+    if (h3->follow != 0) { TEST_FAIL("Hostages", "a dead follower is dropped"); return false; }
+    if (cs2d_hostages_net_message(&w, 3, 3, 40, 2) != 3 || h3->health != 40 ||
+        cs2d_hostages_net_message(&w, 3, 2, 0, 2) != 2 || h3->health != 0 || cs2d_hostages_at_tile(&w, 9, 4)) {
+        TEST_FAIL("Hostages", "[29] hurt / rescue");
+        return false;
+    }
+    TEST_PASS("Hostages: map spawn, snapshot, use, [29], client movement");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -4701,7 +4775,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 47;
+    int total = 48;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -4750,6 +4824,7 @@ int main(void)
     if (test_hudtxt()) passed++;
     if (test_hudscale()) passed++;
     if (test_game_menu()) passed++;
+    if (test_hostages()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

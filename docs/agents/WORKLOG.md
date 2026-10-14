@@ -10,6 +10,21 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-14 — Claude — Hostages, bomb plant / defuse, use key targets
+- New `cs2d_hostage.c` (Thostage list: round start / snapshot [252,7,2], Thostage.use, [29], client movement, drawn from the
+  list); E probes hostage / planted bomb / Trigger_Use per distance like FUN_14014f820; handlers for the [26] echo, [29],
+  [30]; plant ([30,1]/[30,2]) and defuse (mode 3, [30,4] on release) online; [22] special byte (bomb / kit / flag);
+  item 63 renamed Planted Bomb.
+- Verified on the original ded: `hostage_probe.lua` (cs_office: [26,1] echo, [29] targets, hostage stops at 172,176 like
+  the server) and `bomb_probe.lua` (de_dust2: our [30,1] → bombplant 28 22, CT E → use 3 / bombdefuse after 10 s).
+  Test `test_hostages`. Left: OPEN_ISSUES "Hostages / bomb".
+
+## 2026-10-14 — Claude — Use key [26] always sent (Lua "use" hook)
+- E now sends `[26][0][0 i32][0 u16][0 u16]` when no Trigger_Use is in reach, like FUN_14014f820 (the original sends
+  the packet whatever it finds); the server runs the Lua `use` hook with event 0. Trigger_Use still sends mode 100.
+- Verified: `tools/agent/capture_ours.sh use_probe.lua` (new probe) logs `US 1 0 0 0 0` per press on the original ded.
+- Left: hostage (modes 1/2), bomb defuse (3) and own dispenser/teleporter menu (Tdo 9/15) targets (OPEN_ISSUES).
+
 ## 2026-10-14 — Claude — Ingame menu (Esc): briefing, team, leaderboard, vote, options, server info
 
 - Esc in game opens `Tgui_hudmen` menu 2 (was: disconnect). Buttons and the server info box from `Tgui_hudmen.draw`;
@@ -41,26 +56,4 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
   - Added opcode 235 (`CS2D_NET_LUAMENU`) dispatcher in `src/cs2d_client.c` for receiving server menu strings, and client -> server reply `cs2d_client_send_luamenu` (`[235, pid, slen, title_utf16, button]`).
   - Integrated into `src/cs2d_scene_game.c` for rendering, number key selection (`0..9`), and mouse clicks.
 - **Verified:** test `test_lua_menu` in `tests/test_cs2d.c` testing string parsing, modes `@b`/`@i`, disabled options, keys and mouse clicks (45/46 tests passed). Full build clean.
-
-## 2026-10-14 — Antigravity — mp_hudscale (modes 0..3, zoom scaling, aspect letterboxing, font sharpness)
-
-- **Changed:**
-  - Implemented `cs2d_hudscale_compute` in `src/cs2d_hudtxt.c` from CS2D.exe (`FUN_140291080`, `FUN_14024f5a0`, `1402b0000.c:6760-6785`):
-    - Mode 0: 1:1 screen pixels (`screenw x screenh`).
-    - Mode 1: 850x480 virtual resolution, scaled by `g_zoom = min(screen_w / 850, screen_h / 480)` and letterbox offsets.
-    - Mode 2: 640x480 virtual resolution stretched across viewport (`screen_w / 640`, `screen_h / 480`).
-    - Mode 3: 640x480 virtual resolution centered unscaled (`off_x = (screen_w - 640) / 2`, `off_y = (screen_h - 480) / 2`).
-    - Font sharpness (`FUN_14024f5a0:8645`): when `mp_hudscale` in 1..2 and `screen_h > 589`, selects raster font size `size * g_zoom` (clamped 10..100) and scale `1.0 / g_zoom` for pixel-crisp 1:1 rasterized text on high-res displays.
-  - Added `cs2d_render_text_transform_ex` to `src/cs2d_render.c` supporting non-uniform 2D font scaling.
-  - Updated `cs2d_hudtxt_render` to transform coordinates, line height, image sizes, and alignment across all 4 modes.
-  - Added `net_hudscale` to `cs2d_client_t`: parsed from `[252, 6]` byte at offset `b + 16` (`0x140a14de8[1]`), `[237, 22, val]` (`changesettings` case 0x16 in `FUN_1401e3f10`), and console command `mp_hudscale [0..3]` (`0x1401bbc89`).
-- **Verified:** regression test `test_hudscale` in `tests/test_cs2d.c` (44 / 45 passed, only known pre-existing `test_light_engine` formatting diff remains). Build succeeds cleanly.
-
-## 2026-10-14 — Claude — Lua HUD texts (hudtxt, hudtxt2, hudtxtclear, move / alpha / colour fades)
-
-- New `src/cs2d_hudtxt.c`: [234] (FUN_1400a3530), [54] Ttween for hud texts, update and draw (FUN_14024f5a0 /
-  FUN_14024cc00, inline `©` colours and `®` images); render: sized fonts `CS2D_FONT_SIZED(px)` 10..100.
-- Verified: proxy capture + screenshots vs CS2D.exe with `tools/agent/lua/hudtxt_probe.lua`; `test_hudtxt`.
-  Build, 43 / 44 tests (`test_light_engine` fails on fun_roleplay, map file modified in the working tree).
-- Left: mp_hudscale, Tdo (Lua image) tweens, `®` images not screenshot-compared (OPEN_ISSUES).
 

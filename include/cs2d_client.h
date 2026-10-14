@@ -24,6 +24,7 @@
 #include "cs2d_hudmen.h"
 #include "cs2d_projectile.h"
 #include "cs2d_hudtxt.h"
+#include "cs2d_hostage.h"
 
 #define CS2D_CONSOLE_MAX_LINES     1024 /* Ring buffer: the oldest line is dropped when full */
 #define CS2D_CONSOLE_LINE_LEN      192
@@ -119,6 +120,7 @@ struct cs2d_client {
     cs2d_fx_t       fx;                /* Breakable debris / explosion effects */
     cs2d_gen_t      gen;               /* Gen_Particles / Gen_Sprites / Gen_Weather / Gen_FX particles */
     cs2d_ground_item_t ground_items[CS2D_MAX_GROUND_ITEMS];
+    cs2d_hostage_world_t hostages;     /* Thostage.list: map spawns, join snapshot [252,7,2], [29] / [26] */
     cs2d_dynobj_world_t dynobj;        /* Dynamic objects (buildings): Env_Building offline, the server's online */
     cs2d_hudtxt_t   hudtxt;            /* Lua HUD texts ([234] hudtxt, [54] hud text tweens) */
     cs2d_projectile_world_t projectiles; /* Projectiles & fields (grenades, rockets, molotov, flare, gas, etc.) */
@@ -189,6 +191,7 @@ struct cs2d_client {
     bool            key_left;
     bool            key_right;
     bool            key_walk;
+    bool            key_use;           /* Use held (DAT_140ddf488): releasing it aborts defusing with [30,4] */
     bool            mouse_fire;
     bool            mouse_attack2;
     float           mouse_screen_x;

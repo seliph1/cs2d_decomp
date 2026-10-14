@@ -5,6 +5,13 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **Hostages / bomb (2026-10-14, `knowledge/hostages-bomb.md`):** done: use ray (hostage, planted bomb, Trigger_Use),
+  [26] echo, [29], [30], snapshot section 2, plant / defuse online, `[22]` special byte. Missing: sounds (no audio:
+  hos1..4, c4 plant / defuse), own Dispenser / Teleporter menu on E (Tdo 9 / 15), the green "following me" marker
+  (Tp 100 at the hostage, mp_hovertext-like), [29] kind 4 blood (Tp 0x18) and the bomb blast particles (FUN_1401f1130,
+  screenshake 50; ours uses cs2d_fx_explosion), hostage money HUD messages (Thud_msg.add_money), hostage legs (the original
+  never sets `lastmove` on the client, so it likely draws no legs: compare a screenshot), hostage step is 4 px per drawn
+  frame and we assume 60 fps. `0x140a14e48[1]` (hostage spawn gate) taken as sv_gamemode 0, unverified.
 - **Ingame menu (2026-10-14, `knowledge/game-menu.md`):** not compared pixel by pixel with CS2D.exe. Guessed: game mode
   and voice chat value names (runtime arrays 0x140a1ccf8 / 0x140a14ed0), Players colours, vote row height (16 px) and the
   vote lists have no scrolling; vote player names are drawn gray (original screenshot shows team colours). Leaderboard:

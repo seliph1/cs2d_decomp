@@ -1,5 +1,27 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-14 — Antigravity — mp_hudscale (modes 0..3, zoom scaling, aspect letterboxing, font sharpness)
+
+- **Changed:**
+  - Implemented `cs2d_hudscale_compute` in `src/cs2d_hudtxt.c` from CS2D.exe (`FUN_140291080`, `FUN_14024f5a0`, `1402b0000.c:6760-6785`):
+    - Mode 0: 1:1 screen pixels (`screenw x screenh`).
+    - Mode 1: 850x480 virtual resolution, scaled by `g_zoom = min(screen_w / 850, screen_h / 480)` and letterbox offsets.
+    - Mode 2: 640x480 virtual resolution stretched across viewport (`screen_w / 640`, `screen_h / 480`).
+    - Mode 3: 640x480 virtual resolution centered unscaled (`off_x = (screen_w - 640) / 2`, `off_y = (screen_h - 480) / 2`).
+    - Font sharpness (`FUN_14024f5a0:8645`): when `mp_hudscale` in 1..2 and `screen_h > 589`, selects raster font size `size * g_zoom` (clamped 10..100) and scale `1.0 / g_zoom` for pixel-crisp 1:1 rasterized text on high-res displays.
+  - Added `cs2d_render_text_transform_ex` to `src/cs2d_render.c` supporting non-uniform 2D font scaling.
+  - Updated `cs2d_hudtxt_render` to transform coordinates, line height, image sizes, and alignment across all 4 modes.
+  - Added `net_hudscale` to `cs2d_client_t`: parsed from `[252, 6]` byte at offset `b + 16` (`0x140a14de8[1]`), `[237, 22, val]` (`changesettings` case 0x16 in `FUN_1401e3f10`), and console command `mp_hudscale [0..3]` (`0x1401bbc89`).
+- **Verified:** regression test `test_hudscale` in `tests/test_cs2d.c` (44 / 45 passed, only known pre-existing `test_light_engine` formatting diff remains). Build succeeds cleanly.
+
+## 2026-10-14 — Claude — Lua HUD texts (hudtxt, hudtxt2, hudtxtclear, move / alpha / colour fades)
+
+- New `src/cs2d_hudtxt.c`: [234] (FUN_1400a3530), [54] Ttween for hud texts, update and draw (FUN_14024f5a0 /
+  FUN_14024cc00, inline `©` colours and `®` images); render: sized fonts `CS2D_FONT_SIZED(px)` 10..100.
+- Verified: proxy capture + screenshots vs CS2D.exe with `tools/agent/lua/hudtxt_probe.lua`; `test_hudtxt`.
+  Build, 43 / 44 tests (`test_light_engine` fails on fun_roleplay, map file modified in the working tree).
+- Left: mp_hudscale, Tdo (Lua image) tweens, `®` images not screenshot-compared (OPEN_ISSUES).
+
 ## 2026-10-14 — Claude — join password prompt
 
 - `[252,2,1]` now opens the "Password required" window (Tgui_joinmen menu 1) instead of aborting; Connect restarts the join with the typed password, Cancel/Esc sends `[253,9]`. Layout and strings from the dump (net-join.md).

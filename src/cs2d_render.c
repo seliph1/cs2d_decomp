@@ -3032,7 +3032,7 @@ static uint8_t entity_cull_margin(const cs2d_entity_t *ent)
 static const int s_pass_anim_types[]        = { CS2D_ENT_INFO_ANIMATION, -1 };
 static const int s_pass_solid_types[]       = { CS2D_ENT_ENV_BREAKABLE, CS2D_ENT_FUNC_DYNWALL, -1 };
 static const int s_pass_ground_types[]      = { CS2D_ENT_TRIGGER_USE, CS2D_ENT_INFO_BOMBSPOT, CS2D_ENT_ENV_OBJECT, CS2D_ENT_ENV_ITEM, CS2D_ENT_INFO_CTF_FLAG,
-                                                CS2D_ENT_INFO_DOM_POINT, CS2D_ENT_INFO_HOSTAGE, CS2D_ENT_ENV_NPC,
+                                                CS2D_ENT_INFO_DOM_POINT, CS2D_ENT_ENV_NPC,
                                                 CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_IMAGE, -1 };
 static const int s_pass_roof_sprite_types[] = { CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_IMAGE, -1 };
 static const int s_pass_roof_object_types[] = { CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_OBJECT, -1 };
@@ -3546,27 +3546,6 @@ static void render_map_pass01(const cs2d_map_t *map, const cs2d_texture_t *tiles
                                            (float)dtex->width, (float)dtex->height,
                                            0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
                     }
-                }
-                break;
-            }
-            case CS2D_ENT_INFO_HOSTAGE: {
-                /* Info_Hostage (3): ints[0]=rot, ints[1]=look -> legs.bmp + hostages.bmp (Thostage.draw 0x140147090) */
-                if (bank && bank->tex_hostages.id) {
-                    float rot = (float)ent->int_settings[0];
-                    int look = ent->int_settings[1] & 7;
-                    if (s_shadows_enabled && s_player_shadows && s_shadow_intensity > 0) {
-                        const cs2d_texture_t *stex = bank->tex_shadow.id ? &bank->tex_shadow : &bank->tex_leaf;
-                        if (stex && stex->id) {
-                            float shadow_a = ((float)s_shadow_intensity * 0.01f);
-                            cs2d_render_sprite_frame(stex, 32, 32, 0,
-                                                     ex, ey, 48.0f, 48.0f, 0.0f,
-                                                     0.0f, 0.0f, 0.0f, shadow_a, 0);
-                        }
-                    }
-                    if (bank->tex_legs.id) {
-                        cs2d_render_sprite_frame(&bank->tex_legs, 32, 32, 0, ex, ey, 32.0f, 32.0f, rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
-                    }
-                    cs2d_render_sprite_frame(&bank->tex_hostages, 32, 32, look, ex, ey, 32.0f, 32.0f, rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
                 }
                 break;
             }
@@ -5225,5 +5204,30 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
             cs2d_render_sprite_frame(&bank->tex_glowdot, 0, 0, 0, sx, sy, cur_size, cur_size,
                                      p->rot, p->r, p->g, p->b, 0.7f * t, 3);
         }
+    }
+}
+
+/* Hostages (Thostage.draw 0x140147090): 48x48 shadow, legs, hostages.bmp frame `look`, rotated to `rot`.
+ * Rescued / dead ones (health 0) are not drawn. */
+void cs2d_render_hostages(const cs2d_hostage_world_t *w, float cam_x, float cam_y)
+{
+    const cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    if (!w || !bank || !bank->tex_hostages.id) return;
+    for (int i = 0; i < CS2D_MAX_HOSTAGES; i++) {
+        const cs2d_hostage_t *h = &w->h[i];
+        if (!h->active || h->health <= 0) continue;
+        float ex = roundf(h->x - cam_x), ey = roundf(h->y - cam_y);
+        if (s_shadows_enabled && s_player_shadows && s_shadow_intensity > 0) {
+            const cs2d_texture_t *stex = bank->tex_shadow.id ? &bank->tex_shadow : &bank->tex_leaf;
+            if (stex && stex->id) {
+                float shadow_a = ((float)s_shadow_intensity * 0.01f);
+                cs2d_render_sprite_frame(stex, 32, 32, 0, ex, ey, 48.0f, 48.0f, 0.0f, 0.0f, 0.0f, 0.0f, shadow_a, 0);
+            }
+        }
+        if (bank->tex_legs.id) {
+            cs2d_render_sprite_frame(&bank->tex_legs, 32, 32, 0, ex, ey, 32.0f, 32.0f, h->rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
+        }
+        cs2d_render_sprite_frame(&bank->tex_hostages, 32, 32, h->look & 7, ex, ey, 32.0f, 32.0f, h->rot,
+                                 1.0f, 1.0f, 1.0f, 1.0f, 0);
     }
 }

@@ -1545,6 +1545,9 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     uint8_t snap_type = buffer[pos++];
                     if (snap_type == 1) {
                         join_players(client, buffer, recvd, &pos);
+                    } else if (snap_type == 2) {
+                        /* Hostages (FUN_1402ce7c0, "receiving hostage data"): replace the map spawns */
+                        cs2d_hostages_read_snapshot(&client->hostages, buffer, recvd, &pos);
                     } else if (snap_type == 3) {
                         /* Items on the ground (FUN_1402ce7c0 case 3): count u8, then {id u16, type, tile x u16,
                          * tile y u16, clip u16, reserve u16} (11 bytes) */
@@ -1797,6 +1800,13 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         if (pid != client->local_player_id) {
                             cs2d_player_give_weapon(p, r[9]);
                         }
+                        /* r[11] = Tpl.setspecialbyte (0x1401ffdc0): 1 bomb (T) / defuse kit (CT), 2 night vision,
+                         * 8 flag, 16 gas mask (4 VIP and 32 flashlight not kept by this client) */
+                        p->has_defuse_kit  = (r[11] & 1) && p->team == CS2D_TEAM_CT;
+                        p->has_nightvision = (r[11] & 2) != 0;
+                        p->has_flag        = (r[11] & 8) != 0;
+                        p->has_gasmask     = (r[11] & 16) != 0;
+                        p->is_planting = p->is_defusing = false;
                     }
                 }
                 cs2d_player_t *me = &client->game.players[client->local_player_id];
@@ -1807,11 +1817,23 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 me->money = buffer[tail] | (buffer[tail + 1] << 8);
                 cs2d_player_clear_inventory(me);
                 for (int k = 0; k < n_items; k++) cs2d_player_give_weapon(me, buffer[tail + 3 + k]);
+                for (int k = 0; k < count; k++) {
+                    /* setspecialbyte bit 1 on a T: Titem.give(id, 55) - the bomb is not in the inventory list */
+                    const uint8_t *r = &buffer[pos + 3 + k * 12];
+                    if (r[0] > 0 && r[0] <= CS2D_MAX_PLAYERS && (r[11] & 1) && client->game.players[r[0]].team == CS2D_TEAM_T) {
+                        cs2d_player_give_weapon(&client->game.players[r[0]], CS2D_WEP_BOMB);
+                    }
+                }
                 if (!held || !cs2d_player_select_weapon(me, *held)) cs2d_player_select_weapon(me, CS2D_WEP_KNIFE);
 
                 cs2d_ents_round_start(&client->ents);
                 cs2d_fx_clear(&client->fx);
                 cs2d_dynobj_clear(&client->dynobj); /* FUN_1402520b0: Tdo.freeall; the server respawns them ([49]) */
+                /* FUN_1402520b0: bomb timers cleared, Thostage.freeall + one per Info_Hostage when
+                 * 0x140a14e48[1] == 0 (taken as sv_gamemode 0, inferred: the same flag gates achievements) */
+                client->game.bomb_planted = false;
+                if (client->net_sv_gamemode == 0) cs2d_hostages_spawn_from_map(&client->hostages, &client->game.map);
+                else cs2d_hostages_clear(&client->hostages);
                 client->fire_seed   = -1;
                 client->walk_active = false;
                 pos = tail + 3 + n_items;
@@ -1848,6 +1870,97 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 }
                 if (taken) remove_ground_item(client, iid); /* A partly taken grenade stack stays (FUN_14020ce60) */
                 pos += 10;
+            } else if (opcode == CS2D_NET_USE) {
+                /* Server -> Client: [26, player, mode, data i32, x u16, y u16] (11 bytes, FUN_1402d8f00 ->
+                 * FUN_14014f820 with param_6 = 0): the server's echo of an accepted use. Mode 1 / 2 = hostage
+                 * (data = hostage id, x = its "used" flag before), 3 = defuse start (data = defuse kit),
+                 * 100 = Trigger_Use (nothing on the client), 150 = building mode */
+                if (pos + 11 > recvd) break;
+                uint8_t pid  = buffer[pos + 1];
+                uint8_t mode = buffer[pos + 2];
+                int32_t data;
+                memcpy(&data, &buffer[pos + 3], 4);
+                int ux = buffer[pos + 7] | (buffer[pos + 8] << 8);
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
+                    cs2d_player_t *p = &client->game.players[pid];
+                    if (mode == 1 || mode == 2) {
+                        cs2d_hostage_t *h = cs2d_hostages_get(&client->hostages, data);
+                        if (h && h->health > 0) {
+                            h->used = ux != 0;
+                            cs2d_hostages_use(&client->hostages, data, p, pid, mode == 2);
+                        }
+                    } else if (mode == 3) {
+                        /* proc 2 (no kit, 10 s) / 3 (kit, 5 s), proctimer reset (+ sfx/c4/... not played) */
+                        p->is_defusing     = true;
+                        p->defuse_progress = 0.0f;
+                        p->has_defuse_kit  = data != 0;
+                    }
+                }
+                pos += 11;
+            } else if (opcode == CS2D_NET_HOSTAGE) {
+                /* Server -> Client: [29, hostage, kind, a u16, b u16] (7 bytes, FUN_1402d93f0): 0 = target tile
+                 * (a, b), 2 = rescued by player b (+$1000), 3 = hurt to health a by player b (-$150),
+                 * 4 = killed by player b (-$1500) */
+                if (pos + 7 > recvd) break;
+                int a = buffer[pos + 3] | (buffer[pos + 4] << 8);
+                int b = buffer[pos + 5] | (buffer[pos + 6] << 8);
+                int kind = cs2d_hostages_net_message(&client->hostages, buffer[pos + 1], buffer[pos + 2], a, b);
+                int delta = kind == 2 ? 1000 : kind == 3 ? -150 : kind == 4 ? -1500 : 0;
+                if (delta && b > 0 && b <= CS2D_MAX_PLAYERS) {
+                    cs2d_player_t *p = &client->game.players[b];
+                    p->money += delta;
+                    if (p->money > 16000) p->money = 16000;
+                    if (p->money < 0) p->money = 0;
+                }
+                pos += 7;
+            } else if (opcode == CS2D_NET_PROCESS) {
+                /* Server -> Client: [30, player, mode] (FUN_1402d9980): 1 / 2 = plant start / abort, 3 = planted
+                 * [+ tile x u16, tile y u16, item id u16, c4 timer u8] (FUN_1401cb510), 4 / 5 = defuse abort / done,
+                 * 6 = bomb exploded (FUN_1401f5f60) */
+                if (pos + 3 > recvd) break;
+                uint8_t pid  = buffer[pos + 1];
+                uint8_t mode = buffer[pos + 2];
+                cs2d_player_t *p = (pid > 0 && pid <= CS2D_MAX_PLAYERS) ? &client->game.players[pid] : NULL;
+                if (mode == 3) {
+                    if (pos + 10 > recvd) break;
+                    int bx = buffer[pos + 3] | (buffer[pos + 4] << 8);
+                    int by = buffer[pos + 5] | (buffer[pos + 6] << 8);
+                    add_ground_item(client, (uint16_t)(buffer[pos + 7] | (buffer[pos + 8] << 8)), CS2D_WEP_PLANTEDBOMB,
+                                    bx, by, 0, 0);
+                    client->game.bomb_planted = true;
+                    client->game.c4_time      = (float)buffer[pos + 9];
+                    client->game.bomb_pos.x   = (float)(bx * CS2D_TILE_SIZE + 16);
+                    client->game.bomb_pos.y   = (float)(by * CS2D_TILE_SIZE + 16);
+                    if (p) {
+                        p->is_planting = false;
+                        cs2d_player_strip_weapon(p, CS2D_WEP_BOMB); /* Titem.freeatplayer(id, 55) */
+                    }
+                    cs2d_client_center_msg(client, 255, 220, 0, "Bomb has been planted!");
+                    pos += 10;
+                } else {
+                    if (p && (mode == 1 || mode == 2)) {
+                        p->is_planting    = mode == 1;
+                        p->plant_progress = 0.0f;
+                    } else if (p && (mode == 4 || mode == 5)) {
+                        p->is_defusing     = false;
+                        p->defuse_progress = 0.0f;
+                    }
+                    if (mode == 5 || mode == 6) {
+                        /* Defused: bomb timer stops; exploded: the planted item goes with a blast */
+                        client->game.bomb_planted = false;
+                        for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) client->game.players[i].is_defusing = false;
+                    }
+                    if (mode == 6) {
+                        for (int i = 0; i < CS2D_MAX_GROUND_ITEMS; i++) {
+                            cs2d_ground_item_t *it = &client->ground_items[i];
+                            if (!it->active || it->type != CS2D_WEP_PLANTEDBOMB) continue;
+                            /* FUN_1401f1130 + Tp 9 / 14 / 22 / 21 particles; approximated by the generic blast */
+                            cs2d_fx_explosion(&client->fx, it->x, it->y, 0.0f);
+                            it->active = false;
+                        }
+                    }
+                    pos += 3;
+                }
             } else if (opcode == CS2D_NET_SPAWNITEM) {
                 /* Server -> Client: [33, type u8, item id u16, tile x u16, tile y u16, clip u16, reserve u16] (12 bytes) */
                 if (pos + 12 > recvd) break;

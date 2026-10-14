@@ -600,6 +600,9 @@ static bool game_load_map(cs2d_client_t *client, const char *map_name)
     cs2d_gen_init(&client->gen, &client->game.map);
     cs2d_hudtxt_reset(&client->hudtxt);
     memset(client->ground_items, 0, sizeof(client->ground_items));
+    /* Online the join snapshot [252,7,2] replaces these with the server's hostages */
+    cs2d_hostages_spawn_from_map(&client->hostages, &client->game.map);
+    client->key_use = false;
 
     /* Dynamic objects: offline the map's Env_Building entities (the server spawns them at round start);
      * online the join snapshot [252,7,5] and [49] bring the server's */
@@ -645,6 +648,7 @@ void cs2d_scene_game_restart_round(cs2d_client_t *client)
     cs2d_fx_clear(&client->fx);
     cs2d_dynobj_clear(&client->dynobj);
     cs2d_dynobj_spawn_map_buildings(&client->dynobj);
+    cs2d_hostages_spawn_from_map(&client->hostages, &client->game.map);
     client->walk_active = false;
     client->last_tile_x = client->last_tile_y = -1;
     center_camera_on_local_player(client);
@@ -1072,11 +1076,29 @@ static void game_update(cs2d_client_t *client, float delta_time)
     /* Update game simulation; online the server runs the round rules and only players are advanced */
     if (client->connected) {
         for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
-            if (client->game.players[i].alive) cs2d_player_update(&client->game.players[i], delta_time);
+            cs2d_player_t *p = &client->game.players[i];
+            if (!p->alive) continue;
+            cs2d_player_update(p, delta_time);
+            /* Tpl.proctimer: the progress bar runs locally between the server's [30] / [26] messages */
+            if (p->is_planting) p->plant_progress += delta_time;
+            if (p->is_defusing) p->defuse_progress += delta_time;
+        }
+        if (client->game.bomb_planted && client->game.c4_time > 0.0f) {
+            client->game.c4_time -= delta_time;
+            if (client->game.c4_time < 0.0f) client->game.c4_time = 0.0f;
+        }
+        /* FUN_140210000 (0x14021c19f): defusing stops with [30,4] once use is released or the bomb timer is gone */
+        cs2d_player_t *me = &client->game.players[client->local_player_id];
+        if (me->is_defusing && (!client->key_use || !client->game.bomb_planted)) {
+            me->is_defusing     = false;
+            me->defuse_progress = 0.0f;
+            uint8_t pkt[2] = { (uint8_t)CS2D_NET_PROCESS, 4 };
+            cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
         }
     } else {
         cs2d_game_update(&client->game, delta_time);
     }
+    cs2d_hostages_update(&client->hostages, client->game.players, delta_time * 60.0f);
 
     cs2d_scoreboard_tick(client->game.players, delta_time);
 
@@ -1161,6 +1183,24 @@ static void game_update(cs2d_client_t *client, float delta_time)
         /* Firing (left-click attack, or right-click attack2 for Knife/Claw per Tpl.attack2 0x1401fdd37) */
         bool melee_atk2 = client->mouse_attack2 &&
                           (pl->current_weapon == CS2D_WEP_KNIFE || pl->current_weapon == CS2D_WEP_CLAW);
+        /* Bomb online (FUN_1401cb510): attacking with the C4 (55) inside an Info_BombSpot zone starts planting
+         * (proc 1, [30,1]); releasing attack aborts it with [30,2] (0x14021c19f). The server plants after 3 s. */
+        if (client->connected && pl->current_weapon == CS2D_WEP_BOMB) {
+            bool attack = client->mouse_fire && !cs2d_client_any_ui_open(client) && !client->build_menu_open;
+            if (attack && !pl->is_planting && pl->reload_timer <= 0.0f &&
+                cs2d_map_in_zone(&client->game.map, CS2D_ENT_INFO_BOMBSPOT, (int)(pl->pos.x * 0.03125f),
+                                 (int)(pl->pos.y * 0.03125f))) {
+                pl->is_planting    = true;
+                pl->plant_progress = 0.0f;
+                uint8_t pkt[2] = { (uint8_t)CS2D_NET_PROCESS, 1 };
+                cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+            } else if (!attack && pl->is_planting) {
+                pl->is_planting    = false;
+                pl->plant_progress = 0.0f;
+                uint8_t pkt[2] = { (uint8_t)CS2D_NET_PROCESS, 2 };
+                cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+            }
+        }
         if (!cs2d_client_any_ui_open(client) && (client->mouse_fire || melee_atk2) && !client->build_menu_open && cs2d_weapon_fire(pl)) {
             if (melee_atk2 && !client->mouse_fire) {
                 pl->fire_cooldown = 1.2f; /* Tpl.attack2 knife / claw: firetimer.reset(1200) (0x1401fdde8) */
@@ -1177,6 +1217,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
             cs2d_fx_clear(&client->fx);
             cs2d_dynobj_clear(&client->dynobj);
             cs2d_dynobj_spawn_map_buildings(&client->dynobj);
+            cs2d_hostages_spawn_from_map(&client->hostages, &client->game.map);
             cs2d_projectile_clear(&client->projectiles);
         }
         cs2d_ents_update(&client->ents, delta_time);
@@ -2204,6 +2245,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     int  me = client->local_player_id;
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_GROUND, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
     render_ground_items(client);
+    cs2d_render_hostages(&client->hostages, client->cam_x, client->cam_y);
     cs2d_render_gen(&client->gen, CS2D_GEN_LAYER_FLOOR, client->cam_x, client->cam_y, screen_w, screen_h);
     render_projectiles_ground(client);
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_OBSTACLE, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
@@ -2372,6 +2414,58 @@ bool cs2d_scene_game_inv_cmd(cs2d_client_t *client, const char *cmd)
     return true;
 }
 
+/*
+ * Use key online (FUN_14014f820 with param_6 = 1): the tiles 0, 16 and 32 px along the aim are probed in turn; on
+ * each one a CT first looks for a hostage (mode 1 use / 2 release when it follows us; target = hostage id), then the
+ * planted bomb (mode 3, only while the bomb timer runs and no process / reload; defusing starts locally, target =
+ * defuse kit), then anyone looks for a Trigger_Use (mode 100 with its tile). Nothing found still sends mode 0 with
+ * zeros, which the server reports to the Lua "use" hook. Own Dispenser / Teleporter (Tdo 9 / 15) menus: not done.
+ */
+static void game_use_online(cs2d_client_t *client, cs2d_player_t *pl)
+{
+    int mode = 0, x = 0, y = 0;
+    int32_t data = 0;
+    float rad = pl->angle * 0.017453292519943295f;
+    for (int d = 0; d < 48 && mode == 0; d += 16) {
+        int tx = (int)((pl->pos.x + sinf(rad) * (float)d) * 0.03125f);
+        int ty = (int)((pl->pos.y - cosf(rad) * (float)d) * 0.03125f);
+        if (pl->team == CS2D_TEAM_CT) {
+            const cs2d_hostage_t *h = cs2d_hostages_at_tile(&client->hostages, tx, ty);
+            if (h) {
+                mode = h->follow == client->local_player_id ? 2 : 1;
+                data = h->id;
+                break;
+            }
+            for (int i = 0; i < CS2D_MAX_GROUND_ITEMS; i++) {
+                const cs2d_ground_item_t *it = &client->ground_items[i];
+                if (!it->active || it->type != CS2D_WEP_PLANTEDBOMB) continue;
+                if ((int)(it->x * 0.03125f) != tx || (int)(it->y * 0.03125f) != ty) continue;
+                if (pl->is_planting || pl->is_defusing || pl->reload_timer > 0.0f || !client->game.bomb_planted) continue;
+                mode = 3;
+                data = pl->has_defuse_kit ? 1 : 0;
+                x = tx;
+                y = ty;
+                pl->is_defusing     = true;  /* proc 2 / 3, proctimer reset */
+                pl->defuse_progress = 0.0f;
+                break;
+            }
+            if (mode) break;
+        }
+        int use = cs2d_ents_use_at_tile(&client->ents, tx, ty, pl->team);
+        if (use >= 0) {
+            mode = 100;
+            x = client->game.map.entities[use].x;
+            y = client->game.map.entities[use].y;
+        }
+    }
+    /* [26][mode u8][data i32][x u16][y u16] */
+    uint8_t pkt[10] = { (uint8_t)CS2D_NET_USE, (uint8_t)mode,
+                        (uint8_t)(data & 0xFF), (uint8_t)((data >> 8) & 0xFF), (uint8_t)((data >> 16) & 0xFF),
+                        (uint8_t)((uint32_t)data >> 24), (uint8_t)(x & 0xFF), (uint8_t)(x >> 8),
+                        (uint8_t)(y & 0xFF), (uint8_t)(y >> 8) };
+    cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+}
+
 static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
 {
     cs2d_player_t *pl = &client->game.players[client->local_player_id];
@@ -2478,21 +2572,11 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
             }
             break;
         case 'E': case 'e':
-            /* Use key: the server evaluates Trigger_Use online; offline the client does */
+            /* Use key: the server evaluates the target online; offline the client runs Trigger_Use itself */
+            client->key_use = pressed;
             if (pressed && pl->alive) {
-                if (client->connected) {
-                    /* [26][mode 100 = Trigger_Use][target i32 = 0][x u16][y u16] (FUN_14014f820) */
-                    int use = cs2d_ents_find_use_target(&client->ents, pl->pos.x, pl->pos.y, pl->angle, pl->team);
-                    if (use >= 0) {
-                        const cs2d_entity_t *e = &client->game.map.entities[use];
-                        uint8_t use_pkt[10] = { (uint8_t)CS2D_NET_USE, 100, 0, 0, 0, 0,
-                                                (uint8_t)(e->x & 0xFF), (uint8_t)(e->x >> 8),
-                                                (uint8_t)(e->y & 0xFF), (uint8_t)(e->y >> 8) };
-                        cs2d_client_send_udp(client, use_pkt, sizeof(use_pkt), true);
-                    }
-                } else {
-                    cs2d_ents_try_use(&client->ents, pl->pos.x, pl->pos.y, pl->angle, pl->team);
-                }
+                if (client->connected) game_use_online(client, pl);
+                else cs2d_ents_try_use(&client->ents, pl->pos.x, pl->pos.y, pl->angle, pl->team);
             }
             break;
         case VK_SPACE:    /* sys/controls.cfg: bind "space" "specplayer" */

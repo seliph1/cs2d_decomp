@@ -68,6 +68,7 @@ Our client must be able to play on the original dedicated server without the ser
 | `src/cs2d_serverlist.c` | Server browser (Find Servers): server list, `svl.cache`, info/ping queries, LAN scan |
 | `src/cs2d_editor.c` | Map editor model: brush / modifier byte, painting, tile properties and `.inf`, entity tables |
 | `src/cs2d_transfer.c` | Join-time file transfer `[252,50]`: file list checks, requests, blocks, zlib, saving, `dls.cache` |
+| `src/cs2d_hostage.c` | Hostages (`Thostage`): map / snapshot spawns, use, `[29]`, client movement |
 | `src/cs2d_radar.c` | Radar icon queue (`FUN_140291bd0`): which blips the HUD radar draws, and their colours |
 | `src/cs2d_hudtxt.c` | Lua HUD texts: hudtxt `[234]`, their move / alpha / colour tweens `[54]`, inline colour / image tags |
 | `src/cs2d_render.c` | OpenGL 1.x immediate mode, GDI+ TrueType text, shadows, HUD |

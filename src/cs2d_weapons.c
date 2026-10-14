@@ -152,7 +152,7 @@ void cs2d_weapons_init(void)
     set_wep(60, "Gas Mask",         CS2D_SLOT_ITEM,      0, 250,  0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(61, "Primary Ammo",     CS2D_SLOT_ITEM,      0, 50,   0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(62, "Secondary Ammo",   CS2D_SLOT_ITEM,      0, 50,   0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
-    set_wep(63, "Gold",             CS2D_SLOT_ITEM,      6, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(63, "Planted Bomb",     CS2D_SLOT_ITEM,      6, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(70, "Red Flag",         CS2D_SLOT_ITEM,      6, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(71, "Blue Flag",        CS2D_SLOT_ITEM,      6, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(77, "Mine",             CS2D_SLOT_BOMB,      5, 400,  150, 0,  0,   3,   0,   15, 0,   96,  0,   0.0f, 0, 0,    0,  false);

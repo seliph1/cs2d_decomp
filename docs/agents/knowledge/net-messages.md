@@ -11,10 +11,11 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 | Reload | `[16][1]` | |
 | Drop | `[24][type][clip u16][reserve u16][0]` | |
 | Buy | `[23][type][0]` | |
-| Use | `[26][mode u8][target i32][x u16][y u16]` | Mode 100 = Trigger_Use with its tile; target ray at 0, 16 and 32 px along the aim |
+| Use | `[26][mode u8][target i32][x u16][y u16]` | Always sent on E (FUN_14014f820). Mode 100 = Trigger_Use with its tile; 1/2 = hostage use/release (target = hostage id), 3 = defuse (target = defuse kit); nothing found = mode 0 with zeros, still reported to the Lua `use` hook (verified, `use_probe.lua`). Target ray at 0, 16 and 32 px along the aim |
 | Team | `[20][team][look]` | `team`: 0 Spectator (`look = 5`), 1 T, 2 CT; `look`: `0..3` class skin or `4` Auto-Select skin |
 | Projectile | `[27][type][x u16][y u16][dir u16 = deg·65536/360][flydist u16]` | Sent on throw/fire; flydist clamped to 385 px (0x181) for throwables |
 | Spectate | `[67][player]` | Reliable. Followed player, 0 = free look; only sent while dead or Spectator |
+| Process | `[30][mode]` | 1 plant start, 2 plant abort, 4 defuse abort (`FUN_1401cb510`, `FUN_1401f5f60`) |
 | Spec position | `[32][x+32768 u16][y+32768 u16]` | Unreliable, once per second while dead or Spectator: the camera center |
 
 ## Network: server → client (proxy, Lua)
@@ -28,10 +29,13 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 | 17 | `[17,victim,attacker,hp,armor]` | Damage |
 | 20 | `[20,pid,team,look]` | Team and skin broadcast (`team == 0` moves player to Spectator) |
 | 21 | `[21,pid,x u16,y u16,weapon,armor,money u16,n,n×item]` | Spawn, with the whole inventory. prison_funst3r gives only the knife (50) |
-| 22 | `[22,reason,n] + n×{pid,x u16,y u16,angle f32,weapon,armor,flag}` (12 bytes each) `+ {money u16, k, k×item}` | Round start. The trailer is the receiving player's inventory. `reason` = round end reason (see "Scoreboard") |
+| 22 | `[22,reason,n] + n×{pid,x u16,y u16,angle f32,weapon,armor,special}` (12 bytes each) `+ {money u16, k, k×item}` | Round start. The trailer is the receiving player's inventory. `reason` = round end reason (see "Scoreboard") |
 | 23 | `[23,pid,type,money u16,u8]` | Buy result; type 250 = refused (prison has no buy zone) |
 | 24 | `[24,pid,type,clip u16,reserve u16,u8,item id u16,tile x u16,tile y u16,u8]` | Drop; the item lies on the player's tile |
 | 25 | `[25,pid,item id u16,type,clip u16,reserve u16,u8]` | Collect |
+| 26 | `[26,pid,mode,data i32,x u16,y u16]` | Use echo (hostage 1/2, defuse 3); see `hostages-bomb.md` |
+| 29 | `[29,hostage,kind,a u16,b u16]` | Hostage: 0 target tile, 2 rescued, 3 hurt, 4 killed (`FUN_1402d93f0`) |
+| 30 | `[30,pid,mode]` (+ `x u16,y u16,item u16,timer u8` for 3) | Process: 1/2 plant start/abort, 3 planted, 4 defuse abort, 6 explosion |
 | 27 | `[27,pid,type,x u16,y u16,dir u16,flydist u16]` | Projectile broadcast (11 bytes, REA `0x1402d3340`) |
 | 31 | `[31,x u16,y u16,state]` | Entity event |
 | 33 | `[33,type,item id u16,tile x u16,tile y u16,clip u16,reserve u16]` | Spawn item |

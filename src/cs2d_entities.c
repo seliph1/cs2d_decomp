@@ -453,6 +453,14 @@ static bool team_allowed(int filter, cs2d_team_t team)
     return filter == 0 || (filter == 1 && team == CS2D_TEAM_T) || (filter == 2 && team == CS2D_TEAM_CT);
 }
 
+int cs2d_ents_use_at_tile(const cs2d_entity_world_t *w, int tx, int ty, cs2d_team_t team)
+{
+    if (!w || !w->map) return -1;
+    int i = cs2d_ents_find_at(w->map, tx, ty, CS2D_ENT_TRIGGER_USE);
+    if (i >= 0 && w->map->entity_state[i] == 0 && team_allowed(w->map->entities[i].int_settings[2], team)) return i;
+    return -1;
+}
+
 int cs2d_ents_find_use_target(const cs2d_entity_world_t *w, float px, float py, float angle_deg, cs2d_team_t team)
 {
     if (!w || !w->map) return -1;
@@ -460,10 +468,8 @@ int cs2d_ents_find_use_target(const cs2d_entity_world_t *w, float px, float py, 
     for (int d = 0; d < 48; d += 16) {
         int tx = (int)((px + sinf(rad) * (float)d) * 0.03125f);
         int ty = (int)((py - cosf(rad) * (float)d) * 0.03125f);
-        int i  = cs2d_ents_find_at(w->map, tx, ty, CS2D_ENT_TRIGGER_USE);
-        if (i >= 0 && w->map->entity_state[i] == 0 && team_allowed(w->map->entities[i].int_settings[2], team)) {
-            return i;
-        }
+        int i  = cs2d_ents_use_at_tile(w, tx, ty, team);
+        if (i >= 0) return i;
     }
     return -1;
 }

@@ -119,7 +119,7 @@ typedef enum {
     CS2D_WEP_GASMASK        = 60,
     CS2D_WEP_PRIMARYAMMO    = 61,
     CS2D_WEP_SECONDARYAMMO  = 62,
-    CS2D_WEP_GOLDFLAG       = 63,
+    CS2D_WEP_PLANTEDBOMB    = 63, /* Ground item only: the planted C4 (gfx/weapons/plantedbomb_d.bmp) */
     CS2D_WEP_MACHETE        = 69,
     CS2D_WEP_REDFLAG        = 70,
     CS2D_WEP_BLUEFLAG       = 71,

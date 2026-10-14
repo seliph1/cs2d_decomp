@@ -30,6 +30,7 @@ When you confirm or refute something, update the topic file (or add one and list
 | [team-menu.md](knowledge/team-menu.md) | Server Info and Team Selection UI | 1 KB |
 | [map-editor.md](knowledge/map-editor.md) | Map editor | 7 KB |
 | [dynobj.md](knowledge/dynobj.md) | Construction mode and dynamic objects | 9 KB |
+| [hostages-bomb.md](knowledge/hostages-bomb.md) | Hostages, use key targets, bomb plant / defuse ([26] [29] [30]) | 4 KB |
 | [capture-the-flag.md](knowledge/capture-the-flag.md) | Capture the flag | 1 KB |
 | [weapon-select.md](knowledge/weapon-select.md) | Weapon selection HUD and bindings | 2 KB |
 | [progress-bar.md](knowledge/progress-bar.md) | In-game Action Progress Bar (Reloading, Planting, Defusing) | 1 KB |

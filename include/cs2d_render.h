@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "cs2d_types.h"
+#include "cs2d_hostage.h"
 #include "cs2d_radar.h"
 
 typedef struct SDL_Window SDL_Window;
@@ -442,5 +443,8 @@ int  cs2d_render_entity_margin(const cs2d_map_t *map, int index);
 /* The draw path reports the size it just used for an image whose size was unknown (Env_Sprite / Env_Image,
  * whose draw size is their texture): the margin can only grow, so it never cuts something already drawn */
 void cs2d_render_entity_learn_size(const cs2d_map_t *map, int index, int w, int h, int offx, int offy);
+
+/* Hostages from the client list (Thostage.draw), drawn after the ground items */
+void cs2d_render_hostages(const cs2d_hostage_world_t *w, float cam_x, float cam_y);
 
 #endif /* CS2D_RENDER_H */

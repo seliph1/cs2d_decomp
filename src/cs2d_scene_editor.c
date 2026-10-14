@@ -825,6 +825,12 @@ static void editor_render(cs2d_client_t *client, int screen_w, int screen_h)
 
     cs2d_render_rect(0.0f, 0.0f, (float)screen_w, (float)screen_h, 0.0f, 0.0f, 0.0f, 1.0f, true);
     cs2d_render_map_ex(map, &client->editor_tileset, cam_x, cam_y, screen_w, screen_h);
+    {
+        /* Info_Hostage previews: the hostages a round start would create from the edited map */
+        static cs2d_hostage_world_t preview;
+        cs2d_hostages_spawn_from_map(&preview, map);
+        cs2d_render_hostages(&preview, cam_x, cam_y);
+    }
     /* The editor loop (FUN_1402bf960) draws the map like the game (FUN_140281fd0), Te.draw layer 2 included */
     if (ed->disp[CS2D_ED_DISP_SHADOWS]) cs2d_render_map_shadows(map, cam_x, cam_y);
     cs2d_render_map_overhead(map, cam_x, cam_y, screen_w, screen_h);
