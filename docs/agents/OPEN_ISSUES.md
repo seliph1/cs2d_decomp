@@ -5,6 +5,10 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **attack2 / shotgun (2026-10-14):** pellet spread uses rand(), not `TRandom.SeedTable` (seeded by `GenerateSeed`, not
+  traced), so our pellets differ from the server's. `[8]` not checked against a proxy capture; whether attack2 repeats
+  while held (we do, 500 ms) is untested on the original; the scope hint text (`DAT_140ddf19c`, lang 0x36 group) and the
+  Portal Gun (88/89) attack2 are missing; offline knife attack2 hurts breakables with dmg, not dmg_z1.
 - **Hostages / bomb (2026-10-14, `knowledge/hostages-bomb.md`):** done: use ray (hostage, planted bomb, Trigger_Use),
   [26] echo, [29], [30], snapshot section 2, plant / defuse online, `[22]` special byte. Missing: c4 plant / defuse
   sounds, own Dispenser / Teleporter menu on E (Tdo 9 / 15), the green "following me" marker
@@ -191,7 +195,7 @@ the same one.
     hovered player to spectate it (`FUN_14029fc70`) is not done. `team_game()` stands for both `0x140a015d0` tests
     (buildings `== 1`, players `!= 0`): the table values are not read yet.
   - Not handled: teleporter use
-    ("Select Teleporter Destination" 0528), Supply (`FUN_14028dba0` item menu, menu 61/62), Gate Field team blocking
+    ("Select Teleporter Destination" 0528), Gate Field team blocking
     for movement, kill rewards and `mp_building_limit` / `mp_building_price` overrides.
   - `g_prop_class[cellprop] == 1` is approximated by our collision 0; the team-game table `0x140a015d0` is assumed
     (every mode but Deathmatch) and the respawn-mode table `0x1409f57b8` as modes 1..4.

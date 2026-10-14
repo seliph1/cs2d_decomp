@@ -18,6 +18,26 @@ int  cs2d_weapon_hud_slot(uint8_t weapon_id);
 int  cs2d_weapon_hud_order(uint8_t weapon_id);
 bool cs2d_weapon_hud_ammo(uint8_t weapon_id);
 
+/* attack2 kind (CS2D.exe init_weapons table 0x1409f79f0, read by the attack2 handler FUN_1401fd590):
+ * 20 silencer (USP, M4A1), 10 burst (Glock, Famas), 1 one zoom level (SG552, Aug), 2 two zoom levels
+ * (Scout, AWP, G3SG1, SG550), 0 none */
+#define CS2D_ATTACK2_ZOOM1    1
+#define CS2D_ATTACK2_ZOOM2    2
+#define CS2D_ATTACK2_BURST    10
+#define CS2D_ATTACK2_SILENCER 20
+int cs2d_weapon_attack2_type(uint8_t weapon_id);
+
+/* Mode of the item in hand (Titem.mode), 0 without one */
+uint8_t cs2d_weapon_mode(const cs2d_player_t *player);
+
+/* Client shot spread in degrees (init_weapons table 0x1409f5d18, Tpl.shoot 0x140209810): the shot turns by
+ * (seed % (2 * accuracy)) - accuracy */
+int cs2d_weapon_accuracy(uint8_t weapon_id);
+
+/* Tpl.setweapon (0x1400a9430): taking a different item in hand puts a scope (SG552, Aug, Scout, AWP, G3SG1,
+ * SG550) back to mode 0 */
+void cs2d_weapon_unzoom_on_switch(cs2d_player_t *player, uint8_t weapon_id);
+
 /* Query integer weapon property by name (reconstructed from Lua itemtype() FUN_14009b4c0) */
 int cs2d_itemtype_int(uint8_t weapon_id, const char *prop);
 

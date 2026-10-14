@@ -94,3 +94,10 @@ offline dedicated with `sv_gamemode 3` + `tools/agent/lua/construct_probe.lua`. 
   direction (constants 0x140bd6b30 / p5 = 3). Tp type 12 (`Tp.Create` 0x14004ac20, `Tp.draw` 0x140263cc0): rotation
   Rand(1, 360), alpha Rnd(0.7, 1.2) - 0.01 per frame, scale Rnd(0.4, 0.7), alpha blend, speed - speed / 15 per
   frame, stops inside a wall tile; on layer 5 a fragment slower than 0.3 moves to another Tp list.
+- **Supply menu** (`Tgui_hudmen` menu 61 Supply / 62 Super Supply, title 0373 "Supply Selection"): the use key
+  (`FUN_14014f820`, tiles 0/16/32 px along the aim) on an own Tdo 9 / 15 opens it and sends nothing. Buttons x 16
+  from y 30 every 30 px (+20 gap after the 6th) for each non-empty `mp_supply_items` slot with a name, slots 7..10
+  only on 62; key = slot; 0 Cancel (0027) at h - 46. Pick: `[26, 150, slot i32, tile x u16, tile y u16]` -> server
+  sets `Tdo.mode` (slots 1..6 / 1..9, owner within 60 px). `mp_supply_items` (0x140a14e28[1]) is a string, one char
+  per item id: first string of `[252,6]` (proxy `08 33 3a 0b 16 20 23 50 49` = 51,58,11,22,32,35,80,73) and
+  `[237,11]` ("supply items have been changed"). Offline spawn every 7 frames when < 3 items around: `FUN_14028dba0`.

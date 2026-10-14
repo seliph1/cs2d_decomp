@@ -146,6 +146,7 @@ bool cs2d_player_give_weapon(cs2d_player_t *player, uint8_t weapon_id)
     player->owned[weapon_id] = 1;
     player->clip_ammo[weapon_id] = (int16_t)wep->clip_size;
     player->reserve_ammo[weapon_id] = (int16_t)wep->max_reserve;
+    player->weapon_mode[weapon_id] = 0; /* A bought item starts in mode 0 (buy handler, 0x1402004a0) */
 
     /* Set as active weapon */
     player->current_weapon = weapon_id;
@@ -233,6 +234,7 @@ bool cs2d_player_switch_weapon(cs2d_player_t *player, cs2d_weapon_slot_t slot)
     uint8_t wep_id = player->inventory[slot];
     if (wep_id == CS2D_WEP_NONE) return false;
 
+    cs2d_weapon_unzoom_on_switch(player, wep_id);
     player->current_weapon = wep_id;
     player->fire_cooldown = 0.0f;
     player->reload_timer = 0.0f; /* Interrupt reload on switch */
@@ -329,6 +331,7 @@ bool cs2d_player_select_weapon(cs2d_player_t *player, uint8_t weapon_id)
     /* The held item becomes its slot's main item (several grenades share a slot) */
     const cs2d_weapon_def_t *wep = cs2d_weapon_get(weapon_id);
     if (wep && wep->slot < CS2D_SLOT_COUNT) player->inventory[wep->slot] = weapon_id;
+    cs2d_weapon_unzoom_on_switch(player, weapon_id);
     if (player->current_weapon != weapon_id) {
         player->fire_cooldown = 0.0f;
         player->reload_timer = 0.0f;

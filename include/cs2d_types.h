@@ -260,7 +260,6 @@ typedef struct {
     bool        is_planting;
     bool        is_defusing;
     bool        is_reloading;
-    uint8_t     zoom_mode;           /* 0=normal, 1=zoom1, 2=zoom2, 3=silencer */
     float       plant_progress;      /* 0.0 .. 3.0 */
     float       defuse_progress;     /* 0.0 .. 10.0 (or 5.0 with kit) */
     float       recoil;              /* visual backward kickback offset in px on shot (Tpl +0x308) */
@@ -276,6 +275,8 @@ typedef struct {
                                                  * Smoke share CS2D_SLOT_GRENADE; grenade counts are clip_ammo */
     int16_t     clip_ammo[CS2D_MAX_WEAPONS];
     int16_t     reserve_ammo[CS2D_MAX_WEAPONS];
+    uint8_t     weapon_mode[CS2D_MAX_WEAPONS];  /* Titem.mode (+0x1c) of each held item: attack2 state (silencer /
+                                                 * burst on, zoom level 1..2, laser colour 0..3) */
     float       fire_cooldown;
     float       reload_timer;
 

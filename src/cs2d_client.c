@@ -338,6 +338,10 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
     strncpy(client->net_server_name, "CS2D Server", sizeof(client->net_server_name) - 1);
     client->net_hovertext = 31; /* The dedicated's default mp_hovertext (proxy capture of [252,6]) */
     client->net_hudscale  = 0;  /* mp_hudscale default (0x140a14de8) */
+    /* The dedicated's default mp_supply_items "51,58,11,22,32,35,80,73" (proxy capture of [252,6]) */
+    static const uint8_t default_supply[] = { 51, 58, 11, 22, 32, 35, 80, 73 };
+    memcpy(client->net_supply_items, default_supply, sizeof(default_supply));
+    client->net_supply_count = (int)sizeof(default_supply);
     client->net_daylight = -1;
     client->net_ticks     = -1;
     cs2d_client_load_serverinfo(client, "sys/serverinfo.txt");
@@ -1486,6 +1490,9 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                             client->game.score_t  = buffer[pos] | (buffer[pos + 1] << 8);
                             client->game.score_ct = buffer[pos + 2] | (buffer[pos + 3] << 8);
                         }
+                        /* mp_roundtime in minutes (0x140a14ea0[1]); 100 means infinite rounds and hides the HUD
+                         * clock (FUN_140295190), so the server's value replaces our local sys/server.cfg one */
+                        if (pos + 4 < recvd && buffer[pos + 4] > 0) client->game.cfg_roundtime = (float)buffer[pos + 4] * 60.0f;
                         int s = pos + 2 + 2 + 3 + 4 + 2;
                         if (recvd - s > 5) {
                             client->net_maxplayers   = buffer[s];
@@ -1497,6 +1504,11 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                              * string lengths; 31 with the dedicated's default config (proxy) */
                             if (s + 5 < recvd) client->net_infammo = buffer[s + 5] != 0;
                             if (s + 7 < recvd) {
+                                /* The first string is mp_supply_items (0x140a14e28[1]): one byte per item id */
+                                if (s + 8 + buffer[s + 7] <= recvd) {
+                                    client->net_supply_count = buffer[s + 7];
+                                    memcpy(client->net_supply_items, buffer + s + 8, buffer[s + 7]);
+                                }
                                 int h = s + 8 + buffer[s + 7];
                                 if (h < recvd) h += 1 + buffer[h];
                                 if (h + 3 < recvd) client->net_hovertext = buffer[h + 3];
@@ -1880,6 +1892,16 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     cs2d_sound_play_at(snd, cp->pos.x, cp->pos.y, 1.0f, 0);
                     if (type == CS2D_WEP_REDFLAG || type == CS2D_WEP_BLUEFLAG) collect_flag(client, pid, type);
                     else taken = cs2d_player_add_collected(&client->game.players[pid], type, clip, res);
+                    /* FUN_14020ce60 tail: the local player holds a collected weapon (HUD slot != 0, 0x140a017b8)
+                     * when the auto switch option (DAT_140ddf196) is on, via FUN_1401caca0(id, type, 0xff, 1),
+                     * which sends [9, type, mode] */
+                    cs2d_player_t *lp = &client->game.players[pid];
+                    if (pid == client->local_player_id && client->opt_auto_switch && type != CS2D_WEP_REDFLAG &&
+                        type != CS2D_WEP_BLUEFLAG && cs2d_weapon_hud_slot(type) != 0 && lp->owned[type] &&
+                        cs2d_player_select_weapon(lp, type) && client->join_stage == 5) {
+                        uint8_t pkt[3] = { (uint8_t)CS2D_NET_SELECT_WEAPON, type, 0 };
+                        cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+                    }
                 }
                 if (taken) remove_ground_item(client, iid); /* A partly taken grenade stack stays (FUN_14020ce60) */
                 pos += 10;
@@ -2171,6 +2193,15 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     cs2d_scene_game_remote_shot(client, &client->game.players[pid]);
                 }
                 pos += 3;
+            } else if (opcode == CS2D_NET_ATTACK2) {
+                /* Server -> Client: [8, player, mode] (3 bytes, FUN_1401fd590 0x1401fda0c relays it): another
+                 * player's attack2 (weapon mode or Knife / Claw strong slash) */
+                if (pos + 3 > recvd) break;
+                uint8_t pid = buffer[pos + 1];
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS && pid != client->local_player_id) {
+                    cs2d_scene_game_remote_attack2(client, &client->game.players[pid], buffer[pos + 2]);
+                }
+                pos += 3;
             } else if (opcode == CS2D_NET_PROJECTILE) {
                 /* Server -> Client: [27, player u8, type u8, x u16, y u16, dir u16, flydist u16] (11 bytes, FUN_1402d0000 0x1402d3340) */
                 if (pos + 11 > recvd) break;
@@ -2335,6 +2366,12 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 uint8_t setting = buffer[pos + 1];
                 if (setting == 1 || setting == 11 || setting == 12) {
                     if (pos + 3 > recvd || pos + 3 + buffer[pos + 2] > recvd) break;
+                    if (setting == 11) {
+                        /* mp_supply_items (case 0xb): item ids as chars, "supply items have been changed" */
+                        client->net_supply_count = buffer[pos + 2];
+                        memcpy(client->net_supply_items, buffer + pos + 3, buffer[pos + 2]);
+                        cs2d_client_center_msg(client, 255, 220, 0, "supply items have been changed");
+                    }
                     pos += 3 + buffer[pos + 2];
                 } else if ((setting >= 2 && setting <= 10) || (setting >= 13 && setting <= 24)) {
                     if (pos + 6 > recvd) break;

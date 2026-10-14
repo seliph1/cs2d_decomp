@@ -132,6 +132,10 @@ struct cs2d_client {
     int             build_tx;          /* DAT_140ddf470 / DAT_140ddf46c: tile under the cursor */
     int             build_ty;
     float           build_rot;         /* DAT_140ddf468: player rotation when the menu opened */
+    /* Supply item selection (Tgui_hudmen menu 61 Supply / 62 Super Supply), opened by the use key on an own supply */
+    int             supply_menu;       /* 0 closed, 61 or 62 */
+    int             supply_tx;         /* DAT_140ddf464 / DAT_140ddf460: the supply's tile */
+    int             supply_ty;
     cs2d_buymenu_t  buy;               /* Buy menu (Tgui_hudmen menus 20..26, "buy" / "buyequip" commands) */
     int             game_menu;         /* CS2D_GAMEMENU_*: ESC menu or vote screen, 0 closed */
     cs2d_luamenu_t  luamenu;           /* Lua server menu (Tgui_hudmen menu 120, opcode 235 CS2D_NET_LUAMENU) */
@@ -163,6 +167,14 @@ struct cs2d_client {
     bool             chat_just_opened;        /* Suppress first text input from trigger key */
 
     int             fire_seed;         /* Shot counter sent with every fire packet (-1: none sent yet) */
+    /* burstFire (Create 0x14004ef60, Update 0x14018c820): the two delayed shots of a burst-mode attack */
+#define CS2D_MAX_BURSTS 16
+    struct {
+        uint8_t player, weapon;        /* Dropped when the shooter no longer holds weapon */
+        float   angle;                 /* Aim at the attack + 10 + Rand(-5, 5); fired at angle - 10 + Rand(-5, 5) */
+        float   delay;                 /* Seconds left */
+    }               bursts[CS2D_MAX_BURSTS];
+    uint32_t        attack2_ms;        /* attack2 timer (DAT_140a1b008): no new attack2 before this GetTickCount */
     bool            snapshot_states_reset; /* Join snapshot: entity states cleared before applying section 4 */
     uint32_t        ents_round;        /* game.round_number the entity logic was last reset for */
     int             last_tile_x;       /* Local player tile, to detect Trigger_Move / Func_Teleport entry */
@@ -219,6 +231,8 @@ struct cs2d_client {
     int                 net_sv_fow;        /* sv_fow from [252,6] (enables the spectator "Fog" button) */
     int                 net_sv_gamemode;   /* sv_gamemode from [252,6]: 0 Normal, 1 Deathmatch, 2 Team DM, 3 Construction, 4 Zombies */
     int                 net_hovertext;     /* mp_hovertext (0x140a14e00[1], [252,6] / [237,16]): 1|2 players, 4 hostages, 8 buildings, 16 items */
+    uint8_t             net_supply_items[255]; /* mp_supply_items (0x140a14e28[1], [252,6] / [237,11]): one item id per char */
+    int                 net_supply_count;
     bool                net_infammo;       /* mp_infammo (0x140a14e38[1], [252,6] after the respawn delay) */
     bool                net_forcelight;    /* sv_forcelight (0x140a14ee0[1], [252,6] / [237,19]): light engine at least 1 */
     int                 net_daylight;      /* sv_daylighttime (0x140a14ec8[1], [252,6] / [237,20]): sun angle, -1 = map */

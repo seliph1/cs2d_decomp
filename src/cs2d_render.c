@@ -1215,6 +1215,9 @@ bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank)
     if (!cs2d_texture_load_ex(&bank->tex_glowdot, "incbindata/glowdot.bmp", 3)) {
         cs2d_texture_load_ex(&bank->tex_glowdot, "gfx/incbindata/glowdot.bmp", 3);
     }
+    if (!cs2d_texture_load_ex(&bank->tex_scope, "incbindata/scope.png", 1)) {
+        cs2d_texture_load_ex(&bank->tex_scope, "gfx/incbindata/scope.png", 1);
+    }
     if (!cs2d_texture_load_grid(&bank->tex_shells, "gfx/shells.bmp", 2, 8, 8)) {
         cs2d_texture_load_grid(&bank->tex_shells, "gfx/shells.png", 2, 8, 8);
     }
@@ -1264,6 +1267,7 @@ void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank)
     }
     cs2d_texture_free(&bank->tex_reload);
     cs2d_texture_free(&bank->tex_silencer);
+    cs2d_texture_free(&bank->tex_scope);
     cs2d_texture_free(&bank->tex_m4a1s);
     cs2d_texture_free(&bank->tex_redflag);
     cs2d_texture_free(&bank->tex_blueflag);
@@ -1781,10 +1785,10 @@ void cs2d_render_player(
         }
     }
 
-    /* 4. Held weapon, with the silencer overlay for USP (1) and M4A1 (32) when zoom_mode == 3 (0x1401217e4) */
+    /* 4. Held weapon, with the silencer overlay for USP (1) and M4A1 (32) while the item's mode > 0 (0x1401217e4) */
     if (held_tex) {
         cs2d_render_sprite(held_tex, wx, wy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
-        if (held_tex == active_wep && bank && player->zoom_mode == 3) {
+        if (held_tex == active_wep && bank && cs2d_weapon_mode(player) > 0) {
             if (player->current_weapon == CS2D_WEP_USP && bank->tex_silencer.id) {
                 cs2d_render_sprite(&bank->tex_silencer, wx, wy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
             } else if (player->current_weapon == CS2D_WEP_M4A1 && bank->tex_m4a1s.id) {
@@ -4050,6 +4054,7 @@ void cs2d_render_hud(
     const cs2d_game_t   *game,
     const cs2d_texture_t *tileset_tex,
     const cs2d_radar_blip_t *blips, int blip_count,
+    bool infammo, bool show_clock,
     int screen_w, int screen_h
 )
 {
@@ -4127,8 +4132,10 @@ void cs2d_render_hud(
     int disp_armor = (player->armor > 200) ? 100 : player->armor;
     cs2d_render_hud_number(&bank->tex_hud_nums, disp_armor, 172.0f, hud_y, 1.0f, 0.78f, 0.0f, ha);
 
-    /* 3. Bottom-Center: Round Timer (symbol 2) + M:SS */
-    if (game) {
+    /* 3. Bottom-Center: Round Timer (symbol 2) + M:SS; FUN_140295190 (0x1402955b8) skips the whole clock in game
+     * modes without rounds (show_clock, cs2d_hud_has_clock) and when mp_roundtime is 100 (0x140a14ea0[1] == 100:
+     * infinite rounds) */
+    if (game && show_clock && game->cfg_roundtime != 6000.0f) {
         float timer_x = (float)(screen_w / 2) - 46.0f;
         float tr = 1.0f;
         float tg = game->bomb_planted ? 0.2f : 0.78f;
@@ -4151,12 +4158,21 @@ void cs2d_render_hud(
     if (wep && wep->clip_size > 0) {
         int clip = player->clip_ammo[player->current_weapon];
         int res  = player->reserve_ammo[player->current_weapon];
-        cs2d_render_hud_number(&bank->tex_hud_nums, clip, (float)(screen_w - 165), hud_y, 1.0f, 0.78f, 0.0f, ha);
+        /* mp_infammo (0x140a14e38[1], FUN_140295190 at 0x14029575x): the clip moves 0.25 digit left and the
+         * reserve becomes gfx/hud_symbols frame 11 (infinity) one digit right of the '|' */
+        cs2d_render_hud_number(&bank->tex_hud_nums, clip, (float)(screen_w - (infammo ? 171 : 165)), hud_y,
+                               1.0f, 0.78f, 0.0f, ha);
         /* Frame 11 ('|') ammo separator from gfx/hud_nums.bmp */
         cs2d_render_sprite_frame(&bank->tex_hud_nums, num_cw, num_ch, 11,
                                  (float)(screen_w - 94), hud_y + 16.0f, 24.0f, 33.0f,
                                  0.0f, 1.0f, 0.78f, 0.0f, ha, 3);
-        cs2d_render_hud_number(&bank->tex_hud_nums, res,  (float)(screen_w - 82),  hud_y, 1.0f, 0.78f, 0.0f, ha);
+        if (infammo) {
+            cs2d_render_sprite_frame(&bank->tex_hud_symbols, sym_cell, sym_cell, 11,
+                                     (float)(screen_w - 70), hud_y + 16.0f, 32.0f, 32.0f,
+                                     0.0f, 1.0f, 0.78f, 0.0f, ha, 3);
+        } else {
+            cs2d_render_hud_number(&bank->tex_hud_nums, res, (float)(screen_w - 82), hud_y, 1.0f, 0.78f, 0.0f, ha);
+        }
     }
 
     /* 5. Left Status Icons: Buyzone (frame 4), Defuse Kit (frame 3), C4 Bomb (frame 6) */
@@ -4344,9 +4360,10 @@ static void weapon_select_text(float x, float y, const char *text, float scale_x
  *    The melee icon turns the other way around a 5 s circle. Slots 7..9 rows have no content. The column is 155 s.
  *  - other slots: a 10 s square per owned item every 12 s under the number, additive (100,50,0); the number turns
  *    (100,0,0) when the slot is empty. The column is 15 s.
- * Not done: "clip | INF" (sys/language 0762) under infinite ammo (0x140a14e38[1]) and "0 x - Remote" (0763, slot 6).
+ * Under mp_infammo (0x140a14e38[1], 0x1402a00xx) the slot 1 / 2 line is "clip | INF" (sys/language 0762).
+ * Not done: "0 x - Remote" (0763, slot 6).
  */
-void cs2d_render_weapon_select(const cs2d_player_t *player, const struct cs2d_invsel_s *sel, float x0)
+void cs2d_render_weapon_select(const cs2d_player_t *player, const struct cs2d_invsel_s *sel, float x0, bool infammo)
 {
     cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
     if (!player || !sel || sel->slot <= 0 || !bank) return;
@@ -4385,7 +4402,8 @@ void cs2d_render_weapon_select(const cs2d_player_t *player, const struct cs2d_in
 
                 char line[32] = "";
                 if ((slot == 1 || slot == 2) && w != CS2D_WEP_SHIELD && cs2d_weapon_hud_ammo(w)) {
-                    snprintf(line, sizeof(line), "%d | %d", player->clip_ammo[w], player->reserve_ammo[w]);
+                    if (infammo) snprintf(line, sizeof(line), "%d | INF", player->clip_ammo[w]);
+                    else snprintf(line, sizeof(line), "%d | %d", player->clip_ammo[w], player->reserve_ammo[w]);
                 } else if (slot == 4 || (slot == 6 && player->clip_ammo[w] > 0)) {
                     snprintf(line, sizeof(line), "%d x", player->clip_ammo[w]);
                 }
@@ -4417,6 +4435,23 @@ void cs2d_render_crosshair(float mx, float my)
         cs2d_render_sprite_frame(&bank->tex_pointer, 46, 46, 0,
                                  mx, my, 20.0f, 20.0f, 0.0f,
                                  1.0f, 1.0f, 1.0f, 0.95f, 0);
+    }
+}
+
+void cs2d_render_scope(float mx, float my, int level, int screen_w, int screen_h)
+{
+    if (level < 1 || level > 2) return;
+    /* Black (the colour / alpha / blend come from constants: 0, 0, 0 at alpha 1) around the hole */
+    float h = (level == 1) ? 100.0f : 50.0f;
+    float x0 = floorf(mx) - h, y0 = floorf(my) - h, x1 = floorf(mx) + h, y1 = floorf(my) + h;
+    float sw = (float)screen_w, sh = (float)screen_h;
+    if (x0 > 0.0f) cs2d_render_rect(0.0f, 0.0f, x0, sh, 0.0f, 0.0f, 0.0f, 1.0f, true);
+    if (x1 < sw)   cs2d_render_rect(x1, 0.0f, sw - x1, sh, 0.0f, 0.0f, 0.0f, 1.0f, true);
+    if (y0 > 0.0f) cs2d_render_rect(x0, 0.0f, h * 2.0f, y0, 0.0f, 0.0f, 0.0f, 1.0f, true);
+    if (y1 < sh)   cs2d_render_rect(x0, y1, h * 2.0f, sh - y1, 0.0f, 0.0f, 0.0f, 1.0f, true);
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    if (bank && bank->tex_scope.id) {
+        cs2d_render_sprite(&bank->tex_scope, floorf(mx), floorf(my), h * 2.0f, h * 2.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f);
     }
 }
 

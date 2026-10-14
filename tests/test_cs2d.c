@@ -4774,6 +4774,43 @@ static bool test_hostages(void)
  * gain = vol - (|dx| + |dy| + flags) * 0.001, dropped below 0.0001, pan = dx * 0.002;
  * fire sounds from the weapon array 0x1409f4a20 (FUN_14018c6b0)
  */
+/* attack2 and shot spread tables of CS2D.exe init_weapons (0x1409f79f0, 0x1409f5d18), Tpl.setweapon unzoom, burst
+ * fire timer x3.3 (Tpl.attack 0x14021a7b9) */
+static bool test_weapon_modes(void)
+{
+    printf("\n--- Testing weapon modes (attack2) ---\n");
+    cs2d_weapons_init();
+    if (cs2d_weapon_attack2_type(CS2D_WEP_USP) != CS2D_ATTACK2_SILENCER || cs2d_weapon_attack2_type(CS2D_WEP_M4A1) != 20 ||
+        cs2d_weapon_attack2_type(CS2D_WEP_GLOCK) != 10 || cs2d_weapon_attack2_type(CS2D_WEP_FAMAS) != 10 ||
+        cs2d_weapon_attack2_type(CS2D_WEP_SG552) != 1 || cs2d_weapon_attack2_type(CS2D_WEP_AUG) != 1 ||
+        cs2d_weapon_attack2_type(CS2D_WEP_SCOUT) != 2 || cs2d_weapon_attack2_type(CS2D_WEP_AWP) != 2 ||
+        cs2d_weapon_attack2_type(CS2D_WEP_G3SG1) != 2 || cs2d_weapon_attack2_type(CS2D_WEP_SG550) != 2 ||
+        cs2d_weapon_attack2_type(CS2D_WEP_AK47) != 0 || cs2d_weapon_attack2_type(CS2D_WEP_M3) != 0)
+        TEST_FAIL("Weapon modes", "attack2 kinds of 0x1409f79f0");
+    if (cs2d_weapon_accuracy(CS2D_WEP_M3) != 10 || cs2d_weapon_accuracy(CS2D_WEP_XM1014) != 13 ||
+        cs2d_weapon_accuracy(CS2D_WEP_AWP) != 0)
+        TEST_FAIL("Weapon modes", "shotgun spread of 0x1409f5d18 (M3 10, XM1014 13)");
+
+    cs2d_player_t pl;
+    cs2d_player_init(&pl, 1, "p");
+    pl.alive = true;
+    cs2d_player_give_weapon(&pl, CS2D_WEP_USP);
+    cs2d_player_give_weapon(&pl, CS2D_WEP_AWP);
+    pl.weapon_mode[CS2D_WEP_AWP] = 2;
+    pl.weapon_mode[CS2D_WEP_USP] = 1;
+    cs2d_player_select_weapon(&pl, CS2D_WEP_USP);
+    cs2d_player_select_weapon(&pl, CS2D_WEP_AWP);
+    if (pl.weapon_mode[CS2D_WEP_AWP] != 0 || pl.weapon_mode[CS2D_WEP_USP] != 1)
+        TEST_FAIL("Weapon modes", "taking a scoped weapon in hand resets its zoom (Tpl.setweapon)");
+
+    cs2d_player_give_weapon(&pl, CS2D_WEP_FAMAS);
+    pl.weapon_mode[CS2D_WEP_FAMAS] = 1;
+    if (!cs2d_weapon_fire(&pl) || fabsf(pl.fire_cooldown - cs2d_weapon_get(CS2D_WEP_FAMAS)->fire_delay * 3.3f) > 1e-5f)
+        TEST_FAIL("Weapon modes", "burst mode fire timer x3.3");
+    TEST_PASS("Weapon modes: attack2 kinds, shotgun spread, unzoom on switch, burst fire timer");
+    return true;
+}
+
 static bool test_sound(void)
 {
     printf("\n--- Testing sound attenuation ---\n");
@@ -4806,7 +4843,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 49;
+    int total = 50;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -4857,6 +4894,7 @@ int main(void)
     if (test_game_menu()) passed++;
     if (test_hostages()) passed++;
     if (test_sound()) passed++;
+    if (test_weapon_modes()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

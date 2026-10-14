@@ -420,6 +420,17 @@ static void render_spec_map(cs2d_client_t *client)
  * Assumed: mp_hud bits on, DAT_140ddf1cc 0 and the game mode table 0x1409f77e8 1 (like our main HUD timer); the text
  * is drawn with alpha blending (the original keeps the additive blend for it).
  */
+/*
+ * Whether sv_gamemode shows the round clock: the per-mode table 0x1409f77e8 the HUD indexes with 0x140a14e48[1]
+ * (filled at 0x140318264..: 1, 0, 0, 0, 1), so only Standard (0) and Zombies (4); Deathmatch, Team Deathmatch and
+ * Construction draw no clock. Offline games keep it.
+ */
+static bool hud_has_clock(const cs2d_client_t *client)
+{
+    if (client->net_sock == INVALID_SOCKET) return true;
+    return client->net_sv_gamemode == 0 || client->net_sv_gamemode == 4;
+}
+
 static void render_spectator_time_money(cs2d_client_t *client, int screen_w)
 {
     cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
@@ -433,18 +444,20 @@ static void render_spectator_time_money(cs2d_client_t *client, int screen_w)
     char buf[32];
 
     float sz = (float)(text_h + 4), g = 155.0f / 255.0f;
-    int frame = game->bomb_planted ? 6 : 2;
-    cs2d_render_sprite_frame(&bank->tex_hud_symbols, cell, cell, frame, (float)(screen_w - ref_w) + sz * 0.5f,
-                             2.0f + sz * 0.5f, sz, sz, 0.0f, g, g, g, 1.0f, 4);
-    if (!game->bomb_planted && game->cfg_roundtime == 6000.0f) {
-        cs2d_render_sprite_frame(&bank->tex_hud_symbols, cell, cell, 11, (float)(screen_w - 17) + sz * 0.5f,
+    if (hud_has_clock(client)) {
+        int frame = game->bomb_planted ? 6 : 2;
+        cs2d_render_sprite_frame(&bank->tex_hud_symbols, cell, cell, frame, (float)(screen_w - ref_w) + sz * 0.5f,
                                  2.0f + sz * 0.5f, sz, sz, 0.0f, g, g, g, 1.0f, 4);
-    } else {
-        int sec = (int)(game->bomb_planted ? game->c4_time : game->round_time);
-        if (sec < 0) sec = 0;
-        snprintf(buf, sizeof(buf), "%d:%02d", sec / 60, sec % 60);
-        float x = (float)(screen_w - 2 - (int)cs2d_render_text_width_ex(f, buf));
-        cs2d_render_text_ex(f, x, 4.0f, buf, g, g, g, 1.0f);
+        if (!game->bomb_planted && game->cfg_roundtime == 6000.0f) {
+            cs2d_render_sprite_frame(&bank->tex_hud_symbols, cell, cell, 11, (float)(screen_w - 17) + sz * 0.5f,
+                                     2.0f + sz * 0.5f, sz, sz, 0.0f, g, g, g, 1.0f, 4);
+        } else {
+            int sec = (int)(game->bomb_planted ? game->c4_time : game->round_time);
+            if (sec < 0) sec = 0;
+            snprintf(buf, sizeof(buf), "%d:%02d", sec / 60, sec % 60);
+            float x = (float)(screen_w - 2 - (int)cs2d_render_text_width_ex(f, buf));
+            cs2d_render_text_ex(f, x, 4.0f, buf, g, g, g, 1.0f);
+        }
     }
 
     const cs2d_player_t *me = &client->game.players[client->local_player_id];
@@ -613,6 +626,7 @@ static bool game_load_map(cs2d_client_t *client, const char *map_name)
     cs2d_dynobj_init(&client->dynobj, &client->game.map);
     if (client->net_sock == INVALID_SOCKET) cs2d_dynobj_spawn_map_buildings(&client->dynobj);
     client->build_mode = client->build_menu_open = false;
+    client->supply_menu = 0;
     client->buy.menu   = 0;
     client->ents_round = client->game.round_number;
     client->snapshot_states_reset = false;
@@ -787,10 +801,11 @@ static void building_hit_debris(cs2d_client_t *client, const cs2d_player_t *pl, 
     }
 }
 
-/* Fire sound of a shot (FUN_14018c6b0): the weapon's sound at the shooter; silenced USP / M4A1 at flags 100 */
+/* Fire sound of a shot (FUN_14018c6b0): the weapon's sound at the shooter; USP / M4A1 with the silencer on
+ * (mode != 0) play their silenced sound at flags 100 */
 static void shot_sound(const cs2d_player_t *pl)
 {
-    bool silenced = pl->zoom_mode == 3 && (pl->current_weapon == CS2D_WEP_USP || pl->current_weapon == CS2D_WEP_M4A1);
+    bool silenced = cs2d_weapon_attack2_type(pl->current_weapon) == CS2D_ATTACK2_SILENCER && cs2d_weapon_mode(pl) != 0;
     const char *f = cs2d_sound_weapon_file(pl->current_weapon, silenced);
     if (f) cs2d_sound_play_at(f, pl->pos.x, pl->pos.y, 1.0f, silenced ? 100 : 0);
 }
@@ -803,6 +818,98 @@ static void impact_sound(float hx, float hy, bool hit_wall, int material)
                                         "sfx/materials/flesh", "sfx/materials/glass" };
     if (hit_wall && rand() % 3 == 0) cs2d_sound_play_rand_at("sfx/weapons/ric", 5, ".ogg", hx, hy);
     if (material >= 0 && material < 5) cs2d_sound_play_rand_at(mat[material], 3, ".wav", hx, hy);
+}
+
+/*
+ * The bullets of one shot fired at angle: tracer, impact sounds and debris, and offline the damage to the
+ * breakable hit. The M3 and XM1014 fire five pellets (Tpl.attack 0x14021a6xx: Tpl.shoot with angle offsets
+ * 0, -5, +5, -9, +9), each turned again by the weapon accuracy (Tpl.shoot 0x140209810:
+ * seed % (2 * accuracy) - accuracy; the original draws seed from TRandom.SeedTable, we use rand()).
+ * flash adds the muzzle flash and the case once.
+ */
+static void shot_bullets(cs2d_client_t *client, const cs2d_player_t *pl, const cs2d_weapon_def_t *wep, float angle,
+                         bool flash)
+{
+    static const float pellets[5] = { 0.0f, -5.0f, 5.0f, -9.0f, 9.0f };
+    bool melee = (wep->slot == CS2D_SLOT_MELEE || pl->current_weapon == CS2D_WEP_WRENCH);
+    bool shotgun = (pl->current_weapon == CS2D_WEP_M3 || pl->current_weapon == CS2D_WEP_XM1014);
+    int acc = shotgun ? cs2d_weapon_accuracy(pl->current_weapon) : 0;
+    float reach = cs2d_weapon_shot_reach(wep);
+    float muzzle = (wep->slot == CS2D_SLOT_SECONDARY) ? 22.0f : 30.0f;
+    int shell = shotgun ? 2 : (wep->slot == CS2D_SLOT_SECONDARY ? 0 : 1);
+
+    for (int i = 0; i < (shotgun ? 5 : 1); i++) {
+        float a = angle + pellets[i];
+        if (acc > 0) a += (float)(rand() % (2 * acc) - acc);
+        float hx, hy;
+        int hit = cs2d_ents_trace_shot(&client->ents, pl->pos.x, pl->pos.y, a, reach, &hx, &hy);
+        if (!melee) {
+            /* Tracer, muzzle flash and case: measured on CS2D.exe captures (AK-47 flash ~30 px ahead) */
+            float ddx = hx - pl->pos.x, ddy = hy - pl->pos.y;
+            bool hit_wall = (hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < reach - 1.0f);
+            if (i == 0 && flash) {
+                cs2d_fx_shot(&client->fx, pl->pos.x, pl->pos.y, a, muzzle, hx, hy, hit_wall, shell);
+            } else {
+                float r = a * 0.017453292519943295f;
+                cs2d_fx_tracer(&client->fx, pl->pos.x + sinf(r) * muzzle, pl->pos.y - cosf(r) * muzzle, a, hx, hy,
+                               hit_wall);
+            }
+            if (hit < 0) impact_sound(hx, hy, hit_wall, -1);
+        }
+        building_hit_debris(client, pl, wep, hx, hy);
+        if (hit < 0) continue;
+        const cs2d_entity_t *e = &client->game.map.entities[hit];
+        impact_sound(hx, hy, false, e->int_settings[2]);
+        cs2d_fx_breakable_hit(&client->fx, hx, hy, e->int_settings[2], a);
+        if (!client->connected && pl->id == client->local_player_id) {
+            cs2d_ents_damage_breakable(&client->ents, hit, wep->damage);
+        }
+    }
+}
+
+/* Tpl.attack in burst mode (0x14021a4db): after the first shot, burstFire.Create queues two more, 100 / 200 ms
+ * later for pistols (id < 10), 75 / 150 ms for rifles, at aim + 10 + Rand(-5, 5) and aim + 10 - Rand(-5, 5) */
+static void queue_burst(cs2d_client_t *client, const cs2d_player_t *pl)
+{
+    if (cs2d_weapon_attack2_type(pl->current_weapon) != CS2D_ATTACK2_BURST || !cs2d_weapon_mode(pl)) return;
+    bool pistol = pl->current_weapon < 10;
+    float delay[2] = { pistol ? 0.1f : 0.075f, pistol ? 0.2f : 0.15f };
+    for (int k = 0; k < 2; k++) {
+        for (int i = 0; i < CS2D_MAX_BURSTS; i++) {
+            if (client->bursts[i].delay > 0.0f) continue;
+            int r = rand() % 11 - 5;
+            client->bursts[i].player = pl->id;
+            client->bursts[i].weapon = pl->current_weapon;
+            client->bursts[i].angle  = pl->angle + 10.0f + (float)(k == 0 ? r : -r);
+            client->bursts[i].delay  = delay[k];
+            break;
+        }
+    }
+}
+
+/* burstFire.Update (0x14018c820): a due burst shot fires at angle - 10 + Rand(-5, 5) if the shooter still holds
+ * the weapon and has ammo, with the shot sound and recoil, and takes a bullet from the clip */
+static void update_bursts(cs2d_client_t *client, float delta_time)
+{
+    for (int i = 0; i < CS2D_MAX_BURSTS; i++) {
+        if (client->bursts[i].delay <= 0.0f) continue;
+        client->bursts[i].delay -= delta_time;
+        if (client->bursts[i].delay > 0.0f) continue;
+        client->bursts[i].delay = 0.0f;
+        uint8_t pid = client->bursts[i].player;
+        if (pid == 0 || pid > CS2D_MAX_PLAYERS) continue;
+        cs2d_player_t *pl = &client->game.players[pid];
+        const cs2d_weapon_def_t *wep = cs2d_weapon_get(pl->current_weapon);
+        if (!pl->alive || !wep || pl->current_weapon != client->bursts[i].weapon) continue;
+        bool local = (pid == client->local_player_id);
+        if (local && pl->clip_ammo[pl->current_weapon] <= 0) continue;
+        if (wep->visual_recoil > 0) {
+            pl->recoil = (float)wep->visual_recoil + ((float)(rand() & 0x7FFF) / 32768.0f);
+        }
+        shot_sound(pl);
+        shot_bullets(client, pl, wep, client->bursts[i].angle - 10.0f + (float)(rand() % 11 - 5), true);
+        if (local) pl->clip_ammo[pl->current_weapon]--;
+    }
 }
 
 /*
@@ -882,30 +989,95 @@ static void fire_shot(cs2d_client_t *client, const cs2d_player_t *pl)
     }
 
     shot_sound(pl);
-    float hx, hy;
-    float reach = cs2d_weapon_shot_reach(wep);
-    int hit = cs2d_ents_trace_shot(&client->ents, pl->pos.x, pl->pos.y, pl->angle, reach, &hx, &hy);
-
-    if (melee) {
-        if (pl->current_weapon != CS2D_WEP_CHAINSAW) {
-            cs2d_fx_knifeslash(&client->fx, pl->pos.x, pl->pos.y, pl->angle);
-        }
-    } else {
-        /* Tracer, muzzle flash and case: measured on CS2D.exe captures (AK-47 flash ~30 px ahead) */
-        float ddx = hx - pl->pos.x, ddy = hy - pl->pos.y;
-        bool hit_wall = (hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < reach - 1.0f);
-        int shell = (pl->current_weapon == CS2D_WEP_M3 || pl->current_weapon == CS2D_WEP_XM1014) ? 2 :
-                    (wep->slot == CS2D_SLOT_SECONDARY ? 0 : 1);
-        float muzzle = (wep->slot == CS2D_SLOT_SECONDARY) ? 22.0f : 30.0f;
-        cs2d_fx_shot(&client->fx, pl->pos.x, pl->pos.y, pl->angle, muzzle, hx, hy, hit_wall, shell);
-        if (hit < 0) impact_sound(hx, hy, hit_wall, -1);
+    if (melee && pl->current_weapon != CS2D_WEP_CHAINSAW) {
+        cs2d_fx_knifeslash(&client->fx, pl->pos.x, pl->pos.y, pl->angle);
     }
-    building_hit_debris(client, pl, wep, hx, hy);
-    if (hit < 0) return;
-    const cs2d_entity_t *e = &client->game.map.entities[hit];
-    impact_sound(hx, hy, false, e->int_settings[2]);
-    cs2d_fx_breakable_hit(&client->fx, hx, hy, e->int_settings[2], pl->angle);
-    if (!client->connected) cs2d_ents_damage_breakable(&client->ents, hit, wep->damage);
+    shot_bullets(client, pl, wep, pl->angle, true);
+    queue_burst(client, pl);
+}
+
+/* Strong slash of the Knife / Claw (FUN_1401fd590 0x1401fdd37): knifeslash, the weapon sound, a shot with the
+ * dmg_z1 damage (server side) and the slash sprite */
+static void strong_slash(cs2d_client_t *client, cs2d_player_t *pl)
+{
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(pl->current_weapon);
+    if (!wep) return;
+    pl->slash_timer = 8.0f;
+    pl->draw_angle  = pl->angle + 6.0f * pl->slash_timer;
+    shot_sound(pl);
+    cs2d_fx_knifeslash(&client->fx, pl->pos.x, pl->pos.y, pl->angle);
+    shot_bullets(client, pl, wep, pl->angle, false);
+}
+
+/* A weapon's mode changed (FUN_1401fd590 0x1401fdbeb..0x1401fd7d6): the local player sees the silencer / burst /
+ * laser message (lang 0696..0703), and everyone hears the switch: silencer_on / _off, zoom, click */
+static void weapon_mode_feedback(cs2d_client_t *client, const cs2d_player_t *pl, bool local)
+{
+    int kind = cs2d_weapon_attack2_type(pl->current_weapon);
+    uint8_t mode = cs2d_weapon_mode(pl);
+    if (local) {
+        static const char *const laser[4] = { "green", "red", "yellow", "blue" };
+        static const uint8_t laser_rgb[4][3] = { {0, 255, 0}, {255, 50, 0}, {255, 255, 0}, {0, 150, 255} };
+        if (kind == CS2D_ATTACK2_SILENCER) {
+            cs2d_client_center_msg(client, 255, 220, 0, mode ? "silencer \xA9" "000255000ON" : "silencer \xA9" "255000000OFF");
+        } else if (kind == CS2D_ATTACK2_BURST) {
+            cs2d_client_center_msg(client, 255, 220, 0, mode ? "burst-mode \xA9" "000255000ON" : "burst-mode \xA9" "255000000OFF");
+        } else if (pl->current_weapon == CS2D_WEP_LASER && mode < 4) {
+            cs2d_client_center_msg(client, laser_rgb[mode][0], laser_rgb[mode][1], laser_rgb[mode][2], laser[mode]);
+        }
+    }
+    const char *snd = kind == CS2D_ATTACK2_SILENCER ? (mode ? "sfx/weapons/silencer_on.wav" : "sfx/weapons/silencer_off.wav")
+                    : (kind == CS2D_ATTACK2_BURST || pl->current_weapon == CS2D_WEP_LASER) ? "sfx/weapons/click.wav"
+                    : (kind == CS2D_ATTACK2_ZOOM1 || kind == CS2D_ATTACK2_ZOOM2) ? "sfx/weapons/zoom.wav" : NULL;
+    if (snd) cs2d_sound_play_at(snd, pl->pos.x, pl->pos.y, 1.0f, 0);
+}
+
+/*
+ * attack2 of the local player while it is held (FUN_1401fd590 with param_3 = 1, at most every 500 ms by the timer
+ * DAT_140a1b008): silencer / burst toggle 0 <-> 1, a single scope 0 <-> 1, a double scope 0 -> 1 -> 2 -> 0, the
+ * Laser colour 0..3, and the Knife / Claw strong slash (fire timer and attack2 timer 1200 ms). Not while
+ * reloading. Online it sends [8, mode] (reliable); the server relays it to the others as [8, player, mode].
+ */
+static void attack2(cs2d_client_t *client, cs2d_player_t *pl)
+{
+    uint32_t now = GetTickCount();
+    if ((int32_t)(now - client->attack2_ms) < 0 || !pl->alive || pl->current_weapon == CS2D_WEP_NONE) return;
+    uint8_t w = pl->current_weapon;
+    int kind = cs2d_weapon_attack2_type(w);
+    bool melee2 = (w == CS2D_WEP_KNIFE || w == CS2D_WEP_CLAW);
+    if (!kind && !melee2 && w != CS2D_WEP_LASER) return; /* The Wrench is handled on the click (wrench_attack2) */
+    if (melee2 && pl->fire_cooldown > 0.0f) return;
+    client->attack2_ms = now + 500;
+    if (pl->reload_timer > 0.0f || pl->is_planting || pl->is_defusing) return;
+
+    if (melee2) {
+        strong_slash(client, pl);
+        pl->fire_cooldown = 1.2f;    /* firetimer.reset(1200) (0x1401fdde8) */
+        client->attack2_ms = now + 1200;
+    } else {
+        uint8_t *mode = &pl->weapon_mode[w];
+        int max = (w == CS2D_WEP_LASER) ? 3 : (kind == CS2D_ATTACK2_ZOOM2 ? 2 : 1);
+        *mode = (uint8_t)(*mode >= max ? 0 : *mode + 1);
+        weapon_mode_feedback(client, pl, true);
+    }
+    if (client->connected && client->join_stage == 5) {
+        uint8_t pkt[2] = { (uint8_t)CS2D_NET_ATTACK2, pl->weapon_mode[w] };
+        cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+    }
+}
+
+/* [8, player, mode] from the server (FUN_1401fd590 with param_3 = 0): another player's weapon mode, or the
+ * strong slash of their Knife / Claw */
+void cs2d_scene_game_remote_attack2(cs2d_client_t *client, cs2d_player_t *pl, uint8_t mode)
+{
+    if (!pl || !pl->alive || pl->current_weapon == CS2D_WEP_NONE || pl->current_weapon >= CS2D_MAX_WEAPONS) return;
+    if (pl->current_weapon == CS2D_WEP_KNIFE || pl->current_weapon == CS2D_WEP_CLAW) {
+        strong_slash(client, pl);
+        return;
+    }
+    if (pl->weapon_mode[pl->current_weapon] == mode) return;
+    pl->weapon_mode[pl->current_weapon] = mode;
+    weapon_mode_feedback(client, pl, false);
 }
 
 /* Another player's shot or melee swing reported by the server: same recoil / swing / tracer / flash / case as a local shot */
@@ -933,22 +1105,8 @@ void cs2d_scene_game_remote_shot(cs2d_client_t *client, cs2d_player_t *pl)
     }
 
     shot_sound(pl);
-    float hx, hy, reach = cs2d_weapon_shot_reach(wep);
-    int hit = cs2d_ents_trace_shot(&client->ents, pl->pos.x, pl->pos.y, pl->angle, reach, &hx, &hy);
-    if (!melee) {
-        float ddx = hx - pl->pos.x, ddy = hy - pl->pos.y;
-        bool hit_wall = (hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < reach - 1.0f);
-        int shell = (pl->current_weapon == CS2D_WEP_M3 || pl->current_weapon == CS2D_WEP_XM1014) ? 2 :
-                    (wep->slot == CS2D_SLOT_SECONDARY ? 0 : 1);
-        cs2d_fx_shot(&client->fx, pl->pos.x, pl->pos.y, pl->angle, wep->slot == CS2D_SLOT_SECONDARY ? 22.0f : 30.0f,
-                     hx, hy, hit_wall, shell);
-        if (hit < 0) impact_sound(hx, hy, hit_wall, -1);
-    }
-    building_hit_debris(client, pl, wep, hx, hy);
-    if (hit >= 0) {
-        cs2d_fx_breakable_hit(&client->fx, hx, hy, client->game.map.entities[hit].int_settings[2], pl->angle);
-        impact_sound(hx, hy, false, client->game.map.entities[hit].int_settings[2]);
-    }
+    shot_bullets(client, pl, wep, pl->angle, true);
+    queue_burst(client, pl);
 }
 
 /* Explosion of an Env_Breakable (offline): players and breakables in range take power * (1 - d / range) */
@@ -1273,13 +1431,15 @@ static void game_update(cs2d_client_t *client, float delta_time)
             if (pl->feet_timer < 0.0f) pl->feet_timer = 0.0f;
         }
 
-        /* Firing (left-click attack, or right-click attack2 for Knife/Claw per Tpl.attack2 0x1401fdd37) */
-        bool melee_atk2 = client->mouse_attack2 &&
-                          (pl->current_weapon == CS2D_WEP_KNIFE || pl->current_weapon == CS2D_WEP_CLAW);
+        /* Firing (left-click attack); right-click attack2 switches the weapon mode or swings the strong slash */
+        if (client->mouse_attack2 && !client->mouse_fire && !cs2d_client_any_ui_open(client) &&
+            !client->build_menu_open && !client->supply_menu) {
+            attack2(client, pl);
+        }
         /* Bomb online (FUN_1401cb510): attacking with the C4 (55) inside an Info_BombSpot zone starts planting
          * (proc 1, [30,1]); releasing attack aborts it with [30,2] (0x14021c19f). The server plants after 3 s. */
         if (client->connected && pl->current_weapon == CS2D_WEP_BOMB) {
-            bool attack = client->mouse_fire && !cs2d_client_any_ui_open(client) && !client->build_menu_open;
+            bool attack = client->mouse_fire && !cs2d_client_any_ui_open(client) && !client->build_menu_open && !client->supply_menu;
             if (attack && !pl->is_planting && pl->reload_timer <= 0.0f &&
                 cs2d_map_in_zone(&client->game.map, CS2D_ENT_INFO_BOMBSPOT, (int)(pl->pos.x * 0.03125f),
                                  (int)(pl->pos.y * 0.03125f))) {
@@ -1294,10 +1454,8 @@ static void game_update(cs2d_client_t *client, float delta_time)
                 cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
             }
         }
-        if (!cs2d_client_any_ui_open(client) && (client->mouse_fire || melee_atk2) && !client->build_menu_open && cs2d_weapon_fire(pl)) {
-            if (melee_atk2 && !client->mouse_fire) {
-                pl->fire_cooldown = 1.2f; /* Tpl.attack2 knife / claw: firetimer.reset(1200) (0x1401fdde8) */
-            }
+        if (!cs2d_client_any_ui_open(client) && client->mouse_fire && !client->build_menu_open && !client->supply_menu &&
+            cs2d_weapon_fire(pl)) {
             fire_shot(client, pl);
         }
     }
@@ -1331,6 +1489,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
     }
     drain_entity_events(client);
     update_dynobjs(client, delta_time);
+    update_bursts(client, delta_time);
     cs2d_fx_update(&client->fx, delta_time);
     env_sounds_update(client);
     cs2d_hudtxt_update(&client->hudtxt, (uint32_t)SDL_GetTicks()); /* Ttween.update */
@@ -1541,6 +1700,68 @@ static bool build_menu_click(cs2d_client_t *client, float mx, float my)
     }
     if (point_in_rect(mx, my, wx + 16.0f, wy + 394.0f, 240.0f, 25.0f)) client->build_menu_open = false;
     return true; /* The menu is modal: clicks never reach the game */
+}
+
+/*
+ * Supply item selection (Tgui_hudmen.draw menus 61 / 62, 0x14021f7xx, title 0373): one button per non-empty
+ * mp_supply_items slot (at most 10, an item with a name), x 16 from y 30 every 30 px with a 20 px gap after the 6th;
+ * slots 7..10 only on a Super Supply (62). Key = slot. Picking one sends [26, 150, slot i32, tile x u16, tile y u16]
+ * (FUN_14014f820; the server stores it as Tdo.mode, slots 1..6 / 1..9) and closes; 0 Cancel (0027) at h - 46.
+ */
+static int supply_menu_slot_y(const cs2d_client_t *client, int slot)
+{
+    int n = client->net_supply_count < 10 ? client->net_supply_count : 10, y = 30;
+    for (int i = 0; i < n; i++) {
+        const cs2d_weapon_def_t *w = client->net_supply_items[i] ? cs2d_weapon_get(client->net_supply_items[i]) : NULL;
+        if (!w || !w->name[0] || (i > 5 && client->supply_menu != 62)) continue;
+        if (i == slot) return y;
+        y += i == 5 ? 50 : 30;
+    }
+    return -1;
+}
+
+static void send_supply(cs2d_client_t *client, int slot)
+{
+    client->supply_menu = 0;
+    if (!client->connected || client->join_stage != 5) return;
+    int x = client->supply_tx, y = client->supply_ty;
+    uint8_t pkt[10] = { (uint8_t)CS2D_NET_USE, 150, (uint8_t)slot, 0, 0, 0,
+                        (uint8_t)(x & 0xFF), (uint8_t)((x >> 8) & 0xFF), (uint8_t)(y & 0xFF), (uint8_t)((y >> 8) & 0xFF) };
+    cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+}
+
+static void render_supply_menu(cs2d_client_t *client)
+{
+    float wx, wy, mx = client->mouse_screen_x, my = client->mouse_screen_y;
+    build_menu_origin(client, &wx, &wy);
+    cs2d_hudmen_window(wx, wy, "Supply Selection"); /* 0373 */
+    for (int i = 0; i < 10; i++) {
+        int y = supply_menu_slot_y(client, i);
+        if (y < 0) continue;
+        cs2d_hudmen_button(mx, my, wx + 16.0f, wy + (float)y, 240.0f, i + 1,
+                           cs2d_weapon_get(client->net_supply_items[i])->name, "", true, NULL);
+    }
+    cs2d_hudmen_button(mx, my, wx + 16.0f, wy + 440.0f - 46.0f, 240.0f, 0, "Cancel", "", true, NULL); /* 0027 */
+}
+
+static void supply_menu_click(cs2d_client_t *client, float mx, float my)
+{
+    float wx, wy;
+    build_menu_origin(client, &wx, &wy);
+    for (int i = 0; i < 10; i++) {
+        int y = supply_menu_slot_y(client, i);
+        if (y >= 0 && point_in_rect(mx, my, wx + 16.0f, wy + (float)y, 240.0f, 25.0f)) {
+            send_supply(client, i + 1);
+            return;
+        }
+    }
+    if (point_in_rect(mx, my, wx + 16.0f, wy + 394.0f, 240.0f, 25.0f)) client->supply_menu = 0;
+}
+
+static void supply_menu_key(cs2d_client_t *client, int digit)
+{
+    if (digit == 0) { client->supply_menu = 0; return; }
+    if (supply_menu_slot_y(client, digit - 1) >= 0) send_supply(client, digit);
 }
 
 /* Number keys in the "Construct" menu (Tgui_hudmen.button: DAT_140ddf340 == key) */
@@ -1840,7 +2061,7 @@ static size_t inline_image_tag(const char *p, char *path, size_t path_sz)
 }
 
 /*
- * Lays out (and with draw set, draws) text that may switch colour mid-line: every "©RRRGGGBBB" (Latin-1 or
+ * Lays out (and with draw set, draws) text that may switch colour mid-line: every "©" "RRRGGGBBB" (Latin-1 or
  * UTF-8 '©') starts a new run in that colour, and every "®path" inserts that image scaled to the font
  * height, as the original HUD does for server messages. Returns the width. With shadow set, text runs are
  * drawn black (the drop shadow pass) and images are skipped.
@@ -2397,6 +2618,15 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
 
     /* 4. In-Game HUD (hud_nums.bmp, hud_symbols.bmp, hud_radar_advanced.png) */
     const cs2d_player_t *local_pl = &client->game.players[client->local_player_id];
+    /* FUN_140291500: the scope of a zoomed weapon, level 1 with dmg_z1 > 0 on a single or double scope, level 2
+     * with dmg_z2 > 0 on a double scope */
+    if (local_pl->alive) {
+        const cs2d_weapon_def_t *w = cs2d_weapon_get(local_pl->current_weapon);
+        int kind = cs2d_weapon_attack2_type(local_pl->current_weapon), level = cs2d_weapon_mode(local_pl);
+        bool scoped = w && ((level == 1 && w->damage_z1 > 0 && (kind == CS2D_ATTACK2_ZOOM1 || kind == CS2D_ATTACK2_ZOOM2)) ||
+                            (level == 2 && w->damage_z2 > 0 && kind == CS2D_ATTACK2_ZOOM2));
+        if (scoped) cs2d_render_scope(client->mouse_screen_x, client->mouse_screen_y, level, screen_w, screen_h);
+    }
     /* FUN_140295190: the build helper follows the cursor while the Wrench is held (DAT_140ddf474) */
     if (client->build_mode && !local_can_build_mode(client)) client->build_mode = false;
     if (client->build_mode && !client->build_menu_open) {
@@ -2414,10 +2644,11 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
                                   (uint32_t)SDL_GetTicks() };
         cs2d_radar_blip_t blips[CS2D_RADAR_MAX_BLIPS];
         int nblips = cs2d_radar_collect(&client->game, local_pl, &renv, blips);
-        cs2d_render_hud(local_pl, &client->game, &client->tex_tileset, blips, nblips, screen_w, screen_h);
+        cs2d_render_hud(local_pl, &client->game, &client->tex_tileset, blips, nblips, client->net_infammo,
+                        hud_has_clock(client), screen_w, screen_h);
         /* Right of the radar (drawradar != 0: radarsize + 100 + 8), else at 8 (FUN_140295190) */
         float sel_x = client->config.drawradar ? (float)(client->config.radarsize + 108) : 8.0f;
-        cs2d_render_weapon_select(local_pl, &client->invsel, sel_x);
+        cs2d_render_weapon_select(local_pl, &client->invsel, sel_x, client->net_infammo);
     } else {
         render_spectator_hud(client, screen_w, screen_h);
     }
@@ -2434,6 +2665,10 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     if (client->build_menu_open) {
         if (local_pl->alive) render_build_menu(client);
         else client->build_menu_open = false;
+    }
+    if (client->supply_menu) {
+        if (local_pl->alive) render_supply_menu(client);
+        else client->supply_menu = 0;
     }
     if (client->buy.menu) {
         cs2d_buyctx_t ctx = buy_ctx(client);
@@ -2517,7 +2752,8 @@ bool cs2d_scene_game_inv_cmd(cs2d_client_t *client, const char *cmd)
  * each one a CT first looks for a hostage (mode 1 use / 2 release when it follows us; target = hostage id), then the
  * planted bomb (mode 3, only while the bomb timer runs and no process / reload; defusing starts locally, target =
  * defuse kit), then anyone looks for a Trigger_Use (mode 100 with its tile). Nothing found still sends mode 0 with
- * zeros, which the server reports to the Lua "use" hook. Own Dispenser / Teleporter (Tdo 9 / 15) menus: not done.
+ * zeros, which the server reports to the Lua "use" hook. An own Supply / Super Supply (Tdo 9 / 15) on the probed
+ * tile opens the supply menu (61 / 62) instead and sends nothing (0x140150bd0).
  */
 static void game_use_online(cs2d_client_t *client, cs2d_player_t *pl)
 {
@@ -2554,6 +2790,14 @@ static void game_use_online(cs2d_client_t *client, cs2d_player_t *pl)
             mode = 100;
             x = client->game.map.entities[use].x;
             y = client->game.map.entities[use].y;
+            break;
+        }
+        const cs2d_dynobj_t *o = cs2d_dynobj_at_tile(&client->dynobj, tx, ty);
+        if (o && o->player == client->local_player_id && (o->typ == CS2D_DO_SUPPLY || o->typ == CS2D_DO_SUPER_SUPPLY)) {
+            client->supply_tx   = tx;
+            client->supply_ty   = ty;
+            client->supply_menu = o->typ == CS2D_DO_SUPPLY ? 61 : 62;
+            return;
         }
     }
     /* [26][mode u8][data i32][x u16][y u16] */
@@ -2571,6 +2815,10 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
 
     if (client->build_menu_open && key >= '0' && key <= '9') {
         if (pressed) build_menu_key(client, key - '0');
+        return;
+    }
+    if (client->supply_menu && key >= '0' && key <= '9') {
+        if (pressed) supply_menu_key(client, key - '0');
         return;
     }
     if (client->game_menu && key >= '0' && key <= '9') {
@@ -2693,6 +2941,11 @@ static void game_handle_mouse(cs2d_client_t *client, float mx, float my, int but
     cs2d_player_t *me = &client->game.players[client->local_player_id];
     if (client->build_menu_open) {
         if (pressed && button == 1) build_menu_click(client, mx, my);
+        if (!pressed) { client->mouse_fire = false; client->mouse_attack2 = false; }
+        return;
+    }
+    if (client->supply_menu) {
+        if (pressed && button == 1) supply_menu_click(client, mx, my);
         if (!pressed) { client->mouse_fire = false; client->mouse_attack2 = false; }
         return;
     }
@@ -2966,6 +3219,10 @@ static void game_handle_escape(cs2d_client_t *client)
     }
     if (client->build_menu_open || client->build_mode) {
         client->build_menu_open = client->build_mode = false;
+        return;
+    }
+    if (client->supply_menu) {
+        client->supply_menu = 0;
         return;
     }
     if (client->luamenu.open) {

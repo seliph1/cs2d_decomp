@@ -79,6 +79,10 @@ void cs2d_fx_explosion(cs2d_fx_t *fx, float x, float y, float range);
 void cs2d_fx_shot(cs2d_fx_t *fx, float px, float py, float angle_deg, float muzzle_dist,
                   float ex, float ey, bool hit_wall, int shell_frame);
 
+/* The bullet trail of one shot from the muzzle (mx, my) to (ex, ey), with impact sparks when hit_wall: what
+ * cs2d_fx_shot draws besides the flash and the case; each shotgun pellet draws one */
+void cs2d_fx_tracer(cs2d_fx_t *fx, float mx, float my, float angle_deg, float ex, float ey, bool hit_wall);
+
 /*
  * Melee weapon slash arc (CS2D.exe Tpl.slash 0x14018cf63 -> Tp.create type 13 at 0x14004b4e0,
  * drawn in Tp.drawAll at 0x140265220): gfx/knifeslash.bmp centered at (px, py), rotated by

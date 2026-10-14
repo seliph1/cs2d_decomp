@@ -40,3 +40,24 @@ Source: REA `FUN_140148f40`, plus frame captures.
     (`16.5 px` for firearms `0x14012168e`, `13.5 px` for melee/bomb `0x1401229b5`, `12.5 px` for grenades `0x1401227ab`).
   - Spawns `Tp` type `13` (`gfx/knifeslash.bmp`, `0x140a0dcd8`, `maskMode = 3`, `midhandle = 1`) at `(pos.x, pos.y)`
     rotated by `angle`, drawn with additive blend (`LIGHTBLEND = 4`), alpha `1.0` fading by `0.07` per 60 Hz frame (`4.2/s`).
+
+## attack2, shotgun pellets, burst, scope
+
+Source: REA/dump `FUN_1401fd590` (attack2), `FUN_140219e40` (Tpl.attack shot dispatch), `Tpl.shoot 0x140209810`,
+`burstFire 0x14004ef60 / 0x14018c820`, `FUN_140291500` (scope), `Tpl.setweapon 0x1400a9430`.
+
+- Mode lives on the item (`Titem.mode`, +0x1c). attack2 kind table `0x1409f79f0`: 20 silencer (USP, M4A1),
+  10 burst (Glock, Famas), 1 single zoom (SG552, Aug), 2 double zoom (Scout, AWP, G3SG1, SG550). Laser (45) cycles 0..3.
+- attack2 (local, while held, 500 ms timer `DAT_140a1b008`; not while reloading): 20/10/1 toggle, 2 cycles 0→1→2→0.
+  Sends `[8, mode]` reliable; the server relays `[8, player, mode]`. Knife (50) / Claw (78): strong slash, dmg_z1,
+  fire timer + attack2 timer 1200 ms, also sent as `[8, 0]` (not `[7]`).
+- Messages lang 0696..0699 (silencer/burst ON/OFF, base colour 255,220,0), laser 0700..0703 in green / (255,50,0) /
+  yellow / (0,150,255). Sounds: silencer_on/off, zoom (kinds 1/2), click (burst, laser).
+- Shotgun (M3, XM1014): 5 × Tpl.shoot at offsets 0, −5, +5, −9, +9°, each + `seed % (2·acc) − acc`, accuracy table
+  `0x1409f5d18` (M3 10, XM1014 13). seed = `TRandom.SeedTable[Tpl.random]` (not reproduced, we use rand()).
+- Burst: fire timer ×3.3; two burstFire shots at +100/+200 ms (id < 10) or +75/+150 ms, angle aim+10±Rand(-5,5)
+  then −10+Rand(-5,5) at fire time; dropped if the weapon changed; client-side only (no packet).
+- Silenced sound/overlay when kind 20 and mode != 0.
+- Scope: zoom 1 (dmg_z1 > 0) = scope.png 200×200 at the cursor, zoom 2 (dmg_z2 > 0, kind 2) = 100×100 at scale 0.5;
+  the rest is black (protected constants, alpha 1). Drawn at the start of the HUD. No camera zoom.
+- Mode resets: buying (mode 0); switching to a different item resets kinds 1/2 (31, 33, 34..37).

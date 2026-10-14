@@ -48,3 +48,10 @@ Source: REA / dump (`FUN_140166fb0` invnext / invprev, `FUN_1401cc180` slotN, `F
   "name (empty)" red (0799) at 0 ammo, "name (clip|INF)" (0762) with mp_infammo (0x140a14e38[1]).
 - 63: "Bomb" (0798) blinking red/yellow on sin(ms/2), key 1000; 55 red 990; 70 red / 71 blue (50,150,255) 980.
 - g_lang offsets: g_lang[k].scales + data_start + d → entry 777 + ((k - 0xac) * 36 + d + 4) / 8.
+- Main HUD under mp_infammo (FUN_140295190 ~0x14029575x): clip at w - 6.5 u (normal 6.25), hud_nums '|' at w - 3.25 u,
+  then hud_symbols frame 11 (infinity) at w - 2.25 u instead of the reserve. Weapon select slot 1/2: "clip | INF" (0762).
+- Main HUD clock (0x1402955b8) is skipped entirely when mp_roundtime (0x140a14ea0[1], [252,6] byte after the two u16
+  scores) is 100 = infinite rounds; the spectator HUD draws frame 11 instead.
+- Round clock per game mode: table 0x1409f77e8 indexed by sv_gamemode (0x140a14e48[1]), filled at 0x140318264.. as
+  1, 0, 0, 0, 1: only Standard and Zombies draw the clock (main and spectator HUD); DM / TDM / Construction don't.
+- Pickup auto switch: FUN_14020ce60 tail calls FUN_1401caca0(id, type, 0xff, 1) (hold + send [9, type, mode]) for the local player when DAT_140ddf196 (Automatic Weapon Switch option, assumed from the options menu load at 1401b0000) is on and the type has a HUD slot (0x140a017b8). Bots: bestweapon instead.

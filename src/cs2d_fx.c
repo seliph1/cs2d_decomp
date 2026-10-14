@@ -147,27 +147,10 @@ void cs2d_fx_breakable_break(cs2d_fx_t *fx, const cs2d_entity_t *e)
     if (e->int_settings[3]) cs2d_fx_explosion(fx, cx, cy, (float)e->int_settings[4]);
 }
 
-void cs2d_fx_shot(cs2d_fx_t *fx, float px, float py, float angle_deg, float muzzle_dist,
-                  float ex, float ey, bool hit_wall, int shell_frame)
+void cs2d_fx_tracer(cs2d_fx_t *fx, float mx, float my, float angle_deg, float ex, float ey, bool hit_wall)
 {
-    if (!fx) return;
-    float rad = angle_deg * 0.017453292519943295f;
-    float fx_ = sinf(rad), fy = -cosf(rad);   /* Forward */
-    float rx = cosf(rad), ry = sinf(rad);     /* Right of the aim (weapons are held on the right) */
-    float mx = px + fx_ * muzzle_dist, my = py + fy * muzzle_dist;
-
-    /* Muzzle flash: life 1 -> 0 at 0.4 per frame (24/s) */
-    cs2d_fx_particle_t *m = alloc_particle(fx);
-    m->kind     = CS2D_FX_MUZZLE;
-    m->x        = mx;
-    m->y        = my;
-    m->rot      = angle_deg;
-    m->max_life = m->life = 1.0f / 24.0f * 2.5f;
-    m->size     = 16.0f;                      /* 32 px * 0.1 * 5 */
-    m->x2       = px;                         /* Light around the shooter */
-    m->y2       = py;
-
     /* Tracer from the muzzle to the impact, then glowing dots left along the path */
+    if (!fx) return;
     float dx = ex - mx, dy = ey - my;
     float len = sqrtf(dx * dx + dy * dy);
     if (len > 1.0f) {
@@ -207,6 +190,29 @@ void cs2d_fx_shot(cs2d_fx_t *fx, float px, float py, float angle_deg, float muzz
             sp->r = 1.0f; sp->g = 0.85f; sp->b = 0.25f;
         }
     }
+}
+
+void cs2d_fx_shot(cs2d_fx_t *fx, float px, float py, float angle_deg, float muzzle_dist,
+                  float ex, float ey, bool hit_wall, int shell_frame)
+{
+    if (!fx) return;
+    float rad = angle_deg * 0.017453292519943295f;
+    float fx_ = sinf(rad), fy = -cosf(rad);   /* Forward */
+    float rx = cosf(rad), ry = sinf(rad);     /* Right of the aim (weapons are held on the right) */
+    float mx = px + fx_ * muzzle_dist, my = py + fy * muzzle_dist;
+
+    /* Muzzle flash: life 1 -> 0 at 0.4 per frame (24/s) */
+    cs2d_fx_particle_t *m = alloc_particle(fx);
+    m->kind     = CS2D_FX_MUZZLE;
+    m->x        = mx;
+    m->y        = my;
+    m->rot      = angle_deg;
+    m->max_life = m->life = 1.0f / 24.0f * 2.5f;
+    m->size     = 16.0f;                      /* 32 px * 0.1 * 5 */
+    m->x2       = px;                         /* Light around the shooter */
+    m->y2       = py;
+
+    cs2d_fx_tracer(fx, mx, my, angle_deg, ex, ey, hit_wall);
 
     /* Case ejected to the right (slightly backwards), spinning until it lands */
     if (shell_frame >= 0) {

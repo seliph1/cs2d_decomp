@@ -106,6 +106,7 @@ typedef struct {
     cs2d_texture_t            tex_explosion;     /* gfx/explosion.png (320x320 -> 25 frames of 64x64, maskMode=1) */
     cs2d_texture_t            tex_flare_x;       /* incbindata/flare_x.png muzzle flash (32x32) */
     cs2d_texture_t            tex_glowdot;       /* incbindata/glowdot.bmp (3x3) bullet path / sparks */
+    cs2d_texture_t            tex_scope;         /* incbindata/scope.png (200x200) sniper scope */
     cs2d_texture_t            tex_shells;        /* gfx/shells.bmp|png (32x8 -> 4 frames of 8x8, maskMode=2) */
     cs2d_texture_t            tex_knifeslash;    /* gfx/knifeslash.bmp (32x32, maskMode=3, 0x140a0dcd8) */
     cs2d_texture_t            tex_wave;          /* gfx/sprites/wave.bmp (32x32, maskMode 3; Tp type 1) */
@@ -308,6 +309,8 @@ void cs2d_render_hud(
     const cs2d_game_t   *game,
     const cs2d_texture_t *tileset_tex,
     const cs2d_radar_blip_t *blips, int blip_count, /* cs2d_radar_collect */
+    bool infammo,                                    /* mp_infammo: clip | infinity symbol */
+    bool show_clock,                                 /* game mode has a round clock (0x1409f77e8) */
     int screen_w, int screen_h
 );
 
@@ -338,10 +341,14 @@ void cs2d_render_hud_progress_bar(
 
 /* Weapon selection HUD (invnext / invprev / slotN) at the top of the screen, from x0 (FUN_140295190) */
 struct cs2d_invsel_s;
-void cs2d_render_weapon_select(const cs2d_player_t *player, const struct cs2d_invsel_s *sel, float x0);
+void cs2d_render_weapon_select(const cs2d_player_t *player, const struct cs2d_invsel_s *sel, float x0, bool infammo);
 
 /* Crosshair at mouse pointer (gfx/pointer.bmp cell 0) */
 void cs2d_render_crosshair(float mx, float my);
+
+/* Scope view (FUN_140291500, at the start of the HUD): scope.png centred on the cursor, the rest of the screen
+ * black; zoom level 1 shows a 200 x 200 hole, level 2 a 100 x 100 one with the image at half scale */
+void cs2d_render_scope(float mx, float my, int level, int screen_w, int screen_h);
 
 /* UI Font Identifiers (gfx/fonts/liberationsans.ttf & gfx/fonts/sourcesans.ttf) */
 typedef enum {

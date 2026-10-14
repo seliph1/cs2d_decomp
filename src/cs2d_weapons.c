@@ -379,6 +379,44 @@ bool cs2d_weapon_can_fire(const cs2d_player_t *player)
     return player->clip_ammo[player->current_weapon] > 0;
 }
 
+int cs2d_weapon_attack2_type(uint8_t weapon_id)
+{
+    switch (weapon_id) {
+        case CS2D_WEP_USP: case CS2D_WEP_M4A1:                       return CS2D_ATTACK2_SILENCER;
+        case CS2D_WEP_GLOCK: case CS2D_WEP_FAMAS:                    return CS2D_ATTACK2_BURST;
+        case CS2D_WEP_SG552: case CS2D_WEP_AUG:                      return CS2D_ATTACK2_ZOOM1;
+        case CS2D_WEP_SCOUT: case CS2D_WEP_AWP: case CS2D_WEP_G3SG1:
+        case CS2D_WEP_SG550:                                         return CS2D_ATTACK2_ZOOM2;
+        default:                                                     return 0;
+    }
+}
+
+uint8_t cs2d_weapon_mode(const cs2d_player_t *player)
+{
+    if (!player || player->current_weapon >= CS2D_MAX_WEAPONS) return 0;
+    return player->weapon_mode[player->current_weapon];
+}
+
+int cs2d_weapon_accuracy(uint8_t weapon_id)
+{
+    /* 0x1409f5d18 (tools/agent/weapontables.py); unlisted ids are 0 */
+    static const struct { uint8_t id, acc; } t[] = {
+        {10, 10}, {11, 13}, {20, 2}, {21, 4}, {22, 3}, {23, 4}, {24, 3}, {30, 3}, {32, 2}, {36, 1}, {37, 1},
+        {38, 1}, {39, 1}, {40, 8}, {90, 5}, {91, 2}, {92, 2}
+    };
+    for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
+        if (t[i].id == weapon_id) return t[i].acc;
+    }
+    return 0;
+}
+
+void cs2d_weapon_unzoom_on_switch(cs2d_player_t *player, uint8_t weapon_id)
+{
+    if (!player || weapon_id >= CS2D_MAX_WEAPONS || weapon_id == player->current_weapon) return;
+    int k = cs2d_weapon_attack2_type(weapon_id);
+    if (k == CS2D_ATTACK2_ZOOM1 || k == CS2D_ATTACK2_ZOOM2) player->weapon_mode[weapon_id] = 0;
+}
+
 bool cs2d_weapon_fire(cs2d_player_t *player)
 {
     if (!cs2d_weapon_can_fire(player)) return false;
@@ -386,7 +424,11 @@ bool cs2d_weapon_fire(cs2d_player_t *player)
     const cs2d_weapon_def_t *wep = cs2d_weapon_get(player->current_weapon);
     if (!wep) return false;
 
+    /* Tpl.attack (0x14021a7b9): burst mode re-arms the fire timer 3.3 times longer */
     player->fire_cooldown = wep->fire_delay;
+    if (cs2d_weapon_attack2_type(player->current_weapon) == CS2D_ATTACK2_BURST && cs2d_weapon_mode(player)) {
+        player->fire_cooldown *= 3.3f;
+    }
 
     if (wep->slot != CS2D_SLOT_MELEE && player->current_weapon != CS2D_WEP_WRENCH && wep->clip_size > 0) {
         player->clip_ammo[player->current_weapon]--;

@@ -75,5 +75,7 @@ bool cs2d_scene_game_buy_cmd(cs2d_client_t *client, const char *cmd);
 
 /* Draws a shot or melee swing of another player (server fire record [7, player, seed]) */
 void cs2d_scene_game_remote_shot(cs2d_client_t *client, cs2d_player_t *pl);
+/* [8, player, mode] from the server: another player's weapon mode (silencer, burst, zoom, laser) or strong slash */
+void cs2d_scene_game_remote_attack2(cs2d_client_t *client, cs2d_player_t *pl, uint8_t mode);
 
 #endif /* CS2D_SCENE_H */
