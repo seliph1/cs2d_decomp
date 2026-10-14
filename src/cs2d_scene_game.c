@@ -425,6 +425,7 @@ static bool game_load_map(cs2d_client_t *client, const char *map_name)
     cs2d_ents_init(&client->ents, &client->game.map);
     cs2d_ents_round_start(&client->ents);
     cs2d_fx_clear(&client->fx);
+    cs2d_gen_init(&client->gen, &client->game.map);
     memset(client->ground_items, 0, sizeof(client->ground_items));
 
     /* Dynamic objects: offline the map's Env_Building entities (the server spawns them at round start);
@@ -1017,6 +1018,8 @@ static void game_update(cs2d_client_t *client, float delta_time)
     drain_entity_events(client);
     update_dynobjs(client, delta_time);
     cs2d_fx_update(&client->fx, delta_time);
+    cs2d_gen_update(&client->gen, &client->game.map, client->cam_x, client->cam_y,
+                    (float)client->config.window_width * 0.5f, (float)client->config.window_height * 0.5f, delta_time);
     cs2d_projectile_update(client, delta_time);
 
     /* Camera stays centered on the player like CS2D.exe; a lagging camera would also turn the aim
@@ -1724,6 +1727,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     int  me = client->local_player_id;
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_GROUND, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
     render_ground_items(client);
+    cs2d_render_gen(&client->gen, CS2D_GEN_LAYER_FLOOR, client->cam_x, client->cam_y, screen_w, screen_h);
     render_projectiles_ground(client);
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_OBSTACLE, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
     cs2d_light_draw_floor();   /* DrawLayer1: floor occlusion after the items (FUN_140281fd0) */
@@ -1760,6 +1764,12 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
 
     /* 3. Map Pass 2 (Overhead entities: Env_Sprite, Env_Image over players, Env_Object trees/lamps) */
     cs2d_render_map_overhead(&client->game.map, client->cam_x, client->cam_y, screen_w, screen_h);
+
+    /* Gen_* particles: Tp lists 5, 7 and 6 follow Te.draw pass 2 (FUN_1402802xx), then the thunder flash */
+    cs2d_render_gen(&client->gen, CS2D_GEN_LAYER_TOP, client->cam_x, client->cam_y, screen_w, screen_h);
+    cs2d_render_gen(&client->gen, CS2D_GEN_LAYER_FOG, client->cam_x, client->cam_y, screen_w, screen_h);
+    cs2d_render_gen(&client->gen, CS2D_GEN_LAYER_WEATHER, client->cam_x, client->cam_y, screen_w, screen_h);
+    cs2d_render_gen_flash(&client->gen, screen_w, screen_h);
     uint64_t t4 = SDL_GetPerformanceCounter();
 
     /* 4. In-Game HUD (hud_nums.bmp, hud_symbols.bmp, hud_radar_advanced.png) */

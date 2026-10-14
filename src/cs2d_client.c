@@ -2498,7 +2498,12 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
 
     if (client->chat_open) {
         if (sdl_key == SDLK_RETURN || sdl_key == SDLK_KP_ENTER || sdl_key == '\r') {
-            if (client->chat_input[0] != '\0') {
+            if (client->chat_input[0] == '/') {
+                /* "/cmd args" in chat runs a console command instead of sending text. */
+                char cmd[sizeof(client->chat_input)];
+                snprintf(cmd, sizeof(cmd), "%s", client->chat_input + 1);
+                if (cmd[0] != '\0') cs2d_client_console_exec(client, cmd);
+            } else if (client->chat_input[0] != '\0') {
                 cs2d_client_send_chat(client, (uint8_t)client->chat_mode, client->chat_input);
             }
             client->chat_open = false;

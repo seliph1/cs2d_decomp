@@ -31,6 +31,7 @@
 #include "cs2d_light.h"
 #include "cs2d_image.h"
 #include "cs2d_atlas.h"
+#include "cs2d_gen.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -3921,6 +3922,94 @@ static bool test_new_game_maplist(void)
     return true;
 }
 
+/* Gen_* entities: spawn rules decoded from Te.draw pass 2 (0x140271ee0) and Tp.Create / Tp.draw */
+static bool test_gen_entities(void)
+{
+    printf("\n=== Testing Gen_Particles / Gen_Sprites / Gen_Weather / Gen_FX ===\n");
+    static cs2d_map_t map;
+    static cs2d_gen_t gen;
+    memset(&map, 0, sizeof(map));
+    char msg[160];
+    const float hw = 425.0f, hh = 240.0f, cx = 0.0f, cy = 0.0f; /* Camera on tile (13, 7) */
+    cs2d_entity_t *e = map.entities;
+
+    /* Gen_FX steam, rate 10 ms -> clamped to 25 ms: at 60 Hz every second frame, 30 puffs in 60 frames */
+    e[0].type = CS2D_ENT_GEN_FX; e[0].x = 13; e[0].y = 7;
+    e[0].int_settings[0] = 3; e[0].int_settings[5] = 10;
+    map.entity_count = 1;
+    cs2d_gen_init(&gen, &map);
+    for (int i = 0; i < 60; i++) cs2d_gen_step(&gen, &map, cx, cy, hw, hh);
+    int puffs = 0;
+    for (int i = 0; i < gen.count; i++) puffs += gen.p[i].typ == 3 && gen.p[i].r >= 190.0f;
+    if (puffs != 30) { snprintf(msg, sizeof(msg), "%d steam puffs (expected 30)", puffs); TEST_FAIL("Gen_FX rate", msg); }
+    TEST_PASS("Gen_FX spawns every max(ints[5], 25) ms (steam grey 190..255)");
+
+    /* Gen_Weather rain, 10 particles: ints[1] / 2 = 5 drops per frame, alpha 0.9, screen space */
+    memset(e, 0, sizeof(e[0]));
+    e[0].type = CS2D_ENT_GEN_WEATHER; e[0].int_settings[0] = 0; e[0].int_settings[1] = 10;
+    cs2d_gen_init(&gen, &map);
+    cs2d_gen_step(&gen, &map, cx, cy, hw, hh);
+    bool ok = gen.count == 5;
+    for (int i = 0; i < gen.count; i++)
+        ok &= gen.p[i].typ == 20 && gen.p[i].layer == CS2D_GEN_LAYER_WEATHER && fabsf(gen.p[i].a - 0.9f) < 1e-5f &&
+              fabsf(gen.p[i].x) >= 30.0f && fabsf(gen.p[i].x) <= 425.0f && fabsf(gen.p[i].y) >= 20.0f;
+    if (!ok) { snprintf(msg, sizeof(msg), "%d drops", gen.count); TEST_FAIL("Gen_Weather rain", msg); }
+    /* Info_NoWeather over the screen centre (425, 240) = tile (13, 7) stops it */
+    e[1].type = CS2D_ENT_INFO_NOWEATHER; e[1].x = 12; e[1].y = 6; e[1].int_settings[0] = 2; e[1].int_settings[1] = 2;
+    map.entity_count = 2;
+    cs2d_gen_init(&gen, &map);
+    cs2d_gen_step(&gen, &map, cx, cy, hw, hh);
+    if (gen.count != 0) TEST_FAIL("Info_NoWeather", "rain spawned inside the zone");
+    cs2d_gen_step(&gen, &map, 200.0f, cy, hw, hh); /* Centre at x 625 = tile 19: outside */
+    if (gen.count != 5) TEST_FAIL("Info_NoWeather", "no rain outside the zone");
+    TEST_PASS("Rain: ints[1] / 2 drops per frame, none while the screen centre is in Info_NoWeather");
+
+    /* Thunder: the flash Rnd(0.3, 0.4) comes 10..30 frames after the countdown starts, then the clap */
+    e[0].int_settings[0] = 5;
+    map.entity_count = 1;
+    cs2d_gen_init(&gen, &map);
+    float peak = 0.0f;
+    for (int i = 0; i < 32; i++) {
+        cs2d_gen_step(&gen, &map, cx, cy, hw, hh);
+        if (gen.flash > peak) peak = gen.flash;
+    }
+    if (peak < 0.29f || peak > 0.4f || gen.thunder != 1) {
+        snprintf(msg, sizeof(msg), "flash %.3f, %d claps", peak, gen.thunder);
+        TEST_FAIL("Gen_Weather thunder", msg);
+    }
+    TEST_PASS("Thunder flashes Rnd(0.3, 0.4) once per 10..30 frame countdown");
+
+    /* Gen_Particles: colour strs[0] = 0xFF8000, lifetime 4000..4000 ms -> alpha 2; off (state 1) spawns nothing */
+    memset(e, 0, sizeof(e[0]));
+    e[0].type = CS2D_ENT_GEN_PARTICLES; e[0].x = 13; e[0].y = 7;
+    e[0].int_settings[0] = e[0].int_settings[1] = 4000;
+    e[0].int_settings[2] = e[0].int_settings[3] = 1;
+    snprintf(e[0].str_settings[0], sizeof(e[0].str_settings[0]), "%d", 0xFF8000);
+    map.entity_state[0] = 1;
+    cs2d_gen_init(&gen, &map);
+    cs2d_gen_step(&gen, &map, cx, cy, hw, hh);
+    if (gen.count != 0) TEST_FAIL("Gen_Particles", "an inactive generator spawned");
+    map.entity_state[0] = 0;
+    cs2d_gen_step(&gen, &map, cx, cy, hw, hh);
+    const cs2d_gen_particle_t *p = &gen.p[0];
+    if (gen.count != 1 || p->typ != 17 || p->r != 255.0f || p->g != 128.0f || p->b != 0.0f ||
+        fabsf(p->a - 1.99f) > 1e-4f || fabsf(p->x - (13 * 32 + 17)) > 1e-4f) {
+        snprintf(msg, sizeof(msg), "count %d rgb %.0f,%.0f,%.0f a %.3f x %.1f", gen.count, p->r, p->g, p->b, p->a, p->x);
+        TEST_FAIL("Gen_Particles", msg);
+    }
+    TEST_PASS("Gen_Particles: colour from strs[0], alpha = Rand(life * 0.0005), 1 px per frame");
+
+    /* Gen_Sprites: frame clamped to 15, alpha strs[0] */
+    memset(e, 0, sizeof(e[0]));
+    e[0].type = CS2D_ENT_GEN_SPRITES; e[0].int_settings[0] = 20;
+    snprintf(e[0].str_settings[0], sizeof(e[0].str_settings[0]), "0.5");
+    cs2d_gen_init(&gen, &map);
+    cs2d_gen_step(&gen, &map, cx, cy, hw, hh);
+    if (gen.count != 1 || gen.p[0].typ != 12 || gen.p[0].frame != 15) TEST_FAIL("Gen_Sprites", "bad sprite");
+    TEST_PASS("Gen_Sprites: fragments.bmp frame clamped to 0..15");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -3928,7 +4017,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 38;
+    int total = 39;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -3968,6 +4057,7 @@ int main(void)
     if (test_image_decode()) passed++;
     if (test_sprite_atlas_packer()) passed++;
     if (test_new_game_maplist()) passed++;
+    if (test_gen_entities()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

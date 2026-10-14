@@ -5,6 +5,7 @@
 #include "cs2d_weapons.h"
 #include "cs2d_map.h"
 #include "cs2d_fx.h"
+#include "cs2d_gen.h"
 #include "cs2d_player.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
@@ -1079,6 +1080,18 @@ bool cs2d_gfx_bank_init(cs2d_gfx_bank_t *bank)
     cs2d_texture_load_ex(&bank->tex_flare1,    "gfx/sprites/flare1.bmp",   3);
     cs2d_texture_load_ex(&bank->tex_flare3,    "gfx/sprites/flare3.bmp",   3);
     cs2d_texture_load_grid(&bank->tex_fragments, "gfx/fragments.bmp",     3, 32, 32);
+    cs2d_texture_load_ex(&bank->tex_wave,      "gfx/sprites/wave.bmp",      3);
+    cs2d_texture_load_ex(&bank->tex_snowflake, "gfx/sprites/snowflake.bmp", 3);
+    cs2d_texture_load_ex(&bank->tex_raindrop,  "gfx/sprites/raindrop.bmp",  3);
+    for (int i = 0; i < 4; i++) {
+        /* Gray puffs on black, tinted by the particle colour: luminance mask (our choice of mode) */
+        char path[64];
+        snprintf(path, sizeof(path), "incbindata/smokepuff%d.bmp", i);
+        if (!cs2d_texture_load_ex(&bank->tex_smokepuff[i], path, 3)) {
+            snprintf(path, sizeof(path), "gfx/incbindata/smokepuff%d.bmp", i);
+            cs2d_texture_load_ex(&bank->tex_smokepuff[i], path, 3);
+        }
+    }
     cs2d_texture_load_grid(&bank->tex_explosion, "gfx/explosion.png",     1, 64, 64);
     if (!cs2d_texture_load_ex(&bank->tex_flare_x, "incbindata/flare_x.png", 1)) {
         cs2d_texture_load_ex(&bank->tex_flare_x, "gfx/incbindata/flare_x.png", 1);
@@ -1167,6 +1180,10 @@ void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank)
     cs2d_texture_free(&bank->tex_flare1);
     cs2d_texture_free(&bank->tex_flare3);
     cs2d_texture_free(&bank->tex_fragments);
+    cs2d_texture_free(&bank->tex_wave);
+    cs2d_texture_free(&bank->tex_snowflake);
+    cs2d_texture_free(&bank->tex_raindrop);
+    for (int i = 0; i < 4; i++) cs2d_texture_free(&bank->tex_smokepuff[i]);
     cs2d_texture_free(&bank->tex_explosion);
     cs2d_texture_free(&bank->tex_flare_x);
     cs2d_texture_free(&bank->tex_glowdot);
@@ -4807,6 +4824,78 @@ void cs2d_render_build_helper(int ptx, int pty, int tx, int ty, bool ok, float c
     float bx = (float)(tx * 32 - (int)cam_x - 25), by = (float)(ty * 32 - (int)cam_y - 25);
     cs2d_render_sprite_frame(t, t->width, t->height, 0, bx + w * 0.5f, by + h * 0.5f, w, h, 0.0f,
                              ok ? 0.0f : 1.0f, ok ? 1.0f : 0.0f, 0.0f, a, 4);
+}
+
+/* A whole image centred at (x, y), scaled like Max2D SetTransform(rot, scale, scale) */
+static void draw_scaled(const cs2d_texture_t *t, float x, float y, float scale, float rot,
+                        const cs2d_gen_particle_t *p, float a, int blend)
+{
+    if (!t->id) return;
+    if (a > 1.0f) a = 1.0f;
+    if (a <= 0.0f) return;
+    cs2d_render_sprite_frame(t, 0, 0, 0, x, y, (float)t->width * scale, (float)t->height * scale, rot,
+                             p->r / 255.0f, p->g / 255.0f, p->b / 255.0f, a, blend);
+}
+
+void cs2d_render_gen(const struct cs2d_gen_s *gen, int layer, float cam_x, float cam_y, int screen_w, int screen_h)
+{
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    if (!gen || !bank) return;
+    cam_x = roundf(cam_x);
+    cam_y = roundf(cam_y);
+    float hw = (float)screen_w * 0.5f, hh = (float)screen_h * 0.5f;
+    for (int i = 0; i < gen->count; i++) {
+        const cs2d_gen_particle_t *p = &gen->p[i];
+        if (p->layer != layer) continue;
+        float x = p->x - cam_x, y = p->y - cam_y;
+        if (p->typ != 19 && p->typ != 20 &&
+            (x < -100.0f || y < -100.0f || x > (float)screen_w + 100.0f || y > (float)screen_h + 100.0f)) continue;
+        switch (p->typ) {
+            case 1:  /* LIGHTBLEND */
+                draw_scaled(&bank->tex_wave, x, y, p->sx, p->rot, p, p->a, 4);
+                break;
+            case 3:
+            case 21:
+                draw_scaled(&bank->tex_smokepuff[p->frame & 3], x, y, p->sx, p->rot, p, p->a, 0);
+                break;
+            case 12:
+                if (p->a > 0.0f)
+                    cs2d_render_sprite_frame(&bank->tex_fragments, 32, 32, p->frame, x, y, 32.0f * p->sx, 32.0f * p->sx,
+                                             p->rot, p->r / 255.0f, p->g / 255.0f, p->b / 255.0f,
+                                             p->a > 1.0f ? 1.0f : p->a, 0);
+                break;
+            case 14: /* LIGHTBLEND */
+                draw_scaled(&bank->tex_flare3, x, y, p->sx, p->rot, p, p->a, 4);
+                break;
+            case 17: /* Plot */
+                if (p->a > 0.0f)
+                    cs2d_render_rect(floorf(x), floorf(y), 1.0f, 1.0f, p->r / 255.0f, p->g / 255.0f, p->b / 255.0f,
+                                     p->a > 1.0f ? 1.0f : p->a, true);
+                break;
+            case 19: /* Screen space: offset * depth / 30 from the centre, scale sx * depth / 100 */
+                draw_scaled(&bank->tex_snowflake, hw + p->x * p->sy * (1.0f / 30.0f), hh + p->y * p->sy * (1.0f / 30.0f),
+                            p->sx * p->sy * 0.01f, 0.0f, p, p->a, 0);
+                break;
+            case 20:
+                draw_scaled(&bank->tex_raindrop, hw + p->x * p->sy * (1.0f / 30.0f), hh + p->y * p->sy * (1.0f / 30.0f),
+                            p->sx * p->sy * 0.02f, p->rot, p, p->a, 0);
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+void cs2d_render_gen_flash(const struct cs2d_gen_s *gen, int screen_w, int screen_h)
+{
+    /* FUN_140131710: a white rect with alpha = flash, ALPHABLEND then LIGHTBLEND */
+    if (!gen || gen->flash <= 0.0f) return;
+    float a = gen->flash > 1.0f ? 1.0f : gen->flash;
+    cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+    cs2d_gl_rect(0.0f, 0.0f, (float)screen_w, (float)screen_h, 1.0f, 1.0f, 1.0f, a);
+    cs2d_gl_set_blend(CS2D_GL_BLEND_ADD);
+    cs2d_gl_rect(0.0f, 0.0f, (float)screen_w, (float)screen_h, 1.0f, 1.0f, 1.0f, a);
+    cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
 }
 
 void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2d_texture_t *tileset_tex, float cam_x, float cam_y)

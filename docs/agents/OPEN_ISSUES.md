@@ -5,6 +5,12 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **Gen_* entities (2026-10-13, `src/cs2d_gen.c`):** not screenshot-compared with CS2D.exe. Missing: the thunder
+  sound (no audio system; `gen.thunder` counts claps), wind `_DAT_140ddf028/024` (Info_Storm) on smoke / fire,
+  the FOW hiding (`FUN_140146fd0`) and the lighting sprites (`TLightingSprite::DrawSprite` when DAT_140ddf185).
+  Settings gating rain / snow / effects (DAT_140a1b068, 140a1b05c, 140ddf540) are assumed on, "particles" = 4.
+  Thunder decoded as a 10..30 *frame* countdown (assembly 0x14027525b), which seems very frequent: verify on the
+  original. smokepuff masks (mode 3) are our choice. Spawns follow 60 Hz, the original spawns per rendered frame.
 - **Loading screen (2026-10-13):** `cs2d_render_loadscreen` lacks the menu background and DrawWindow corner
   images/spinner; progress uses our 6 steps, not the original `PROCESS_MAPS`. Not compared to a screenshot yet.
 - **First-frame freeze when a map is set up (RESOLVED 2026-10-13):** resolved by preloading

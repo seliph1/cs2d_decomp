@@ -13,6 +13,7 @@
 #include "cs2d_scene.h"
 #include "cs2d_entities.h"
 #include "cs2d_fx.h"
+#include "cs2d_gen.h"
 #include "cs2d_serverlist.h"
 #include "cs2d_transfer.h"
 #include "cs2d_editor.h"
@@ -96,6 +97,7 @@ struct cs2d_client {
     char            game_map_name[64]; /* Map loaded by the game scene (e.g. "prison_funst3r") */
     cs2d_entity_world_t ents;          /* Name/trigger entity logic for game.map (simulated offline) */
     cs2d_fx_t       fx;                /* Breakable debris / explosion effects */
+    cs2d_gen_t      gen;               /* Gen_Particles / Gen_Sprites / Gen_Weather / Gen_FX particles */
     cs2d_ground_item_t ground_items[CS2D_MAX_GROUND_ITEMS];
     cs2d_dynobj_world_t dynobj;        /* Dynamic objects (buildings): Env_Building offline, the server's online */
     cs2d_projectile_world_t projectiles; /* Projectiles & fields (grenades, rockets, molotov, flare, gas, etc.) */

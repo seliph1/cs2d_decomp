@@ -21,6 +21,28 @@ Source: Lua fixture, 331 samples.
   tile (first wins); `FUN_140110c60` draws it with alpha blend right after its tile in the floor / wall / obstacle
   tile loops. In the editor (state 4) it stays an ordinary entity.
 
+- **Gen_* (50..53), REA:** spawned in `Te.draw` pass 2 (0x140271ee0, once per rendered frame), moved and drawn
+  as `Tp` (Create 0x14004ac20, draw 0x140263cc0; g_dt 0x140a1b090 = 1 per 60 Hz frame). Code: `src/cs2d_gen.c`.
+  - Particles: Tp 17 at tile centre, speed Rnd(ints[2..3]) / Rnd(ints[4..5]) px per frame, alpha
+    `Rand(int(life_min*0.0005), int(life_max*0.0005))` - 0.01 / frame (so < 2000 ms dies at once), colour strs[0]
+    = 0xRRGGBB int; 1 px plot. Only when |x*32 - camx - 425| < 670, |y*32 - camy - 240| < 590.
+  - Sprites: Tp 12 = gfx/fragments.bmp frame ints[0] clamped 0..15, centre ± Rand(8), alpha strs[0], scale
+    Rnd(0.4, 0.7), friction 1/15 per frame, alpha - 0.01; stops in a wall (g_prop_class 0), alpha *= 0.5 on deadly
+    (class -1); no camera check. ints[8] (sprite type) is not read by the client.
+  - Weather: rain = max(ints[1] >> 1, 1) Tp 20 (raindrop.bmp) per frame, snow = max(ints[1], 1) Tp 19
+    (snowflake.bmp), both in screen space (offset * depth / 30 from the centre, depth Rnd(100, 150) decaying 5 % / 1 %
+    per frame) and skipped while the screen centre is in an Info_NoWeather rect (x..x+ints[0], y..y+ints[1] tiles).
+    Rain landing on mode-14 water splashes (wave, 1 in 3). Fog / dust / smog: max(ints[1], 1) Tp 21 (smokepuff)
+    per frame at centre ± Rand(50) within 960 x 720 px of camx/camy; alpha fades in +0.01 to 0.7 then out -0.002.
+    Thunder: ints[9] counts Rand(10, 30) frames down; at 2 the screen flash (0x140a17ff0) = Rnd(0.3, 0.4), at 1
+    sfx/env/thunder.wav; the flash decays 0.005 / frame (FUN_140131710 draws a white 854x480 rect).
+  - FX: every max(ints[5], 25) ms (ints[9] = last time), at x*32 + Rand(ints[1..2]), y*32 + Rand(ints[3..4]):
+    0 waves (Tp 1 wave.bmp LIGHTBLEND), 1 smoke (Tp 3 grey 30..120), 2 fire (Tp 14 flare3 + 50 % smoke),
+    3 steam (Tp 3 grey 190..255). Only within 850 x 480 of the screen centre.
+  - Draw lists: wave l[1] (under players), Tp 3/12/14/17 l[5], fog l[7], rain/snow l[6]; after Te.draw pass 2:
+    l5, l7, l6. Image masks: wave / raindrop / snowflake descriptors +0x74 = 3.
+  - g_prop_class (TmapPreview colours): 0 wall, 1 floor (14 water), 2 obstacle, -1 deadly.
+
 ## Implementation checklist (client)
 
 Status of each entity type in the reimplementation (2026-10-13). [x] done, [~] partial, [ ] missing.
@@ -55,15 +77,15 @@ Status of each entity type in the reimplementation (2026-10-13). [x] done, [~] p
 - [x] Env_Building (30)
 - [~] Env_NPC (31): render only, no AI / movement
 - [x] Env_Room (32), Env_Light (33), Env_LightStripe (34): light engine
-- [ ] Gen_Particles (50)
-- [ ] Gen_Sprites (51)
-- [ ] Gen_Weather (52)
-- [ ] Gen_FX (53)
+- [x] Gen_Particles (50)
+- [x] Gen_Sprites (51)
+- [~] Gen_Weather (52): thunder sound and wind (Info_Storm) missing
+- [x] Gen_FX (53)
 - [x] Func_Teleport (70)
 - [x] Func_DynWall (71)
 - [x] Func_Message (72)
 - [x] Func_GameAction (73)
-- [ ] Info_NoWeather (80)
+- [x] Info_NoWeather (80): stops rain / snow
 - [x] Info_RadarIcon (81)
 - [x] Trigger_Start (90), Trigger_Move (91), Trigger_Use (93), Trigger_Delay (94), Trigger_Once (95), Trigger_If (96)
 - [ ] Trigger_Hit (92)

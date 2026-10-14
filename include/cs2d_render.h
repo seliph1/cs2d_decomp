@@ -106,6 +106,10 @@ typedef struct {
     cs2d_texture_t            tex_glowdot;       /* incbindata/glowdot.bmp (3x3) bullet path / sparks */
     cs2d_texture_t            tex_shells;        /* gfx/shells.bmp|png (32x8 -> 4 frames of 8x8, maskMode=2) */
     cs2d_texture_t            tex_knifeslash;    /* gfx/knifeslash.bmp (32x32, maskMode=3, 0x140a0dcd8) */
+    cs2d_texture_t            tex_wave;          /* gfx/sprites/wave.bmp (32x32, maskMode 3; Tp type 1) */
+    cs2d_texture_t            tex_snowflake;     /* gfx/sprites/snowflake.bmp (64x64, maskMode 3; Tp type 19) */
+    cs2d_texture_t            tex_raindrop;      /* gfx/sprites/raindrop.bmp (32x32, maskMode 3; Tp type 20) */
+    cs2d_texture_t            tex_smokepuff[4];  /* incbindata/smokepuff0..3.bmp (32x32, midhandle; 0x140a0e738) */
     cs2d_texture_t            tex_bspot_a;       /* gfx/sprites/bspot_a.png */
     cs2d_texture_t            tex_bspot_b;       /* gfx/sprites/bspot_b.png */
     cs2d_texture_t            tex_npc[5];        /* gfx/npc/zombie, headcrab, snark, vortigaunt, soldier */
@@ -266,6 +270,11 @@ void cs2d_render_map_overhead(
 
 /* Breakable effects (tile quarters, fragments, explosions) of cs2d_fx */
 struct cs2d_fx_s;
+/* Gen_* particles of one cs2d_gen_layer_t (Tp.draw 0x140263cc0), and the white screen flash (FUN_140131710) */
+struct cs2d_gen_s;
+void cs2d_render_gen(const struct cs2d_gen_s *gen, int layer, float cam_x, float cam_y, int screen_w, int screen_h);
+void cs2d_render_gen_flash(const struct cs2d_gen_s *gen, int screen_w, int screen_h);
+
 void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
                     float cam_x, float cam_y);
 
