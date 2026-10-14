@@ -399,16 +399,25 @@ static bool spectator_hud_click(cs2d_client_t *client, float mx, float my, int b
 /* Loads maps/<name>.map and its tileset (FUN_140113d50) into the running game */
 static bool game_load_map(cs2d_client_t *client, const char *map_name)
 {
+    /* Loading screen steps (strings of cs2d_load_map 0x1401da1e0); the original's PROCESS_MAPS step count
+     * is not recovered, so progress is our own step index / LOAD_STEPS */
+    enum { LOAD_STEPS = 6 };
+    cs2d_render_loadscreen("Loading Map", 0.0f);
     char map_path[128];
     snprintf(map_path, sizeof(map_path), "maps/%s.map", map_name);
+    cs2d_render_loadscreen("Loading Map Header", 1.0f / LOAD_STEPS);
     if (!cs2d_game_load_map(&client->game, map_path)) return false;
     snprintf(client->game_map_name, sizeof(client->game_map_name), "%s", map_name);
 
+    cs2d_render_loadscreen("Loading Tileset", 2.0f / LOAD_STEPS);
     cs2d_texture_free(&client->tex_tileset);
     cs2d_texture_load_tileset(&client->tex_tileset, client->game.map.tileset);
     cs2d_render_invalidate_shadows();
+    cs2d_render_loadscreen("Initializing Lighting", 3.0f / LOAD_STEPS);
     cs2d_light_load_map(&client->game.map);
+    cs2d_render_loadscreen("Caching Entities", 4.0f / LOAD_STEPS);
     cs2d_gfx_atlas_load_map(cs2d_render_get_gfx_bank(), &client->game.map);
+    cs2d_render_loadscreen("Loading Entities", 5.0f / LOAD_STEPS);
     cs2d_game_start_round(&client->game);
 
     /* Entity logic: offline the client runs it (round start fires every Trigger_Start);
@@ -436,6 +445,7 @@ static bool game_load_map(cs2d_client_t *client, const char *map_name)
         pl->pos.y = 44.5f * CS2D_TILE_SIZE;
     }
     center_camera_on_local_player(client);
+    cs2d_render_loadscreen("Loading Entities", 1.0f);
 
     cs2d_client_console_print(client, 170, 170, 170, "load map '%s' (%ux%u, tileset: %s, sun: %d deg)",
                               map_name, client->game.map.width, client->game.map.height,

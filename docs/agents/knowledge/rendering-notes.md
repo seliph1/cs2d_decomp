@@ -34,3 +34,13 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
   - Circular ground shadow: `incbindata/shadow.bmp` at scale 1.0 (32x32 px) in black `(0,0,0)` at `(x, y)` with alpha `shadows * 0.01f`.
   - Item silhouette drop shadow: Item image (`tex_weapons_d[type]` or projectile sprite) rendered in black `(0,0,0)` with alpha `shadows * 0.01f` offset by `+1.0 px, +1.0 px` at `(x + 1.0f, y + 1.0f)`.
   - Normal item drawn at `(x, y)` in full color above both shadows.
+
+### Loading screen "Loading Map" (LoadScreen state 3)
+- `cs2d_load_map` 0x1401da1e0 sets state 3, progress 0; every `cs2d_loadscreen_status` 0x1401d6510 / `SetTitle`
+  redraws+presents a full frame and adds `1/PROCESS_MAPS` (value not recovered). Steps: Loading Map, Loading Map Header,
+  Generating Background, Loading Tileset, Initializing Tileset/Map Tiles, Loading Map Tiles/Modifiers, Loading Entities,
+  Counting Map Mission Entities, Updating Map Data, Checking Map Integrity, Generating Tile Effects/Blending,
+  Initializing Lighting, Caching Entities.
+- Draw (`DrawLoadingScreen` 0x1401d1610, `DrawWindow` 0x14012bee0): window 350x200 centered, title + 0-3 dots,
+  step text 0xbc centered at bar_center-42; bar frame 204x14 0x40, 202x12 black, fill 200*p x10 0x3c, edges 0x60/0x20.
+  Ours: `cs2d_render_loadscreen` (no menu background / corner images yet).

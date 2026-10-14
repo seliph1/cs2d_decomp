@@ -148,6 +148,9 @@ void cs2d_render_resize(int width, int height);
 void cs2d_render_begin_frame(void);
 void cs2d_render_end_frame(SDL_Window *window);
 
+/* Draws and presents one "Loading Map" frame (LoadScreen state 3): step text and progress 0..1 */
+void cs2d_render_loadscreen(const char *step, float progress);
+
 /* Dynamic object layers, in the order of the world pass FUN_14028f890 */
 typedef enum {
     CS2D_DO_LAYER_GROUND   = 0, /* Tdo.draw_ground: after the floor, before items and players */
@@ -376,12 +379,18 @@ void  cs2d_render_clear_shadow_dirty_test(void);
 typedef enum {
     CS2D_EPASS_ANIM = 0,    /* Info_Animation (8): tile animation remap table */
     CS2D_EPASS_SOLID,       /* Env_Breakable (25) / Func_DynWall (71) tiles (Te.draw 0x140272808) */
-    CS2D_EPASS_GROUND,      /* Te.draw(0)/(1): bomb spots, decals, ground images/objects, items, flags,
+    CS2D_EPASS_GROUND,      /* Te.draw(0)/(1): bomb spots, ground images/objects, items, flags,
                              * hostages, NPCs, trigger buttons, ground Env_Sprite */
     CS2D_EPASS_ROOF_SPRITE, /* Te.draw(2): non-additive rooftop Env_Sprite / Env_Image */
     CS2D_EPASS_ROOF_OBJECT, /* Te.draw(2): Env_Object palms / trees / lamps and layer 3+4 sprites */
+    CS2D_EPASS_DECAL,       /* Env_Decal (24): TDecal grid, drawn with the tiles (FUN_140110c60) */
     CS2D_EPASS_COUNT
 } cs2d_entity_pass_t;
+
+/* Env_Decal (Te.setup 0x1401ad930 case 0x18): the decal frame ints[0] clamped to [0, frames - 1] */
+int  cs2d_render_decal_frame(int frame, int frames);
+/* TDecal::Add 0x140005c70 keeps one decal per tile: true when entity `index` is the first Env_Decal on its tile */
+bool cs2d_render_decal_owns_tile(const cs2d_map_t *map, int index);
 
 /* Builds (or reuses) the index for this map; called by the map passes themselves, exposed for tests */
 void cs2d_render_entity_index_prepare(const cs2d_map_t *map);

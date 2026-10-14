@@ -5,6 +5,8 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **Loading screen (2026-10-13):** `cs2d_render_loadscreen` lacks the menu background and DrawWindow corner
+  images/spinner; progress uses our 6 steps, not the original `PROCESS_MAPS`. Not compared to a screenshot yet.
 - **First-frame freeze when a map is set up (RESOLVED 2026-10-13):** resolved by preloading
   and packing map entity sprites into atlas pages at map load (`game_load_map`, `cs2d_gfx_atlas_load_map`).
   The 1447 ms freeze on `fun_roleplay` was transferred to load time (172.35 ms in `game_load_map` to load,

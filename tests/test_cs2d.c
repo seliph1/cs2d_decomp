@@ -2461,6 +2461,42 @@ static bool test_shadow_chunks(void)
  * lock in both halves: a list has to hold every entity of its pass exactly once, and no entity whose box
  * touches the view may be dropped.
  */
+static bool test_env_decal(void)
+{
+    /* Te.setup 0x1401ad930 case 0x18: frame clamped to [0, frames - 1]; TDecal::Add 0x140005c70: first decal per tile */
+    if (cs2d_render_decal_frame(-3, 72) != 0 || cs2d_render_decal_frame(71, 72) != 71 ||
+        cs2d_render_decal_frame(200, 72) != 71) {
+        TEST_FAIL("Env_Decal", "frame clamp");
+        return false;
+    }
+    static cs2d_map_t map;
+    memset(&map, 0, sizeof(map));
+    map.width = 8;
+    map.height = 8;
+    static const struct { uint8_t type; int x, y; bool owns; } spec[] = {
+        { CS2D_ENT_ENV_DECAL, 2, 2, true  },
+        { CS2D_ENT_ENV_SOUND, 3, 3, false },
+        { CS2D_ENT_ENV_DECAL, 2, 2, false },  /* same tile: TDecal keeps the first */
+        { CS2D_ENT_ENV_DECAL, 3, 2, true  },
+        { CS2D_ENT_ENV_DECAL, 9, 2, false }   /* outside the map */
+    };
+    int n = (int)(sizeof(spec) / sizeof(spec[0]));
+    for (int i = 0; i < n; i++) {
+        map.entities[i].type = (cs2d_entity_type_t)spec[i].type;
+        map.entities[i].x = spec[i].x;
+        map.entities[i].y = spec[i].y;
+    }
+    map.entity_count = (uint32_t)n;
+    for (int i = 0; i < n; i++) {
+        if (cs2d_render_decal_owns_tile(&map, i) != spec[i].owns) {
+            TEST_FAIL("Env_Decal", "one decal per tile");
+            return false;
+        }
+    }
+    TEST_PASS("Env_Decal: frame clamp and one decal per tile (TDecal)");
+    return true;
+}
+
 static bool test_entity_culling(void)
 {
     printf("\n=== Testing the Entity Index & View Culling ===\n");
@@ -2492,14 +2528,15 @@ static bool test_entity_culling(void)
     }
     map.entity_count = (uint32_t)n;
 
-    /* 1. Membership: anim 1, Breakable/DynWall 2, ground 5 (bomb spots, decals, ground images/objects,
-     *    items, flags, hostages, NPCs, buttons, sprites), rooftop sprites 2, rooftop objects 3 */
+    /* 1. Membership: anim 1, Breakable/DynWall 2, ground 4 (bomb spots, ground images/objects,
+     *    items, flags, hostages, NPCs, buttons, sprites), rooftop sprites 2, rooftop objects 3, decals 1 */
     static const struct { cs2d_entity_pass_t pass; int want; } pass_want[] = {
         { CS2D_EPASS_ANIM,        1 },
         { CS2D_EPASS_SOLID,       2 },
-        { CS2D_EPASS_GROUND,      5 },
+        { CS2D_EPASS_GROUND,      4 },
         { CS2D_EPASS_ROOF_SPRITE, 2 },
-        { CS2D_EPASS_ROOF_OBJECT, 3 }
+        { CS2D_EPASS_ROOF_OBJECT, 3 },
+        { CS2D_EPASS_DECAL,       1 }
     };
     for (int p = 0; p < CS2D_EPASS_COUNT; p++) {
         int got = 0;
@@ -2522,7 +2559,7 @@ static bool test_entity_culling(void)
     /* 2. The entity table version invalidates the index */
     map.entities[0].type = CS2D_ENT_ENV_SOUND;   /* hostage -> sound: leaves the ground pass */
     map.entity_table_version++;
-    if (cs2d_render_entity_pass_total(&map, CS2D_EPASS_GROUND) != 4) {
+    if (cs2d_render_entity_pass_total(&map, CS2D_EPASS_GROUND) != 3) {
         TEST_FAIL("Entity Index", "entity_table_version did not rebuild the index");
         free(map.tiles);
         return false;
@@ -2591,14 +2628,14 @@ static bool test_entity_culling(void)
      *    far fewer entities than the five full sweeps they replaced */
     static const int set_anim[]        = { CS2D_ENT_INFO_ANIMATION, -1 };
     static const int set_solid[]       = { CS2D_ENT_ENV_BREAKABLE, CS2D_ENT_FUNC_DYNWALL, -1 };
-    static const int set_ground[]      = { CS2D_ENT_TRIGGER_USE, CS2D_ENT_INFO_BOMBSPOT, CS2D_ENT_ENV_DECAL,
-                                           CS2D_ENT_ENV_OBJECT, CS2D_ENT_ENV_ITEM, CS2D_ENT_INFO_CTF_FLAG,
+    static const int set_ground[]      = { CS2D_ENT_TRIGGER_USE, CS2D_ENT_INFO_BOMBSPOT, CS2D_ENT_ENV_OBJECT, CS2D_ENT_ENV_ITEM, CS2D_ENT_INFO_CTF_FLAG,
                                            CS2D_ENT_INFO_DOM_POINT, CS2D_ENT_INFO_HOSTAGE, CS2D_ENT_ENV_NPC,
                                            CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_IMAGE, -1 };
     static const int set_roof_sprite[] = { CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_IMAGE, -1 };
     static const int set_roof_object[] = { CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_OBJECT, -1 };
+    static const int set_decal[]       = { CS2D_ENT_ENV_DECAL, -1 };
     static const int *const sets[CS2D_EPASS_COUNT] = { set_anim, set_solid, set_ground, set_roof_sprite,
-                                                       set_roof_object };
+                                                       set_roof_object, set_decal };
     static const char *const map_paths[] = { "maps/fun_roleplay.map", "maps/de_dust2.map",
                                              "maps/prison_funst3r.map" };
     static cs2d_map_t rmap;   /* static: too big for the stack */
@@ -3891,7 +3928,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 37;
+    int total = 38;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -3906,6 +3943,7 @@ int main(void)
     if (test_ui_scroll()) passed++;
     if (test_console()) passed++;
     if (test_entities_prison()) passed++;
+    if (test_env_decal()) passed++;
     if (test_player_physics()) passed++;
     if (test_breakables()) passed++;
     if (test_server_info_and_team_menu()) passed++;

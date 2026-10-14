@@ -17,6 +17,7 @@
 static SDL_GLContext   g_gl_ctx = NULL;
 static int             g_viewport_w = 850;
 static int             g_viewport_h = 480;
+static SDL_Window     *g_window = NULL; /* kept for cs2d_render_loadscreen, which presents mid-load */
 static cs2d_gfx_bank_t g_gfx_bank;
 
 bool cs2d_render_has_context(void)
@@ -502,6 +503,7 @@ bool cs2d_render_init(SDL_Window *window, int width, int height)
     g_viewport_h = height;
 
     if (!window) return false;
+    g_window = window;
 
     g_gl_ctx = SDL_GL_CreateContext(window);
     if (!g_gl_ctx) {
@@ -567,6 +569,56 @@ void cs2d_render_end_frame(SDL_Window *window)
     if (window) {
         SDL_GL_SwapWindow(window);
     }
+}
+
+/*
+ * Loading screen, state 3 "Loading Map" (LoadScreen::DrawLoadingScreen 0x1401d1610, DrawWindow 0x14012bee0).
+ * The original redraws and presents a whole frame at every LoadScreen.SetTitle / cs2d_loadscreen_status
+ * (0x1401d6510) call inside cs2d_load_map (0x1401da1e0), which also advances progress by 1/PROCESS_MAPS.
+ * Window 350x200 centered; title + animated dots at (x+35, y+1); step text color 0xbc centered 42 px above
+ * the bar center; bar: 204x14 frame 0x40, 202x12 black, fill 200*p x 10 color 0x3c, top/left light 0x60.
+ */
+void cs2d_render_loadscreen(const char *step, float progress)
+{
+    if (!g_window || !g_gl_ctx) return;
+    if (progress < 0.0f) progress = 0.0f;
+    if (progress > 1.0f) progress = 1.0f;
+
+    cs2d_render_begin_frame();
+    float sw = (float)g_viewport_w, sh = (float)g_viewport_h;
+    cs2d_render_rect(0.0f, 0.0f, sw, sh, 0.0f, 0.0f, 0.0f, 1.0f, true);
+
+    float wx = floorf((sw - 350.0f) * 0.5f), wy = floorf((sh - 200.0f) * 0.5f);
+    /* DrawWindow: gui color * 0x3d/0xff at alpha 0.9, separator gui * 0x65/0xff at y+20 (gui color 255 assumed) */
+    const float bg = 0.2392157f, sep = 0.39607847f;
+    cs2d_render_rect(wx, wy, 350.0f, 200.0f, bg, bg, bg, 0.9f, true);
+    cs2d_render_rect(wx + 16.0f, wy + 20.0f, 350.0f - 32.0f, 1.0f, sep, sep, sep, 1.0f, true);
+
+    /* Title "Loading Map" + 0..3 dots cycling every 250 ms (time * 0.36 / 90 mod 4) */
+    static const char *dots[4] = { "", ".", "..", "..." };
+    char title[32];
+    snprintf(title, sizeof(title), "Loading Map%s", dots[(SDL_GetTicks() / 250u) % 4u]);
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, wx + 35.0f, wy + 1.0f, title, 1.0f, 1.0f, 1.0f, 1.0f);
+
+    float cx = wx + 175.0f, cy = wy + 100.0f;
+    if (step && *step) {
+        const float t = 188.0f / 255.0f;
+        float tw = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, step);
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, (float)((int)cx - (int)tw / 2), (float)(int)(cy - 42.0f), step, t, t, t, 1.0f);
+    }
+    const float f = 64.0f / 255.0f, fill = 60.0f / 255.0f, hi = 96.0f / 255.0f, lo = 32.0f / 255.0f;
+    cs2d_render_rect(cx - 102.0f, cy - 2.0f, 204.0f, 14.0f, f, f, f, 1.0f, true);
+    cs2d_render_rect(cx - 101.0f, cy - 1.0f, 202.0f, 12.0f, 0.0f, 0.0f, 0.0f, 1.0f, true);
+    float w = progress * 200.0f;
+    if (w >= 1.0f) {
+        cs2d_render_rect(cx - 100.0f, cy, w, 10.0f, fill, fill, fill, 1.0f, true);
+        cs2d_render_rect(cx - 100.0f, cy, w, 1.0f, hi, hi, hi, 1.0f, true);
+        cs2d_render_rect(cx - 100.0f, cy, 1.0f, 10.0f, hi, hi, hi, 1.0f, true);
+        cs2d_render_rect(cx - 100.0f, cy + 9.0f, w, 1.0f, lo, lo, lo, 1.0f, true);
+        cs2d_render_rect(cx - 101.0f + w, cy, 1.0f, 10.0f, lo, lo, lo, 1.0f, true);
+    }
+    cs2d_render_end_frame(g_window);
+    SDL_PumpEvents(); /* keep the window responsive during long loads */
 }
 
 bool cs2d_texture_load_grid(cs2d_texture_t *tex, const char *filepath, int mask_mode, int cell_w, int cell_h)
@@ -2820,16 +2872,17 @@ static uint8_t entity_cull_margin(const cs2d_entity_t *ent)
 
 static const int s_pass_anim_types[]        = { CS2D_ENT_INFO_ANIMATION, -1 };
 static const int s_pass_solid_types[]       = { CS2D_ENT_ENV_BREAKABLE, CS2D_ENT_FUNC_DYNWALL, -1 };
-static const int s_pass_ground_types[]      = { CS2D_ENT_TRIGGER_USE, CS2D_ENT_INFO_BOMBSPOT, CS2D_ENT_ENV_DECAL,
-                                                CS2D_ENT_ENV_OBJECT, CS2D_ENT_ENV_ITEM, CS2D_ENT_INFO_CTF_FLAG,
+static const int s_pass_ground_types[]      = { CS2D_ENT_TRIGGER_USE, CS2D_ENT_INFO_BOMBSPOT, CS2D_ENT_ENV_OBJECT, CS2D_ENT_ENV_ITEM, CS2D_ENT_INFO_CTF_FLAG,
                                                 CS2D_ENT_INFO_DOM_POINT, CS2D_ENT_INFO_HOSTAGE, CS2D_ENT_ENV_NPC,
                                                 CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_IMAGE, -1 };
 static const int s_pass_roof_sprite_types[] = { CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_IMAGE, -1 };
 static const int s_pass_roof_object_types[] = { CS2D_ENT_ENV_SPRITE, CS2D_ENT_ENV_OBJECT, -1 };
+static const int s_pass_decal_types[]       = { CS2D_ENT_ENV_DECAL, -1 };
 
 /* The types each map pass below draws. A new case in one of those switches has to be added here too. */
 static const int *const s_pass_types[CS2D_EPASS_COUNT] = {
-    s_pass_anim_types, s_pass_solid_types, s_pass_ground_types, s_pass_roof_sprite_types, s_pass_roof_object_types
+    s_pass_anim_types, s_pass_solid_types, s_pass_ground_types, s_pass_roof_sprite_types, s_pass_roof_object_types,
+    s_pass_decal_types
 };
 
 static void entity_index_clear(void)
@@ -2972,6 +3025,58 @@ static bool entity_sprite_is_ground(const cs2d_map_t *map, uint32_t i)
     return atoi(map->entities[i].str_settings[4]) == 1;
 }
 
+/*
+ * Env_Decal (24). In a game Te.setup (0x1401ad930, case 0x18) removes the entity from the entity list and
+ * turns it into a Tp of type 10 at the tile centre: frame = ints[0] clamped to the gfx/decals.bmp frames,
+ * colour = ints[1..3], rotation = ints[4], alpha = strs[0] as a float (bbStringToFloat, so "" is 0 and the
+ * decal is invisible), scale 1 (Tp::Create 0x14004ac20). TDecal::Add (0x140005c70) stores it in a per-tile
+ * grid that keeps only the first decal of a tile; the tile loops draw it right after its tile
+ * (FUN_140110c60: SetBlend 3 = alpha, SetAlpha, SetTransform, SetColor, DrawImage at the integer screen
+ * position). Being out of the entity list, triggers and Lua cannot reach it, so entity_state is ignored.
+ */
+int cs2d_render_decal_frame(int frame, int frames)
+{
+    if (frame < 0) frame = 0;
+    if (frames > 0 && frame >= frames) frame = frames - 1;
+    return frame;
+}
+
+bool cs2d_render_decal_owns_tile(const cs2d_map_t *map, int index)
+{
+    if (!map || index < 0 || (uint32_t)index >= map->entity_count) return false;
+    const cs2d_entity_t *ent = &map->entities[index];
+    if (ent->type != CS2D_ENT_ENV_DECAL || ent->x < 0 || ent->y < 0) return false;
+    if ((uint32_t)ent->x >= map->width || (uint32_t)ent->y >= map->height) return false;
+    for (int i = 0; i < index; i++) {
+        const cs2d_entity_t *e = &map->entities[i];
+        if (e->type == CS2D_ENT_ENV_DECAL && e->x == ent->x && e->y == ent->y) return false;
+    }
+    return true;
+}
+
+static void render_decals(const cs2d_map_t *map, const cs2d_gfx_bank_t *bank,
+                          float cam_x, float cam_y, int screen_w, int screen_h)
+{
+    int n = 0;
+    const int *list = cs2d_render_entity_pass_list(map, CS2D_EPASS_DECAL, &n);
+    const cs2d_texture_t *tex = &bank->tex_decals;
+    int frames = (tex->width / 32) * (tex->height / 32);
+    for (int k = 0; k < n; k++) {
+        int i = list[k];
+        if (!cs2d_render_entity_visible(map, i, cam_x, cam_y, screen_w, screen_h)) continue;
+        if (!cs2d_render_decal_owns_tile(map, i)) continue;
+        const cs2d_entity_t *ent = &map->entities[i];
+        float a = (float)atof(ent->str_settings[0]);
+        if (a <= 0.0f) continue;
+        float ex = (float)(ent->x * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_x;
+        float ey = (float)(ent->y * CS2D_TILE_SIZE + (CS2D_TILE_SIZE / 2)) - cam_y;
+        cs2d_render_sprite_frame(tex, 32, 32, cs2d_render_decal_frame(ent->int_settings[0], frames), ex, ey,
+                                 32.0f, 32.0f, (float)ent->int_settings[4],
+                                 (float)ent->int_settings[1] / 255.0f, (float)ent->int_settings[2] / 255.0f,
+                                 (float)ent->int_settings[3] / 255.0f, a, 0);
+    }
+}
+
 void cs2d_render_map_ex(
     const cs2d_map_t     *map,
     const cs2d_texture_t *tileset_tex,
@@ -3083,6 +3188,9 @@ void cs2d_render_map_ex(
         }
     }
 
+    /* Pass 1a: Env_Decal on top of its tile, before any entity */
+    if (bank && bank->tex_decals.id) render_decals(map, bank, cam_x, cam_y, screen_w, screen_h);
+
     /* Pass 1b: Render Env_Breakable (type 25) and Func_DynWall (type 71) using map tileset (Te.draw 0x140272808 & 0x140273858) */
     if (has_tileset) {
         int solid_n = 0;
@@ -3131,19 +3239,6 @@ void cs2d_render_map_ex(
             case CS2D_ENT_INFO_BOMBSPOT:
                 /* Info_BombSpot (5): original CS2D does not render any decals on the map floor; icons appear on radar only */
                 break;
-            case CS2D_ENT_ENV_DECAL: {
-                /* Env_Decal (24): ints[0]=frame (0..71) in gfx/decals.bmp, ints[1..3]=r,g,b, ints[4]=rot, strs[0]=alpha */
-                if (bank && bank->tex_decals.id) {
-                    int frame = ent->int_settings[0];
-                    float r = (float)ent->int_settings[1] / 255.0f;
-                    float g = (float)ent->int_settings[2] / 255.0f;
-                    float b = (float)ent->int_settings[3] / 255.0f;
-                    float a = ent->str_settings[0][0] ? (float)atof(ent->str_settings[0]) : 0.9f;
-                    float rot = (float)ent->int_settings[4];
-                    cs2d_render_sprite_frame(&bank->tex_decals, 32, 32, frame, ex, ey, 32.0f, 32.0f, rot, r, g, b, a, 0);
-                }
-                break;
-            }
             case CS2D_ENT_ENV_OBJECT:
                 if (bank) render_env_object_ground(bank, ent, cam_x, cam_y);
                 break;

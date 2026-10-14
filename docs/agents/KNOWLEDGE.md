@@ -23,7 +23,7 @@ When you confirm or refute something, update the topic file (or add one and list
 | [net-messages.md](knowledge/net-messages.md) | Network: client → server (proxy); Network: server → client (proxy, Lua) | 4 KB |
 | [server-browser.md](knowledge/server-browser.md) | Server browser (Find Servers) | 4 KB |
 | [movement.md](knowledge/movement.md) | Movement and collision | 1 KB |
-| [entities.md](knowledge/entities.md) | Entities | 1 KB |
+| [entities.md](knowledge/entities.md) | Entities, Env_Decal, implementation checklist | 3 KB |
 | [breakable.md](knowledge/breakable.md) | Env_Breakable and shots | 1 KB |
 | [shot-effects.md](knowledge/shot-effects.md) | Shot effects | 3 KB |
 | [spectator.md](knowledge/spectator.md) | Spectator | 3 KB |
