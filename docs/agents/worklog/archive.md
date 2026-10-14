@@ -1,5 +1,20 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-14 — Antigravity — Lua server menu (menu(), opcode 235 CS2D_NET_LUAMENU)
+
+- **Changed:**
+  - Implemented `cs2d_luamenu_t` parsing, rendering, and input in `src/cs2d_hudmen.c` matching CS2D.exe (`FUN_14015c320`, `Tgui_hudmen.update` at `0x14002ef23`, `Tgui_hudmen.draw` at `0x14022680e`).
+  - Supports comma-separated `"Title[@b|@i],Btn1|Right1,(Btn2|Right2),..."`:
+    - Mode 0 (default): `272x330` window at `(20, 20)` with `240` px buttons.
+    - Mode 1 (`@b` big centered): `600x330` window centered at `y = 20` with `568` px buttons.
+    - Mode 2 (`@i` invisible): positioned off-screen at `x = 10000` for script input capture.
+    - Parentheses `(option)` mark items as disabled.
+    - Escaping for `\,`, `\|`, `\(`, `\)`.
+    - Key 0 ("Cancel", `sys/language 0027`) at `y = wh - 46` and top-right close `X` button.
+  - Added opcode 235 (`CS2D_NET_LUAMENU`) dispatcher in `src/cs2d_client.c` for receiving server menu strings, and client -> server reply `cs2d_client_send_luamenu` (`[235, pid, slen, title_utf16, button]`).
+  - Integrated into `src/cs2d_scene_game.c` for rendering, number key selection (`0..9`), and mouse clicks.
+- **Verified:** test `test_lua_menu` in `tests/test_cs2d.c` testing string parsing, modes `@b`/`@i`, disabled options, keys and mouse clicks (45/46 tests passed). Full build clean.
+
 ## 2026-10-14 — Antigravity — mp_hudscale (modes 0..3, zoom scaling, aspect letterboxing, font sharpness)
 
 - **Changed:**

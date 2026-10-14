@@ -2267,11 +2267,17 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 }
                 pos += 9;
             } else if (opcode == CS2D_NET_SETTEAMSCORES) {
-                /* [64, t u16, ct u16] (FUN_1402de440, "recv 64 setteamscores") */
+                /* [64, t u16, ct u16] (FUN_1402de510, "recv 64 setteamscores") */
                 if (pos + 5 > recvd) break;
                 client->game.score_t  = buffer[pos + 1] | (buffer[pos + 2] << 8);
                 client->game.score_ct = buffer[pos + 3] | (buffer[pos + 4] << 8);
                 pos += 5;
+            } else if (opcode == CS2D_NET_POSITIONALSOUND) {
+                /* [65, x u16 + 32768, y u16 + 32768, len, path] (FUN_1402de5f0 -> FUN_1401e3890(x, y, path, 0)).
+                 * Lua servers send it with sfx/player/build.wav right before a spawnobject [49] in the same
+                 * datagram (proxy, 157.90.170.75:10003). No audio yet: the message is only skipped */
+                if (pos + 6 > recvd || pos + 6 + buffer[pos + 5] > recvd) break;
+                pos += 6 + buffer[pos + 5];
             } else if (opcode == CS2D_NET_PINGLIST) {
                 /* [247, n, ticks u8, u16, u16, n x {pid, ping u16}] (FUN_140060f80): server ticks (DAT_140ddf3e0) and
                  * every player's latency; the two u16 (x 8) go to DAT_140ddf3ec / DAT_140ddf3e8 */
@@ -2786,6 +2792,15 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         client->cam_y = pl->pos.y - (float)client->config.window_height * 0.5f;
         cs2d_client_console_print(client, 100, 255, 100, "Teleported to tile (%.1f, %.1f) [px: %.0f, %.0f]",
                                   pl->pos.x / 32.0f, pl->pos.y / 32.0f, pl->pos.x, pl->pos.y);
+    } else if (_stricmp(cmd, "objlist") == 0) {
+        /* Debug: the client's dynamic objects (Tdo.list) */
+        for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+            const cs2d_dynobj_t *o = &client->dynobj.objs[i];
+            if (!o->active) continue;
+            cs2d_client_console_print(client, 170, 170, 170, "obj %d typ %d tile (%d, %d) hp %d mode %d team %d pl %d",
+                                      o->id, o->typ, (int)(o->x / 32.0f), (int)(o->y / 32.0f), o->health, o->mode,
+                                      o->team, o->player);
+        }
     } else if (_stricmp(cmd, "pos") == 0 || _stricmp(cmd, "where") == 0) {
         cs2d_client_console_print(client, 170, 170, 170,
                                   "Player '%s' at tile (%.1f, %.1f) | pixel (%.1f, %.1f) | angle %.1f deg",

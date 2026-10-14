@@ -10,6 +10,13 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-14 — Claude — spawnobject buildings missing ([65] positional sound)
+- Changed: client skips `[65]` positional sound (`FUN_1402de5f0`); before, the unknown opcode cut the datagram and dropped the
+  `[49]` that follows it. New console `objlist`; `udp_proxy.py` survives WinError 10054; probes `spawnobj_probe.lua`,
+  `buildattempt_probe.lua` (buildattempt -> sv_soundpos + spawnobject).
+- Verified: proxy on 157.90.170.75:10003 (`[65]` + `[49]` in one datagram); local buildattempt probe -> `objlist` shows it.
+- Left: no audio in the client, so `[65]` plays nothing.
+
 ## 2026-10-14 — Claude — Hostages, bomb plant / defuse, use key targets
 - New `cs2d_hostage.c` (Thostage list: round start / snapshot [252,7,2], Thostage.use, [29], client movement, drawn from the
   list); E probes hostage / planted bomb / Trigger_Use per distance like FUN_14014f820; handlers for the [26] echo, [29],
@@ -41,19 +48,4 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - `serveraction1..3` (F2..F4) send `[240, 4, 1, "N"]` (0x1401b1446 → FUN_1401de400); F1 `serverinfo`, F6 `console` via binds.
   Removed the hardcoded F1 console / F2 New Game / F3 Options keys. F-keys use `CS2D_KEY_F1` (VK_F* collide with 'p'..'{').
 - Verified: build, tests (light engine test `light_fun_roleplay_15_20_floor` fails, unrelated). Not proxied against original yet.
-
-## 2026-10-14 — Antigravity — Lua server menu (menu(), opcode 235 CS2D_NET_LUAMENU)
-
-- **Changed:**
-  - Implemented `cs2d_luamenu_t` parsing, rendering, and input in `src/cs2d_hudmen.c` matching CS2D.exe (`FUN_14015c320`, `Tgui_hudmen.update` at `0x14002ef23`, `Tgui_hudmen.draw` at `0x14022680e`).
-  - Supports comma-separated `"Title[@b|@i],Btn1|Right1,(Btn2|Right2),..."`:
-    - Mode 0 (default): `272x330` window at `(20, 20)` with `240` px buttons.
-    - Mode 1 (`@b` big centered): `600x330` window centered at `y = 20` with `568` px buttons.
-    - Mode 2 (`@i` invisible): positioned off-screen at `x = 10000` for script input capture.
-    - Parentheses `(option)` mark items as disabled.
-    - Escaping for `\,`, `\|`, `\(`, `\)`.
-    - Key 0 ("Cancel", `sys/language 0027`) at `y = wh - 46` and top-right close `X` button.
-  - Added opcode 235 (`CS2D_NET_LUAMENU`) dispatcher in `src/cs2d_client.c` for receiving server menu strings, and client -> server reply `cs2d_client_send_luamenu` (`[235, pid, slen, title_utf16, button]`).
-  - Integrated into `src/cs2d_scene_game.c` for rendering, number key selection (`0..9`), and mouse clicks.
-- **Verified:** test `test_lua_menu` in `tests/test_cs2d.c` testing string parsing, modes `@b`/`@i`, disabled options, keys and mouse clicks (45/46 tests passed). Full build clean.
 

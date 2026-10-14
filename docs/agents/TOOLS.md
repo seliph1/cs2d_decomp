@@ -181,6 +181,7 @@ Debug console commands:
 | `where` | Player position |
 | `entstate x y` | State of the entity on a tile |
 | `entdump` | Positions of all entities in state 1 |
+| `objlist` | Dynamic objects (`Tdo.list`): id, type, tile, health, mode, team, owner |
 | `walkto tx ty` | Walks the BFS path to a tile |
 | `net_send <hex>` | Sends a raw reliable message |
 | `consolebench` | Console performance benchmark |

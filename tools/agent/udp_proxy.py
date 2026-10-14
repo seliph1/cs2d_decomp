@@ -16,7 +16,10 @@ with open(log_path, 'w') as log:
     while time.time() - t0 < duration:
         r, _, _ = select.select([front, back], [], [], 0.2)
         for s in r:
-            data, addr = s.recvfrom(65536)
+            try:
+                data, addr = s.recvfrom(65536)
+            except ConnectionResetError:  # Windows reports an ICMP port unreachable from an earlier sendto here
+                continue
             t = time.time() - t0
             if s is front:
                 client = addr
