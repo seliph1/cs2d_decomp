@@ -352,6 +352,10 @@ typedef enum {
     CS2D_FONT_COUNT   = 5
 } cs2d_font_id_t;
 
+/* Liberation Sans at px 10..100 (lua_font.SetFont 0x140030be0: gfx/fonts/<font>, size clamped to 10..100) */
+#define CS2D_FONT_SIZED_BASE 16
+#define CS2D_FONT_SIZED(px)  ((cs2d_font_id_t)(CS2D_FONT_SIZED_BASE + ((px) < 10 ? 10 : (px) > 100 ? 100 : (px))))
+
 /* High-Quality TrueType UI Font Rendering & Measurement */
 void  cs2d_render_text_ex(cs2d_font_id_t font_id, float x, float y, const char *text, float r, float g, float b, float a);
 /* Text stretched horizontally by scale_x (BlitzMax SetScale(sx, 1) before DrawText) */

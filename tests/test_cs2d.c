@@ -34,6 +34,7 @@
 #include "cs2d_atlas.h"
 #include "cs2d_tilefx.h"
 #include "cs2d_gen.h"
+#include "cs2d_hudtxt.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -4409,6 +4410,83 @@ static bool test_tilefx(void)
     return true;
 }
 
+/* Lua HUD texts: [234] and [54] bytes recorded from the original dedicated (tools/agent/lua/hudtxt_probe.lua,
+ * proxy_ht.log 2026-10-14) */
+static void ht_put(uint8_t *b, int *n, const char *hex)
+{
+    for (const char *p = hex; p[0] && p[1]; ) {
+        if (*p == ' ') { p++; continue; }
+        unsigned v;
+        sscanf(p, "%2x", &v);
+        b[(*n)++] = (uint8_t)v;
+        p += 2;
+    }
+}
+
+static bool test_hudtxt(void)
+{
+    printf("\n=== Testing Lua HUD texts (hudtxt / tweens) ===\n");
+    static cs2d_hudtxt_t h;
+    cs2d_hudtxt_reset(&h);
+    bool ok = true;
+    uint8_t b[512];
+    int n = 0, pos = 0;
+
+    /* hudtxt 1 "\169255000000Red centered" 425 160 1 0 20 */
+    ht_put(b, &n, "ea 01 16 00 a9 00 32 00 35 00 35 00 30 00 30 00 30 00 30 00 30 00 30 00 52 00 65 00 64 00 20 00 63 00"
+                  "65 00 6e 00 74 00 65 00 72 00 65 00 64 00 a9 41 a0 40 01 00 14");
+    /* hudtxt 3 "\169000255000Green \169000128255Blue \169255255255white" 425 300 1 1 16 */
+    ht_put(b, &n, "ea 03 2e 00 a9 00 30 00 30 00 30 00 32 00 35 00 35 00 30 00 30 00 30 00 47 00 72 00 65 00 65 00 6e 00"
+                  "20 00 a9 00 30 00 30 00 30 00 31 00 32 00 38 00 32 00 35 00 35 00 42 00 6c 00 75 00 65 00 20 00 a9 00"
+                  "32 00 35 00 35 00 32 00 35 00 35 00 32 00 35 00 35 00 77 00 68 00 69 00 74 00 65 00 a9 41 2c 41 01 01 10");
+    while (pos < n && ok) ok = cs2d_hudtxt_on_message(&h, b, n, &pos);
+    const cs2d_hudtxt_line_t *l1 = &h.line[1], *l3 = &h.line[3];
+    if (!ok || pos != n || l1->len != 22 || l1->x != 425 || l1->y != 160 || l1->align != 1 || l1->valign != 0 ||
+        l1->size != 20 || l1->alpha != 1.0f || l1->tags) {
+        printf("  FAIL: text 1 len %d at (%d, %d) align %d/%d size %d tags %d\n", l1->len, l1->x, l1->y, l1->align,
+               l1->valign, l1->size, l1->tags);
+        ok = false;
+    }
+    if (l3->len != 46 || l3->y != 300 || l3->valign != 1 || l3->size != 16 || !l3->tags) {
+        printf("  FAIL: text 3 len %d y %d valign %d size %d tags %d\n", l3->len, l3->y, l3->valign, l3->size, l3->tags);
+        ok = false;
+    }
+    if (h.last != 3 || h.count != 2) { printf("  FAIL: last %d count %d\n", h.last, h.count); ok = false; }
+
+    /* hudtxtmove 0 1 2000 300 120, hudtxtalphafade 0 1 2000 0.2, hudtxtcolorfade 0 1 2000 0 128 255:
+     * three [54] in one datagram, targets 200 - id */
+    n = 0;
+    pos = 0;
+    ht_put(b, &n, "36 00 c7 00 d0 07 00 00 2c 81 78 80 36 04 c7 00 d0 07 00 00 33 36 05 c7 00 d0 07 00 00 00 80 ff");
+    while (pos < n && ok) ok = cs2d_hudtxt_on_tween(&h, b, n, &pos, 1000);
+    if (pos != n) { printf("  FAIL: tween parse stopped at %d of %d\n", pos, n); ok = false; }
+    cs2d_hudtxt_update(&h, 2000); /* halfway */
+    if (l1->x != 362 || l1->y != 140 || fabsf(l1->alpha - 0.6f) > 0.01f || l1->len != 22 || l1->text[0] != 0xA9 ||
+        l1->text[1] != '1' || l1->text[3] != '7' || l1->text[4] != '0' || l1->text[6] != '4' || l1->text[9] != '7') {
+        printf("  FAIL: halfway at (%d, %d) alpha %.2f len %d\n", l1->x, l1->y, l1->alpha, l1->len);
+        ok = false;
+    }
+    cs2d_hudtxt_update(&h, 3001); /* done: the tweens are dropped */
+    if (l1->x != 300 || l1->y != 120 || fabsf(l1->alpha - 0.2f) > 0.01f || l1->text[1] != '0' || l1->text[7] != '2' ||
+        l1->text[10] != 'R') {
+        printf("  FAIL: end at (%d, %d) alpha %.2f\n", l1->x, l1->y, l1->alpha);
+        ok = false;
+    }
+    for (int i = 0; i < CS2D_HUDTXT_TWEENS; i++) {
+        if (h.tween[i].used) { printf("  FAIL: tween %d still running\n", i); ok = false; }
+    }
+
+    /* hudtxtclear: [234, 255] */
+    n = 0;
+    pos = 0;
+    ht_put(b, &n, "ea ff");
+    cs2d_hudtxt_on_message(&h, b, n, &pos);
+    if (pos != 2 || h.count != 0 || h.line[1].len != 0 || h.line[3].len != 0) { printf("  FAIL: clear\n"); ok = false; }
+
+    if (ok) TEST_PASS("hudtxt [234] layout, tweens [54] (move / alpha / colour) and hudtxtclear");
+    return ok;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -4416,7 +4494,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 43;
+    int total = 44;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -4461,6 +4539,7 @@ int main(void)
     if (test_new_game_maplist()) passed++;
     if (test_gen_entities()) passed++;
     if (test_tilefx()) passed++;
+    if (test_hudtxt()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

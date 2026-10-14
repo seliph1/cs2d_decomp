@@ -5,6 +5,9 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **Lua HUD texts (2026-10-14, `src/cs2d_hudtxt.c`):** `mp_hudscale` not applied (size / position scaling by g_zoom
+  when screen_h > 589); [54] tweens of Tdo targets (Lua images) are parsed and skipped; `®path` inline images not
+  compared with the original; texts are cleared on map load (original reset point not checked).
 - **Gen_* entities (2026-10-13, `src/cs2d_gen.c`):** not screenshot-compared with CS2D.exe. Missing: the thunder
   sound (no audio system; `gen.thunder` counts claps), wind on Tp 22 / 0x20 (not spawned by us), screen shake
   from explosions / Lua (only Info_Quake feeds `gen.shake`),

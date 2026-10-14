@@ -148,6 +148,7 @@ Lua probes:
 | `construct_probe.lua` | Run with `sv_gamemode 3` in `sys/server.cfg` (back it up): logs `build` / `objectkill` / `spawn` / `die` (`CP` lines), spawns several objects around the first spawned player, sets $16000 and kills the player after 25 s |
 | `light_probe.lua` | Spawns player 1 on fun_roleplay and moves it through 6 fixed positions, one every 4 s, for light engine screenshots (`drive_orig.ps1` `shot` steps every 4 s) |
 | `night_probe.lua` | `sv_daylighttime 90` (night), then `light_probe.lua` |
+| `hudtxt_probe.lua` | On join: hudtxt with every align / size / colour tag, hudtxt2, then move / alpha / colour fades at +25 s, an empty text at +32 s and hudtxtclear at +36 s (`HT` lines) |
 | `spec_probe.lua` | Adds a T and a CT bot; logs `specswitch` (whom each spectator follows, `SP` lines) and team changes |
 
 Notes:

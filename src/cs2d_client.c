@@ -603,6 +603,7 @@ bool cs2d_client_connect(cs2d_client_t *client, const char *ip, int port)
     client->net_sent_x   = client->net_sent_y = client->net_sent_rot = -1;
     client->fire_seed    = -1;
     client->download_open = false;
+    client->join_menu     = 0;
     memset(client->net_seen_seq, 0, sizeof(client->net_seen_seq));
     cs2d_xfer_reset(&client->xfer);
 
@@ -954,6 +955,8 @@ static void join_map_checksum(cs2d_client_t *client)
     cs2d_net_sha256_file(map_path, client->net_map_checksum);
 }
 
+static void join_menu_submit(cs2d_client_t *client);
+
 /* Gives up a join that is still in the handshake: [253,reason], socket closed, back to the menu */
 static void join_abort(cs2d_client_t *client, uint8_t reason)
 {
@@ -963,10 +966,24 @@ static void join_abort(cs2d_client_t *client, uint8_t reason)
         closesocket(client->net_sock);
         client->net_sock = INVALID_SOCKET;
     }
-    client->join_stage    = 0;
-    client->connected     = false;
-    client->download_open = false;
+    client->join_stage     = 0;
+    client->connected      = false;
+    client->download_open  = false;
+    client->join_menu      = 0;
+    client->xfer.map_mode  = 0;
     if (client->scene != CS2D_SCENE_LOBBY) cs2d_client_set_scene(client, CS2D_SCENE_LOBBY);
+}
+
+/*
+ * Refused join (Tgui_joinmen.errorprompt 0x14008b090, menu 2): the window stays open on the server's socket
+ * until Okay / Cancel; status 11 (map differs) also shows the three map choices
+ */
+static void join_error_prompt(cs2d_client_t *client, uint8_t status)
+{
+    client->join_stage = 0;
+    client->join_menu  = 2;
+    client->join_error = status;
+    client->join_opt   = 0;
 }
 
 /*
@@ -1194,9 +1211,17 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                                                    client->xfer.accept);
                         cs2d_client_send_udp(client, p3.buf, (size_t)p3.pos, true);
                         client->join_stage = 2;
+                    } else if (status == 1) {
+                        /* Missing or wrong password: Tgui_joinmen.pwprompt (0x140055e40) via vtable +0xa0 in the
+                         * join handler (0x1402cf1c1 area); no [253] is sent, the prompt restarts the join */
+                        client->join_stage      = 0;
+                        client->join_menu       = 1;
+                        client->join_pw_text[0] = '\0';
+                        client->join_pw_cursor  = 0;
+                        client->ui.focused_id   = CS2D_UI_ID("JoinPwInput"); /* pwprompt focuses the input */
                     } else {
                         cs2d_client_console_print(client, 255, 0, 0, "Failed to join the server (join status %u)", status);
-                        join_abort(client, 0);
+                        join_error_prompt(client, status);
                     }
                     break;
                 } else if (sub == 4) {
@@ -1209,7 +1234,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         cs2d_xfer_reset(&client->xfer);
                     } else if (status != 0) {
                         cs2d_client_console_print(client, 255, 0, 0, "Failed to join the server (map status %u)", status);
-                        join_abort(client, 0);
+                        join_error_prompt(client, status);
                     } else {
                         client->download_open = false;
                         /* Play on the server's map (maps/temp.map in temporary mode), not the one loaded before */
@@ -1250,6 +1275,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                             client->net_respawn_delay = buffer[s + 4];
                             /* Then infammo, u8, two strings, u8, u8, u8 and mp_hovertext (0x140a14e00), at s + 12 + both
                              * string lengths; 31 with the dedicated's default config (proxy) */
+                            if (s + 5 < recvd) client->net_infammo = buffer[s + 5] != 0;
                             if (s + 7 < recvd) {
                                 int h = s + 8 + buffer[s + 7];
                                 if (h < recvd) h += 1 + buffer[h];
@@ -1913,6 +1939,12 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 } else {
                     break;
                 }
+            } else if (opcode == CS2D_NET_HUDTXT) {
+                /* Server -> Client: [234] hudtxt / hudtxt2 / hudtxtclear (FUN_1400a3530) */
+                if (!cs2d_hudtxt_on_message(&client->hudtxt, buffer, recvd, &pos)) break;
+            } else if (opcode == CS2D_NET_TWEEN) {
+                /* Server -> Client: [54] Ttween.receive: hudtxtmove / hudtxtalphafade / hudtxtcolorfade */
+                if (!cs2d_hudtxt_on_tween(&client->hudtxt, buffer, recvd, &pos, (uint32_t)SDL_GetTicks())) break;
             } else if (opcode == CS2D_NET_PING_INGAME) {
                 /* Server -> Client: [249, int32_t ts] -> Reply [249, int32_t ts] (0x1401d9f10) */
                 if (pos + 5 > recvd) break;
@@ -2499,6 +2531,7 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         int port = (n >= 3) ? atoi(arg2) : client->config.server_port;
         if (port <= 0) port = 36963;
         snprintf(client->net_password, sizeof(client->net_password), "%s", (n >= 4) ? arg3 : "");
+        client->xfer.map_mode = 0; /* A new join starts in normal map mode; error 11 picks another one */
         cs2d_client_console_print(client, 170, 170, 170, "Connecting to %s:%d ...", ip, port);
         /* The handshake runs in the current scene (the menu); [252,4,0] then enters the game on the server's map */
         snprintf(client->config.server_ip, sizeof(client->config.server_ip), "%s", ip);
@@ -2563,7 +2596,7 @@ bool cs2d_client_any_ui_open(const cs2d_client_t *client)
     return client && (client->console_open || client->create_server_open ||
                       client->options_open || client->server_info_open ||
                       client->team_menu_open || client->servers_open || client->connect_ip_open ||
-                      client->download_open || client->chat_open);
+                      client->download_open || client->join_menu != 0 || client->chat_open);
 }
 
 void cs2d_client_handle_text_input(cs2d_client_t *client, const char *text)
@@ -2693,6 +2726,19 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
         if (sdl_key == SDLK_ESCAPE && !cs2d_ui_capture_escape(&client->ui)) {
             client->create_server_open = false;
             client->options_open       = false;
+            return;
+        }
+        cs2d_ui_feed_key(&client->ui, sdl_key);
+        return;
+    }
+
+    if (!client->console_open && client->join_menu != 0) {
+        if (sdl_key == SDLK_ESCAPE && !cs2d_ui_capture_escape(&client->ui)) {
+            join_abort(client, 9);
+            return;
+        }
+        if (sdl_key == SDLK_RETURN || sdl_key == SDLK_KP_ENTER) {
+            join_menu_submit(client);
             return;
         }
         cs2d_ui_feed_key(&client->ui, sdl_key);
@@ -2937,6 +2983,43 @@ static void ui_form_row_end(cs2d_ui_context_t *ui)
     cs2d_ui_close_element(ui);
 }
 
+/* A console line whose inline "©RRRGGGBBB" codes switch colour mid-line: one text run per colour */
+static void console_text_colored(cs2d_ui_context_t *ui, const char *text, uint8_t r, uint8_t g, uint8_t b)
+{
+    const char *p = text;
+    bool multi = false;
+    for (const char *q = text; *q && !multi; q++) {
+        multi = cs2d_parse_color_code(q, NULL, NULL, NULL, NULL);
+    }
+    if (!multi) {
+        cs2d_ui_text(ui, text, CS2D_FONT_REGULAR, CS2D_UI_RGB(r, g, b));
+        return;
+    }
+    CS2D_UI_ELEMENT(ui, 0, {
+        .layout = {
+            .sizing    = { CS2D_UI_FIT(0, 0), CS2D_UI_FIT(0, 0) },
+            .child_gap = 0.0f,
+            .dir       = CS2D_UI_LEFT_TO_RIGHT
+        }
+    }) {
+        char seg[CS2D_CHAT_LINE_LEN + 32];
+        while (*p) {
+            const char *next;
+            uint8_t nr, ng, nb;
+            if (cs2d_parse_color_code(p, &nr, &ng, &nb, &next)) { r = nr; g = ng; b = nb; p = next; continue; }
+            size_t n = 0;
+            while (p[n] && n < sizeof(seg) - 1) {
+                if (n > 0 && cs2d_parse_color_code(p + n, NULL, NULL, NULL, NULL)) break;
+                n++;
+            }
+            memcpy(seg, p, n);
+            seg[n] = '\0';
+            cs2d_ui_text(ui, seg, CS2D_FONT_REGULAR, CS2D_UI_RGB(r, g, b));
+            p += n;
+        }
+    }
+}
+
 static void cs2d_client_build_console_ui(cs2d_client_t *client, int screen_w, int screen_h)
 {
     if (!client->console_open) return;
@@ -2988,7 +3071,7 @@ static void cs2d_client_build_console_ui(cs2d_client_t *client, int screen_w, in
             }) {
                 for (int i = start_idx; i < end_idx; i++) {
                     const cs2d_console_line_t *ln = cs2d_client_console_line(client, i);
-                    cs2d_ui_text(ui, ln->text, CS2D_FONT_REGULAR, CS2D_UI_RGB(ln->r, ln->g, ln->b));
+                    console_text_colored(ui, ln->text, ln->r, ln->g, ln->b);
                 }
             }
 
@@ -4289,6 +4372,183 @@ static void cs2d_client_build_download_ui(cs2d_client_t *client, int screen_w, i
     }
 }
 
+/*
+ * Reasons of a refused join, drawn under "Failed to join $1:$2" (Tgui_joinmen.draw menu 2, 0x140301640):
+ * error -> sys/language entry, '|' separates lines; $1 is the map name, $2 the map load error
+ */
+static const struct { int error; const char *text; } s_join_errors[] = {
+    {   2, "Only registered U.S.G.N. users allowed!|Login (Options -> Net) with your account|or get an account at UnrealSoftware.de!" }, /* 0378 */
+    {   3, "Server is full!|Please try again later!" },                                                       /* 0379 */
+    {   4, "You are banned!|Please contact the admin of this server|in order to get more info about this.|Please do NOT contact Unreal Software." }, /* 0380 */
+    {   5, "Server uses another game version!|Either your client or the version of the|server is outdated." }, /* 0381 */
+    {   7, "Can't validate user (U.S.G.N. timeout)|Maybe the U.S.G.N. is offline/overloaded.|Please try again!" }, /* 0382 */
+    {   9, "Connection with server already exists!|Please try again later!" },                               /* 0383 */
+    {  10, "Your client does not suit the server!|Do not modify your client!|Re-download at www.CS2D.com or|contact the server admin!" }, /* 0384 */
+    {  11, "Your map differs from the server's!" },                                                          /* 0385 */
+    {  12, "You do not have the map|'$1'|and the server disabled map transfer.|You can't join without this map." }, /* 0386 */
+    {  20, "Failed to load the map|'$1'|$2" },                                                               /* 0387 */
+    {  21, "Server changed map during join-process!|Please try again!" },                                    /* 0388 */
+    {  22, "Authentication failed!|Your or the server's version is modified|or outdated!|Please check your version and try again!" }, /* 0389 */
+    {  23, "Too many clients with your IP!|There are too many clients with the same IP|on this server!Please try again later!" }, /* 0390 */
+    { 100, "Transfer problems!|Please try again!" },                                                         /* 0391 */
+    { 101, "Connection lost!|Please try again!" },                                                           /* 0392 */
+    { 102, "Server does not answer!|Maybe it is offline or busy. Try again later.|Please change your router/firewall settings if|it is your server! (read www.CS2D.com/faq)" }, /* 0393 */
+    { 103, "Failed to save downloaded map!|Make sure that there is enough space and that|you're allowed to save files in your maps-folder!" }, /* 0394 */
+    { 200, "Timeout! Server does not answer!|Maybe it is offline or busy. Try again later.|Please change your router/firewall settings if|it is your server! (read www.CS2D.com/faq)" }, /* 0395 */
+    { 201, "Connection problems!|Failed to receive all server data.|Please try again!" },                   /* 0396 */
+};
+
+/* Error 11 choices (lang 0860, Tgui_opt at (16, 85)) */
+static const char *s_join_map_opts[3] = {
+    "Download map temporarily, keep existing", "Download map, overwrite existing", "Cancel joining, keep existing"
+};
+
+/*
+ * Okay / Connect button (0x140a10ed0) in cs2d_menu_screen (0x140249280):
+ *   menu 1: the textbox text becomes the join password (0x140a18368) and the join restarts from [252,0]
+ *           (FUN_14016a3c0(0));
+ *   menu 2, error 11: choice 0 / 1 set the map transfer mode (DAT_140ddf3dc) to 1 / 2 and restart the join;
+ *   otherwise: [253,9] and back to the menu.
+ */
+static void join_menu_submit(cs2d_client_t *client)
+{
+    if (client->join_menu == 1) {
+        snprintf(client->net_password, sizeof(client->net_password), "%s", client->join_pw_text);
+    } else if (client->join_error == 11 && client->join_opt != 2) {
+        client->xfer.map_mode = client->join_opt + 1;
+    } else {
+        join_abort(client, 9);
+        return;
+    }
+    client->join_menu = 0;
+    cs2d_client_connect(client, client->config.server_ip, client->config.server_port);
+}
+
+/*
+ * Tgui_joinmen window: the same 350x200 Tgui_win as the download window (0x1401a3604). Buttons at y 164:
+ * Okay / Connect (124) and Cancel (234), 100 px wide.
+ *   menu 1 (pwprompt 0x140055e40): "Password required" (lang 0782), password input at (16, 64) 318 px wide,
+ *           button label "Connect" (lang 0106);
+ *   menu 2 (errorprompt 0x14008b090): "Error" (lang 0034), button "Okay" (lang 0030), map choices for error 11.
+ * The text lines are drawn by cs2d_client_render_join_menu.
+ */
+static void cs2d_client_build_join_menu_ui(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    if (client->join_menu == 0) return;
+
+    cs2d_ui_context_t *ui = &client->ui;
+    float win_x, win_y;
+    download_window_pos(screen_w, screen_h, &win_x, &win_y);
+    bool pw = (client->join_menu == 1);
+    bool open = true;
+    bool submit = false, cancel = false;
+    if (cs2d_ui_window_begin(ui, CS2D_UI_ID("JoinMenuWin"), pw ? "Password required" : "Error",
+                             win_x, win_y, DL_WIN_W, DL_WIN_H, &open)) {
+        /* Content starts 23 px below the window top and 6 px right of its left edge (see the download window) */
+        if (pw) {
+            CS2D_UI_ELEMENT(ui, 0, {
+                .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(41.0f) } }
+            }) {}
+            CS2D_UI_ELEMENT(ui, 0, {
+                .layout = {
+                    .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(18.0f) },
+                    .dir    = CS2D_UI_LEFT_TO_RIGHT
+                }
+            }) {
+                CS2D_UI_ELEMENT(ui, 0, {
+                    .layout = { .sizing = { CS2D_UI_FIXED(10.0f), CS2D_UI_FIXED(1.0f) } }
+                }) {}
+                cs2d_ui_textbox(ui, CS2D_UI_ID("JoinPwInput"), client->join_pw_text, sizeof(client->join_pw_text),
+                                &client->join_pw_cursor, 318.0f, true);
+            }
+            CS2D_UI_ELEMENT(ui, 0, {
+                .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(82.0f) } }
+            }) {}
+        } else {
+            CS2D_UI_ELEMENT(ui, 0, {
+                .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(62.0f) } }
+            }) {}
+            CS2D_UI_ELEMENT(ui, 0, {
+                .layout = {
+                    .sizing  = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(79.0f) },
+                    .padding = CS2D_UI_PAD(10, 0, 0, 0),
+                    .dir     = CS2D_UI_TOP_TO_BOTTOM
+                }
+            }) {
+                if (client->join_error == 11) {
+                    for (int i = 0; i < 3; i++) {
+                        cs2d_ui_radio(ui, CS2D_UI_IDI("JoinMapOpt", i), s_join_map_opts[i], i, &client->join_opt);
+                    }
+                }
+            }
+        }
+        CS2D_UI_ELEMENT(ui, 0, {
+            .layout = {
+                .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(20.0f) },
+                .child_gap = 10.0f,
+                .dir       = CS2D_UI_LEFT_TO_RIGHT
+            }
+        }) {
+            CS2D_UI_ELEMENT(ui, 0, {
+                .layout = { .sizing = { CS2D_UI_FIXED(108.0f), CS2D_UI_FIXED(1.0f) } }
+            }) {}
+            submit = cs2d_ui_button(ui, CS2D_UI_ID("BtnJoinMenuOk"), pw ? "Connect" : "Okay", 100.0f, 20.0f);
+            cancel = cs2d_ui_button(ui, CS2D_UI_ID("BtnJoinMenuCancel"), "Cancel", 100.0f, 20.0f);
+        }
+        cs2d_ui_window_end(ui);
+    }
+    if (submit) {
+        join_menu_submit(client);
+    } else if (cancel || !open) {
+        /* Cancel (0x140a10ed8) leaves with reason 9, as in the download window */
+        join_abort(client, 9);
+    }
+}
+
+/*
+ * Tgui_joinmen.draw (0x140301640): menu 1 draws lang 0376 at (16, 32) in the gui color; menu 2 draws
+ * "Failed to join $1:$2" (lang 0377) at (16, 32) and the reason lines from (16, 52) every 20 px, in red
+ * (SetColor(255 + alpha, alpha, alpha) with the window alpha 0)
+ */
+static void cs2d_client_render_join_menu(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    if (client->join_menu == 0) return;
+    float win_x, win_y;
+    download_window_pos(screen_w, screen_h, &win_x, &win_y);
+    float tx = win_x + 16.0f;
+    if (client->join_menu == 1) {
+        const float c = 150.0f / 255.0f;
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, tx, win_y + 32.0f, "Please enter the right password!", c, c, c, 1.0f);
+        return;
+    }
+
+    char line[256];
+    snprintf(line, sizeof(line), "Failed to join %s:%d", client->config.server_ip, client->config.server_port);
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, tx, win_y + 32.0f, line, 1.0f, 0.0f, 0.0f, 1.0f);
+
+    const char *text = NULL;
+    for (size_t i = 0; i < sizeof(s_join_errors) / sizeof(s_join_errors[0]); i++) {
+        if (s_join_errors[i].error == client->join_error) text = s_join_errors[i].text;
+    }
+    float y = win_y + 52.0f;
+    while (text && *text) {
+        const char *bar = strchr(text, '|');
+        size_t n = bar ? (size_t)(bar - text) : strlen(text);
+        char raw[128];
+        snprintf(raw, sizeof(raw), "%.*s", (int)n, text);
+        /* $1 = map name; $2 (the map load error) is not tracked and stays empty */
+        char *d = strstr(raw, "$1");
+        if (d) {
+            snprintf(line, sizeof(line), "%.*s%s%s", (int)(d - raw), raw, client->net_map_name, d + 2);
+        } else {
+            snprintf(line, sizeof(line), "%s", strcmp(raw, "$2") == 0 ? "" : raw);
+        }
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, tx, y, line, 1.0f, 0.0f, 0.0f, 1.0f);
+        y += 20.0f;
+        text = bar ? bar + 1 : NULL;
+    }
+}
+
 static cs2d_texture_t s_tex_gui_shade; /* gfx/gui_shade.bmp: 10x10 vertical gradient, maskMode 3 (0x140a0de78) */
 
 /* Progress bar: 1 px frame, black inside, gui_shade stretched to the filled width (Tgui_joinmen.draw) */
@@ -4358,6 +4618,7 @@ void cs2d_client_build_ui(cs2d_client_t *client, int screen_w, int screen_h)
     cs2d_client_build_servers_ui(client, screen_w, screen_h);
     cs2d_client_build_connect_ip_ui(client, screen_w, screen_h);
     cs2d_client_build_download_ui(client, screen_w, screen_h);
+    cs2d_client_build_join_menu_ui(client, screen_w, screen_h);
 
     cs2d_ui_end_layout(&client->ui);
 }
@@ -4375,6 +4636,7 @@ static void cs2d_client_render_ui(cs2d_client_t *client, int screen_w, int scree
     cs2d_client_render_servers_rows(client);
     if (client->scene == CS2D_SCENE_EDITOR) cs2d_scene_editor_render_overlay(client, screen_w, screen_h);
     cs2d_client_render_download(client, screen_w, screen_h);
+    cs2d_client_render_join_menu(client, screen_w, screen_h);
 }
 
 /*

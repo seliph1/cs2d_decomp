@@ -592,6 +592,7 @@ static bool game_load_map(cs2d_client_t *client, const char *map_name)
     cs2d_ents_round_start(&client->ents);
     cs2d_fx_clear(&client->fx);
     cs2d_gen_init(&client->gen, &client->game.map);
+    cs2d_hudtxt_reset(&client->hudtxt);
     memset(client->ground_items, 0, sizeof(client->ground_items));
 
     /* Dynamic objects: offline the map's Env_Building entities (the server spawns them at round start);
@@ -1191,6 +1192,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
     drain_entity_events(client);
     update_dynobjs(client, delta_time);
     cs2d_fx_update(&client->fx, delta_time);
+    cs2d_hudtxt_update(&client->hudtxt, (uint32_t)SDL_GetTicks()); /* Ttween.update */
     cs2d_gen_update(&client->gen, &client->game.map, client->cam_x, client->cam_y,
                     (float)client->config.window_width * 0.5f, (float)client->config.window_height * 0.5f, delta_time);
     cs2d_projectile_update(client, delta_time);
@@ -1507,6 +1509,10 @@ static int respawn_wait(const cs2d_client_t *client)
 }
 
 /* Thud_msg.draw_center (0x14024d230): from screen_h / 2 - 10 n - 50 down, 5 s each (fade calibrated: 1 s) */
+static float render_text_colored(float x, float y, const char *text, uint8_t r, uint8_t g, uint8_t b,
+                                 float a, bool shadow);
+static float text_width_colored(const char *text);
+
 static void render_center_msgs(cs2d_client_t *client, int screen_w, int screen_h)
 {
     uint32_t now = GetTickCount();
@@ -1522,13 +1528,13 @@ static void render_center_msgs(cs2d_client_t *client, int screen_w, int screen_h
         float a = age < 5000u ? 1.0f : 1.0f - (float)(age - 5000u) / 1000.0f;
         float tw, th;
         cs2d_render_text_measure(CS2D_FONT_REGULAR, client->center_msg[i], &tw, &th);
+        tw = text_width_colored(client->center_msg[i]);
         cs2d_render_rect((float)(screen_w / 2) - tw * 0.5f - 20.0f, y - 2.0f, tw + 40.0f, th + 4.0f, 0, 0, 0, 0.25f * a, true);
         /* Drop shadow at +1, +1 (0x14024d230) */
-        cs2d_render_text_ex(CS2D_FONT_REGULAR, (float)(screen_w / 2 - (int)tw / 2) + 1.0f, y + 1.0f, client->center_msg[i],
-                            0.0f, 0.0f, 0.0f, a);
-        cs2d_render_text_ex(CS2D_FONT_REGULAR, (float)(screen_w / 2 - (int)tw / 2), y, client->center_msg[i],
-                            client->center_rgb[i][0] / 255.0f, client->center_rgb[i][1] / 255.0f,
-                            client->center_rgb[i][2] / 255.0f, a);
+        render_text_colored((float)(screen_w / 2 - (int)tw / 2) + 1.0f, y + 1.0f, client->center_msg[i],
+                            0, 0, 0, a, true);
+        render_text_colored((float)(screen_w / 2 - (int)tw / 2), y, client->center_msg[i],
+                            client->center_rgb[i][0], client->center_rgb[i][1], client->center_rgb[i][2], a, false);
         y += th + 2.0f;
     }
 }
@@ -1677,6 +1683,86 @@ static void render_kill_msgs(cs2d_client_t *client, int screen_w)
  * Text at x = 3.0f, drop shadow at x = 4.0f, y + 1.0f.
  * Chat input prompt at bottom when chat_open.
  */
+/*
+ * Inline image tag: '®' (Latin-1 0xAE or UTF-8 C2 AE) + a file path up to the next space, e.g.
+ * "®gfx/c4/ServerInfo3.png Visit ...". Returns the bytes consumed (0 when p is not a tag) and copies the path.
+ */
+static size_t inline_image_tag(const char *p, char *path, size_t path_sz)
+{
+    size_t m = (unsigned char)p[0] == 0xAE ? 1 : ((unsigned char)p[0] == 0xC2 && (unsigned char)p[1] == 0xAE) ? 2 : 0;
+    if (!m) return 0;
+    size_t n = 0;
+    while (p[m + n] && p[m + n] != ' ' && !cs2d_parse_color_code(p + m + n, NULL, NULL, NULL, NULL)) n++;
+    if (!n) return 0;
+    if (path) snprintf(path, path_sz, "%.*s", (int)n, p + m);
+    return m + n;
+}
+
+/*
+ * Lays out (and with draw set, draws) text that may switch colour mid-line: every "©RRRGGGBBB" (Latin-1 or
+ * UTF-8 '©') starts a new run in that colour, and every "®path" inserts that image scaled to the font
+ * height, as the original HUD does for server messages. Returns the width. With shadow set, text runs are
+ * drawn black (the drop shadow pass) and images are skipped.
+ */
+static float text_colored_pass(float x, float y, const char *text, uint8_t r, uint8_t g, uint8_t b,
+                               float a, bool shadow, bool draw)
+{
+    char seg[CS2D_CHAT_LINE_LEN + 32];
+    char path[128];
+    float x0 = x;
+    float fh = cs2d_render_font_line_height(CS2D_FONT_REGULAR);
+    const char *p = text;
+    while (*p) {
+        const char *next;
+        uint8_t nr, ng, nb;
+        if (cs2d_parse_color_code(p, &nr, &ng, &nb, &next)) {
+            r = nr; g = ng; b = nb;
+            p = next;
+            continue;
+        }
+        size_t tag = inline_image_tag(p, path, sizeof(path));
+        if (tag) {
+            const cs2d_texture_t *t = cs2d_gfx_get_sprite(cs2d_render_get_gfx_bank(), path, false);
+            if (t && t->height > 0) {
+                float w = fh * (float)t->width / (float)t->height;
+                if (draw && !shadow) {
+                    cs2d_render_sprite_frame(t, t->width, t->height, 0, x + w * 0.5f, y + fh * 0.5f, w, fh,
+                                             0.0f, 1, 1, 1, a, 0);
+                }
+                x += w;
+            }
+            p += tag;
+            continue;
+        }
+        size_t n = 0;
+        while (p[n] && n < sizeof(seg) - 1) {
+            if (n > 0 && (cs2d_parse_color_code(p + n, NULL, NULL, NULL, NULL) || inline_image_tag(p + n, NULL, 0))) break;
+            n++;
+        }
+        memcpy(seg, p, n);
+        seg[n] = '\0';
+        if (draw) {
+            if (shadow) cs2d_render_text_ex(CS2D_FONT_REGULAR, x, y, seg, 0.0f, 0.0f, 0.0f, a);
+            else        cs2d_render_text_ex(CS2D_FONT_REGULAR, x, y, seg, r / 255.0f, g / 255.0f, b / 255.0f, a);
+        }
+        x += cs2d_render_text_width_ex(CS2D_FONT_REGULAR, seg);
+        p += n;
+    }
+    return x - x0;
+}
+
+static float render_text_colored(float x, float y, const char *text, uint8_t r, uint8_t g, uint8_t b,
+                                 float a, bool shadow)
+{
+    return text_colored_pass(x, y, text, r, g, b, a, shadow, true);
+}
+
+/* Width of text with its inline colour codes left out and its inline images counted */
+static float text_width_colored(const char *text)
+{
+    return text_colored_pass(0.0f, 0.0f, text, 0, 0, 0, 0.0f, false, false);
+}
+
 static void render_chat(cs2d_client_t *client, int screen_w, int screen_h)
 {
     (void)screen_w;
@@ -1749,10 +1835,9 @@ static void render_chat(cs2d_client_t *client, int screen_w, int screen_h)
         }
 
         /* Message text shadow */
-        cs2d_render_text_ex(CS2D_FONT_REGULAR, x + 1.0f, y + 1.0f, ln->text, 0.0f, 0.0f, 0.0f, a);
-        /* Message text */
-        cs2d_render_text_ex(CS2D_FONT_REGULAR, x, y, ln->text,
-                            ln->text_rgb[0] / 255.0f, ln->text_rgb[1] / 255.0f, ln->text_rgb[2] / 255.0f, a);
+        render_text_colored(x + 1.0f, y + 1.0f, ln->text, 0, 0, 0, a, true);
+        /* Message text (inline ©RRRGGGBBB codes switch colour mid-line) */
+        render_text_colored(x, y, ln->text, ln->text_rgb[0], ln->text_rgb[1], ln->text_rgb[2], a, false);
 
         y -= line_h;
     }
@@ -1989,6 +2074,103 @@ static bool render_player_hover(cs2d_client_t *client, int screen_w, int screen_
     return true;
 }
 
+/*
+ * Item hover text (FUN_1402a12d0 mp_hovertext bit 16 -> FUN_14029ffb0 at the cursor + 25): one line per visible item
+ * whose tile center is within 16 px of the cursor, in one gui_c box (top at y - 12, line height text + 2, at least
+ * 16), sorted by key. Key = min(price * 0.005, 99) + 100 (no clip, unlisted: green) / + 0 (no clip: yellow) /
+ * + 300 grenades of slot 4 (orange) / + 200 (yellow) "name (clip)" / + 500 pistols (230,200,10) / + 600 (yellow)
+ * "name (clip|reserve)", red "name (empty)" (0799) at 0 ammo, "name (clip|INF)" (0762) under mp_infammo.
+ * Specials: 63 blinking red / yellow "Bomb" (0798, sin(ms / 2) > 0 red) key 1000; 55 red 990; flags 70 red, 71
+ * blue, 980. The separators " (", "|", ")" are short literals not read from the binary (assumed).
+ */
+typedef struct { int key, r, g, b; char text[96]; } item_hover_line_t;
+
+static void render_item_hover(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    float mx = client->mouse_screen_x, my = client->mouse_screen_y;
+    if (!(client->net_hovertext & 16) || mx < 0 || my < 0 || mx > screen_w || my > screen_h) return;
+    item_hover_line_t lines[16];
+    int n = 0;
+    for (int i = 0; i < CS2D_MAX_GROUND_ITEMS && n < 16; i++) {
+        const cs2d_ground_item_t *it = &client->ground_items[i];
+        if (!it->active || it->id == 0) continue;
+        if (fabsf(mx - (it->x - client->cam_x)) >= 16.0f || fabsf(my - (it->y - client->cam_y)) >= 16.0f) continue;
+        const cs2d_weapon_def_t *def = cs2d_weapon_get(it->type);
+        const char *name = def && def->name ? def->name : "";
+        item_hover_line_t *l = &lines[n++];
+        l->r = 255; l->g = 255; l->b = 0;
+        snprintf(l->text, sizeof(l->text), "%s", name);
+        if (it->type == 63) {
+            snprintf(l->text, sizeof(l->text), "Bomb");
+            if (sin((double)(SDL_GetTicks() / 2) * 0.017453292519943295) > 0.0) { l->g = 25; }
+            l->key = 1000;
+            continue;
+        }
+        if (it->type == 55 || it->type == 70) { l->g = 25; l->key = it->type == 55 ? 990 : 980; continue; }
+        if (it->type == 71) { l->r = 50; l->g = 150; l->b = 255; l->key = 980; continue; }
+        float k = def ? def->price * 0.005f : 0.0f;
+        if (k >= 99.0f) k = 99.0f;
+        int clip = def ? def->clip_size : 0, reserve = def ? def->max_reserve : 0, slot = cs2d_weapon_hud_slot(it->type);
+        if (clip < 1) {
+            if (slot == 0) { l->r = 0; l->key = (int)(k + 100.0f); }
+            else l->key = (int)k;
+        } else if (reserve < 1) {
+            if (slot == 4) { l->g = 150; l->b = 30; l->key = (int)(k + 300.0f); }
+            else l->key = (int)(k + 200.0f);
+            snprintf(l->text, sizeof(l->text), "%s (%d)", name, it->clip);
+        } else {
+            if (slot == 2) { l->r = 230; l->g = 200; l->b = 10; l->key = (int)(k + 500.0f); }
+            else l->key = (int)(k + 600.0f);
+            if (client->net_infammo) {
+                snprintf(l->text, sizeof(l->text), "%s (%d|INF)", name, it->clip);
+            } else if (it->clip + it->reserve < 1) {
+                snprintf(l->text, sizeof(l->text), "%s (empty)", name);
+                l->r = 255; l->g = 25; l->b = 0;
+            } else {
+                snprintf(l->text, sizeof(l->text), "%s (%d|%d)", name, it->clip, it->reserve);
+            }
+        }
+    }
+    if (n == 0) return;
+    for (int i = 1; i < n; i++) {   /* TList.Sort ascending, stable */
+        item_hover_line_t t = lines[i];
+        int j = i;
+        for (; j > 0 && lines[j - 1].key > t.key; j--) lines[j] = lines[j - 1];
+        lines[j] = t;
+    }
+    if (!s_tex_gui_c.id) cs2d_texture_load_grid(&s_tex_gui_c, "gfx/gui_c.bmp", 3, 16, 16);
+    const int c = 8;
+    int th = (int)cs2d_render_font_line_height(CS2D_FONT_REGULAR);
+    int lh = th + 2 < 2 * c ? 2 * c : th + 2;
+    int tw = 0;
+    for (int i = 0; i < n; i++) {
+        int w = (int)cs2d_render_text_width_ex(CS2D_FONT_REGULAR, lines[i].text);
+        if (w > tw) tw = w;
+    }
+    if (tw == 0) return;
+    int x = (int)mx, top = (int)(my + 25.0f) - 12;
+    int w = tw + (tw & 1), h = n * lh;
+    h += h & 1;
+    int left = x - w / 2 - c / 2, inner = w - c > 0 ? w - c : 0, right = left + c + inner;
+    float hc = c * 0.5f;
+    cs2d_render_sprite_frame(&s_tex_gui_c, 16, 16, 0, left + hc, top + hc, c, c, 0.0f, 0, 0, 0, 0.4f, 0);
+    cs2d_render_sprite_frame(&s_tex_gui_c, 16, 16, 2, left + hc, top + h - c + hc, c, c, 0.0f, 0, 0, 0, 0.4f, 0);
+    cs2d_render_sprite_frame(&s_tex_gui_c, 16, 16, 1, right + hc, top + hc, c, c, 0.0f, 0, 0, 0, 0.4f, 0);
+    cs2d_render_sprite_frame(&s_tex_gui_c, 16, 16, 3, right + hc, top + h - c + hc, c, c, 0.0f, 0, 0, 0, 0.4f, 0);
+    if (h > 2 * c) {
+        cs2d_render_rect((float)left, (float)(top + c), c, (float)(h - 2 * c), 0, 0, 0, 0.4f, true);
+        cs2d_render_rect((float)right, (float)(top + c), c, (float)(h - 2 * c), 0, 0, 0, 0.4f, true);
+    }
+    if (inner > 0) cs2d_render_rect((float)(left + c), (float)top, (float)inner, (float)h, 0, 0, 0, 0.4f, true);
+    int ty = top + (lh - th) / 2;
+    for (int i = 0; i < n; i++, ty += lh) {
+        int tx = x - (int)cs2d_render_text_width_ex(CS2D_FONT_REGULAR, lines[i].text) / 2;
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, (float)(tx + 1), (float)(ty + 1), lines[i].text, 0, 0, 0, 1.0f);
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, (float)tx, (float)ty, lines[i].text,
+                            lines[i].r / 255.0f, lines[i].g / 255.0f, lines[i].b / 255.0f, 1.0f);
+    }
+}
+
 static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
 {
     /* Light engine (FUN_140262ed0): light buffers for this frame, at the integer camera; dt in 60 Hz frames */
@@ -2083,6 +2265,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
         cs2d_render_build_helper(ptx, pty, tx, ty, ok, client->cam_x, client->cam_y);
     }
     if (!render_player_hover(client, screen_w, screen_h)) render_building_hover(client, screen_w, screen_h);
+    render_item_hover(client, screen_w, screen_h);
     if (local_pl->alive) {
         /* FUN_140291bd0 fills the radar icon queue, cs2d_draw_line_3 draws it */
         cs2d_radar_env_t renv = { client->ground_items, CS2D_MAX_GROUND_ITEMS, team_game(client),
@@ -2116,6 +2299,8 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
                                                  screen_w, screen_h);
         else client->buy.menu = 0;
     }
+    /* FUN_14024f5a0: Lua HUD texts after the HUD, before the chat (0x1402a0000 game HUD) */
+    cs2d_hudtxt_render(&client->hudtxt);
     render_kill_msgs(client, screen_w);
     render_chat(client, screen_w, screen_h);
     render_center_msgs(client, screen_w, screen_h);

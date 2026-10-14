@@ -39,3 +39,12 @@ Source: REA / dump (`FUN_140166fb0` invnext / invprev, `FUN_1401cc180` slotN, `F
   ground item stays, its count unchanged on the client); else ammoin += n. Other items: give, ammoin / ammo = the
   packet's values, the ground item freed. (The host path, DAT_140ddf400, also lowers the ground item's ammoin.) Proxy (de_dust, dedicated): three `[23,52,0]` -> two `[23,1,52,money]` answers, no ammo
   message, the third ignored; our client then shows 2 x.
+
+## Ground item hover text (FUN_14029ffb0)
+- mp_hovertext bit 16 (FUN_1402a12d0, always checked last): items with id > 0, visible, tile center within 16 px of the
+  cursor; one gui_c box at cursor y + 25 - 12, line height max(text + 2, 16), lines sorted by key ascending.
+- Key = min(price * 0.005, 99) + offset: clip < 1 → +100 green (slot 0) / +0 yellow; reserve < 1 → "name (clip)"
+  +300 orange (255,150,30) slot 4 / +200 yellow; guns "name (clip|reserve)" +500 (230,200,10) slot 2 / +600 yellow,
+  "name (empty)" red (0799) at 0 ammo, "name (clip|INF)" (0762) with mp_infammo (0x140a14e38[1]).
+- 63: "Bomb" (0798) blinking red/yellow on sin(ms/2), key 1000; 55 red 990; 70 red / 71 blue (50,150,255) 980.
+- g_lang offsets: g_lang[k].scales + data_start + d → entry 777 + ((k - 0xac) * 36 + d + 4) / 8.

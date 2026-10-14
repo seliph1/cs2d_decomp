@@ -23,6 +23,7 @@
 #include "cs2d_bind.h"
 #include "cs2d_hudmen.h"
 #include "cs2d_projectile.h"
+#include "cs2d_hudtxt.h"
 
 #define CS2D_CONSOLE_MAX_LINES     1024 /* Ring buffer: the oldest line is dropped when full */
 #define CS2D_CONSOLE_LINE_LEN      192
@@ -102,6 +103,7 @@ struct cs2d_client {
     cs2d_gen_t      gen;               /* Gen_Particles / Gen_Sprites / Gen_Weather / Gen_FX particles */
     cs2d_ground_item_t ground_items[CS2D_MAX_GROUND_ITEMS];
     cs2d_dynobj_world_t dynobj;        /* Dynamic objects (buildings): Env_Building offline, the server's online */
+    cs2d_hudtxt_t   hudtxt;            /* Lua HUD texts ([234] hudtxt, [54] hud text tweens) */
     cs2d_projectile_world_t projectiles; /* Projectiles & fields (grenades, rockets, molotov, flare, gas, etc.) */
 
     /* Construction (Tpl.attack2 with the Wrench, 0x1401fd6c0): the first right click shows the build helper,
@@ -194,7 +196,8 @@ struct cs2d_client {
     char                net_server_name[64];
     int                 net_sv_fow;        /* sv_fow from [252,6] (enables the spectator "Fog" button) */
     int                 net_sv_gamemode;   /* sv_gamemode from [252,6]: 0 Normal, 1 Deathmatch, 2 Team DM, 3 Construction, 4 Zombies */
-    int                 net_hovertext;     /* mp_hovertext (0x140a14e00[1], [252,6] / [237,16]): 1|2 players, 4 hostages, 8 buildings */
+    int                 net_hovertext;     /* mp_hovertext (0x140a14e00[1], [252,6] / [237,16]): 1|2 players, 4 hostages, 8 buildings, 16 items */
+    bool                net_infammo;       /* mp_infammo (0x140a14e38[1], [252,6] after the respawn delay) */
     bool                net_forcelight;    /* sv_forcelight (0x140a14ee0[1], [252,6] / [237,19]): light engine at least 1 */
     int                 net_daylight;      /* sv_daylighttime (0x140a14ec8[1], [252,6] / [237,20]): sun angle, -1 = map */
     int                 net_ticks;         /* Server ticks from [247] (DAT_140ddf3e0), -1 until received */
@@ -202,6 +205,11 @@ struct cs2d_client {
     uint8_t             net_seen_seq[8192]; /* Reliable sequence numbers already handled (1 bit each) */
     cs2d_xfer_t         xfer;               /* Join-time file transfer [252,50] */
     bool                download_open;      /* "Downloading" window (Tgui_joinmen menu 10) */
+    int                 join_menu;          /* Tgui_joinmen.menu: 0 none, 1 password prompt, 2 error prompt */
+    int                 join_error;         /* Tgui_joinmen.error: the refused join status */
+    int                 join_opt;           /* Error 11 choice (Tgui_opt 0x140a10960): temp map, overwrite, cancel */
+    char                join_pw_text[64];
+    int                 join_pw_cursor;
 
     /* Declarative UI Context & Window States */
     cs2d_ui_context_t   ui;

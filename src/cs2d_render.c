@@ -4501,7 +4501,7 @@ static PFN_GdipDrawString                        pGdipDrawString = NULL;
 static PFN_GdipMeasureString                     pGdipMeasureString = NULL;
 
 #define CS2D_TEXT_SCRATCH_W  1024
-#define CS2D_TEXT_SCRATCH_H  48
+#define CS2D_TEXT_SCRATCH_H  128 /* hudtxt sizes up to 100 px */
 #define CS2D_TEXT_CACHE_SIZE 512
 
 typedef struct {
@@ -4520,6 +4520,9 @@ typedef struct {
 static bool                    s_fonts_loaded = false;
 static GpFontCollection       *s_font_collection = NULL;
 static GpFont                 *s_gp_fonts[CS2D_FONT_COUNT] = {0};
+static GpFontFamily           *s_fam_lib = NULL;
+static GpFont                 *s_gp_sized[101] = {0};   /* CS2D_FONT_SIZED(px), created on first use */
+static float                   s_sized_line_h[101] = {0};
 static float                   s_font_line_h[CS2D_FONT_COUNT] = { 15.0f, 10.0f, 15.0f, 22.0f, 18.0f };
 static GpStringFormat         *s_str_format = NULL;
 static GpSolidFill            *s_white_brush = NULL;
@@ -4622,6 +4625,7 @@ static void ensure_ui_fonts(void)
     }
 
     /* UnitPixel = 2; FontStyleRegular = 0, FontStyleBold = 1 */
+    s_fam_lib = fam_lib;
     if (fam_lib) {
         pGdipCreateFont(fam_lib, 13.0f, 0, 2, &s_gp_fonts[CS2D_FONT_REGULAR]);
         pGdipCreateFont(fam_lib, 10.0f, 0, 2, &s_gp_fonts[CS2D_FONT_SMALL]);
@@ -4634,6 +4638,20 @@ static void ensure_ui_fonts(void)
 
     memset(s_text_cache, 0, sizeof(s_text_cache));
     s_fonts_loaded = true;
+}
+
+/* Font of a UI id or a CS2D_FONT_SIZED id (same style as CS2D_FONT_REGULAR: both are LoadImageFont flags 5) */
+static GpFont *font_for_id(cs2d_font_id_t font_id)
+{
+    ensure_ui_fonts();
+    if (!s_fonts_loaded) return NULL;
+    if ((int)font_id >= CS2D_FONT_SIZED_BASE + 10 && (int)font_id <= CS2D_FONT_SIZED_BASE + 100) {
+        int px = (int)font_id - CS2D_FONT_SIZED_BASE;
+        if (!s_gp_sized[px] && s_fam_lib) pGdipCreateFont(s_fam_lib, (float)px, 0, 2, &s_gp_sized[px]);
+        if (s_gp_sized[px]) return s_gp_sized[px];
+    }
+    if (font_id < 0 || font_id >= CS2D_FONT_COUNT) font_id = CS2D_FONT_REGULAR;
+    return s_gp_fonts[font_id] ? s_gp_fonts[font_id] : s_gp_fonts[CS2D_FONT_REGULAR];
 }
 
 static uint32_t hash_font_string(cs2d_font_id_t font_id, const char *text)
@@ -4649,13 +4667,8 @@ static uint32_t hash_font_string(cs2d_font_id_t font_id, const char *text)
 static cs2d_text_cache_entry_t *get_or_create_text_entry(cs2d_font_id_t font_id, const char *text)
 {
     if (!text || !text[0]) return NULL;
-    ensure_ui_fonts();
-    if (!s_fonts_loaded || !s_scratch_gfx) return NULL;
-    if (font_id < 0 || font_id >= CS2D_FONT_COUNT) font_id = CS2D_FONT_REGULAR;
-
-    GpFont *gp_font = s_gp_fonts[font_id];
-    if (!gp_font) gp_font = s_gp_fonts[CS2D_FONT_REGULAR];
-    if (!gp_font) return NULL;
+    GpFont *gp_font = font_for_id(font_id);
+    if (!gp_font || !s_scratch_gfx) return NULL;
 
     uint32_t h = hash_font_string(font_id, text);
     s_text_cache_tick++;
@@ -4807,11 +4820,8 @@ float cs2d_render_text_width_ex(cs2d_font_id_t font_id, const char *text)
 float cs2d_render_text_prefix_width(cs2d_font_id_t font_id, const char *text, int len)
 {
     if (!text || len <= 0) return 0.0f;
-    ensure_ui_fonts();
-    if (!s_fonts_loaded || !s_scratch_gfx) return 0.0f;
-    if (font_id < 0 || font_id >= CS2D_FONT_COUNT) font_id = CS2D_FONT_REGULAR;
-    GpFont *gp_font = s_gp_fonts[font_id] ? s_gp_fonts[font_id] : s_gp_fonts[CS2D_FONT_REGULAR];
-    if (!gp_font) return 0.0f;
+    GpFont *gp_font = font_for_id(font_id);
+    if (!gp_font || !s_scratch_gfx) return 0.0f;
 
     WCHAR wtext[256];
     int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, len, wtext, 255);
@@ -4828,6 +4838,16 @@ float cs2d_render_text_prefix_width(cs2d_font_id_t font_id, const char *text, in
 
 float cs2d_render_font_line_height(cs2d_font_id_t font_id)
 {
+    if ((int)font_id >= CS2D_FONT_SIZED_BASE + 10 && (int)font_id <= CS2D_FONT_SIZED_BASE + 100) {
+        /* TextHeight of a sized font: the measured height of one line */
+        int px = (int)font_id - CS2D_FONT_SIZED_BASE;
+        if (s_sized_line_h[px] <= 0.0f) {
+            cs2d_text_cache_entry_t *e = get_or_create_text_entry(font_id, "I");
+            if (!e) return (float)px * 15.0f / 13.0f;
+            s_sized_line_h[px] = e->height;
+        }
+        return s_sized_line_h[px];
+    }
     if (font_id < 0 || font_id >= CS2D_FONT_COUNT) return 15.0f;
     return s_font_line_h[font_id];
 }
