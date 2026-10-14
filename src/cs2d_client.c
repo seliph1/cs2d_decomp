@@ -1997,12 +1997,15 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     pos += 3;
                 }
             } else if (opcode == CS2D_NET_SPAWNITEM) {
-                /* Server -> Client: [33, type u8, item id u16, tile x u16, tile y u16, clip u16, reserve u16] (12 bytes) */
+                /* Server -> Client: [33, type u8, item id u16, tile x u16, tile y u16, clip u16, reserve u16] (12 bytes).
+                 * A supply's item comes with -1 / -1; FUN_14011ba70 turns that into the type's defaults */
                 if (pos + 12 > recvd) break;
+                int clip = (int16_t)(buffer[pos + 8] | (buffer[pos + 9] << 8));
+                int res  = (int16_t)(buffer[pos + 10] | (buffer[pos + 11] << 8));
+                cs2d_weapon_item_ammo(buffer[pos + 1], &clip, &res);
                 add_ground_item(client, (uint16_t)(buffer[pos + 2] | (buffer[pos + 3] << 8)), buffer[pos + 1],
                                 buffer[pos + 4] | (buffer[pos + 5] << 8), buffer[pos + 6] | (buffer[pos + 7] << 8),
-                                (int16_t)(buffer[pos + 8] | (buffer[pos + 9] << 8)),
-                                (int16_t)(buffer[pos + 10] | (buffer[pos + 11] << 8)));
+                                (int16_t)clip, (int16_t)res);
                 pos += 12;
             } else if (opcode == CS2D_NET_DROP) {
                 /* Server -> Client: [24, player, type, clip u16, reserve u16, u8, item id u16, tile x u16,
@@ -2193,6 +2196,15 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     cs2d_scene_game_remote_shot(client, &client->game.players[pid]);
                 }
                 pos += 3;
+            } else if (opcode == CS2D_NET_PORTALFIRE) {
+                /* Server -> Client: [50, player, mode, x i32, y i32] (11 bytes, FUN_1401fc9f0 relay): a Portal Gun shot;
+                 * the portal itself arrives as a dynamic object (Tdo 22 orange / 23 blue) */
+                if (pos + 11 > recvd) break;
+                uint8_t pid = buffer[pos + 1];
+                if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
+                    cs2d_scene_game_portal_shot(client, &client->game.players[pid], buffer[pos + 2]);
+                }
+                pos += 11;
             } else if (opcode == CS2D_NET_ATTACK2) {
                 /* Server -> Client: [8, player, mode] (3 bytes, FUN_1401fd590 0x1401fda0c relays it): another
                  * player's attack2 (weapon mode or Knife / Claw strong slash) */

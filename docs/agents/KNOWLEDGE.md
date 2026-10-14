@@ -47,5 +47,6 @@ When you confirm or refute something, update the topic file (or add one and list
 | [projectiles.md](knowledge/projectiles.md) | Projectiles and Persistent Fields (Tpro, Tfield) | 2 KB |
 | [radar.md](knowledge/radar.md) | Advanced radar / minimap (TSmartRadar / TSmartMinimap) | 2 KB |
 | [web-port.md](knowledge/web-port.md) | Web/Wasm portability (Emscripten) | 9 KB |
+| [special-weapons.md](knowledge/special-weapons.md) | Laser, flamethrower, launchers, Portal Gun; consumable items, spawned item ammo | 3 KB |
 | [sound.md](knowledge/sound.md) | Sound effects: play formulas, sound globals → files, triggers | 3 KB |
 | [performance.md](knowledge/performance.md) | Performance (measured 2026-10-12, desktop, 850x480) | 11 KB |

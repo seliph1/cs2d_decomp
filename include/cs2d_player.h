@@ -22,6 +22,10 @@ bool cs2d_player_give_weapon(cs2d_player_t *player, uint8_t weapon_id);
 bool cs2d_player_buy_weapon(cs2d_player_t *player, uint8_t weapon_id);
 /* A bought item ([23]): HE, Flashbang, Smoke, Flare and Medikit add 1 to the count when already owned */
 void cs2d_player_add_bought(cs2d_player_t *player, uint8_t weapon_id);
+/* Titem.give (FUN_14020ce60) for the items used up on pickup: Primary / Secondary Ammo refill the reserve of HUD slot
+ * 1 / 2, Medikit heals fully, Bandage +20 (up to max), Coins / Money / Gold +100 / +500 / +1000 money (max 16000).
+ * Returns false for any other item (it goes into the inventory). */
+bool cs2d_player_consume_item(cs2d_player_t *player, uint8_t weapon_id);
 /* A picked up item ([25]): an owned grenade (HUD slot 4) adds its count up to the maximum (clip size). Returns
  * false when part of it did not fit: the ground item then stays */
 bool cs2d_player_add_collected(cs2d_player_t *player, uint8_t weapon_id, int clip, int reserve);

@@ -235,6 +235,90 @@ void cs2d_fx_shot(cs2d_fx_t *fx, float px, float py, float angle_deg, float muzz
     }
 }
 
+/* Tshoot.Shoot laser colours by mode: 0 green, 1 red, 2 yellow, 3 blue (Rand ranges / 255) */
+static void laser_colour(cs2d_fx_t *fx, int mode, float *r, float *g, float *b)
+{
+    switch (mode) {
+        case 1:  *r = (100.0f + frand(fx) * 155.0f) / 255.0f; *g = frand(fx) * 50.0f / 255.0f;            *b = 0.0f; break;
+        case 2:  *r = (100.0f + frand(fx) * 155.0f) / 255.0f; *g = (100.0f + frand(fx) * 155.0f) / 255.0f; *b = 0.0f; break;
+        case 3:  *r = 0.0f; *g = (25.0f + frand(fx) * 50.0f) / 255.0f; *b = (100.0f + frand(fx) * 155.0f) / 255.0f; break;
+        default: *r = frand(fx) * 50.0f / 255.0f; *g = (100.0f + frand(fx) * 155.0f) / 255.0f;            *b = 0.0f; break;
+    }
+}
+
+void cs2d_fx_laser(cs2d_fx_t *fx, float mx, float my, float ex, float ey, int mode)
+{
+    if (!fx) return;
+    cs2d_fx_particle_t *l = alloc_particle(fx);
+    l->kind = CS2D_FX_LASER;
+    l->x = mx; l->y = my; l->x2 = ex; l->y2 = ey;
+    laser_colour(fx, mode, &l->r, &l->g, &l->b);
+    l->size     = 0.4f + frand(fx) * 0.2f;           /* Start alpha */
+    l->max_life = l->life = l->size / 0.03f / 60.0f; /* -0.03 per 60 Hz frame */
+
+    float dx = ex - mx, dy = ey - my;
+    float len = sqrtf(dx * dx + dy * dy);
+    int glows = (int)(len / 100.0f) + 1;             /* Rand(len / 3, 1) == 1 per px: about 3 per 100 px */
+    for (int i = 0; i < glows * 3 && len > 1.0f; i++) {
+        float k = frand(fx);
+        cs2d_fx_particle_t *p = alloc_particle(fx);
+        p->kind = CS2D_FX_FIRE;
+        p->x = mx + dx * k; p->y = my + dy * k;
+        p->vx = (frand(fx) - 0.5f) * 0.4f * 60.0f;
+        p->vy = (frand(fx) - 0.5f) * 0.4f * 60.0f;
+        p->rot = frand(fx) * 360.0f;
+        p->max_life = p->life = 0.3f + frand(fx) * 0.3f;
+        p->size = 32.0f * (0.05f + frand(fx) * 0.15f);
+        laser_colour(fx, mode, &p->r, &p->g, &p->b);
+    }
+    float r, g, b;
+    laser_colour(fx, mode, &r, &g, &b);
+    for (int i = 0; i < 3; i++) cs2d_fx_sparkle(fx, ex, ey, r, g, b);
+}
+
+void cs2d_fx_flame(cs2d_fx_t *fx, float px, float py, float angle_deg, float dist)
+{
+    if (!fx) return;
+    float rad = angle_deg * 0.017453292519943295f;
+    float sx = sinf(rad), sy = -cosf(rad);
+    for (int d = 20; d <= (int)dist; d += 5) {
+        cs2d_fx_particle_t *p = alloc_particle(fx);
+        float a = (angle_deg + (frand(fx) - 0.5f) * 100.0f) * 0.017453292519943295f;
+        p->kind = CS2D_FX_FIRE;
+        p->x = px + sx * (float)d + (frand(fx) - 0.5f) * 6.0f;
+        p->y = py + sy * (float)d + (frand(fx) - 0.5f) * 6.0f;
+        p->vx = sinf(a) * 60.0f;
+        p->vy = -cosf(a) * 60.0f;
+        p->rot = frand(fx) * 360.0f;
+        p->vrot = (frand(fx) - 0.5f) * 180.0f;
+        p->max_life = p->life = 0.35f + frand(fx) * 0.25f;
+        if (d < 30) {        /* Blue */
+            p->r = frand(fx) * 100.0f / 255.0f; p->g = frand(fx) * 60.0f / 255.0f; p->b = (200.0f + frand(fx) * 55.0f) / 255.0f;
+            p->size = 32.0f * frand(fx) * 0.05f + 4.0f;
+        } else if (d < 60) { /* Purple */
+            p->r = (150.0f + frand(fx) * 105.0f) / 255.0f; p->g = frand(fx) * 100.0f / 255.0f; p->b = (50.0f + frand(fx) * 100.0f) / 255.0f;
+            p->size = 32.0f * frand(fx) * 0.1f + 6.0f;
+        } else {             /* Orange */
+            p->r = (200.0f + frand(fx) * 55.0f) / 255.0f; p->g = (50.0f + frand(fx) * 100.0f) / 255.0f; p->b = frand(fx) * 70.0f / 255.0f;
+            p->size = 32.0f * frand(fx) * 0.2f + 8.0f;
+        }
+    }
+}
+
+void cs2d_fx_portal_flash(cs2d_fx_t *fx, float px, float py, float angle_deg, int mode)
+{
+    if (!fx) return;
+    float rad = angle_deg * 0.017453292519943295f;
+    cs2d_fx_particle_t *p = alloc_particle(fx);
+    p->kind = CS2D_FX_SPARKLE;
+    p->x = px + sinf(rad) * 24.0f;
+    p->y = py - cosf(rad) * 24.0f;
+    p->max_life = p->life = 0.3f;
+    p->size = 16.0f; /* flare sx 0.5 */
+    if (mode == 2) { p->r = 50.0f / 255.0f; p->g = 100.0f / 255.0f; p->b = 1.0f; }
+    else           { p->r = 200.0f / 255.0f; p->g = 100.0f / 255.0f; p->b = 0.0f; }
+}
+
 void cs2d_fx_knifeslash(cs2d_fx_t *fx, float px, float py, float angle_deg)
 {
     if (!fx) return;

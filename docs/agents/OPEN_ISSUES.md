@@ -5,6 +5,10 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **Special weapons / items (2026-10-14):** none checked against a proxy capture. The client `[33]` handler was not found
+  (we normalize like FUN_14011ba70). Missing: money indicator `Thud_msg.add_money` on Coins/Money/Gold, laser / flame
+  lights and TSparkle details, Tp 23 / Tp 0x1d sprites (approximated with glowdot), Satchel Charge attack / attack2
+  (FUN_1401f2670), Portal Gun teleport visuals (server moves the player), offline portal placement.
 - **attack2 / shotgun (2026-10-14):** pellet spread uses rand(), not `TRandom.SeedTable` (seeded by `GenerateSeed`, not
   traced), so our pellets differ from the server's. `[8]` not checked against a proxy capture; whether attack2 repeats
   while held (we do, 500 ms) is untested on the original; the scope hint text (`DAT_140ddf19c`, lang 0x36 group) and the

@@ -10,6 +10,13 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-14 — Claude — special weapons, consumable items, item tooltips
+- Laser beam / flames / RPG backblast (`cs2d_fx_laser/flame`), launchers as projectiles without `[7]` (GL now too),
+  Portal Gun `[50]` send/receive + portal Tdo drawing; table fixes (45..49, 88, 89 = Satchel, new 64..68).
+- Consumables on pickup (`cs2d_player_consume_item`); `[33]` ammo normalized (`cs2d_weapon_item_ammo`) → no
+  "(empty)" on supply items; 64..68 now named items (plain tooltip).
+- Verified: dump/REA (knowledge/special-weapons.md), `test_special_items`, offline screenshots (laser, flame, RPG).
+
 ## 2026-10-14 — Claude — attack2 (silencer, burst, scope, strong slash) and shotgun pellets
 - `cs2d_weapon_attack2_type/accuracy/mode`, per-item `weapon_mode[]` (replaces unused `zoom_mode`), attack2 handler +
   `[8]` send/receive, burst queue, 5 shotgun pellets, `cs2d_fx_tracer`, `cs2d_render_scope`. Knife attack2 now sends `[8,0]`.
@@ -33,13 +40,4 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - Clock also hidden in DM / TDM / Construction (table 0x1409f77e8 = 1,0,0,0,1).
 - mp_infammo: main HUD shows clip | infinity (hud_symbols 11), weapon select "clip | INF".
 - Verified: build + tests (48/49, Light engine failure pre-existing). Not compared on screenshots yet.
-
-## 2026-10-14 — Claude — Game sounds (cs2d_sound)
-
-- New `src/cs2d_sound.c`: SDL3 audio stream mixer, WAV (SDL_LoadWAV) + OGG (vendored `third_party/stb_vorbis.c`),
-  port of `cs2d_sound_play_at` 0x1401191c0 / FUN_140109d30 (gain, pan, 20 per frame), TPosSound tracking.
-- Hooks: weapon fire (+ silenced), wall ricochet, material hit / break, building hit, explosions, hit / die, item
-  pickup / drop, build, [65], Env_Sound, thunder, flashbang, hostage, HUD slot keys. Config `mapsounds`, `soundmode`.
-- Verified: `test_sound` (formula, table); client starts with audio. Not compared by ear with the original.
-- Left: see OPEN_ISSUES "Audio".
 

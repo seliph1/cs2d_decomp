@@ -115,14 +115,15 @@ void cs2d_weapons_init(void)
     set_wep(38, "Galil",            CS2D_SLOT_PRIMARY,   1, 2000, 13, 0,   0,   35,  90,  3,  250, 300, 35, -1.0f, 0, 50,   1,  true);
     set_wep(39, "Famas",            CS2D_SLOT_PRIMARY,   1, 2250, 14, 10,  0,   25,  90,  3,  250, 300, 20, -1.0f, 1, 40,   1,  true);
 
-    /* Heavy & Special Primary Weapons (CS2D slot 1 -> CS2D_SLOT_PRIMARY) */
+    /* Heavy & Special Primary Weapons (CS2D slot 1 -> CS2D_SLOT_PRIMARY). Laser .. Grenade Launcher clip, reserve and
+     * range from CS2D.exe init_weapons (0x140a017a8, 0x140a017b0, 0x1409f62a8; tools/agent/weapontables.py) */
     set_wep(40, "M249",             CS2D_SLOT_PRIMARY,   1, 5750, 15, 0,   0,   100, 200, 2,  460, 300, 40, -3.5f, 5, 60,   1,  true);
     set_wep(41, "Tactical Shield",  CS2D_SLOT_PRIMARY,   1, 1000, 0,  0,   0,   0,   0,   2,  0,   300, 0,   0.0f, 0, -899, 0,  false);
-    set_wep(45, "Laser",            CS2D_SLOT_PRIMARY,   1, 6500, 1000, 0, 0,   1,   4,   30, 200, 300, 0,  -2.5f, 0, 70,   1,  false);
-    set_wep(46, "Flamethrower",     CS2D_SLOT_PRIMARY,   1, 3200, 30, 0,   0,   100, 100, 3,  200, 300, 0,  -1.0f, 0, 70,   1,  true);
-    set_wep(47, "RPG Launcher",     CS2D_SLOT_PRIMARY,   1, 4000, 325, 0,  0,   1,   1,   50, 500, 160, 0,  -4.0f, 0, 70,   1,  false);
-    set_wep(48, "Rocket Launcher",  CS2D_SLOT_PRIMARY,   1, 5500, 70, 0,   0,   1,   3,   20, 300, 96,  0,  -3.5f, 0, 70,   1,  false);
-    set_wep(49, "Grenade Launcher", CS2D_SLOT_PRIMARY,   1, 5500, 75, 0,   0,   1,   5,   20, 300, 96,  0,  -3.5f, 0, 70,   1,  false);
+    set_wep(45, "Laser",            CS2D_SLOT_PRIMARY,   1, 6500, 1000, 0, 0,   15,  45,  30, 200, 1000, 0,  -2.5f, 0, 70,   1,  false);
+    set_wep(46, "Flamethrower",     CS2D_SLOT_PRIMARY,   1, 3200, 30, 0,   0,   100, 200, 3,  200, 55,  0,  -1.0f, 0, 70,   1,  true);
+    set_wep(47, "RPG Launcher",     CS2D_SLOT_PRIMARY,   1, 4000, 325, 0,  0,   1,   2,   50, 500, 700, 0,  -4.0f, 0, 70,   1,  false);
+    set_wep(48, "Rocket Launcher",  CS2D_SLOT_PRIMARY,   1, 5500, 70, 0,   0,   20,  60,  20, 300, 700, 0,  -3.5f, 0, 70,   1,  false);
+    set_wep(49, "Grenade Launcher", CS2D_SLOT_PRIMARY,   1, 5500, 75, 0,   0,   20,  60,  20, 300, 425, 0,  -3.5f, 0, 70,   1,  false);
 
     /* Melee (CS2D slot 3 -> CS2D_SLOT_MELEE) */
     set_wep(50, "Knife",            CS2D_SLOT_MELEE,     3, 0,    45, 90,  0,   0,   0,   9,  0,   15,  0,   0.0f, 0, 0,    0,  false);
@@ -153,12 +154,18 @@ void cs2d_weapons_init(void)
     set_wep(61, "Primary Ammo",     CS2D_SLOT_ITEM,      0, 50,   0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(62, "Secondary Ammo",   CS2D_SLOT_ITEM,      0, 50,   0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(63, "Planted Bomb",     CS2D_SLOT_ITEM,      6, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    /* 64..68 (init_weapons names 0x200..0x220 / 8): picked up and consumed (Titem.give FUN_14020ce60) */
+    set_wep(64, "Medikit",          CS2D_SLOT_ITEM,      0, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(65, "Bandage",          CS2D_SLOT_ITEM,      0, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(66, "Coins",            CS2D_SLOT_ITEM,      0, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(67, "Money",            CS2D_SLOT_ITEM,      0, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(68, "Gold",             CS2D_SLOT_ITEM,      0, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(70, "Red Flag",         CS2D_SLOT_ITEM,      6, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(71, "Blue Flag",        CS2D_SLOT_ITEM,      6, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(77, "Mine",             CS2D_SLOT_BOMB,      5, 400,  150, 0,  0,   3,   0,   15, 0,   96,  0,   0.0f, 0, 0,    0,  false);
     set_wep(87, "Laser Mine",       CS2D_SLOT_BOMB,      5, 400,  150, 0,  0,   3,   0,   15, 0,   96,  0,   0.0f, 0, 0,    0,  false);
-    set_wep(88, "Portal Gun",       CS2D_SLOT_BOMB,      5, 10000, 0,  0,  0,   100, 0,   5,  0,   300, 0,   0.0f, 0, -899, 0,  false);
-    set_wep(89, "Medikit",          CS2D_SLOT_BOMB,      5, 300,  100, 0,  0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(88, "Portal Gun",       CS2D_SLOT_PRIMARY,   1, 10000, 0,  0,  0,   0,   0,   5,  0,   300, 0,   0.0f, 0, -899, 0,  false);
+    set_wep(89, "Satchel Charge",   CS2D_SLOT_BOMB,      5, 300,  100, 0,  0,   5,   0,   15, 0,   425, 0,   0.0f, 0, 0,    0,  false);
 
     /* Minigun & FN F2000 (CS2D slot 1 -> CS2D_SLOT_PRIMARY) */
     set_wep(90, "M134",             CS2D_SLOT_PRIMARY,   1, 8100, 13, 0,   0,   200, 200, 2,  600, 300, 40, -6.0f, 8, 0,    1,  true);
@@ -375,8 +382,23 @@ bool cs2d_weapon_can_fire(const cs2d_player_t *player)
     if (!wep) return false;
 
     if (wep->slot == CS2D_SLOT_MELEE || player->current_weapon == CS2D_WEP_WRENCH) return true;
+    if (player->current_weapon == CS2D_WEP_PORTALGUN) return true; /* No ammo: ammoin 0, ammo -1 (0x140a017b0) */
 
     return player->clip_ammo[player->current_weapon] > 0;
+}
+
+void cs2d_weapon_item_ammo(uint8_t weapon_id, int *clip, int *reserve)
+{
+    const cs2d_weapon_def_t *w = cs2d_weapon_get(weapon_id);
+    int max_clip = w ? w->clip_size : 0, max_res = w ? w->max_reserve : 0, slot = cs2d_weapon_hud_slot(weapon_id);
+    if (slot >= 4 && slot <= 6 && weapon_id != CS2D_WEP_BOMB) {
+        *clip = *clip < 0 ? 1 : (*clip > max_clip ? max_clip : *clip);
+        if (*clip < 1) *clip = 1;
+        *reserve = 0;
+        return;
+    }
+    *reserve = *reserve < 0 ? max_res : (*reserve > max_res ? max_res : *reserve);
+    *clip    = *clip < 0 ? max_clip : (*clip > max_clip ? max_clip : *clip);
 }
 
 int cs2d_weapon_attack2_type(uint8_t weapon_id)

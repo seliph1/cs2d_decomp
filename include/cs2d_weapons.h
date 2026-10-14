@@ -38,6 +38,11 @@ int cs2d_weapon_accuracy(uint8_t weapon_id);
  * SG550) back to mode 0 */
 void cs2d_weapon_unzoom_on_switch(cs2d_player_t *player, uint8_t weapon_id);
 
+/* Ammo of a spawned ground item (FUN_14011ba70): grenades, bombs and mines (HUD slot 4..6, not the C4) hold
+ * clip 1..max (1 when negative) and no reserve; other items take clip and reserve up to the maximum, the
+ * maximum when negative */
+void cs2d_weapon_item_ammo(uint8_t weapon_id, int *clip, int *reserve);
+
 /* Query integer weapon property by name (reconstructed from Lua itemtype() FUN_14009b4c0) */
 int cs2d_itemtype_int(uint8_t weapon_id, const char *prop);
 

@@ -4811,6 +4811,52 @@ static bool test_weapon_modes(void)
     return true;
 }
 
+/* Special weapons and consumable items: client init_weapons tables, Titem.give (FUN_14020ce60), FUN_14011ba70 */
+static bool test_special_items(void)
+{
+    printf("\n--- Testing special weapons and consumable items ---\n");
+    cs2d_weapons_init();
+    const cs2d_weapon_def_t *l = cs2d_weapon_get(CS2D_WEP_LASER), *f = cs2d_weapon_get(CS2D_WEP_FLAMETHROWER),
+                            *rpg = cs2d_weapon_get(CS2D_WEP_RPG7), *rl = cs2d_weapon_get(CS2D_WEP_ROCKETLAUNCHER),
+                            *gl = cs2d_weapon_get(CS2D_WEP_GRENADELAUNCHER);
+    if (!l || l->clip_size != 15 || l->max_reserve != 45 || l->range != 1000 || !f || f->range != 55 ||
+        f->max_reserve != 200 || !rpg || rpg->clip_size != 1 || rpg->max_reserve != 2 || rpg->range != 700 ||
+        !rl || rl->clip_size != 20 || rl->max_reserve != 60 || !gl || gl->range != 425)
+        TEST_FAIL("Special items", "clip / reserve / range of 0x140a017a8 / 0x140a017b0 / 0x1409f62a8");
+    const cs2d_weapon_def_t *mk = cs2d_weapon_get(CS2D_WEP_MEDIKIT), *gold = cs2d_weapon_get(CS2D_WEP_GOLD),
+                            *sat = cs2d_weapon_get(CS2D_WEP_SATCHEL);
+    if (!mk || strcmp(mk->name, "Medikit") || !gold || strcmp(gold->name, "Gold") || !sat ||
+        strcmp(sat->name, "Satchel Charge") || mk->clip_size != 0)
+        TEST_FAIL("Special items", "names 64 Medikit .. 68 Gold, 89 Satchel Charge");
+
+    cs2d_player_t pl;
+    cs2d_player_init(&pl, 1, "p");
+    pl.alive = true;
+    pl.max_health = 100;
+    pl.health = 30;
+    pl.money = 15800;
+    cs2d_player_give_weapon(&pl, CS2D_WEP_AK47);
+    pl.reserve_ammo[CS2D_WEP_AK47] = 3;
+    if (!cs2d_player_add_collected(&pl, CS2D_WEP_BANDAGE, 0, 0) || pl.health != 50 ||
+        !cs2d_player_add_collected(&pl, CS2D_WEP_MEDIKIT, 0, 0) || pl.health != 100 ||
+        !cs2d_player_add_collected(&pl, CS2D_WEP_MONEY, 0, 0) || pl.money != 16000 ||
+        !cs2d_player_add_collected(&pl, CS2D_WEP_PRIMARYAMMO, 0, 0) || pl.reserve_ammo[CS2D_WEP_AK47] != 90 ||
+        pl.owned[CS2D_WEP_MEDIKIT] || pl.owned[CS2D_WEP_MONEY] || pl.owned[CS2D_WEP_PRIMARYAMMO])
+        TEST_FAIL("Special items", "consumables: bandage +20, medikit full, money capped, ammo refill, nothing owned");
+
+    int c = -1, r = -1;
+    cs2d_weapon_item_ammo(CS2D_WEP_AK47, &c, &r);
+    if (c != 30 || r != 90) TEST_FAIL("Special items", "spawned item -1 / -1 takes the defaults");
+    c = -1; r = -1;
+    cs2d_weapon_item_ammo(CS2D_WEP_HE, &c, &r);
+    if (c != 1 || r != 0) TEST_FAIL("Special items", "spawned grenade holds 1, no reserve");
+    c = 500; r = 500;
+    cs2d_weapon_item_ammo(CS2D_WEP_LASER, &c, &r);
+    if (c != 15 || r != 45) TEST_FAIL("Special items", "spawned item ammo capped at the maximum");
+    TEST_PASS("Special items: launcher / laser / flamethrower stats, consumables, spawned item ammo");
+    return true;
+}
+
 static bool test_sound(void)
 {
     printf("\n--- Testing sound attenuation ---\n");
@@ -4843,7 +4889,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 50;
+    int total = 51;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -4895,6 +4941,7 @@ int main(void)
     if (test_hostages()) passed++;
     if (test_sound()) passed++;
     if (test_weapon_modes()) passed++;
+    if (test_special_items()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

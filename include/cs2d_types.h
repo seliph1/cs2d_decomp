@@ -120,6 +120,11 @@ typedef enum {
     CS2D_WEP_PRIMARYAMMO    = 61,
     CS2D_WEP_SECONDARYAMMO  = 62,
     CS2D_WEP_PLANTEDBOMB    = 63, /* Ground item only: the planted C4 (gfx/weapons/plantedbomb_d.bmp) */
+    CS2D_WEP_MEDIKIT        = 64, /* 64..68: consumed when collected (Titem.give FUN_14020ce60) */
+    CS2D_WEP_BANDAGE        = 65,
+    CS2D_WEP_COINS          = 66,
+    CS2D_WEP_MONEY          = 67,
+    CS2D_WEP_GOLD           = 68,
     CS2D_WEP_MACHETE        = 69,
     CS2D_WEP_REDFLAG        = 70,
     CS2D_WEP_BLUEFLAG       = 71,
@@ -134,7 +139,7 @@ typedef enum {
     CS2D_WEP_GUTBOMB        = 86,
     CS2D_WEP_LASERMINE      = 87,
     CS2D_WEP_PORTALGUN      = 88,
-    CS2D_WEP_MEDIKIT        = 89,
+    CS2D_WEP_SATCHEL        = 89, /* Satchel Charge (init_weapons name table: 0x2c8 / 8) */
     CS2D_WEP_M134           = 90,
     CS2D_WEP_FNF2000        = 91
 } cs2d_weapon_id_t;

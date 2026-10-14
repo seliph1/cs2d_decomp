@@ -843,9 +843,17 @@ static void shot_bullets(cs2d_client_t *client, const cs2d_player_t *pl, const c
         if (acc > 0) a += (float)(rand() % (2 * acc) - acc);
         float hx, hy;
         int hit = cs2d_ents_trace_shot(&client->ents, pl->pos.x, pl->pos.y, a, reach, &hx, &hy);
-        if (!melee) {
+        float ddx = hx - pl->pos.x, ddy = hy - pl->pos.y;
+        if (pl->current_weapon == CS2D_WEP_LASER) {
+            /* Tshoot.Shoot style 2: the beam in the colour of the laser mode instead of tracer, flash and case */
+            float r = a * 0.017453292519943295f;
+            cs2d_fx_laser(&client->fx, pl->pos.x + sinf(r) * muzzle, pl->pos.y - cosf(r) * muzzle, hx, hy,
+                          pl->weapon_mode[CS2D_WEP_LASER]);
+        } else if (pl->current_weapon == CS2D_WEP_FLAMETHROWER) {
+            /* Tshoot.Shoot style 3: flames along the path, no tracer, flash, case or ricochet */
+            cs2d_fx_flame(&client->fx, pl->pos.x, pl->pos.y, a, sqrtf(ddx * ddx + ddy * ddy));
+        } else if (!melee) {
             /* Tracer, muzzle flash and case: measured on CS2D.exe captures (AK-47 flash ~30 px ahead) */
-            float ddx = hx - pl->pos.x, ddy = hy - pl->pos.y;
             bool hit_wall = (hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < reach - 1.0f);
             if (i == 0 && flash) {
                 cs2d_fx_shot(&client->fx, pl->pos.x, pl->pos.y, a, muzzle, hx, hy, hit_wall, shell);
@@ -912,6 +920,38 @@ static void update_bursts(cs2d_client_t *client, float delta_time)
     }
 }
 
+/* RPG backblast (FUN_140217d80 0x14021829e): smoke (Tp 3) and fire (Tp 14) from 20 to 50 px behind the shooter at
+ * aim + 195 deg drifting backwards, smoke at 25 px ahead */
+static void rpg_backblast(cs2d_client_t *client, const cs2d_player_t *pl)
+{
+    float a = pl->angle * 0.017453292519943295f, back = (pl->angle + 195.0f) * 0.017453292519943295f;
+    for (int d = 5; d < 55; d += 5) {
+        float jx = (float)(rand() % 11 - 5), jy = (float)(rand() % 11 - 5);
+        cs2d_fx_smoke_puff(&client->fx, pl->pos.x + sinf(a) * 25.0f + jx, pl->pos.y - cosf(a) * 25.0f + jy,
+                           0.6f, 0.6f, 0.6f, 0.0f, 15.0f);
+        float bx = pl->pos.x + sinf(back) * (15.0f + (float)d + jy), by = pl->pos.y - cosf(back) * (15.0f + (float)d + jx);
+        cs2d_fx_smoke_puff(&client->fx, bx, by, 0.6f, 0.6f, 0.6f, 0.0f, 15.0f);
+        cs2d_fx_fire_puff(&client->fx, bx, by, 0.0f);
+    }
+}
+
+/* Portal Gun (FUN_1401fc9f0): online the shot is [50, mode, x i32, y i32] (mode 1 orange from attack, 2 blue from
+ * attack2, at the cursor in world pixels, reliable) and the server answers with [50, player, mode, x, y]; offline
+ * the effect plays at once. Fire timer 500 ms. */
+static void portal_fire(cs2d_client_t *client, cs2d_player_t *pl, int mode)
+{
+    int x = (int)(client->mouse_screen_x + client->cam_x), y = (int)(client->mouse_screen_y + client->cam_y);
+    pl->fire_cooldown = 0.5f;
+    if (client->connected && client->join_stage == 5) {
+        uint8_t pkt[10] = { (uint8_t)CS2D_NET_PORTALFIRE, (uint8_t)mode,
+                            (uint8_t)x, (uint8_t)(x >> 8), (uint8_t)(x >> 16), (uint8_t)(x >> 24),
+                            (uint8_t)y, (uint8_t)(y >> 8), (uint8_t)(y >> 16), (uint8_t)(y >> 24) };
+        cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+    } else {
+        cs2d_scene_game_portal_shot(client, pl, mode);
+    }
+}
+
 /*
  * A shot of the local player. Online it is the fire packet [7, seed u8] (recorded from CS2D.exe:
  * melee always sends 0, firearms count 0, 2, 3, 4, ... per shot; the server stores the byte,
@@ -924,42 +964,46 @@ static void fire_shot(cs2d_client_t *client, const cs2d_player_t *pl)
     if (!wep) return;
     bool melee = (wep->slot == CS2D_SLOT_MELEE || pl->current_weapon == CS2D_WEP_WRENCH);
 
-    /* Projectile weapons: throwables (grenades, flare, molotov, gutbomb, etc.) and rockets */
-    if (cs2d_projectile_is_throwable(pl->current_weapon) || cs2d_projectile_is_rocket(pl->current_weapon)) {
-        float world_mx = client->mouse_screen_x + client->cam_x;
-        float world_my = client->mouse_screen_y + client->cam_y;
-        float dx = world_mx - pl->pos.x;
-        float dy = world_my - pl->pos.y;
-        float dist = sqrtf(dx * dx + dy * dy);
-        if (dist > 385.0f && cs2d_projectile_is_throwable(pl->current_weapon)) {
-            dist = 385.0f; /* 0x181 = 385 px max throw distance in CS2D.exe FUN_140217d80 */
-        }
+    /* Portal Gun (FUN_14021b910 case 0x58): attack opens the orange portal */
+    if (pl->current_weapon == CS2D_WEP_PORTALGUN) {
+        portal_fire(client, &client->game.players[client->local_player_id], 1);
+        return;
+    }
+
+    /*
+     * Projectile weapons (FUN_1402193e0 -> FUN_140217d80): grenades and the Grenade Launcher fly to the cursor
+     * (distance from the screen centre - 12, at most 385), the RPG and the Rocket Launcher their range (at most 385);
+     * the projectile starts 10 px ahead. A launcher sends only [27] (no fire record [7]).
+     */
+    bool launcher = cs2d_projectile_is_rocket(pl->current_weapon) || pl->current_weapon == CS2D_WEP_GRENADELAUNCHER;
+    if (cs2d_projectile_is_throwable(pl->current_weapon) || launcher) {
         float dir = pl->angle;
+        float flydist;
+        if (cs2d_projectile_is_rocket(pl->current_weapon)) {
+            flydist = (float)(wep->range < 385 ? wep->range : 385);
+        } else {
+            float dx = client->mouse_screen_x + client->cam_x - pl->pos.x;
+            float dy = client->mouse_screen_y + client->cam_y - pl->pos.y;
+            flydist = sqrtf(dx * dx + dy * dy) - 12.0f;
+            if (flydist > 385.0f) flydist = 385.0f; /* 0x181 */
+            if (flydist < 0.0f) flydist = 0.0f;
+        }
+        float rad = dir * 0.017453292519943295f;
+        float sx = (float)(int)(pl->pos.x + sinf(rad) * 10.0f), sy = (float)(int)(pl->pos.y - cosf(rad) * 10.0f);
         float def_speed, def_lifetime, def_flydist;
         cs2d_projectile_get_default_properties(pl->current_weapon, &def_speed, &def_lifetime, &def_flydist);
-        float flydist = cs2d_projectile_is_throwable(pl->current_weapon) ? dist : def_flydist;
-
-        cs2d_projectile_spawn(&client->projectiles, pl->id, pl->current_weapon,
-                              pl->pos.x, pl->pos.y, dir, flydist, def_speed, def_lifetime);
+        cs2d_projectile_spawn(&client->projectiles, pl->id, pl->current_weapon, sx, sy, dir, flydist, def_speed, def_lifetime);
 
         if (client->connected && client->join_stage == 5) {
             /* Client -> Server: [27, type, x u16, y u16, dir u16, flydist u16] (10 bytes) */
-            uint16_t x_u16 = (uint16_t)(pl->pos.x < 0.0f ? 0 : (pl->pos.x > 65535.0f ? 65535 : (int)pl->pos.x));
-            uint16_t y_u16 = (uint16_t)(pl->pos.y < 0.0f ? 0 : (pl->pos.y > 65535.0f ? 65535 : (int)pl->pos.y));
+            uint16_t x_u16 = (uint16_t)(sx < 0.0f ? 0 : (sx > 65535.0f ? 65535 : (int)sx));
+            uint16_t y_u16 = (uint16_t)(sy < 0.0f ? 0 : (sy > 65535.0f ? 65535 : (int)sy));
             float norm_dir = fmodf(fmodf(dir, 360.0f) + 360.0f, 360.0f);
             uint16_t dir_u16 = (uint16_t)(norm_dir * (65536.0f / 360.0f));
-            uint16_t fly_u16 = (uint16_t)(flydist < 0.0f ? 0 : (flydist > 65535.0f ? 65535 : (int)flydist));
-            uint8_t pkt[10];
-            pkt[0] = (uint8_t)CS2D_NET_PROJECTILE;
-            pkt[1] = pl->current_weapon;
-            pkt[2] = (uint8_t)(x_u16 & 0xFF);
-            pkt[3] = (uint8_t)((x_u16 >> 8) & 0xFF);
-            pkt[4] = (uint8_t)(y_u16 & 0xFF);
-            pkt[5] = (uint8_t)((y_u16 >> 8) & 0xFF);
-            pkt[6] = (uint8_t)(dir_u16 & 0xFF);
-            pkt[7] = (uint8_t)((dir_u16 >> 8) & 0xFF);
-            pkt[8] = (uint8_t)(fly_u16 & 0xFF);
-            pkt[9] = (uint8_t)((fly_u16 >> 8) & 0xFF);
+            uint16_t fly_u16 = (uint16_t)(int)flydist;
+            uint8_t pkt[10] = { (uint8_t)CS2D_NET_PROJECTILE, pl->current_weapon,
+                                (uint8_t)(x_u16 & 0xFF), (uint8_t)(x_u16 >> 8), (uint8_t)(y_u16 & 0xFF), (uint8_t)(y_u16 >> 8),
+                                (uint8_t)(dir_u16 & 0xFF), (uint8_t)(dir_u16 >> 8), (uint8_t)(fly_u16 & 0xFF), (uint8_t)(fly_u16 >> 8) };
             cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
         }
 
@@ -974,8 +1018,9 @@ static void fire_shot(cs2d_client_t *client, const cs2d_player_t *pl)
             }
             return;
         }
-
-        /* For rockets (ammo of rocket launcher / RPG), continue to gun recoil and tracer below */
+        shot_sound(pl);
+        if (pl->current_weapon == CS2D_WEP_RPG7) rpg_backblast(client, pl);
+        return;
     }
 
     if (client->connected && client->join_stage == 5) {
@@ -1045,6 +1090,13 @@ static void attack2(cs2d_client_t *client, cs2d_player_t *pl)
     uint8_t w = pl->current_weapon;
     int kind = cs2d_weapon_attack2_type(w);
     bool melee2 = (w == CS2D_WEP_KNIFE || w == CS2D_WEP_CLAW);
+    if (w == CS2D_WEP_PORTALGUN) {
+        /* FUN_1401fd590 case 0x58: firetimer 500 ms, then the blue portal (FUN_1401fc9f0 mode 2) */
+        if (pl->fire_cooldown > 0.0f) return;
+        client->attack2_ms = now + 500;
+        portal_fire(client, pl, 2);
+        return;
+    }
     if (!kind && !melee2 && w != CS2D_WEP_LASER) return; /* The Wrench is handled on the click (wrench_attack2) */
     if (melee2 && pl->fire_cooldown > 0.0f) return;
     client->attack2_ms = now + 500;
@@ -1078,6 +1130,17 @@ void cs2d_scene_game_remote_attack2(cs2d_client_t *client, cs2d_player_t *pl, ui
     if (pl->weapon_mode[pl->current_weapon] == mode) return;
     pl->weapon_mode[pl->current_weapon] = mode;
     weapon_mode_feedback(client, pl, false);
+}
+
+/* [50, player, mode, x, y] (FUN_1401fc9f0 with param_5 = 0): recoil, the coloured flash and the Portal Gun sound */
+void cs2d_scene_game_portal_shot(cs2d_client_t *client, cs2d_player_t *pl, int mode)
+{
+    if (!pl || !pl->alive) return;
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(CS2D_WEP_PORTALGUN);
+    if (wep && wep->visual_recoil > 0) pl->recoil = (float)wep->visual_recoil + ((float)(rand() & 0x7FFF) / 32768.0f);
+    cs2d_fx_portal_flash(&client->fx, pl->pos.x, pl->pos.y, pl->angle, mode);
+    const char *f = cs2d_sound_weapon_file(CS2D_WEP_PORTALGUN, false);
+    if (f) cs2d_sound_play_at(f, pl->pos.x, pl->pos.y, 1.0f, 0);
 }
 
 /* Another player's shot or melee swing reported by the server: same recoil / swing / tracer / flash / case as a local shot */

@@ -161,7 +161,7 @@ bool cs2d_player_give_weapon(cs2d_player_t *player, uint8_t weapon_id)
 /* Bought items that stack: HE, Flashbang, Smoke, Flare and Medikit ([23] handler 0x1402008xx: 0x33..0x36, 0x59) */
 static bool buy_stacks(uint8_t weapon_id)
 {
-    return (weapon_id >= CS2D_WEP_HE && weapon_id <= CS2D_WEP_FLARE) || weapon_id == CS2D_WEP_MEDIKIT;
+    return (weapon_id >= CS2D_WEP_HE && weapon_id <= CS2D_WEP_FLARE) || weapon_id == CS2D_WEP_SATCHEL;
 }
 
 void cs2d_player_add_bought(cs2d_player_t *player, uint8_t weapon_id)
@@ -182,9 +182,42 @@ void cs2d_player_add_bought(cs2d_player_t *player, uint8_t weapon_id)
     cs2d_player_select_weapon(player, weapon_id);
 }
 
+/* Titem.refillammo (0x140036f90) with p3 = 0: every held item of HUD slot hud_slot gets its full reserve */
+static void refill_ammo(cs2d_player_t *player, int hud_slot)
+{
+    for (int id = 1; id < CS2D_MAX_WEAPONS; id++) {
+        const cs2d_weapon_def_t *w = cs2d_weapon_get((uint8_t)id);
+        if (!player->owned[id] || !w || cs2d_weapon_hud_slot((uint8_t)id) != hud_slot) continue;
+        if (player->reserve_ammo[id] < w->max_reserve) player->reserve_ammo[id] = (int16_t)w->max_reserve;
+    }
+}
+
+bool cs2d_player_consume_item(cs2d_player_t *player, uint8_t weapon_id)
+{
+    if (!player) return false;
+    int money = 0;
+    switch (weapon_id) {
+        case CS2D_WEP_PRIMARYAMMO:   refill_ammo(player, 1); return true;
+        case CS2D_WEP_SECONDARYAMMO: refill_ammo(player, 2); return true;
+        case CS2D_WEP_MEDIKIT:       player->health = player->max_health; return true;
+        case CS2D_WEP_BANDAGE:
+            player->health += 20;
+            if (player->health > player->max_health) player->health = player->max_health;
+            return true;
+        case CS2D_WEP_COINS: money = 100;  break;
+        case CS2D_WEP_MONEY: money = 500;  break;
+        case CS2D_WEP_GOLD:  money = 1000; break;
+        default: return false;
+    }
+    player->money += money;
+    if (player->money > 16000) player->money = 16000;
+    return true;
+}
+
 bool cs2d_player_add_collected(cs2d_player_t *player, uint8_t weapon_id, int clip, int reserve)
 {
     if (!player || weapon_id == CS2D_WEP_NONE || weapon_id >= CS2D_MAX_WEAPONS) return true;
+    if (cs2d_player_consume_item(player, weapon_id)) return true;
     const cs2d_weapon_def_t *wep = cs2d_weapon_get(weapon_id);
     if (wep && cs2d_weapon_hud_slot(weapon_id) == 4 && player->owned[weapon_id]) {
         /* FUN_14020ce60 (client path): an owned grenade takes ammoin up to the max (0x140a017a8); when that is

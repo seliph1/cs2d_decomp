@@ -27,7 +27,8 @@ typedef enum {
     CS2D_FX_FIRE       = 9,  /* Fire / flame particle */
     CS2D_FX_SPARKLE    = 10, /* Bright flare sparkle */
     CS2D_FX_BLOOD      = 11, /* Gut bomb blood drop / splat */
-    CS2D_FX_SNOW       = 12  /* Snowball snow puff */
+    CS2D_FX_SNOW       = 12, /* Snowball snow puff */
+    CS2D_FX_LASER      = 13  /* Laser beam: Tp.CreateLine width 3 in the laser colour */
 } cs2d_fx_kind_t;
 
 typedef struct {
@@ -82,6 +83,23 @@ void cs2d_fx_shot(cs2d_fx_t *fx, float px, float py, float angle_deg, float muzz
 /* The bullet trail of one shot from the muzzle (mx, my) to (ex, ey), with impact sparks when hit_wall: what
  * cs2d_fx_shot draws besides the flash and the case; each shotgun pellet draws one */
 void cs2d_fx_tracer(cs2d_fx_t *fx, float mx, float my, float angle_deg, float ex, float ey, bool hit_wall);
+
+/*
+ * Laser shot (Tshoot.Shoot style 2, 0x140207092 / 0x14020871a): a line from the muzzle (mx, my) to (ex, ey), width 3,
+ * alpha Rnd(0.4, 0.6) fading by 0.03 per 60 Hz frame, in the colour of the laser mode (0 green, 1 red, 2 yellow,
+ * 3 blue), a few glowing particles of that colour along the beam and sparkles at the end
+ */
+void cs2d_fx_laser(cs2d_fx_t *fx, float mx, float my, float ex, float ey, int mode);
+
+/*
+ * Flamethrower shot (Tshoot.Shoot style 3, 0x140207144): a fire particle every 5 px of the path past the first 20 px,
+ * moving at 1 px per frame within 50 deg of the aim, blue near the nozzle, then purple, then orange
+ */
+void cs2d_fx_flame(cs2d_fx_t *fx, float px, float py, float angle_deg, float dist);
+
+/* Portal Gun shot (FUN_1401fc9f0, Tp 0x1d sx 0.5): a flash 24 px ahead, orange (200, 100, 0) for mode 1, blue
+ * (50, 100, 255) for mode 2 */
+void cs2d_fx_portal_flash(cs2d_fx_t *fx, float px, float py, float angle_deg, int mode);
 
 /*
  * Melee weapon slash arc (CS2D.exe Tpl.slash 0x14018cf63 -> Tp.create type 13 at 0x14004b4e0,

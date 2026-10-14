@@ -5011,6 +5011,22 @@ void cs2d_render_dynobjs(const cs2d_dynobj_world_t *w, cs2d_dynobj_layer_t layer
                     dynobj_shadow(bank, cx, cy, 2.3f, 0.5f);
                     dynobj_frame(bank, cx, cy, 9, 0.0f, tc[0], tc[1], tc[2], (float)(fabs(pulse * 0.3) + 0.7), 4);
                     break;
+                case CS2D_DO_ORANGE_PORTAL: case CS2D_DO_BLUE_PORTAL: {
+                    /* Tdo.draw_ground case 0x16 / 0x17: shadow, flare1 turning at (ms + rot) * 0.05 in orange
+                     * (255, 128, 0) or blue (50, 100, 255), and eight smaller flares circling 10 px away */
+                    if (!bank->tex_flare1.id) break;
+                    static const float orange[3] = { 1.0f, 128.0f / 255.0f, 0.0f }, blue[3] = { 50.0f / 255.0f, 100.0f / 255.0f, 1.0f };
+                    const float *pc = o->typ == CS2D_DO_ORANGE_PORTAL ? orange : blue;
+                    dynobj_shadow(bank, cx, cy, 0.5f, 0.4f);
+                    dynobj_flare(bank, cx, cy, ((float)ms + o->rot) * 0.05f, 1.0f, pc, 1.0f);
+                    float sc = (float)(fabs(sin((double)(ms / 30) * 0.017453292519943295)) * 0.3 + 0.4);
+                    float spin = ((float)ms + o->rot) * -0.1f;
+                    for (int k = 45; k != 405; k += 45) {
+                        double a = (double)(ms / 10 + k) * 0.017453292519943295;
+                        dynobj_flare(bank, cx + (float)(sin(a) * 10.0), cy - (float)(cos(a) * 10.0), spin, sc, pc, 1.0f);
+                    }
+                    break;
+                }
                 case CS2D_DO_MINE:
                     if (!bank->tex_flare1.id) break;
                     dynobj_shadow(bank, cx, cy, 0.5f, 0.4f);
@@ -5204,6 +5220,16 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
         } else if (p->kind == CS2D_FX_TRACER) {
             cs2d_gl_set_blend(CS2D_GL_BLEND_ADD);
             cs2d_render_line(sx, sy, p->x2 - cam_x, p->y2 - cam_y, 1.0f, 0.9f, 0.4f, 0.6f * t);
+            cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+        } else if (p->kind == CS2D_FX_LASER) {
+            /* Tp.CreateLine width 3 (three parallel 1 px lines), additive */
+            float dx = p->x2 - p->x, dy = p->y2 - p->y, len = sqrtf(dx * dx + dy * dy);
+            float nx = len > 0.0f ? -dy / len : 0.0f, ny = len > 0.0f ? dx / len : 0.0f;
+            float a = p->size * t;
+            cs2d_gl_set_blend(CS2D_GL_BLEND_ADD);
+            for (int k = -1; k <= 1; k++) {
+                cs2d_render_line(sx + nx * k, sy + ny * k, p->x2 - cam_x + nx * k, p->y2 - cam_y + ny * k, p->r, p->g, p->b, a);
+            }
             cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
         } else if (p->kind == CS2D_FX_GLOWDOT && bank) {
             cs2d_render_sprite_frame(&bank->tex_glowdot, 0, 0, 0, sx, sy, p->size + 1.0f, p->size + 1.0f,
