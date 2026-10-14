@@ -41,6 +41,14 @@ Source: Lua fixture, 331 samples.
     3 steam (Tp 3 grey 190..255). Only within 850 x 480 of the screen centre.
   - Draw lists: wave l[1] (under players), Tp 3/12/14/17 l[5], fog l[7], rain/snow l[6]; after Te.draw pass 2:
     l5, l7, l6. Image masks: wave / raindrop / snowflake descriptors +0x74 = 3.
+  - Info_Storm (9): Te.setup case 9: wind_x = ints[1]*0.1*sin(ints[0] deg), wind_y = -ints[1]*0.1*cos (globals
+    0x140ddf028/024, last storm wins, reset on map load); Tp.draw adds it to the speed of Tp 3, 0x20, 14, 22.
+  - Info_Quake (14): Te.draw pass 2: state 0 and g_screenshake < ints[0] → g_screenshake = ints[0].
+    cs2d_draw_world (0x140290310): s = min(shake, 30); camx/camy += Rand(-s, s) for the world draw only
+    (restored before HUD), shake -= g_dt. Other writers (not ported): explosions within 150 px
+    ((1 - d/150) * 30), the Lua shake message (cap 1000), a 50 on an item pickup at 0x1401f0xxx.
+  - Info_TileFX (10): see `include/cs2d_tilefx.h` (CreateTileFX 0x1400aa640, update 0x1400f4b60). Built at map load
+    with Info_Animation by FUN_1401d7c40 when DAT_140ddf17f == 1; one effect per tile frame, first entity wins.
   - g_prop_class (TmapPreview colours): 0 wall, 1 floor (14 water), 2 obstacle, -1 deadly.
 
 ## Implementation checklist (client)
@@ -53,12 +61,12 @@ Status of each entity type in the reimplementation (2026-10-13). [x] done, [~] p
 - [x] Info_RescuePoint (4), Info_BombSpot (5), Info_EscapePoint (6): zones
 - [ ] Info_Target (7): bots only (server-side)
 - [x] Info_Animation (8): tile animation
-- [ ] Info_Storm (9)
-- [ ] Info_TileFX (10)
+- [x] Info_Storm (9): wind on Tp 3 / 14 (`cs2d_gen.c`)
+- [x] Info_TileFX (10): scroll / noise / wave frames (`cs2d_tilefx.c`)
 - [ ] Info_NoBuying (11)
 - [ ] Info_NoWeapons (12)
 - [ ] Info_NoFOW (13)
-- [ ] Info_Quake (14)
+- [x] Info_Quake (14): screen shake (`cs2d_gen_shake_offset`)
 - [x] Info_CTF_Flag (15)
 - [ ] Info_OldRender (16)
 - [x] Info_Dom_Point (17)
@@ -79,7 +87,7 @@ Status of each entity type in the reimplementation (2026-10-13). [x] done, [~] p
 - [x] Env_Room (32), Env_Light (33), Env_LightStripe (34): light engine
 - [x] Gen_Particles (50)
 - [x] Gen_Sprites (51)
-- [~] Gen_Weather (52): thunder sound and wind (Info_Storm) missing
+- [~] Gen_Weather (52): thunder sound missing
 - [x] Gen_FX (53)
 - [x] Func_Teleport (70)
 - [x] Func_DynWall (71)

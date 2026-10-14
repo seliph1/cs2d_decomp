@@ -123,6 +123,14 @@ void cs2d_gen_init(cs2d_gen_t *g, const cs2d_map_t *map)
         cs2d_entity_type_t t = map->entities[i].type;
         if (t >= CS2D_ENT_GEN_PARTICLES && t <= CS2D_ENT_GEN_FX && g->ent_count < CS2D_GEN_MAX_ENTS) {
             g->ents[g->ent_count++] = (int)i;
+        } else if (t == CS2D_ENT_INFO_QUAKE && g->quake_count < CS2D_GEN_MAX_ENTS) {
+            g->quake[g->quake_count++] = (int)i;
+        } else if (t == CS2D_ENT_INFO_STORM) {
+            /* Te.setup case 9 (0x1401ad930): ints[0] = angle in degrees, ints[1] = strength; the last one wins */
+            const cs2d_entity_t *e = &map->entities[i];
+            double ang = (double)e->int_settings[0] * 0.017453292519943295;
+            g->wind_x = (float)((double)e->int_settings[1] * 0.1 * sin(ang));
+            g->wind_y = (float)((double)e->int_settings[1] * -0.1 * cos(ang));
         } else if (t == CS2D_ENT_INFO_NOWEATHER && g->noweather_count < CS2D_GEN_MAX_ENTS) {
             g->noweather[g->noweather_count++] = (int)i;
         }
@@ -278,9 +286,9 @@ static bool move(cs2d_gen_t *g, cs2d_gen_particle_t *p, const cs2d_map_t *map, f
             p->sx += 0.01f;
             p->a  -= 0.01f;
             return p->a >= 0.0f;
-        case 3: /* Wind (_DAT_140ddf028 / 024) is not added: Info_Storm is not implemented */
-            p->x   += p->fx;
-            p->y   += p->fy;
+        case 3: /* Info_Storm wind (_DAT_140ddf028 / 024) is added to the speed */
+            p->x   += p->fx + g->wind_x;
+            p->y   += p->fy + g->wind_y;
             p->sx  += 0.001f;
             p->a   -= p->sy;
             p->rot += p->rots;
@@ -305,8 +313,8 @@ static bool move(cs2d_gen_t *g, cs2d_gen_particle_t *p, const cs2d_map_t *map, f
         case 14:
             p->a   -= 0.02f;
             p->rot -= 5.0f;
-            p->x   += p->fx;
-            p->y   += p->fy;
+            p->x   += p->fx + g->wind_x;
+            p->y   += p->fy + g->wind_y;
             p->sx  += 0.001f;
             return p->a >= 0.0f;
         case 17: /* Per frame, without g_dt */
@@ -378,8 +386,25 @@ void cs2d_gen_step(cs2d_gen_t *g, const cs2d_map_t *map, float cam_x, float cam_
     }
     g->count = keep;
 
+    /* cs2d_draw_world decays the shake, then Te.draw pass 2 raises it to every active Info_Quake's ints[0] */
+    if (g->shake > 0.0f) g->shake -= 1.0f;
+    for (int k = 0; k < g->quake_count; k++) {
+        const cs2d_entity_t *e = &map->entities[g->quake[k]];
+        if (map->entity_state[g->quake[k]] == 0 && g->shake < (float)e->int_settings[0]) g->shake = (float)e->int_settings[0];
+    }
+
     g->flash -= 0.005f; /* FUN_140131710: flash -= 0.005 * g_dt */
     if (g->flash < 0.0f) g->flash = 0.0f;
+}
+
+bool cs2d_gen_shake_offset(cs2d_gen_t *g, int *dx, int *dy)
+{
+    *dx = *dy = 0;
+    if (!g || g->shake <= 0.0f) return false;
+    int s = (int)(g->shake < 30.0f ? g->shake : 30.0f);
+    *dx = rand_i(g, -s, s);
+    *dy = rand_i(g, -s, s);
+    return true;
 }
 
 void cs2d_gen_update(cs2d_gen_t *g, const cs2d_map_t *map, float cam_x, float cam_y,

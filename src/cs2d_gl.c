@@ -288,6 +288,9 @@ static void gl3_push(GLenum mode, const cs2d_gl_vertex_t *verts, int count)
         if (S.count > 0) s_stats.mode_switches++;
         gl3_flush();
         S.mode = mode;
+    } else if (mode == GL_LINE_LOOP || mode == GL_LINE_STRIP || mode == GL_TRIANGLE_FAN || mode == GL_TRIANGLE_STRIP) {
+        /* Connected primitives cannot be concatenated: two loops in one draw join into a single loop */
+        gl3_flush();
     }
     if (S.count + count > CS2D_GL_BATCH_MAX) {
         s_stats.overflows++;

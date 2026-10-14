@@ -750,6 +750,28 @@ void cs2d_ui_render(const cs2d_ui_context_t *ctx)
  * Authentic CS2D Theme Widgets (Built on the Declarative Layout Engine)
  * ============================================================================ */
 
+static void ui_window_register(cs2d_ui_context_t *ctx, cs2d_ui_id_t id, bool *is_open)
+{
+    for (int i = 0; i < ctx->window_count; i++) {
+        if (ctx->windows[i].id == id) { ctx->windows[i].is_open = is_open; return; }
+    }
+    if (ctx->window_count < CS2D_UI_MAX_WINDOWS) {
+        ctx->windows[ctx->window_count].id = id;
+        ctx->windows[ctx->window_count].is_open = is_open;
+        ctx->window_count++;
+    }
+}
+
+/* A parent counts as closed when it was registered with a flag that is now false */
+static bool ui_window_parent_closed(const cs2d_ui_context_t *ctx, cs2d_ui_id_t parent_id)
+{
+    if (parent_id == 0) return false;
+    for (int i = 0; i < ctx->window_count; i++) {
+        if (ctx->windows[i].id == parent_id) return ctx->windows[i].is_open && !*ctx->windows[i].is_open;
+    }
+    return false;
+}
+
 bool cs2d_ui_window_begin(
     cs2d_ui_context_t *ctx,
     cs2d_ui_id_t id,
@@ -758,7 +780,22 @@ bool cs2d_ui_window_begin(
     bool *is_open
 )
 {
-    if (!ctx || (is_open && !*is_open)) return false;
+    return cs2d_ui_window_begin_child(ctx, id, title, x, y, w, h, is_open, 0);
+}
+
+bool cs2d_ui_window_begin_child(
+    cs2d_ui_context_t *ctx,
+    cs2d_ui_id_t id,
+    const char *title,
+    float x, float y, float w, float h,
+    bool *is_open,
+    cs2d_ui_id_t parent_id
+)
+{
+    if (!ctx) return false;
+    ui_window_register(ctx, id, is_open);
+    if (is_open && ui_window_parent_closed(ctx, parent_id)) *is_open = false;
+    if (is_open && !*is_open) return false;
 
     cs2d_ui_open_element(ctx, id, &(cs2d_ui_element_decl_t){
         .layout = {

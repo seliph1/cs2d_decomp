@@ -952,7 +952,10 @@ static void build_color_window(cs2d_client_t *client)
     cs2d_ed_state_t *ed = &client->editor;
     cs2d_ui_context_t *ui = &client->ui;
     const float wx = 95.0f, wy = 144.0f;
-    if (!cs2d_ui_window_begin(ui, CS2D_UI_ID("EdColorWin"), "Color", wx, wy, 451.0f, 193.0f, &ed->color_open)) return;
+    /* Opened from an Entity Properties color box, it belongs to that window and closes with it */
+    cs2d_ui_id_t parent = ed->color_for_entprop ? CS2D_UI_ID("EdEntPropWin") : 0;
+    if (!cs2d_ui_window_begin_child(ui, CS2D_UI_ID("EdColorWin"), "Color", wx, wy, 451.0f, 193.0f, &ed->color_open,
+                                    parent)) return;
     static const char *names[3] = { "Red:", "Green:", "Blue:" };
     int *values[3] = { &ed->color_r, &ed->color_g, &ed->color_b };
     for (int i = 0; i < 3; i++) {

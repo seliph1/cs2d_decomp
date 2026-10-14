@@ -221,6 +221,7 @@ typedef struct {
 
 #define CS2D_UI_MAX_KEY_EVENTS   32
 #define CS2D_UI_MAX_FOCUSABLE    32
+#define CS2D_UI_MAX_WINDOWS      32
 #define CS2D_UI_EDIT_MAX_TEXT    256 /* Longest buffer the edit state can snapshot / measure */
 #define CS2D_UI_UNDO_DEPTH       32
 
@@ -310,6 +311,11 @@ typedef struct {
     char                 numbox_text[16];
     int                  numbox_cursor;
 
+    /* Windows seen by cs2d_ui_window_begin (persistent): a child window closes itself once its parent's
+     * open flag goes false. The is_open flags must outlive the context */
+    struct { cs2d_ui_id_t id; bool *is_open; } windows[CS2D_UI_MAX_WINDOWS];
+    int                  window_count;
+
     /* Current frame node tree */
     cs2d_ui_node_t       nodes[CS2D_UI_MAX_NODES];
     int                  node_count;
@@ -384,6 +390,16 @@ bool cs2d_ui_window_begin(
     const char *title,
     float x, float y, float w, float h,
     bool *is_open
+);
+/* Same, owned by the window parent_id (0 = none): when the parent closes (by any path: X, Okay, ESC, code),
+ * the child sets *is_open = false and returns false. Closing cascades down a chain of children */
+bool cs2d_ui_window_begin_child(
+    cs2d_ui_context_t *ctx,
+    cs2d_ui_id_t id,
+    const char *title,
+    float x, float y, float w, float h,
+    bool *is_open,
+    cs2d_ui_id_t parent_id
 );
 void cs2d_ui_window_end(cs2d_ui_context_t *ctx);
 

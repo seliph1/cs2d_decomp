@@ -1,5 +1,31 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-13 — Claude — Gen_Particles / Gen_Sprites / Gen_Weather / Gen_FX + Info_NoWeather
+
+- **Changed:** new `src/cs2d_gen.c` (+ `include/cs2d_gen.h`): spawn rules of `Te.draw` pass 2 and the `Tp` types
+  1/3/12/14/17/19/20/21 in fixed 60 Hz steps; `cs2d_render_gen` / `cs2d_render_gen_flash` (render.c) with
+  wave/snowflake/raindrop/smokepuff textures; hooked in `game_load_map`, the game update and `game_render`.
+- **Verified:** `test_gen_entities` (39 / 39); our client screenshots of de_aztec_classic (rain + fog) and de_inferno
+  (chimney smoke). Not compared to original screenshots yet.
+- **Left:** see OPEN_ISSUES "Gen_* entities".
+
+## 2026-10-13 — Claude — Map loading screen
+
+- **Changed:** `cs2d_render_loadscreen` (render.c) draws+presents a "Loading Map" window with step text and progress
+  bar (port of `LoadScreen::DrawLoadingScreen` 0x1401d1610 state 3); `game_load_map` calls it at each step.
+- **Verified:** build + 38 / 38; not screenshot-compared.
+- **Left:** see OPEN_ISSUES "Loading screen".
+
+## 2026-10-13 — Claude — Env_Decal (TDecal) + entity checklist
+
+- **Changed:** Env_Decal moved out of the ground pass into its own `CS2D_EPASS_DECAL`, drawn right after the tiles
+  (`render_decals`): alpha = `strs[0]` as float with no invented default ("" = invisible), frame clamped, one decal
+  per tile (first wins), entity_state ignored. Source: `Te.setup` 0x1401ad930 case 0x18, `TDecal::Add` 0x140005c70,
+  `FUN_140110c60`. Added the implementation checklist to `knowledge/entities.md`.
+- **Verified:** `test_env_decal` + updated `test_entity_culling`; 38 / 38. No screenshot comparison yet.
+- **Left:** decals on wall/obstacle tiles are drawn in the original's wall/obstacle tile loops (layer 4 / 5);
+  ours draws all after the single tile pass.
+
 ## 2026-10-13 — Antigravity — Fix player shadow order and remove BombSpot decals on floor
 
 - **Changed:**

@@ -1823,6 +1823,13 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     uint64_t now_ms = SDL_GetTicks();
     float light_dt = last_ms ? (float)(now_ms - last_ms) * 0.06f : 1.0f;
     last_ms = now_ms;
+    /* cs2d_draw_world (0x140290310): the screen shake (Info_Quake, ...) moves the camera for the world only */
+    float world_cam_x = client->cam_x, world_cam_y = client->cam_y;
+    int shake_x, shake_y;
+    if (cs2d_gen_shake_offset(&client->gen, &shake_x, &shake_y)) {
+        client->cam_x += (float)shake_x;
+        client->cam_y += (float)shake_y;
+    }
     for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
         const cs2d_player_t *p = &client->game.players[i];
         if (p->alive) {
@@ -1885,6 +1892,8 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     cs2d_render_gen(&client->gen, CS2D_GEN_LAYER_FOG, client->cam_x, client->cam_y, screen_w, screen_h);
     cs2d_render_gen(&client->gen, CS2D_GEN_LAYER_WEATHER, client->cam_x, client->cam_y, screen_w, screen_h);
     cs2d_render_gen_flash(&client->gen, screen_w, screen_h);
+    client->cam_x = world_cam_x;
+    client->cam_y = world_cam_y;
     uint64_t t4 = SDL_GetPerformanceCounter();
 
     /* 4. In-Game HUD (hud_nums.bmp, hud_symbols.bmp, hud_radar_advanced.png) */

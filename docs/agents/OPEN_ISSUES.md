@@ -6,7 +6,8 @@ the same one.
 
 ## Known gaps
 - **Gen_* entities (2026-10-13, `src/cs2d_gen.c`):** not screenshot-compared with CS2D.exe. Missing: the thunder
-  sound (no audio system; `gen.thunder` counts claps), wind `_DAT_140ddf028/024` (Info_Storm) on smoke / fire,
+  sound (no audio system; `gen.thunder` counts claps), wind on Tp 22 / 0x20 (not spawned by us), screen shake
+  from explosions / Lua (only Info_Quake feeds `gen.shake`),
   the FOW hiding (`FUN_140146fd0`) and the lighting sprites (`TLightingSprite::DrawSprite` when DAT_140ddf185).
   Settings gating rain / snow / effects (DAT_140a1b068, 140a1b05c, 140ddf540) are assumed on, "particles" = 4.
   Thunder decoded as a 10..30 *frame* countdown (assembly 0x14027525b), which seems very frequent: verify on the
@@ -22,13 +23,12 @@ the same one.
   with a dynamically resized sprite cache (`sprite_cache`) backed by map texture atlas pages. Maps with
   >64 distinct entity sprites (`fun_roleplay` has 157 distinct sprite/mask pairs) keep every sprite without
   silently dropping any. Verified by regression test `test_sprite_atlas_packer`.
-- **Two entity types are still never culled (2026-10-12, `cs2d_render.c` `entity_cull_margin`):**
-  `Env_Object` (417 in `fun_roleplay`) draws its palm / tree leaves at `size * 30 px` offsets plus
-  texture sized flares, and a texture sized `Env_Image` draws at its whole texture size, so neither has a
-  margin the index can know before its image is loaded. Both could use the same trick as `Env_Sprite`
-  (`cs2d_render_entity_learn_size` from `render_env_object_overhead` / the two `Env_Image` branches, using
-  `w = tex->width * size + 2 * size * 30` for the palms). Not measured yet how much they cost on
-  `fun_roleplay`, where the index already dropped the per-frame count from 49,505 to 998.
+- **Info_TileFX (2026-10-14, `cs2d_tilefx.c`):** not screenshot-compared with CS2D.exe. Not applied to tile frames
+  drawn outside the map pass (Env_Breakable / Func_DynWall, tile blending sources); the frame clock is the global
+  tick instead of a per-effect timer; built on the first draw, not at map load; ignores DAT_140ddf17f (as tile blending).
+- **Entity culling (RESOLVED 2026-10-14):** `Env_Image` and `Env_Object` now start unculled and learn their
+  drawn size (`cs2d_render_entity_learn_size`, `env_object_learn`), like `Env_Sprite`. `fun_roleplay` at (0,0):
+  78 entities considered per frame once learned (test_entity_culling). Not re-profiled on GPU.
 - **No frame cap with VSync off (measured 2026-10-13):** the original locks its frame at ~65 FPS
   (`15.384615 ms`, `docs/dump/cs2d/_global/1402f0000.c:2284`) whether VSync is on or off; our loop only
   does `SDL_Delay(1)` (~1.5 ms), so it runs at 167 FPS and pegs a CPU core. Measured on `fun_roleplay`:

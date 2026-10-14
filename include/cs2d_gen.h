@@ -56,6 +56,11 @@ typedef struct cs2d_gen_s {
     int                 noweather[CS2D_GEN_MAX_ENTS]; /* Info_NoWeather indices */
     int                 noweather_count;
 
+    int                 quake[CS2D_GEN_MAX_ENTS]; /* Info_Quake indices */
+    int                 quake_count;
+    float               shake;     /* g_screenshake: camera shake in px, -1 per frame (cs2d_draw_world 0x140290310) */
+    float               wind_x;    /* Info_Storm wind, px per frame (_DAT_140ddf028), added to Tp 3 / 14 */
+    float               wind_y;    /* (_DAT_140ddf024) */
     float               flash;     /* White screen flash (0x140a17ff0, drawn by FUN_140131710) */
     int                 thunder;   /* Thunder claps so far (the sound is not played yet) */
     float               step_acc;  /* Seconds not yet simulated */
@@ -70,6 +75,12 @@ void cs2d_gen_init(cs2d_gen_t *g, const cs2d_map_t *map);
  * Advances dt seconds in 60 Hz steps: each step spawns from the active (state 0) generators near the
  * camera (cam = top-left of the screen, half_w / half_h = half the screen) and moves every particle.
  */
+/*
+ * cs2d_draw_world (0x140290310): while the world is drawn the camera moves by Rand(-s, s) on each axis,
+ * s = min(shake, 30) truncated; restored before the HUD. Returns false (0, 0) when nothing shakes.
+ */
+bool cs2d_gen_shake_offset(cs2d_gen_t *g, int *dx, int *dy);
+
 void cs2d_gen_update(cs2d_gen_t *g, const cs2d_map_t *map, float cam_x, float cam_y,
                      float half_w, float half_h, float dt);
 

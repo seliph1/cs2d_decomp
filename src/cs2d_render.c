@@ -1,6 +1,7 @@
 #include "cs2d_render.h"
 #include "cs2d_gl.h"
 #include "cs2d_light.h"
+#include "cs2d_tilefx.h"
 #include "cs2d_dynobj.h"
 #include "cs2d_weapons.h"
 #include "cs2d_map.h"
@@ -903,6 +904,96 @@ static void tileblend_upload(tileblend_source_t *src)
     cs2d_texture_free(&src->atlas);
     upload_rgba_to_texture(&src->atlas, copy, w, h, true, 0, src->tile_src, src->tile_src);
     free(copy);
+}
+
+/*
+ * Info_TileFX (10, cs2d_tilefx.c): frames generated from the tileset pixels kept for tile blending, in one atlas
+ * (TILEBLEND_ATLAS_COLS cells per row). Built the first time the map is drawn after a load or an entity change;
+ * the original builds them at map load (FUN_1401d7c40). A tile frame with an effect is drawn from the atlas cell
+ * (tick / speed) % count (Ttilefx.update 0x1400f4b60).
+ */
+typedef struct {
+    const cs2d_map_t *map;
+    uint32_t          table_version, tileset_id;
+    int               tile_src;
+    int16_t           first[256];  /* First atlas cell of tile frame f, -1 = no Info_TileFX */
+    uint8_t           count[256];
+    uint16_t          speed[256];
+    cs2d_texture_t    atlas;
+} tilefx_state_t;
+
+static tilefx_state_t s_tilefx = { .map = NULL };
+
+static void tilefx_prepare(const cs2d_map_t *map, tileblend_source_t *src, uint32_t tileset_id, int tile_src)
+{
+    if (s_tilefx.map == map && s_tilefx.table_version == map->entity_table_version &&
+        s_tilefx.tileset_id == tileset_id && s_tilefx.tile_src == tile_src) {
+        return;
+    }
+    cs2d_texture_free(&s_tilefx.atlas);
+    s_tilefx.map = map;
+    s_tilefx.table_version = map->entity_table_version;
+    s_tilefx.tileset_id = tileset_id;
+    s_tilefx.tile_src = tile_src;
+    for (int i = 0; i < 256; i++) s_tilefx.first[i] = -1;
+    if (!src || src->tileset.w < tile_src || tile_src < 32) return;
+
+    int tcols = src->tileset.w / tile_src;
+    int tiles = tcols * (src->tileset.h / tile_src);
+    size_t cell = (size_t)tile_src * (size_t)tile_src;
+    uint32_t *tile = (uint32_t *)malloc(cell * 4);
+    uint32_t *frames = (uint32_t *)malloc(cell * 4 * CS2D_TILEFX_MAX_FRAMES);
+    uint32_t *atlas = NULL;
+    int cells = 0;
+    bool taken[256] = { false };
+    for (uint32_t i = 0; tile && frames && i < map->entity_count; i++) {
+        const cs2d_entity_t *e = &map->entities[i];
+        if (e->type != CS2D_ENT_INFO_ANIMATION && e->type != CS2D_ENT_INFO_TILEFX) continue;
+        int f = e->int_settings[0];
+        /* canCreateNewTileFXFromEntity: an existing tile, one effect per frame (Info_Animation included) */
+        if (f < 0 || f > 255 || f >= tiles || taken[f]) continue;
+        taken[f] = true;
+        if (e->type != CS2D_ENT_INFO_TILEFX) continue;
+        int fx = (f % tcols) * tile_src, fy = (f / tcols) * tile_src;
+        for (int y = 0; y < tile_src; y++) {
+            memcpy(tile + (size_t)y * tile_src, src->tileset.px + (size_t)(fy + y) * src->tileset.w + fx,
+                   (size_t)tile_src * 4);
+        }
+        int speed = 60;
+        int n = cs2d_tilefx_build(tile, tile_src, e->int_settings[1], e->int_settings[2], e->int_settings[3],
+                                  0x9e3779b9u * (i + 1), frames, &speed);
+        if (n <= 0) continue;
+        int rows = (cells + n + TILEBLEND_ATLAS_COLS - 1) / TILEBLEND_ATLAS_COLS;
+        size_t aw = (size_t)TILEBLEND_ATLAS_COLS * tile_src;
+        uint32_t *grown = (uint32_t *)realloc(atlas, aw * (size_t)tile_src * (size_t)rows * 4);
+        if (!grown) break;
+        atlas = grown;
+        int old_rows = (cells + TILEBLEND_ATLAS_COLS - 1) / TILEBLEND_ATLAS_COLS;
+        if (rows > old_rows) {
+            memset(atlas + aw * (size_t)tile_src * (size_t)old_rows, 0,
+                   aw * (size_t)tile_src * (size_t)(rows - old_rows) * 4);
+        }
+        for (int k = 0; k < n; k++) {
+            int c = cells + k;
+            size_t ox = (size_t)(c % TILEBLEND_ATLAS_COLS) * tile_src, oy = (size_t)(c / TILEBLEND_ATLAS_COLS) * tile_src;
+            for (int y = 0; y < tile_src; y++) {
+                memcpy(atlas + (oy + (size_t)y) * aw + ox, frames + cell * (size_t)k + (size_t)y * tile_src,
+                       (size_t)tile_src * 4);
+            }
+        }
+        s_tilefx.first[f] = (int16_t)cells;
+        s_tilefx.count[f] = (uint8_t)n;
+        s_tilefx.speed[f] = (uint16_t)speed;
+        cells += n;
+    }
+    if (atlas && cells > 0) {
+        int rows = (cells + TILEBLEND_ATLAS_COLS - 1) / TILEBLEND_ATLAS_COLS;
+        upload_rgba_to_texture(&s_tilefx.atlas, atlas, TILEBLEND_ATLAS_COLS * tile_src, rows * tile_src, true, 0,
+                               tile_src, tile_src);
+    }
+    free(atlas);
+    free(frames);
+    free(tile);
 }
 
 /*
@@ -2624,14 +2715,22 @@ static float env_object_sway(int k, float deg)
     return (k % 3 == 0) ? sinf(rad) : cosf(rad);
 }
 
+/* Env_Object sizes are only known while drawing (texture x size, leaf offsets): the entity is culled from the next frame */
+static void env_object_learn(const cs2d_map_t *map, const cs2d_entity_t *ent, float w, float h, float off)
+{
+    cs2d_render_entity_learn_size(map, (int)(ent - map->entities), (int)ceilf(w), (int)ceilf(h), (int)ceilf(off), 0);
+}
+
 /* Sink (3) and Toilet (4): Te.draw(1) (0x1402720f0), under the players, ALPHABLEND, objects.bmp frame 0 / 1 */
-static void render_env_object_ground(const cs2d_gfx_bank_t *bank, const cs2d_entity_t *ent, float cam_x, float cam_y)
+static void render_env_object_ground(const cs2d_map_t *map, const cs2d_gfx_bank_t *bank, const cs2d_entity_t *ent,
+                                     float cam_x, float cam_y)
 {
     int type = ent->int_settings[0];
     if ((type != 3 && type != 4) || !bank->tex_objects.id) return;
     float ex = (float)(ent->x * CS2D_TILE_SIZE + 16) - cam_x;
     float ey = (float)(ent->y * CS2D_TILE_SIZE + 16) - cam_y;
     float size = env_object_float(ent->str_settings[0]);
+    env_object_learn(map, ent, 32.0f * size, 32.0f * size, 0.0f);
     cs2d_render_sprite_frame(&bank->tex_objects, 32, 32, type - 3, ex, ey, 32.0f * size, 32.0f * size,
                              (float)((ent->int_settings[4] / 10) * 10),
                              (float)ent->int_settings[1] / 255.0f, (float)ent->int_settings[2] / 255.0f,
@@ -2655,7 +2754,6 @@ static void render_env_object_overhead(const cs2d_map_t *map, const cs2d_gfx_ban
     /* Leaf shadows (itemshadows, DAT_140ddf183): black at shadows % x alpha, moved 4 px along
      * (cos, sin)(ShadowRotation - 180) */
     bool shadows = s_item_shadows && s_shadow_intensity > 0;
-    (void)map;
     float sun_rad = (cs2d_light_shadow_rotation() - 180.0f) * (3.14159265f / 180.0f);
     float sh_dx = cosf(sun_rad) * 4.0f;
     float sh_dy = sinf(sun_rad) * 4.0f;
@@ -2669,6 +2767,7 @@ static void render_env_object_overhead(const cs2d_map_t *map, const cs2d_gfx_ban
         float s = size * 0.8f;
         float w = (float)tex->width * s, h = (float)tex->height * s;
         float d = ((float)tex->height * 0.5f - 2.0f) * s;
+        env_object_learn(map, ent, w, h, d);
         for (int pass = shadows ? 0 : 1; pass < 2; pass++) {
             float ox = pass ? 0.0f : sh_dx, oy = pass ? 0.0f : sh_dy;
             for (int k = 1; k <= 8; k++) {
@@ -2693,6 +2792,7 @@ static void render_env_object_overhead(const cs2d_map_t *map, const cs2d_gfx_ban
         const cs2d_texture_t *tex = &bank->tex_tree;
         if (!tex->id) return;
         float w = (float)tex->width * size, h = (float)tex->height * size;
+        env_object_learn(map, ent, w * 1.2f, h * 1.2f, size * 30.0f);
         for (int pass = shadows ? 0 : 1; pass < 2; pass++) {
             float ox = pass ? 0.0f : sh_dx, oy = pass ? 0.0f : sh_dy;
             for (int k = 1; k <= 7; k++) {
@@ -2725,6 +2825,7 @@ static void render_env_object_overhead(const cs2d_map_t *map, const cs2d_gfx_ban
         /* Alarm: flare1 additive, rotation rot, alpha |sin(ms / 3 degrees)| x alpha */
         const cs2d_texture_t *tex = &bank->tex_flare1;
         if (!tex->id) return;
+        env_object_learn(map, ent, (float)tex->width * size, (float)tex->height * size, 0.0f);
         float pulse = fabsf(sinf((float)((tick_ms / 3) % 360) * (3.14159265f / 180.0f)));
         cs2d_render_sprite_frame(tex, 0, 0, 0, ex, ey, (float)tex->width * size, (float)tex->height * size,
                                  (float)rot, r, g, b, pulse * alpha, 3);
@@ -2738,6 +2839,7 @@ static void render_env_object_overhead(const cs2d_map_t *map, const cs2d_gfx_ban
          * rot rounded down to 10 degrees */
         const cs2d_texture_t *tex = &bank->tex_flare3;
         if (tex->id) {
+            env_object_learn(map, ent, (float)tex->width * size, (float)tex->height * size, 0.0f);
             float a = alpha;
             if (type == 6 && rand() % 5 == 0) a *= (float)rand() / (float)RAND_MAX * 0.8f;
             cs2d_render_sprite_frame(tex, 0, 0, 0, ex, ey, (float)tex->width * size, (float)tex->height * size,
@@ -2881,7 +2983,7 @@ static cs2d_entity_index_t s_entity_index;
  *    image is loaded, so it starts unculled and is culled from the second frame on (the draw path calls
  *    cs2d_render_entity_learn_size with the size it just used).
  *  - Env_Image draws at its texture size, Env_Object at "size * 30 px" leaf offsets plus texture sized
- *    flares (render_env_object_ground / _overhead): both unknown here -> never culled.
+ *    flares (render_env_object_ground / _overhead): both start unculled and learn their size like Env_Sprite.
  */
 static uint8_t margin_for_size(int w, int h, int offx, int offy)
 {
@@ -2904,14 +3006,6 @@ static uint8_t entity_cull_margin(const cs2d_entity_t *ent)
         case CS2D_ENT_ENV_NPC:
         case CS2D_ENT_TRIGGER_USE:
             return 2;
-        case CS2D_ENT_ENV_OBJECT: {
-            /* Palms & trees have radius around tile center proportional to size string (max ~150-200px) */
-            float sz = ent->str_settings[0][0] ? (float)atof(ent->str_settings[0]) : 1.0f;
-            if (sz < 0.1f) sz = 1.0f;
-            if (sz > 4.0f) sz = 4.0f;
-            int radius_px = (int)(sz * 70.0f) + 32;
-            return (uint8_t)((radius_px / CS2D_TILE_SIZE) + 2);
-        }
         case CS2D_ENT_ENV_SPRITE:
             /* ints[0] / ints[1] are the size when > 0; the texture size is learned on the first draw
              * (cs2d_render_entity_learn_size), until then the sprite is not culled */
@@ -3193,6 +3287,7 @@ void cs2d_render_map_ex(
     /* Pass 1: Render base tiles and tile overlays (per cs2d_spec_map_format.txt section 4).
      * Blended tiles (Ttileblend) are drawn afterwards from the blend atlas, with the same rotation and brightness */
     tileblend_source_t *blend = has_tileset ? tileblend_find(tileset_tex->id) : NULL;
+    tilefx_prepare(map, blend, has_tileset ? tileset_tex->id : 0, tile_src);
     static int *blended = NULL;
     static size_t blended_cap = 0;
     size_t blended_n = 0;
@@ -3201,6 +3296,7 @@ void cs2d_render_map_ex(
             uint32_t idx = (uint32_t)(ty * map->width + tx);
             uint8_t tile_idx = anim_remap[map->tiles[idx]];
             uint8_t mod      = map->modifiers ? map->modifiers[idx] : 0;
+            int     fx_first = s_tilefx.first[map->tiles[idx]];
 
             float rx = (float)(tx * CS2D_TILE_SIZE) - cam_x;
             float ry = (float)(ty * CS2D_TILE_SIZE) - cam_y;
@@ -3224,6 +3320,13 @@ void cs2d_render_map_ex(
                     }
                 }
                 const uint8_t *rgb = ((mod & 0xc0) == 0x80 && map->tile_data) ? &map->tile_data[idx * 4] : NULL;
+                if (fx_first >= 0 && s_tilefx.atlas.id) {
+                    uint8_t t = map->tiles[idx];
+                    int cell = fx_first + (int)((tick_ms / s_tilefx.speed[t]) % s_tilefx.count[t]);
+                    draw_tile_frame(&s_tilefx.atlas, tile_src, TILEBLEND_ATLAS_COLS, cell, mod, rx, ry,
+                                    (float)CS2D_TILE_SIZE, 1.0f, rgb);
+                    continue;
+                }
                 draw_tile_frame(tileset_tex, tile_src, cols, tile_idx, mod, rx, ry, (float)CS2D_TILE_SIZE, 1.0f, rgb);
             }
         }
@@ -3293,7 +3396,7 @@ void cs2d_render_map_ex(
                 /* Info_BombSpot (5): original CS2D does not render any decals on the map floor; icons appear on radar only */
                 break;
             case CS2D_ENT_ENV_OBJECT:
-                if (bank) render_env_object_ground(bank, ent, cam_x, cam_y);
+                if (bank) render_env_object_ground(map, bank, ent, cam_x, cam_y);
                 break;
             case CS2D_ENT_ENV_ITEM: {
                 /* Env_Item (21): ints[0]=weapon/item ID -> drawn with gfx/weapons/<wep>_d.bmp (Titem.draw 0x140147b80 / Te.draw 0x140260000) */

@@ -31,6 +31,7 @@
 #include "cs2d_light.h"
 #include "cs2d_image.h"
 #include "cs2d_atlas.h"
+#include "cs2d_tilefx.h"
 #include "cs2d_gen.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
@@ -677,6 +678,26 @@ static bool test_ui_layout(void)
     }
     cs2d_ui_end_layout(&ui);
     TEST_PASS("Z-ordered Box Cache & Interactive Hover/Active Hit-Testing");
+
+    /* Child windows close with their parent, whatever path closed the parent */
+    static bool parent_open = true, child_open = true, free_open = true;
+    cs2d_ui_begin_layout(&ui, 850, 480, -100.0f, -100.0f, false, 0);
+    if (cs2d_ui_window_begin(&ui, CS2D_UI_ID("WParent"), "P", 0, 0, 100, 100, &parent_open)) cs2d_ui_window_end(&ui);
+    if (cs2d_ui_window_begin_child(&ui, CS2D_UI_ID("WChild"), "C", 0, 0, 50, 50, &child_open, CS2D_UI_ID("WParent")))
+        cs2d_ui_window_end(&ui);
+    cs2d_ui_end_layout(&ui);
+    parent_open = false;
+    cs2d_ui_begin_layout(&ui, 850, 480, -100.0f, -100.0f, false, 0);
+    bool shown = cs2d_ui_window_begin_child(&ui, CS2D_UI_ID("WChild"), "C", 0, 0, 50, 50, &child_open,
+                                            CS2D_UI_ID("WParent"));
+    if (shown) cs2d_ui_window_end(&ui);
+    bool free_shown = cs2d_ui_window_begin_child(&ui, CS2D_UI_ID("WFree"), "F", 0, 0, 50, 50, &free_open, 0);
+    if (free_shown) cs2d_ui_window_end(&ui);
+    cs2d_ui_end_layout(&ui);
+    if (shown || child_open || !free_shown) {
+        TEST_FAIL("Window parenting", "Expected the child to close with its parent and the free window to stay");
+    }
+    TEST_PASS("Child windows close with their parent");
 
     return true;
 }
@@ -2700,6 +2721,10 @@ static bool test_entity_culling(void)
     /* 3. Culling: the box is the tile centre +- margin tiles tested against [cam, cam + screen]; a 64x64
      *    sprite is 45 / 32 + 2 = 3 tiles, a 32x32 one 22 / 32 + 2 = 2 */
     const int sw = 850, sh = 480;
+    if (cs2d_render_entity_margin(&map, 7) != 0) {
+        TEST_FAIL("Entity Culling", "Env_Object must start unculled until its draw learns its size");
+        return false;
+    }
     if (cs2d_render_entity_margin(&map, 5) != 3 || cs2d_render_entity_margin(&map, 8) != 2) {
         TEST_FAIL("Entity Culling", "unexpected draw margin");
         free(map.tiles);
@@ -2826,6 +2851,9 @@ static bool test_entity_culling(void)
                     cs2d_render_entity_learn_size(&rmap, (int)i, 32, 32, e->int_settings[2], e->int_settings[3]);
                 } else if (e->type == CS2D_ENT_ENV_IMAGE) {
                     cs2d_render_entity_learn_size(&rmap, (int)i, 64, 64, e->int_settings[0], e->int_settings[1]);
+                } else if (e->type == CS2D_ENT_ENV_OBJECT) {
+                    /* A size 1 tree: 7 leaves 30 px from the centre plus the x 1.2 centre one */
+                    cs2d_render_entity_learn_size(&rmap, (int)i, 77, 77, 30, 0);
                 }
             }
             int after = 0;
@@ -4135,6 +4163,67 @@ static bool test_gen_entities(void)
     cs2d_gen_step(&gen, &map, cx, cy, hw, hh);
     if (gen.count != 1 || gen.p[0].typ != 12 || gen.p[0].frame != 15) TEST_FAIL("Gen_Sprites", "bad sprite");
     TEST_PASS("Gen_Sprites: fragments.bmp frame clamped to 0..15");
+
+    /* Info_Storm (Te.setup case 9): angle 90, strength 20 -> wind (2, 0) px per frame on smoke (Tp 3) */
+    memset(e, 0, sizeof(e[0]) * 2);
+    e[0].type = CS2D_ENT_INFO_STORM; e[0].int_settings[0] = 90; e[0].int_settings[1] = 20;
+    map.entity_count = 1;
+    cs2d_gen_init(&gen, &map);
+    if (fabsf(gen.wind_x - 2.0f) > 1e-4f || fabsf(gen.wind_y) > 1e-4f) TEST_FAIL("Info_Storm", "bad wind");
+    gen.count = 1; memset(&gen.p[0], 0, sizeof(gen.p[0])); gen.p[0].typ = 3; gen.p[0].a = 1.0f;
+    cs2d_gen_step(&gen, &map, cx, cy, hw, hh);
+    if (fabsf(gen.p[0].x - 2.0f) > 1e-4f) TEST_FAIL("Info_Storm", "smoke not blown");
+    TEST_PASS("Info_Storm: wind = strength * 0.1 * (sin, -cos)(angle), added to smoke / fire");
+
+    /* Info_Quake: an active one holds g_screenshake at ints[0]; offsets stay within min(shake, 30) */
+    memset(e, 0, sizeof(e[0]));
+    e[0].type = CS2D_ENT_INFO_QUAKE; e[0].int_settings[0] = 50;
+    cs2d_gen_init(&gen, &map);
+    map.entity_state[0] = 0;
+    cs2d_gen_step(&gen, &map, cx, cy, hw, hh);
+    int dx, dy;
+    if (gen.shake != 50.0f || !cs2d_gen_shake_offset(&gen, &dx, &dy) || abs(dx) > 30 || abs(dy) > 30)
+        TEST_FAIL("Info_Quake", "bad shake");
+    map.entity_state[0] = 1; /* Turned off: decays 1 per frame */
+    cs2d_gen_step(&gen, &map, cx, cy, hw, hh);
+    if (gen.shake != 49.0f) TEST_FAIL("Info_Quake", "no decay");
+    TEST_PASS("Info_Quake: shake = ints[0] while state 0, then -1 per frame");
+    return true;
+}
+
+/* Info_TileFX: Ttilefx.CreateTileFX (0x1400aa640) frame generation */
+static bool test_tilefx(void)
+{
+    printf("\n=== Testing Info_TileFX ===\n");
+    static uint32_t src[32 * 32], out[32 * 32 * CS2D_TILEFX_MAX_FRAMES];
+    char msg[160];
+    for (int i = 0; i < 32 * 32; i++) src[i] = 0xff000000u | (uint32_t)i;
+    int speed = 0;
+
+    /* Scroll: ints[2] = 3 -> 2 px per frame (2 * size / 32), 32 / 2 = 16 frames, 60 ms */
+    if (cs2d_tilefx_scroll_step(3, 32) != 2 || cs2d_tilefx_scroll_step(-13, 32) != -16 ||
+        cs2d_tilefx_scroll_step(4, 32) != 4 || cs2d_tilefx_scroll_step(9, 64) != 16) {
+        TEST_FAIL("Info_TileFX", "scroll step table");
+    }
+    int n = cs2d_tilefx_build(src, 32, 0, 3, 0, 1, out, &speed);
+    snprintf(msg, sizeof(msg), "scroll: %d frames, %d ms", n, speed);
+    if (n != 16 || speed != 60) TEST_FAIL("Info_TileFX", msg);
+    /* Frame 1: source (0, 0) lands on (2, 0); source (31, 5) wraps to (1, 5) */
+    if (out[32 * 32 + 2] != src[0] || out[32 * 32 + 5 * 32 + 1] != src[5 * 32 + 31]) TEST_FAIL("Info_TileFX", "scroll shift");
+    if (cs2d_tilefx_build(src, 32, 0, 0, 0, 1, out, &speed) != 0) TEST_FAIL("Info_TileFX", "no scroll must add nothing");
+
+    /* Noise: 16 frames, 50 ms, every pixel comes from the tile */
+    n = cs2d_tilefx_build(src, 32, 3, 0, 0, 7, out, &speed);
+    if (n != 16 || speed != 50) TEST_FAIL("Info_TileFX", "noise count");
+    int changed = 0;
+    for (int i = 0; i < 32 * 32; i++) changed += out[i] != src[i];
+    if (changed == 0 || changed > 501) TEST_FAIL("Info_TileFX", "noise changes 1..501 pixels");
+
+    /* Wave: 30 frames, 80 ms; frame 0 row 0 reads x + sin(0) * a = x, y = sin(x * 11 deg) * a */
+    n = cs2d_tilefx_build(src, 32, 4, 0, 0, 1, out, &speed);
+    if (n != 30 || speed != 80) TEST_FAIL("Info_TileFX", "wave count");
+    if (out[0] != src[0]) TEST_FAIL("Info_TileFX", "wave pixel (0, 0)");
+    TEST_PASS("Info_TileFX: scroll / noise / wave frames, counts and speeds of CreateTileFX");
     return true;
 }
 
@@ -4145,7 +4234,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 40;
+    int total = 41;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -4187,6 +4276,7 @@ int main(void)
     if (test_sprite_atlas_packer()) passed++;
     if (test_new_game_maplist()) passed++;
     if (test_gen_entities()) passed++;
+    if (test_tilefx()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);
