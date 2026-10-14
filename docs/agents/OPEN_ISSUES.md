@@ -120,7 +120,8 @@ the same one.
   adds an empty string), and in `[252,1]` it sends `01` after the U.S.G.N. fields and the spray file name
   (`unrealsoftware.bmp`) where ours sends empty strings. The dedicated accepts both.
 - **Spectator, not reconstructed** (KNOWLEDGE "Spectator" has what is done):
-  - The Menu / Map / Fog buttons are drawn but open nothing (game menu, big map `DAT_140a15478`, fog toggle).
+  - The Menu / Fog buttons open nothing (game menu, fog toggle). Map toggles the minimap; its hostage / flag / bomb /
+    Dom_Point dots, the per-player fog test under sv_specmode 2 and the `TSmartMinimap` variant are missing.
   - `mp_spectatemouse`: the followed player's mouse cursor (`Tpl.mx/my`, `net_mspec`) is not drawn, and its
     network message is unknown. The kill cam (`Thud_killCam`) is not done.
   - Respawn game modes: "Click to respawn" sends nothing (`FUN_140298b30`), and the respawn countdown text
@@ -132,7 +133,10 @@ the same one.
 - **Map editor, not reconstructed yet** (KNOWLEDGE "Map editor" has the layouts):
   - Map Properties (Map Settings window), Display Settings, and the Tools / More Options mode (Distance, Path
     Distance, Pathfinder, Tile Blender, Decal Painter, minimap sizes, export, move map).
-  - Entity Properties window (clicking a placed entity), the tile context menu (right click), undo
+  - Entity Properties: opened by a right click on the entity (the original's context menu is missing); no decal
+    preview (`Tgui_img` 0x140a0e850); Okay does not re-run `Te.setup` / `cs2d_update_mapdata` (nothing in our editor
+    caches them). Not compared to screenshots of every type, only Env_Hurt's layout.
+  - The tile context menu (right click), undo
     (`Teditor_actionlist`), tile blending (`0x40`), the unsaved-map and "save as default" confirmations.
   - New Map makes a 50x50 `cs2dnorm.bmp` map (size not measured); the 600 px/s scroll speed is a guess; the selection
     pulse speed (`_DAT_140ddeff8`) is calibrated by eye.

@@ -39,3 +39,9 @@ Source: REA `FUN_14025aa60` (camera), `FUN_1401698a0` (target picker), `FUN_1401
     the name in the team color (white in Deathmatch), `hud_symbols` frame 0 + health and frame 1 + armor
     (additive (255,255,32); value color ((100-v) x 5.1, v x 5.1, 0); armors 201..206 by name). Under
     sv_specmode 2 an enemy shows only its name. Left click = next player, right click = previous.
+- **Minimap** (`FUN_140299d70`, called with y = 40 while `DAT_140a15478` is 1; the Map button toggles it; it is 1 in
+  .data; `DAT_140ddf195` selects `TSmartMinimap` instead): the editor pixmap scaled s = 5/4/3/2/1 for max(xmax, ymax)
+  < 21/31/61/121/else at x = w - (xmax - 1) * s, alpha 0.75, white frame; living players as s x s dots (T (255,25,0),
+  CT (50,150,255), green without teams; hostages yellow, items 70/71 and Info_CTF_Flag / Info_Dom_Point dots too);
+  the 27x15 camera rect additive yellow |sin(ms / 10 deg)| * 0.2. With sv_specmode 1 a held left button on it sets
+  free look (no `[67]`) and camx = ((mx - x) / s - 13) * 32 - 16, camy = ((my - 40) / s - 6) * 32 - 16.

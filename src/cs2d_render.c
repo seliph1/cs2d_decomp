@@ -932,6 +932,31 @@ bool cs2d_texture_load_tileset(cs2d_texture_t *tex, const char *tileset_name)
     return ok;
 }
 
+bool cs2d_texture_upload_rgba(cs2d_texture_t *tex, const uint32_t *rgba, int w, int h)
+{
+    if (!tex || !rgba || w <= 0 || h <= 0 || !g_gl_ctx) return false;
+    GLuint tid = tex->id;
+    bool resize = tid == 0 || tex->width != w || tex->height != h;
+    cs2d_gl_flush(); /* Batched quads may still sample the old pixels */
+    if (tid == 0) glGenTextures(1, &tid);
+    glBindTexture(GL_TEXTURE_2D, tid);
+    if (resize) {
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    } else {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    }
+    memset(tex, 0, sizeof(*tex));
+    tex->id = tid;
+    tex->width = tex->gpu_w = w;
+    tex->height = tex->gpu_h = h;
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return true;
+}
+
 void cs2d_texture_free(cs2d_texture_t *tex)
 {
     if (tex && tex->id) {
@@ -1307,10 +1332,9 @@ const cs2d_texture_t *cs2d_render_get_projectile_texture(uint8_t type)
     return NULL;
 }
 
-void cs2d_render_rect(float x, float y, float w, float h, float r, float g, float b, float a, bool fill)
+static void render_rect_blend(float x, float y, float w, float h, float r, float g, float b, float a, bool fill, int blend)
 {
-    /* The original forces the alpha blend here (glBlendFunc is reset before every rect) */
-    cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+    cs2d_gl_set_blend(blend);
     if (fill) {
         cs2d_gl_rect(x, y, w, h, r, g, b, a);
         return;
@@ -1324,6 +1348,18 @@ void cs2d_render_rect(float x, float y, float w, float h, float r, float g, floa
         v[i].r = r; v[i].g = g; v[i].b = b; v[i].a = a;
     }
     cs2d_gl_push_line_loop(v, 4);
+}
+
+void cs2d_render_rect(float x, float y, float w, float h, float r, float g, float b, float a, bool fill)
+{
+    /* The original forces the alpha blend here (glBlendFunc is reset before every rect) */
+    render_rect_blend(x, y, w, h, r, g, b, a, fill, CS2D_GL_BLEND_ALPHA);
+}
+
+void cs2d_render_rect_add(float x, float y, float w, float h, float r, float g, float b, float a, bool fill)
+{
+    render_rect_blend(x, y, w, h, r, g, b, a, fill, CS2D_GL_BLEND_ADD);
+    cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
 }
 
 void cs2d_render_line(float x1, float y1, float x2, float y2, float r, float g, float b, float a)

@@ -4,6 +4,7 @@
 #include "cs2d_game.h"
 #include "cs2d_network.h"
 #include "cs2d_scoreboard.h"
+#include "cs2d_editor.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -112,6 +113,49 @@ static void spec_showcase(cs2d_client_t *client, int *cam_x, int *cam_y, float h
     client->spec.idle_ticks = 5;
 }
 
+/*
+ * Spectator minimap (FUN_140299d70): the editor's 1 px per tile pixmap (cs2d_ed_minimap_build, no entities) scaled by
+ * 5 / 4 / 3 / 2 / 1 for a largest map index below 21 / 31 / 61 / 121 / above, in the top right corner below the band.
+ * Shown while the "Map" button flag DAT_140a15478 is set (1 in .data, never reset; the TSmartMinimap variant behind
+ * DAT_140ddf195 is not reconstructed). With sv_specmode 1 a held left button on it switches to free look and moves
+ * the camera there.
+ */
+static bool           s_spec_map = true;   /* DAT_140a15478 */
+static bool           s_spec_map_drag;
+static cs2d_texture_t s_tex_spec_map;
+static uint32_t      *s_spec_map_px, *s_spec_map_prev;
+static size_t         s_spec_map_cap;
+
+static int spec_map_scale(const cs2d_map_t *map)
+{
+    int m = (int)(map->width > map->height ? map->width : map->height) - 1;
+    return m < 21 ? 5 : m < 31 ? 4 : m < 61 ? 3 : m < 121 ? 2 : 1;
+}
+
+/* x = screen width - (map_xmax - 1) * scale (the image overhangs the right edge by two tiles, as in the original) */
+static float spec_map_x(const cs2d_client_t *client)
+{
+    const cs2d_map_t *map = &client->game.map;
+    return (float)client->config.window_width - (float)(((int)map->width - 2) * spec_map_scale(map));
+}
+
+static bool spec_map_hovered(const cs2d_client_t *client)
+{
+    const cs2d_map_t *map = &client->game.map;
+    if (!s_spec_map || client->spec.server_mode != 1 || !map->tiles || spec_menu_open(client)) return false;
+    return client->mouse_screen_y <= SPEC_BAR_H + (float)(map->height * (uint32_t)spec_map_scale(map)) &&
+           client->mouse_screen_x >= spec_map_x(client);
+}
+
+/* camx = ((mx - x) / scale - 13) * 32 - 16, camy = ((my - 40) / scale - 6) * 32 - 16 */
+static void spec_map_navigate(cs2d_client_t *client)
+{
+    float sc = (float)spec_map_scale(&client->game.map);
+    client->spec.mode = CS2D_SPEC_FREE; /* DAT_140ddf2f8 = 1, no [67] */
+    client->cam_x = (float)(int)(((client->mouse_screen_x - spec_map_x(client)) / sc - 13.0f) * 32.0f - 16.0f);
+    client->cam_y = (float)(int)(((client->mouse_screen_y - 40.0f) / sc - 6.0f) * 32.0f - 16.0f);
+}
+
 /* FUN_14025aa60: the camera of a local player that is not alive. tick = the 1 s network tick */
 static void update_spectator_camera(cs2d_client_t *client, float delta_time, bool tick)
 {
@@ -140,6 +184,11 @@ static void update_spectator_camera(cs2d_client_t *client, float delta_time, boo
             }
         }
         if (!following && s->idle_cam && tick && --s->idle_ticks < 1) spec_showcase(client, &cx, &cy, half_w, half_h);
+        if (s_spec_map_drag && spec_map_hovered(client)) {
+            spec_map_navigate(client);
+            cx = (int)client->cam_x;
+            cy = (int)client->cam_y;
+        }
         /* Own Team only: a dead target is replaced by the next player (HUD, 0x14029b574) */
         const cs2d_player_t *t = spec_target(client);
         if (s->server_mode == 2 && t && !t->alive) spec_pick(client, 1);
@@ -294,6 +343,61 @@ static spec_box_kind_t spec_box(const cs2d_client_t *client, const cs2d_player_t
     return (lt == 1 && s->server_mode != 1) ? SPEC_BOX_NAME : SPEC_BOX_INFO;
 }
 
+/* FUN_140299d70: pixmap at alpha 0.75, a white frame, living players as scale-sized dots, then the 27x15 tile camera
+ * view in additive yellow at |sin(ms / 10 deg)| * 0.2. Hostages, flags, bombs and Info_Dom_Point dots are not drawn. */
+static void render_spec_map(cs2d_client_t *client)
+{
+    const cs2d_map_t *map = &client->game.map;
+    if (!map->tiles || map->width == 0 || map->height == 0) return;
+    size_t n = (size_t)map->width * map->height;
+    if (n > s_spec_map_cap) {
+        free(s_spec_map_px);
+        free(s_spec_map_prev);
+        s_spec_map_px = (uint32_t *)malloc(n * 4);
+        s_spec_map_prev = (uint32_t *)calloc(n, 4);
+        s_spec_map_cap = (s_spec_map_px && s_spec_map_prev) ? n : 0;
+        cs2d_texture_free(&s_tex_spec_map);
+        if (!s_spec_map_cap) return;
+    }
+    cs2d_ed_minimap_build(map, false, s_spec_map_px);
+    if (!s_tex_spec_map.id || s_tex_spec_map.width != (int)map->width || s_tex_spec_map.height != (int)map->height ||
+        memcmp(s_spec_map_px, s_spec_map_prev, n * 4) != 0) {
+        cs2d_texture_upload_rgba(&s_tex_spec_map, s_spec_map_px, (int)map->width, (int)map->height);
+        memcpy(s_spec_map_prev, s_spec_map_px, n * 4);
+    }
+
+    const cs2d_spec_t *sp = &client->spec;
+    float sc = (float)spec_map_scale(map), x0 = spec_map_x(client), y0 = SPEC_BAR_H;
+    float w = (float)map->width * sc, h = (float)map->height * sc;
+    cs2d_render_sprite_frame(&s_tex_spec_map, (int)map->width, (int)map->height, 0, x0 + w * 0.5f, y0 + h * 0.5f, w, h,
+                             0.0f, 1.0f, 1.0f, 1.0f, 0.75f, 0);
+    cs2d_render_rect(x0, y0, w, h, 1.0f, 1.0f, 1.0f, 0.75f, false);
+
+    if (sp->server_mode != 0) {
+        /* Colors (0x14029a150): T (255,25,0), CT (50,150,255), green without teams. Under sv_specmode 2 a team
+         * member sees only its side; the per-player fog test is not reconstructed */
+        bool teams = client->net_sv_gamemode != 1;
+        int lt = (int)client->game.players[client->local_player_id].team;
+        for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
+            const cs2d_player_t *pl = &client->game.players[i];
+            if (!pl->alive || pl->health <= 0 || pl->team == CS2D_TEAM_SPEC) continue;
+            float r = 0.0f, g = 1.0f, b = 0.0f;
+            bool is_t = pl->team == CS2D_TEAM_T;
+            if (teams) {
+                if (sp->server_mode != 1 && lt != CS2D_TEAM_SPEC && (lt == CS2D_TEAM_T) != is_t) continue;
+                if (is_t) { r = 1.0f; g = 25.0f / 255.0f; b = 0.0f; }
+                else      { r = 50.0f / 255.0f; g = 150.0f / 255.0f; b = 1.0f; }
+            }
+            float px = floorf(pl->pos.x / 32.0f) * sc + x0, py = floorf(pl->pos.y / 32.0f) * sc + y0;
+            cs2d_render_rect(px, py, sc, sc, r, g, b, 0.75f, true);
+        }
+    }
+
+    float a = (float)fabs(sin((double)(GetTickCount() / 10) * 0.017453292519943295)) * 0.2f;
+    float vx = floorf(client->cam_x / 32.0f) * sc + x0, vy = floorf(client->cam_y / 32.0f) * sc + y0;
+    cs2d_render_rect_add(vx, vy, 27.0f * sc, 15.0f * sc, 1.0f, 1.0f, 0.0f, a, true);
+}
+
 /* Spectator HUD (FUN_14029ac10): bands, "Spectating", Menu / Map / Fog, name box and mode button */
 static void render_spectator_hud(cs2d_client_t *client, int screen_w, int screen_h)
 {
@@ -307,6 +411,7 @@ static void render_spectator_hud(cs2d_client_t *client, int screen_w, int screen
 
     cs2d_render_rect(0.0f, 0.0f, sw, SPEC_BAR_H, 0.0f, 0.0f, 0.0f, 0.55f, true);
     cs2d_render_rect(0.0f, sh - SPEC_BAR_H, sw, SPEC_BAR_H, 0.0f, 0.0f, 0.0f, 0.55f, true);
+    if (s_spec_map) render_spec_map(client);
 
     /* A dead team member: "You are dead!" at the top. Respawn game modes (DM, TDM, Construction, Zombies)
      * pulse yellow-red and respawn on a click ([39]), after "Respawn possible in $1 sec" in (200, 0, 0) while
@@ -340,7 +445,8 @@ static void render_spectator_hud(cs2d_client_t *client, int screen_w, int screen
     float gray = 150.0f / 255.0f;
     cs2d_render_text_ex(f, (float)(screen_w / 2 - (int)tw / 2), SPEC_BAR_H - th - 3.0f, spectating, gray, gray, gray, 1.0f);
 
-    /* Menu, Map and Fog (the last only with sv_fow and sv_specmode 1); their windows are not reconstructed */
+    /* Menu, Map and Fog (the last only with sv_fow and sv_specmode 1); Map toggles the minimap, the Menu and Fog
+     * windows are not reconstructed */
     spec_button(client, 5.0f, by, 46.0f, SPEC_BTN_H, "Menu", 0, !menu);
     spec_button(client, 56.0f, by, 37.0f, SPEC_BTN_H, "Map", 0, !menu);
     spec_button(client, 98.0f, by, 37.0f, SPEC_BTN_H, "Fog", 0, !menu && client->net_sv_fow > 0 && s->server_mode == 1);
@@ -375,6 +481,15 @@ static bool spectator_hud_click(cs2d_client_t *client, float mx, float my, int b
     float sw = (float)client->config.window_width, sh = (float)client->config.window_height;
     float by = sh - 8.0f - SPEC_BTN_H;
 
+    if (button == 1 && spec_map_hovered(client)) {
+        s_spec_map_drag = true;
+        spec_map_navigate(client);
+        return true;
+    }
+    if (point_in_rect(mx, my, 56.0f, by, 37.0f, SPEC_BTN_H)) {
+        s_spec_map = !s_spec_map; /* The original also plays a GUI sound (0x140a0d628 / 0x140a0d630) */
+        return true;
+    }
     if (point_in_rect(mx, my, sw - 135.0f, by, 130.0f, SPEC_BTN_H)) {
         if (s->mode == CS2D_SPEC_FOLLOW && s->server_mode == 1) {
             s->mode = CS2D_SPEC_FREE;
@@ -2010,6 +2125,7 @@ static void game_handle_mouse(cs2d_client_t *client, float mx, float my, int but
         }
         return;
     }
+    if (button == 1 && !pressed) s_spec_map_drag = false;
     if (pressed && !me->alive && spectator_hud_click(client, mx, my, button)) {
         return;
     }

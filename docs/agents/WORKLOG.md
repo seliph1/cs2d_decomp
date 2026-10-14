@@ -2,6 +2,7 @@
 
 Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by a few bullets covering:
 
+- 2026-10-14 Claude: editor entity helpers (zones, Env_Light radius, LightStripe, Teleport line, trigger links) now hover-only / Space, per Te.drawineditor + Ted_tr.drawat.
 - what changed;
 - how it was verified;
 - what is left (move it to `OPEN_ISSUES.md`).
@@ -9,6 +10,16 @@ Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by 
 Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
+
+## 2026-10-14 — Claude — Editor Entity Properties, editor and spectator minimap
+- **Changed:** `cs2d_ed_prop_*` (editor.c: per-type widget table of `FUN_1402aa220`, load / apply with its clamps
+  and conversions), `cs2d_ed_minimap_build` (`FUN_14019d7c0`); editor scene: Entity Properties window (right click
+  on an entity), rotation dial, color box -> Color window, minimap with click / drag navigation; spectator minimap
+  (`FUN_140299d70`) toggled by the Map button, click moves the free-look camera. Render: `cs2d_texture_upload_rgba`,
+  `cs2d_render_rect_add`.
+- **Verified:** build, `test_editor_entity_props` (40 / 40); `--capture` of the editor on de_dust2 (minimap click
+  moved the camera, Env_Object window, dial drag). The spectator minimap was not run against a server.
+- **Left:** OPEN_ISSUES "Map editor" / "Spectator".
 
 ## 2026-10-13 — Claude — Editor Display Settings window, console over editor UI
 - Client windows (console, ...) now build after the editor UI, so they draw on top of it.
@@ -40,18 +51,3 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - **Verified:** `test_env_decal` + updated `test_entity_culling`; 38 / 38. No screenshot comparison yet.
 - **Left:** decals on wall/obstacle tiles are drawn in the original's wall/obstacle tile loops (layer 4 / 5);
   ours draws all after the single tile pass.
-
-## 2026-10-13 — Antigravity — Fix player shadow order and remove BombSpot decals on floor
-
-- **Changed:**
-  - Removed floor rendering of `bspot_a.png` / `bspot_b.png` for `CS2D_ENT_INFO_BOMBSPOT` in `src/cs2d_render.c`:
-    the original CS2D renders no floor decals for BombSpots on the game map; bombspot icons appear only on the radar / minimap.
-  - Reordered the game scene render loop in `src/cs2d_scene_game.c`:
-    - Moved the light buffer (`cs2d_light_draw_buffer()`) and world floor shadows (`cs2d_render_map_shadows()`) to render *before* the player drawing loop instead of after it.
-    - Previously, `cs2d_light_draw_buffer()` was multiplied (blend mode 5) over the scene *after* players, multiplying the black player day shadow silhouette directly over the player's body and darkening it by ~50%.
-    - With the new pass order, world shadows, day shadows and the player's floor shadow silhouette are rendered onto the floor first, and player bodies are rendered on top with their legs, torso and weapons clean and unshaded. Overhead passes (rooftop sprites and tree canopies) continue to render above players.
-  - Separated CPU floor shadow chunk pass (`cs2d_render_map_shadows`) from `cs2d_render_map_overhead`, calling it before players in `src/cs2d_scene_game.c` and before overhead entities in `src/cs2d_scene_editor.c`.
-- **Verified:**
-  - `build.bat` compiles `test_cs2d.exe` and `cs2d_client.exe` without warnings or errors.
-  - `test_cs2d.exe` regression suite: **37 / 37** tests passing.
-

@@ -59,4 +59,29 @@ Source: REA `FUN_1401a85f0` (GUI builder), `FUN_1402bf960` (editor loop), `FUN_1
   `sys/editor.cfg` into the checkboxes; Okay writes it (`FUN_1402b7570`, CRLF) and executes it. Flags: minimap
   `0x140a14cd4`, grid `cd0` (G toggles, unsaved), shadows `ccc`, entities `cc8` (`Te.drawineditor` only with it or
   in the Entities mode), entitygraphics `cc4` (Te.draw on `DAT_140ddf418 == 4`), gameplayview `cc0` (fixed 850x480
-  camera/`g_xform_mode`). Ours wires grid / shadows / entities; minimap, entity graphics and gameplay view are saved only.
+  camera/`g_xform_mode`). Ours wires grid / shadows / entities / minimap; entity graphics and gameplay view are saved only.
+- **Minimap** (`FUN_14019d7c0` builds, `FUN_1402b6340` draws): a 1 px per tile pixmap (`0x140a0f620`) at
+  (w - 1 - xmax, 0), alpha 0.75. Colors by `g_prop_class[mode]` (same as `TmapPreview`): tile 0 black, wall (class 0)
+  white, floor (1) (50,50,50) or (0,100,150) for mode 14, obstacle (2) 125, deadly (-1) red; with editor_entities each
+  entity is a pixel in its type color. Then additive yellow at |sin(`_DAT_140ddeff8`)| * 0.2: the frame and a filled
+  27x15 rect at (camx >> 5, camy >> 5). A held left button over it: camx = (column - 13) * 32, camy = (row - 8) * 32;
+  the pointer there takes clicks away from the map. Rebuilt after every edit when the flag is on.
+- **Entity Properties** (`FUN_1402aa220(e, 0)` fills, `(e, 1)` writes back; GUI in `FUN_1401a85f0` ~L5130): window
+  (155, 5) 480x470, "<type> @ x|y" (16, 32), Name (16, 57) / Trigger (16, 82) boxes at x 91 w 100, "Rotation"
+  (16, 107) + `Tgui_rot` 100x100 at (91, 107) (left drag: atan2(dx, -dy) degrees; right click 0/90/180/-90), Delete
+  (16, 434), Okay (259, 434), Cancel (364, 434). Per type it places pooled widgets (labels `0e880`, 15 textboxes
+  `0e878`, 10 options `0e870` / checks `0e868` / combos `0e858`, one `Tgui_col` `0e860`): labels at x 216, boxes at
+  361 w 100, rows 25 px from 32. The full per-type table (texts from the binary, slots, clamps, the +1.0 transparency
+  of Env_Breakable / Func_DynWall via `FUN_1402aa0d0`, Env_Room alpha 1 - x, Env_Light angles copied to ints 7/8,
+  Trigger_Delay '.' -> ms) is `cs2d_ed_prop_fields` in `src/cs2d_editor.c`. Combo lists: radar icons `0x1409cd280`,
+  buttons `0x1409cd1e0`, items `0x1409fff98` minus 50/55/63/70/71, buildings of category 1-2. The original opens
+  it from the entity context menu (`g_gui_dragmode == 10`); ours opens it with a right click on the entity.
+
+
+## Entity construction helpers (Te.drawineditor 0x14026a260, REA/dump)
+- Drawn **only for the hovered entity** (or every entity while **Space** is held: `KeyDown(0x20)` = p3, FUN_1402bf960), and only with the Entities mode button down (Tgui_ibtn 0x140a0f3c8 +0x50). All SetBlend 4 (additive), alpha 0.1.
+- Zone table 0x1409f75f8 (T/CT/BombSpot 2, RescuePoint 1): yellow (2z+1)² tiles. BombSpot: + oval radius ints[0] in type color.
+- 18 NoBuildings / 32 Env_Room / 80 NoWeather: yellow ints[0]×ints[1] tiles. 20 TeamGate: ints[0]×ints[1], ints[2] 0 yellow/1 red/2 blue. 27 Env_Hurt: (128,255,0) ints[2]×ints[3].
+- 33 Env_Light: oval radius ints[0] at tile centre + (strs[1], strs[2]) px, type color; icon there at alpha 0.5. 34 LightStripe: yellow ints[0]×ints[1] at tile offset (ints[7], ints[8]).
+- 70 Func_Teleport: line width 3 to target tile (ints[0], ints[1]). BombSpot oval / Teleport line skipped while picking a target (DAT_140ddefac 2/1, not reconstructed).
+- Then Ted_tr.drawat FUN_140269f10 for the tile: links (trigger entity → entity named in its comma list, trimmed) leaving the tile (100,200,255) a 0.5, arriving (50,50,150) a |sin(ms/2 deg)|*0.5, additive, line width 2. Implemented.

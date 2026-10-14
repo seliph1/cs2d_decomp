@@ -1,5 +1,19 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-13 — Antigravity — Fix player shadow order and remove BombSpot decals on floor
+
+- **Changed:**
+  - Removed floor rendering of `bspot_a.png` / `bspot_b.png` for `CS2D_ENT_INFO_BOMBSPOT` in `src/cs2d_render.c`:
+    the original CS2D renders no floor decals for BombSpots on the game map; bombspot icons appear only on the radar / minimap.
+  - Reordered the game scene render loop in `src/cs2d_scene_game.c`:
+    - Moved the light buffer (`cs2d_light_draw_buffer()`) and world floor shadows (`cs2d_render_map_shadows()`) to render *before* the player drawing loop instead of after it.
+    - Previously, `cs2d_light_draw_buffer()` was multiplied (blend mode 5) over the scene *after* players, multiplying the black player day shadow silhouette directly over the player's body and darkening it by ~50%.
+    - With the new pass order, world shadows, day shadows and the player's floor shadow silhouette are rendered onto the floor first, and player bodies are rendered on top with their legs, torso and weapons clean and unshaded. Overhead passes (rooftop sprites and tree canopies) continue to render above players.
+  - Separated CPU floor shadow chunk pass (`cs2d_render_map_shadows`) from `cs2d_render_map_overhead`, calling it before players in `src/cs2d_scene_game.c` and before overhead entities in `src/cs2d_scene_editor.c`.
+- **Verified:**
+  - `build.bat` compiles `test_cs2d.exe` and `cs2d_client.exe` without warnings or errors.
+  - `test_cs2d.exe` regression suite: **37 / 37** tests passing.
+
 ## 2026-10-13 — Antigravity — Dynamic map list in New Game (Create Server) from maps/ directory
 
 - **Changed:**

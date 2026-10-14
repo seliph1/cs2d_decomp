@@ -1946,6 +1946,126 @@ static bool test_editor(void)
     return true;
 }
 
+/* Entity Properties (FUN_1402aa220) and the editor / spectator minimap pixmap (FUN_14019d7c0). The Env_Hurt layout
+ * matches the screenshot of the original window at (155, 5): labels at x 371, widgets at x 516 */
+static bool test_editor_entity_props(void)
+{
+    printf("\n=== Testing Editor Entity Properties and Minimap ===\n");
+    int n;
+    const cs2d_edf_t *f = cs2d_ed_prop_fields(CS2D_ENT_ENV_HURT, &n);
+    if (n != 8 || strcmp(f[0].text, "Damage per Sec.:") != 0 || f[0].x != 216 || f[0].y != 32 || f[1].x != 361 ||
+        f[3].kind != CS2D_EDF_RADIO || f[3].y != 57 || strcmp(f[4].text, "X Tiles / Area Width:") != 0 || f[5].y != 132) {
+        TEST_FAIL("Entity props", "Env_Hurt layout");
+    }
+    if (cs2d_ed_prop_rot_slot(CS2D_ENT_ENV_HURT) != -1 || cs2d_ed_prop_rot_slot(CS2D_ENT_INFO_T) != 0 ||
+        cs2d_ed_prop_rot_slot(CS2D_ENT_ENV_BUILDING) != 2 || cs2d_ed_prop_rot_slot(CS2D_ENT_ENV_SPRITE) != 4) {
+        TEST_FAIL("Entity props", "rotation dial slots");
+    }
+
+    /* Env_Hurt: load -> apply keeps the values; X / Y tiles are clamped to >= 1 */
+    static cs2d_ed_prop_t p;
+    cs2d_entity_t e;
+    memset(&e, 0, sizeof(e));
+    e.type = CS2D_ENT_ENV_HURT;
+    strcpy(e.name, "cell");
+    e.int_settings[0] = -10; e.int_settings[1] = 2; e.int_settings[2] = 2; e.int_settings[3] = 1;
+    cs2d_ed_prop_load(&p, &e);
+    if (strcmp(p.text[1], "-10") != 0 || p.value[3] != 2 || strcmp(p.text[5], "2") != 0 || strcmp(p.name, "cell") != 0) {
+        TEST_FAIL("Entity props", "Env_Hurt load");
+    }
+    strcpy(p.text[7], "0");
+    cs2d_ed_prop_apply(&p, &e);
+    if (e.int_settings[0] != -10 || e.int_settings[1] != 2 || e.int_settings[2] != 2 || e.int_settings[3] != 1) {
+        TEST_FAIL("Entity props", "Env_Hurt apply");
+    }
+
+    /* Env_Breakable transparency is shown + 1.0 and stored - 1.0, keeping the decimals (FUN_1402aa0d0);
+     * Shadow Type is stored as option + 1; Env_Light angles are clamped to 0..359 and copied to ints[7] / ints[8] */
+    memset(&e, 0, sizeof(e));
+    e.type = CS2D_ENT_ENV_BREAKABLE;
+    strcpy(e.str_settings[0], "-0.25");
+    e.int_settings[6] = 3;
+    cs2d_ed_prop_load(&p, &e);
+    int ti = -1, ri = -1;
+    f = cs2d_ed_prop_fields(CS2D_ENT_ENV_BREAKABLE, &n);
+    for (int i = 0; i < n; i++) {
+        if (f[i].kind == CS2D_EDF_STR) ti = i;
+        if (f[i].kind == CS2D_EDF_RADIO && f[i].slot == 6) ri = i;
+    }
+    if (ti < 0 || ri < 0 || strcmp(p.text[ti], "0.75") != 0 || p.value[ri] != 2) TEST_FAIL("Entity props", "Env_Breakable load");
+    strcpy(p.text[ti], "0.5");
+    p.value[ri] = 0;
+    cs2d_ed_prop_apply(&p, &e);
+    if (strcmp(e.str_settings[0], "-0.5") != 0 || e.int_settings[6] != 1) TEST_FAIL("Entity props", "Env_Breakable apply");
+
+    memset(&e, 0, sizeof(e));
+    e.type = CS2D_ENT_ENV_LIGHT;
+    cs2d_ed_prop_load(&p, &e);
+    f = cs2d_ed_prop_fields(CS2D_ENT_ENV_LIGHT, &n);
+    for (int i = 0; i < n; i++) {
+        if (f[i].kind == CS2D_EDF_INT && f[i].slot == 0) strcpy(p.text[i], "999");
+        if (f[i].kind == CS2D_EDF_INT && f[i].slot == 4) strcpy(p.text[i], "400");
+        if (f[i].kind == CS2D_EDF_INT && f[i].slot == 5) strcpy(p.text[i], "-5");
+    }
+    cs2d_ed_prop_apply(&p, &e);
+    if (e.int_settings[0] != 250 || e.int_settings[4] != 359 || e.int_settings[7] != 359 || e.int_settings[5] != 0 ||
+        e.int_settings[8] != 0 || strcmp(e.str_settings[0], "0") != 0) {
+        TEST_FAIL("Entity props", "Env_Light clamps");
+    }
+
+    /* Trigger_Delay: "1.5" -> 1500 ms in ints[1]; "3" -> 3 s in ints[0] */
+    memset(&e, 0, sizeof(e));
+    e.type = CS2D_ENT_TRIGGER_DELAY;
+    e.int_settings[1] = 250;
+    cs2d_ed_prop_load(&p, &e);
+    if (strcmp(p.text[1], "0.25") != 0) TEST_FAIL("Entity props", "Trigger_Delay load");
+    strcpy(p.text[1], "1.5");
+    cs2d_ed_prop_apply(&p, &e);
+    if (e.int_settings[0] != 0 || e.int_settings[1] != 1500) TEST_FAIL("Entity props", "Trigger_Delay float");
+    strcpy(p.text[1], "-3");
+    cs2d_ed_prop_apply(&p, &e);
+    if (e.int_settings[0] != 3 || e.int_settings[1] != 0) TEST_FAIL("Entity props", "Trigger_Delay seconds");
+
+    /* Gen_Particles color is r << 16 | g << 8 | b in strs[0] */
+    memset(&e, 0, sizeof(e));
+    e.type = CS2D_ENT_GEN_PARTICLES;
+    snprintf(e.str_settings[0], 64, "%d", (10 << 16) | (20 << 8) | 30);
+    cs2d_ed_prop_load(&p, &e);
+    if (p.rgb[0] != 10 || p.rgb[1] != 20 || p.rgb[2] != 30) TEST_FAIL("Entity props", "Gen_Particles color");
+
+    /* Item combo: ids 50, 55, 63, 70, 71 are left out */
+    int ids[256];
+    static char names[256][48];
+    int ni = cs2d_ed_prop_combo_ids(CS2D_EDF_COMBO_ITEM, ids, names, 256);
+    for (int i = 0; i < ni; i++) {
+        if (ids[i] == 50 || ids[i] == 55 || ids[i] == 63 || ids[i] == 70 || ids[i] == 71) TEST_FAIL("Entity props", "item filter");
+    }
+    if (ni < 10 || strcmp(names[0], "1 - USP") != 0) TEST_FAIL("Entity props", "item combo names");
+
+    /* Minimap colors: tile 0 black, wall white, floor 50, wade (0,100,150), obstacle 125, deadly red; entities on top */
+    static cs2d_map_t m;
+    memset(&m, 0, sizeof(m));
+    if (!cs2d_ed_new_map(&m, 6, 1, "cs2dnorm.bmp")) TEST_FAIL("Minimap", "new map failed");
+    m.tile_modes[1] = CS2D_TILE_WALL;
+    m.tile_modes[2] = CS2D_TILE_FLOOR_DIRT;
+    m.tile_modes[3] = CS2D_TILE_FLOOR_WADE;
+    m.tile_modes[4] = CS2D_TILE_OBSTACLE;
+    m.tile_modes[5] = CS2D_TILE_DEADLY_TOXIC;
+    for (int x = 1; x < 6; x++) m.tiles[x] = (uint8_t)x;
+    cs2d_ed_entity_add(&m, CS2D_ENT_INFO_CT, 2, 0);
+    uint32_t px[6];
+    cs2d_ed_minimap_build(&m, false, px);
+    static const uint32_t want[6] = { 0xff000000u, 0xffffffffu, 0xff323232u, 0xff966400u, 0xff7d7d7du, 0xff0000ffu };
+    bool ok = memcmp(px, want, sizeof(want)) == 0;
+    cs2d_ed_minimap_build(&m, true, px);
+    ok = ok && px[2] == 0xffff0000u; /* Info_CT (0,0,255) */
+    cs2d_map_free(&m);
+    if (!ok) TEST_FAIL("Minimap", "pixmap colors");
+
+    TEST_PASS("Entity Properties layouts / conversions and the minimap pixmap");
+    return true;
+}
+
 /* Spectator camera (FUN_14025aa60, FUN_1401698a0, Tmap_scroll.toplayer_smoothly) and the join snapshot
  * player names, checked against proxy captures of CS2D.exe on prison_funst3r with two bots */
 static bool test_spectator(void)
@@ -4025,7 +4145,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 39;
+    int total = 40;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -4048,6 +4168,7 @@ int main(void)
     if (test_serverlist()) passed++;
     if (test_file_transfer()) passed++;
     if (test_editor()) passed++;
+    if (test_editor_entity_props()) passed++;
     if (test_spectator()) passed++;
     if (test_construction()) passed++;
     if (test_weapon_select()) passed++;

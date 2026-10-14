@@ -26,9 +26,9 @@ When you confirm or refute something, update the topic file (or add one and list
 | [entities.md](knowledge/entities.md) | Entities, Env_Decal, Gen_* (particles, sprites, weather, FX), implementation checklist | 6 KB |
 | [breakable.md](knowledge/breakable.md) | Env_Breakable and shots | 1 KB |
 | [shot-effects.md](knowledge/shot-effects.md) | Shot effects | 3 KB |
-| [spectator.md](knowledge/spectator.md) | Spectator | 3 KB |
+| [spectator.md](knowledge/spectator.md) | Spectator | 4 KB |
 | [team-menu.md](knowledge/team-menu.md) | Server Info and Team Selection UI | 1 KB |
-| [map-editor.md](knowledge/map-editor.md) | Map editor | 4 KB |
+| [map-editor.md](knowledge/map-editor.md) | Map editor | 7 KB |
 | [dynobj.md](knowledge/dynobj.md) | Construction mode and dynamic objects | 9 KB |
 | [capture-the-flag.md](knowledge/capture-the-flag.md) | Capture the flag | 1 KB |
 | [weapon-select.md](knowledge/weapon-select.md) | Weapon selection HUD and bindings | 2 KB |

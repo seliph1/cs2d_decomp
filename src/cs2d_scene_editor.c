@@ -7,6 +7,7 @@
 #include <string.h>
 #include "cs2d_light.h"
 #include "cs2d_atlas.h"
+#include "cs2d_gl.h"
 
 /*
  * Editor scene: the map editor (GUI built by FUN_1401a85f0, loop FUN_1402bf960, CS2D.exe).
@@ -36,6 +37,23 @@ static cs2d_texture_t s_tex_shadow;  /* incbindata/shadow.bmp, behind entity ico
 /* Mouse state seen by the custom sidebar widgets */
 static bool s_mouse_down;
 static bool s_mouse_hit;
+static bool s_mouse_rhit;            /* Right button pressed this frame (rotation dial) */
+
+/* Minimap (editor_minimap): 1 px per tile pixmap 0x140a0f620, rebuilt when the map changes */
+static cs2d_texture_t s_tex_minimap;
+static uint32_t      *s_minimap_px;
+static uint32_t      *s_minimap_prev;
+static size_t         s_minimap_cap;
+
+/* Entity Properties: radio / combo items split from the field table, the combo's "id - name" list */
+#define ED_EP_ITEMS 32
+static char        s_ep_items[CS2D_ED_PROP_FIELDS][ED_EP_ITEMS][72];
+static const char *s_ep_ptrs[CS2D_ED_PROP_FIELDS][ED_EP_ITEMS];
+static int         s_ep_count[CS2D_ED_PROP_FIELDS];
+static int         s_ep_ids[ED_EP_ITEMS * 4];
+static char        s_ep_id_names[ED_EP_ITEMS * 4][48];
+static const char *s_ep_id_ptrs[ED_EP_ITEMS * 4];
+static int         s_ep_id_count;
 
 typedef struct {
     int         frame;
@@ -194,6 +212,45 @@ static void editor_tileprop_apply(cs2d_client_t *client)
 
 /* --- Scene --- */
 
+/* Splits "a|b|c" into s_ep_items[field] */
+static void split_items(int field, const char *items)
+{
+    int n = 0;
+    const char *p = items;
+    while (p && n < ED_EP_ITEMS) {
+        const char *bar = strchr(p, '|');
+        size_t len = bar ? (size_t)(bar - p) : strlen(p);
+        if (len >= sizeof(s_ep_items[0][0])) len = sizeof(s_ep_items[0][0]) - 1;
+        memcpy(s_ep_items[field][n], p, len);
+        s_ep_items[field][n][len] = '\0';
+        s_ep_ptrs[field][n] = s_ep_items[field][n];
+        n++;
+        p = bar ? bar + 1 : NULL;
+    }
+    s_ep_count[field] = n;
+}
+
+/* FUN_1402aa220(entity, 0): fills the Entity Properties widgets and shows the window */
+static void editor_entprop_show(cs2d_client_t *client, int index)
+{
+    cs2d_ed_state_t *ed = &client->editor;
+    const cs2d_entity_t *e = &client->editor_map.entities[index];
+    ed->entprop_open = true;
+    ed->entprop_index = index;
+    cs2d_ed_prop_load(&ed->entprop, e);
+    int count;
+    const cs2d_edf_t *fields = cs2d_ed_prop_fields((int)e->type, &count);
+    for (int i = 0; i < count && i < CS2D_ED_PROP_FIELDS; i++) {
+        const cs2d_edf_t *f = &fields[i];
+        s_ep_count[i] = 0;
+        if (f->kind == CS2D_EDF_RADIO || f->kind == CS2D_EDF_COMBO) split_items(i, f->text);
+        if (f->kind == CS2D_EDF_COMBO_ITEM || f->kind == CS2D_EDF_COMBO_BLD) {
+            s_ep_id_count = cs2d_ed_prop_combo_ids(f->kind, s_ep_ids, s_ep_id_names, ED_EP_ITEMS * 4);
+            for (int k = 0; k < s_ep_id_count; k++) s_ep_id_ptrs[k] = s_ep_id_names[k];
+        }
+    }
+}
+
 static void editor_enter(cs2d_client_t *client)
 {
     cs2d_ed_state_t *ed = &client->editor;
@@ -227,17 +284,44 @@ static void editor_leave(cs2d_client_t *client)
     memset(&client->editor_map, 0, sizeof(client->editor_map));
     client->editor.file_open = client->editor.tileprop_open = client->editor.color_open = false;
     client->editor.disp_open = false;
+    client->editor.entprop_open = false;
+    cs2d_texture_free(&s_tex_minimap);
+    free(s_minimap_px);
+    free(s_minimap_prev);
+    s_minimap_px = s_minimap_prev = NULL;
+    s_minimap_cap = 0;
 }
 
 static bool editor_window_open(const cs2d_ed_state_t *ed)
 {
-    return ed->tileprop_open || ed->color_open || ed->file_open || ed->disp_open;
+    return ed->tileprop_open || ed->color_open || ed->file_open || ed->disp_open || ed->entprop_open;
 }
 
-/* Pointer over the sidebar or an editor window (the map does not react then) */
+/* FUN_1402b6340: the minimap sits in the top right corner, x = width - 1 - map_xmax, 1 px per tile */
+static float minimap_x(const cs2d_client_t *client)
+{
+    return (float)client->config.window_width - (float)client->editor_map.width;
+}
+
+/* The pointer over the minimap (FUN_1402b6260: mx >= w - xmax and my <= ymax take the map clicks away) */
+static bool over_minimap(const cs2d_client_t *client)
+{
+    return client->editor.disp[CS2D_ED_DISP_MINIMAP] && !client->editor.pointer_on_ui &&
+           client->mouse_screen_x >= minimap_x(client) &&
+           client->mouse_screen_y <= (float)client->editor_map.height;
+}
+
+/* A held left button on the minimap moves the camera: camx = (column - 13) * 32, camy = (row - 8) * 32 */
+static void minimap_navigate(cs2d_client_t *client)
+{
+    client->editor_cam_x = (float)(int)((client->mouse_screen_x - minimap_x(client) - 13.0f) * 32.0f);
+    client->editor_cam_y = (float)(int)((client->mouse_screen_y - 8.0f) * 32.0f);
+}
+
+/* Pointer over the sidebar, an editor window or the minimap (the map does not react then) */
 static bool pointer_blocked(const cs2d_client_t *client)
 {
-    return client->mouse_screen_x < (float)CS2D_ED_SIDEBAR_W || client->editor.pointer_on_ui;
+    return client->mouse_screen_x < (float)CS2D_ED_SIDEBAR_W || client->editor.pointer_on_ui || over_minimap(client);
 }
 
 /* Tile under the pointer, false when it is outside the map */
@@ -273,6 +357,8 @@ static void editor_update(cs2d_client_t *client, float delta_time)
     if (client->editor_cam_y < min_y) client->editor_cam_y = min_y;
     if (client->editor_cam_x > max_x) client->editor_cam_x = max_x;
     if (client->editor_cam_y > max_y) client->editor_cam_y = max_y;
+
+    if (ed->minimap_drag && s_mouse_down && over_minimap(client)) minimap_navigate(client);
 
     /* Draw Tile by Tile while the button is held */
     int tx, ty;
@@ -480,6 +566,7 @@ static bool editor_sidebar_click(cs2d_client_t *client, float mx, float my, int 
         }
         if (point_in(mx, my, 90.0f, by, 57.0f, 20.0f)) {
             ed->color_open = true;
+            ed->color_for_entprop = false;
             bool colored = (ed->brush.mod & 0xc0) == 0x80;
             ed->color_r = colored ? ed->brush.r : 255;
             ed->color_g = colored ? ed->brush.g : 255;
@@ -502,6 +589,122 @@ static bool editor_sidebar_click(cs2d_client_t *client, float mx, float my, int 
 
 /* --- Map view --- */
 
+/* SetLineWidth(width) DrawLine: parallel 1 px lines across the width */
+static void wide_line(float x1, float y1, float x2, float y2, int width, float r, float g, float b, float a)
+{
+    float len = hypotf(x2 - x1, y2 - y1), nx = 0.0f, ny = 0.0f;
+    if (len > 0.0f) { nx = -(y2 - y1) / len; ny = (x2 - x1) / len; }
+    for (int k = 0; k < width; k++) {
+        float o = (float)k - (float)(width - 1) * 0.5f;
+        cs2d_render_line(x1 + nx * o, y1 + ny * o, x2 + nx * o, y2 + ny * o, r, g, b, a);
+    }
+}
+
+/* Whether the trigger list of `src` (comma separated, FUN_14011e350 trims spaces) names `dst` */
+static bool entity_triggers(const cs2d_entity_t *src, const cs2d_entity_t *dst)
+{
+    if (!src->trigger[0] || !dst->name[0]) return false;
+    size_t n = strlen(dst->name);
+    for (const char *p = src->trigger; *p;) {
+        while (*p == ' ') p++;
+        const char *end = p;
+        while (*end && *end != ',') end++;
+        const char *last = end;
+        while (last > p && last[-1] == ' ') last--;
+        if ((size_t)(last - p) == n && memcmp(p, dst->name, n) == 0) return true;
+        p = *end ? end + 1 : end;
+    }
+    return false;
+}
+
+/* Ted_tr.drawat (FUN_140269f10): the trigger links of tile (x, y). Ted_tr::update builds one link per
+ * (trigger entity, named entity) pair; links leaving the tile in (100,200,255) at 0.5, links arriving at it
+ * in (50,50,150) pulsing at |sin(ms / 2 deg)| * 0.5, both additive with line width 2 */
+static void draw_trigger_links(const cs2d_map_t *map, int x, int y, float cam_x, float cam_y, float time)
+{
+    cs2d_gl_set_blend(CS2D_GL_BLEND_ADD);
+    for (int pass = 0; pass < 2; pass++) {
+        float r = pass ? 50.0f / 255.0f : 100.0f / 255.0f, g = pass ? 50.0f / 255.0f : 200.0f / 255.0f;
+        float b = pass ? 150.0f / 255.0f : 1.0f;
+        float a = pass ? fabsf(sinf(time * 500.0f * 0.017453292f)) * 0.5f : 0.5f;
+        for (uint32_t i = 0; i < map->entity_count; i++) {
+            const cs2d_entity_t *s = &map->entities[i];
+            if (!s->trigger[0]) continue;
+            for (uint32_t j = 0; j < map->entity_count; j++) {
+                const cs2d_entity_t *d = &map->entities[j];
+                const cs2d_entity_t *end = pass ? d : s;
+                if (end->x != x || end->y != y || !entity_triggers(s, d)) continue;
+                wide_line((float)s->x * 32.0f - cam_x + 16.0f, (float)s->y * 32.0f - cam_y + 16.0f,
+                          (float)d->x * 32.0f - cam_x + 16.0f, (float)d->y * 32.0f - cam_y + 16.0f, 2, r, g, b, a);
+            }
+        }
+    }
+    cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+}
+
+/* Te.drawineditor (0x14026a260), hover branch: the construction helpers of one entity, all additive (SetBlend 4).
+ * The original skips the Info_BombSpot circle and the Func_Teleport line while a target is being picked
+ * (DAT_140ddefac 2 / 1, FUN_1402baa..); that picking is not reconstructed, so they are always drawn. */
+static void draw_entity_helpers(const cs2d_entity_t *e, float px, float py, float r, float g, float b)
+{
+    const int32_t *v = e->int_settings;
+    float cx = px + 16.0f, cy = py + 16.0f;
+    int zone = cs2d_ed_entity_zone((int)e->type);
+    if (zone > 0) {
+        float z = (float)zone * CS2D_TILE_SIZE;
+        cs2d_render_rect_add(px - z, py - z, 2.0f * z + 32.0f, 2.0f * z + 32.0f, 1.0f, 1.0f, 0.0f, 0.1f, true);
+    }
+    switch ((int)e->type) {
+        case CS2D_ENT_INFO_BOMBSPOT:
+            /* DrawOval of radius ints[0] in the type color, alpha still 0.1 */
+            cs2d_gl_set_blend(CS2D_GL_BLEND_ADD);
+            cs2d_render_circle(cx, cy, (float)v[0], r, g, b, 0.1f, true);
+            cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+            break;
+        case CS2D_ENT_FUNC_TELEPORT: {
+            /* SetLineWidth 3 from the tile centre to the target tile centre (ints[0], ints[1]) */
+            float tx = cx + (float)(v[0] - e->x) * CS2D_TILE_SIZE, ty = cy + (float)(v[1] - e->y) * CS2D_TILE_SIZE;
+            cs2d_gl_set_blend(CS2D_GL_BLEND_ADD);
+            wide_line(cx, cy, tx, ty, 3, r, g, b, 1.0f);
+            cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+            break;
+        }
+        case CS2D_ENT_INFO_NOBUILDINGS: case CS2D_ENT_ENV_ROOM: case CS2D_ENT_INFO_NOWEATHER:
+            /* Yellow, ints[0] x ints[1] tiles */
+            cs2d_render_rect_add(px, py, (float)v[0] * 32.0f, (float)v[1] * 32.0f, 1.0f, 1.0f, 0.0f, 0.1f, true);
+            break;
+        case CS2D_ENT_INFO_TEAMGATE: {
+            /* ints[2] team: 0 yellow, 1 red, 2 blue (any other keeps the type color) */
+            float cr = r, cg = g, cb = b;
+            if (v[2] == 0)      { cr = 1.0f; cg = 1.0f; cb = 0.0f; }
+            else if (v[2] == 1) { cr = 1.0f; cg = 0.0f; cb = 0.0f; }
+            else if (v[2] == 2) { cr = 0.0f; cg = 0.0f; cb = 1.0f; }
+            cs2d_render_rect_add(px, py, (float)v[0] * 32.0f, (float)v[1] * 32.0f, cr, cg, cb, 0.1f, true);
+            break;
+        }
+        case CS2D_ENT_ENV_HURT:
+            /* (128,255,0), ints[2] x ints[3] tiles */
+            cs2d_render_rect_add(px, py, (float)v[2] * 32.0f, (float)v[3] * 32.0f, 128.0f / 255.0f, 1.0f, 0.0f, 0.1f, true);
+            break;
+        case CS2D_ENT_ENV_LIGHT: {
+            /* Radius ints[0] around the tile centre moved by the pixel offset strs[1], strs[2], then the icon
+             * at the offset position at alpha 0.5 */
+            float ox = (float)atoi(e->str_settings[1]), oy = (float)atoi(e->str_settings[2]);
+            cs2d_gl_set_blend(CS2D_GL_BLEND_ADD);
+            cs2d_render_circle(cx + ox, cy + oy, (float)v[0], r, g, b, 0.1f, true);
+            cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
+            cs2d_render_sprite_frame(&s_tex_icons, 16, 16, 9, cx + ox, cy + oy, 16.0f, 16.0f, 0.0f, r, g, b, 0.5f, 4);
+            break;
+        }
+        case CS2D_ENT_ENV_LIGHTSTRIPE:
+            /* Yellow, ints[0] x ints[1] tiles from the tile offset ints[7], ints[8] */
+            cs2d_render_rect_add(px + (float)v[7] * 32.0f, py + (float)v[8] * 32.0f, (float)v[0] * 32.0f, (float)v[1] * 32.0f,
+                                 1.0f, 1.0f, 0.0f, 0.1f, true);
+            break;
+        default: break;
+    }
+}
+
 /* Te.drawineditor (0x14026a260): shadow, type-colored icon (additive), pulsing glow, short label, zones */
 static void draw_entities(cs2d_client_t *client, int screen_w, int screen_h)
 {
@@ -517,11 +720,6 @@ static void draw_entities(cs2d_client_t *client, int screen_w, int screen_h)
         cs2d_ed_entity_color((int)e->type, rgb);
         float r = rgb[0] / 255.0f, g = rgb[1] / 255.0f, b = rgb[2] / 255.0f;
 
-        int zone = cs2d_ed_entity_zone((int)e->type);
-        if (zone > 0) {
-            float z = (float)zone * CS2D_TILE_SIZE;
-            cs2d_render_rect(px - z, py - z, 2.0f * z + 32.0f, 2.0f * z + 32.0f, 1.0f, 1.0f, 0.0f, 0.1f, true);
-        }
         cs2d_render_sprite_frame(&s_tex_shadow, 32, 32, 0, px + 17.0f, py + 17.0f, 38.4f, 38.4f, 0.0f, 0.0f, 0.0f, 0.0f, 0.6f, 0);
         cs2d_render_sprite_frame(&s_tex_icons, 16, 16, 9, px + 16.0f, py + 16.0f, 16.0f, 16.0f, 0.0f, r, g, b, 1.0f, 4);
         float pulse = sinf((px + py + ed->time * 180.0f) * 0.017453292f) * 0.5f;
@@ -530,10 +728,15 @@ static void draw_entities(cs2d_client_t *client, int screen_w, int screen_h)
         }
         cs2d_render_text_ex(CS2D_FONT_SMALL, px + 19.0f, py + 21.0f, cs2d_ed_entity_label((int)e->type), r, g, b, 1.0f);
 
-        if (!pointer_blocked(client) && point_in(client->mouse_screen_x, client->mouse_screen_y, px, py, 32.0f, 32.0f)) {
-            ed->ent_hover = (int)i;
-            editor_tooltip(client, cs2d_entity_type_name(e->type), 5.0f, 5.0f);
-        }
+        /* Hovered, or every entity while Space is held (p3 = 1) */
+        bool over = !pointer_blocked(client) && point_in(client->mouse_screen_x, client->mouse_screen_y, px, py, 32.0f, 32.0f);
+        if (!over && !ed->ent_show_all) continue;
+        ed->ent_hover = (int)i;
+        editor_tooltip(client, cs2d_entity_type_name(e->type), 5.0f, 5.0f);
+        /* The helpers need the Entities mode button down (Tgui_ibtn 0x140a0f3c8 +0x50) */
+        if (ed->mode != CS2D_ED_MODE_ENTITIES) continue;
+        draw_entity_helpers(e, px, py, r, g, b);
+        draw_trigger_links(map, e->x, e->y, cam_x, cam_y, ed->time);
     }
 }
 
@@ -581,6 +784,37 @@ static void draw_status(cs2d_client_t *client, int screen_h)
     cs2d_render_text_ex(CS2D_FONT_REGULAR, x, y, text, 100.0f / 255.0f, 200.0f / 255.0f, 1.0f, a);
 }
 
+/* FUN_1402b6340: the pixmap at alpha 0.75, then a pulsing additive yellow frame and the 27x15 tile view */
+static void draw_minimap(cs2d_client_t *client, int screen_w)
+{
+    const cs2d_map_t *map = &client->editor_map;
+    if (!map->tiles || map->width == 0 || map->height == 0) return;
+    size_t n = (size_t)map->width * map->height;
+    if (n > s_minimap_cap) {
+        free(s_minimap_px);
+        free(s_minimap_prev);
+        s_minimap_px = (uint32_t *)malloc(n * 4);
+        s_minimap_prev = (uint32_t *)calloc(n, 4);
+        s_minimap_cap = (s_minimap_px && s_minimap_prev) ? n : 0;
+        cs2d_texture_free(&s_tex_minimap);
+        if (!s_minimap_cap) return;
+    }
+    /* The original rebuilds it after each edit (FUN_14019d7c0); comparing with the last upload has the same effect */
+    cs2d_ed_minimap_build(map, client->editor.disp[CS2D_ED_DISP_ENTITIES], s_minimap_px);
+    if (!s_tex_minimap.id || s_tex_minimap.width != (int)map->width || s_tex_minimap.height != (int)map->height ||
+        memcmp(s_minimap_px, s_minimap_prev, n * 4) != 0) {
+        cs2d_texture_upload_rgba(&s_tex_minimap, s_minimap_px, (int)map->width, (int)map->height);
+        memcpy(s_minimap_prev, s_minimap_px, n * 4);
+    }
+    float w = (float)map->width, h = (float)map->height, x = (float)screen_w - w;
+    cs2d_render_sprite_frame(&s_tex_minimap, (int)w, (int)h, 0, x + w * 0.5f, h * 0.5f, w, h, 0.0f, 1.0f, 1.0f, 1.0f, 0.75f, 0);
+    /* Alpha |sin(DAT_140ddeff8)| * 0.2; that counter's rate is not recovered, the 1 deg per 10 ms of the HUD is used */
+    float a = fabsf(sinf(client->editor.time * 100.0f * 0.017453292f)) * 0.2f;
+    cs2d_render_rect_add(x, 0.0f, w, h, 1.0f, 1.0f, 0.0f, a, false);
+    float vx = floorf(client->editor_cam_x / 32.0f), vy = floorf(client->editor_cam_y / 32.0f);
+    cs2d_render_rect_add(vx + x, vy, 27.0f, 15.0f, 1.0f, 1.0f, 0.0f, a, true);
+}
+
 static void editor_render(cs2d_client_t *client, int screen_w, int screen_h)
 {
     cs2d_ed_state_t *ed = &client->editor;
@@ -626,6 +860,7 @@ static void editor_render(cs2d_client_t *client, int screen_w, int screen_h)
 
     draw_sidebar(client, screen_h);
     draw_status(client, screen_h);
+    if (ed->disp[CS2D_ED_DISP_MINIMAP]) draw_minimap(client, screen_w);
 }
 
 /* --- Windows (cs2d_ui, built every frame while the editor runs) --- */
@@ -728,7 +963,13 @@ static void build_color_window(cs2d_client_t *client)
     }
     ED_AT(ui, wx + 230.0f, wy + 157.0f) {
         if (cs2d_ui_button(ui, CS2D_UI_ID("EdColorOk"), "Okay", 100.0f, 20.0f)) {
-            cs2d_ed_brush_set_color(&ed->brush, (uint8_t)ed->color_r, (uint8_t)ed->color_g, (uint8_t)ed->color_b);
+            if (ed->color_for_entprop) {
+                ed->entprop.rgb[0] = ed->color_r;
+                ed->entprop.rgb[1] = ed->color_g;
+                ed->entprop.rgb[2] = ed->color_b;
+            } else {
+                cs2d_ed_brush_set_color(&ed->brush, (uint8_t)ed->color_r, (uint8_t)ed->color_g, (uint8_t)ed->color_b);
+            }
             ed->color_open = false;
         }
     }
@@ -769,6 +1010,147 @@ static void build_disp_window(cs2d_client_t *client)
 }
 
 /* Load / Save Map: Tgui_win (155, 5) (w - 160) x (h - 10); list (16, 25), name box (16, h - 71) */
+/* Entity Properties: Tgui_win (155, 5) 480x470 (FUN_1401a85f0): "<type> @ x|y" (16, 32), Name (16, 57) + box (91, 57),
+ * Trigger (16, 82) + box (91, 82), Rotation (16, 107) + dial (91, 107), Delete (16, 434), Okay (259, 434),
+ * Cancel (364, 434); the per-type widgets come from cs2d_ed_prop_fields */
+#define ED_EP_X 155.0f
+#define ED_EP_Y 5.0f
+static void build_entprop_window(cs2d_client_t *client)
+{
+    cs2d_ed_state_t *ed = &client->editor;
+    cs2d_ui_context_t *ui = &client->ui;
+    cs2d_ed_prop_t *p = &ed->entprop;
+    const float wx = ED_EP_X, wy = ED_EP_Y;
+    if (ed->entprop_index < 0 || (uint32_t)ed->entprop_index >= client->editor_map.entity_count) {
+        ed->entprop_open = false;
+        return;
+    }
+    cs2d_entity_t *e = &client->editor_map.entities[ed->entprop_index];
+    if (!cs2d_ui_window_begin(ui, CS2D_UI_ID("EdEntPropWin"), "Entity Properties", wx, wy, 480.0f, 470.0f, &ed->entprop_open)) return;
+
+    char title[96];
+    snprintf(title, sizeof(title), "%s @ %d|%d", cs2d_entity_type_name(e->type), e->x, e->y);
+    label_at(ui, wx + 16.0f, wy + 32.0f, title);
+    label_at(ui, wx + 16.0f, wy + 57.0f, "Name:");
+    ED_AT(ui, wx + 91.0f, wy + 57.0f) {
+        static int cursor;
+        cs2d_ui_textbox_ex(ui, CS2D_UI_ID("EdEpName"), p->name, sizeof(p->name), &cursor, 100.0f, 0);
+    }
+    label_at(ui, wx + 16.0f, wy + 82.0f, "Trigger:");
+    ED_AT(ui, wx + 91.0f, wy + 82.0f) {
+        static int cursor;
+        cs2d_ui_textbox_ex(ui, CS2D_UI_ID("EdEpTrigger"), p->trigger, sizeof(p->trigger), &cursor, 100.0f, 0);
+    }
+    if (cs2d_ed_prop_rot_slot((int)e->type) >= 0) label_at(ui, wx + 16.0f, wy + 107.0f, "Rotation:");
+
+    int count;
+    const cs2d_edf_t *fields = cs2d_ed_prop_fields((int)e->type, &count);
+    for (int i = 0; i < count && i < CS2D_ED_PROP_FIELDS; i++) {
+        const cs2d_edf_t *f = &fields[i];
+        float fx = wx + (float)f->x, fy = wy + (float)f->y;
+        switch (f->kind) {
+            case CS2D_EDF_LABEL:
+                label_at(ui, fx, fy, f->text);
+                break;
+            case CS2D_EDF_INT:
+            case CS2D_EDF_STR:
+            case CS2D_EDF_STR_INT:
+            case CS2D_EDF_DELAY:
+                ED_AT(ui, fx, fy) {
+                    cs2d_ui_textbox_ex(ui, CS2D_UI_IDI("EdEpTxt", i), p->text[i], sizeof(p->text[i]), &p->cursor[i],
+                                       (float)f->w, 0);
+                }
+                break;
+            case CS2D_EDF_RADIO:
+                for (int k = 0; k < s_ep_count[i]; k++) {
+                    ED_AT(ui, fx, fy + 20.0f * (float)k) {
+                        cs2d_ui_radio(ui, CS2D_UI_IDI("EdEpRad", i * ED_EP_ITEMS + k), s_ep_ptrs[i][k], k, &p->value[i]);
+                    }
+                }
+                break;
+            case CS2D_EDF_CHECK:
+            case CS2D_EDF_CHECK_STR:
+                ED_AT(ui, fx, fy) {
+                    bool b = p->value[i] != 0;
+                    if (cs2d_ui_checkbox(ui, CS2D_UI_IDI("EdEpChk", i), f->text, &b)) p->value[i] = b ? 1 : 0;
+                }
+                break;
+            case CS2D_EDF_COMBO:
+                ED_AT(ui, fx, fy) {
+                    cs2d_ui_select(ui, CS2D_UI_IDI("EdEpCmb", i), s_ep_ptrs[i], s_ep_count[i], &p->value[i], (float)f->w);
+                }
+                break;
+            case CS2D_EDF_COMBO_ITEM:
+            case CS2D_EDF_COMBO_BLD: {
+                /* The value is an id; an id missing from the list shows an empty box (Tgui_combo +0x10 = "") */
+                int sel = -1;
+                for (int k = 0; k < s_ep_id_count; k++) {
+                    if (s_ep_ids[k] == p->value[i]) sel = k;
+                }
+                int before = sel;
+                ED_AT(ui, fx, fy) {
+                    cs2d_ui_select(ui, CS2D_UI_IDI("EdEpCmb", i), s_ep_id_ptrs, s_ep_id_count, &sel, (float)f->w);
+                }
+                if (sel != before && sel >= 0) p->value[i] = s_ep_ids[sel];
+                break;
+            }
+            default: break; /* Color boxes and the dial are drawn by the overlay */
+        }
+    }
+
+    ED_AT(ui, wx + 16.0f, wy + 434.0f) {
+        if (cs2d_ui_button(ui, CS2D_UI_ID("EdEpDelete"), "Delete", 100.0f, 20.0f)) {
+            cs2d_ed_entity_remove(&client->editor_map, ed->entprop_index);
+            ed->ent_hover = -1;
+            ed->entprop_open = false;
+        }
+    }
+    ED_AT(ui, wx + 259.0f, wy + 434.0f) {
+        /* FUN_1402aa220(entity, 1); the original then runs Te.setup and cs2d_update_mapdata around the tile */
+        if (cs2d_ui_button(ui, CS2D_UI_ID("EdEpOkay"), "Okay", 100.0f, 20.0f)) {
+            cs2d_ed_prop_apply(p, e);
+            ed->entprop_open = false;
+        }
+    }
+    ED_AT(ui, wx + 364.0f, wy + 434.0f) {
+        if (cs2d_ui_button(ui, CS2D_UI_ID("EdEpCancel"), "Cancel", 100.0f, 20.0f)) ed->entprop_open = false;
+    }
+    cs2d_ui_window_end(ui);
+}
+
+/* Tgui_rot.draw (0x140263690): 100x100 circle (150, 255 hovered), dark inside, a line from the center towards rot
+ * (0 = up). Left drag: rot = atan2(dx, -dy) in whole degrees with a tooltip; right click: 0 -> 90 -> 180 -> -90 -> 0 */
+static void draw_rot_dial(cs2d_client_t *client, float x, float y, bool hit)
+{
+    cs2d_ed_state_t *ed = &client->editor;
+    float mx = client->mouse_screen_x, my = client->mouse_screen_y;
+    bool hover = !ed->color_open && point_in(mx, my, x, y, 100.0f, 100.0f);
+    float c = hover ? 1.0f : ED_GRAY;
+    /* circle128px.png (0x140a0df00, packed in the exe) drawn 100x100, then 98x98 in black */
+    for (int row = 0; row < 100; row++) {
+        /* One 1 px span per row (batched triangle fans would merge) */
+        float dy = (float)row + 0.5f - 50.0f;
+        float half = sqrtf(fmaxf(2500.0f - dy * dy, 0.0f));
+        cs2d_render_rect(x + 50.0f - half, y + (float)row, half * 2.0f, 1.0f, c, c, c, 1.0f, true);
+        float inner = sqrtf(fmaxf(49.0f * 49.0f - dy * dy, 0.0f));
+        if (inner > 0.0f) cs2d_render_rect(x + 50.0f - inner, y + (float)row, inner * 2.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, true);
+    }
+    float r = (float)ed->entprop.rot * 0.017453292f;
+    cs2d_render_line(x + 50.0f, y + 50.0f, x + 50.0f + sinf(r) * 50.0f, y + 50.0f - cosf(r) * 50.0f, c, c, c, 1.0f);
+    if (hover && hit) ed->rot_drag = true;
+    if (!s_mouse_down) ed->rot_drag = false;
+    if (ed->rot_drag) {
+        ed->entprop.rot = (int)(atan2f(mx - (x + 50.0f), (y + 50.0f) - my) * 57.29578f);
+        snprintf(ed->tooltip, sizeof(ed->tooltip), "%d", ed->entprop.rot);
+        ed->tooltip_x = x + 105.0f;
+        ed->tooltip_y = y + 45.0f;
+    }
+    if (hover && s_mouse_rhit) {
+        int *rot = &ed->entprop.rot;
+        *rot = (*rot == 0) ? 90 : (*rot == 90) ? 180 : (*rot == 180) ? -90 : 0;
+    }
+}
+
 static void build_file_window(cs2d_client_t *client, int screen_w, int screen_h)
 {
     cs2d_ed_state_t *ed = &client->editor;
@@ -862,11 +1244,13 @@ void cs2d_scene_editor_build_ui(cs2d_client_t *client, int screen_w, int screen_
     if (ed->color_open) build_color_window(client);
     if (ed->file_open) build_file_window(client, screen_w, screen_h);
     if (ed->disp_open) build_disp_window(client);
+    if (ed->entprop_open) build_entprop_window(client);
 
     ed->pointer_on_ui = rect_has_pointer(client, CS2D_UI_ID("EdTilePropWin")) && ed->tileprop_open;
     ed->pointer_on_ui |= rect_has_pointer(client, CS2D_UI_ID("EdColorWin")) && ed->color_open;
     ed->pointer_on_ui |= rect_has_pointer(client, CS2D_UI_ID("EdFileWin")) && ed->file_open;
     ed->pointer_on_ui |= rect_has_pointer(client, CS2D_UI_ID("EdDispWin")) && ed->disp_open;
+    ed->pointer_on_ui |= rect_has_pointer(client, CS2D_UI_ID("EdEntPropWin")) && ed->entprop_open;
 }
 
 /* Drawn over the UI windows: tile picture, color preview / sliders / palette, map list, tooltip */
@@ -876,6 +1260,33 @@ void cs2d_scene_editor_render_overlay(cs2d_client_t *client, int screen_w, int s
     float mx = client->mouse_screen_x, my = client->mouse_screen_y;
     bool hit = s_mouse_hit;
     s_mouse_hit = false;
+
+    if (ed->entprop_open && ed->entprop_index >= 0 && (uint32_t)ed->entprop_index < client->editor_map.entity_count) {
+        int type = (int)client->editor_map.entities[ed->entprop_index].type;
+        if (cs2d_ed_prop_rot_slot(type) >= 0) draw_rot_dial(client, ED_EP_X + 91.0f, ED_EP_Y + 107.0f, hit && !ed->color_open);
+        /* Tgui_col: the color in a frame; a click opens the Color window for it */
+        int count;
+        const cs2d_edf_t *fields = cs2d_ed_prop_fields(type, &count);
+        for (int i = 0; i < count; i++) {
+            const cs2d_edf_t *f = &fields[i];
+            if (f->kind != CS2D_EDF_COLOR && f->kind != CS2D_EDF_COLOR_STR) continue;
+            float fx = ED_EP_X + (float)f->x, fy = ED_EP_Y + (float)f->y, fw = (float)f->w;
+            bool hover = !ed->color_open && point_in(mx, my, fx, fy, fw, 20.0f);
+            float c = hover ? 1.0f : ED_GRAY;
+            cs2d_render_rect(fx, fy, fw, 20.0f, c, c, c, 1.0f, true);
+            cs2d_render_rect(fx + 1.0f, fy + 1.0f, fw - 2.0f, 18.0f, ed->entprop.rgb[0] / 255.0f, ed->entprop.rgb[1] / 255.0f,
+                             ed->entprop.rgb[2] / 255.0f, 1.0f, true);
+            if (hover && hit) {
+                ed->color_open = true;
+                ed->color_for_entprop = true;
+                ed->color_r = ed->entprop.rgb[0];
+                ed->color_g = ed->entprop.rgb[1];
+                ed->color_b = ed->entprop.rgb[2];
+                hit = false;
+            }
+        }
+    }
+    s_mouse_rhit = false;
 
     if (ed->tileprop_open) {
         cs2d_render_tile_frame(&client->editor_tileset, (uint8_t)ed->tileprop_tile, 0, NULL, 155.0f + 41.0f, 5.0f + 32.0f,
@@ -957,6 +1368,8 @@ static void editor_handle_key(cs2d_client_t *client, int key, bool pressed)
         case 'A': case 'a': case VK_LEFT:  client->key_left    = pressed; break;
         case 'D': case 'd': case VK_RIGHT: client->key_right   = pressed; break;
         case VK_SHIFT:                     client->key_walk    = pressed; break;
+        /* KeyDown(Space) is the p3 of Te.drawineditor (FUN_1402bf960) */
+        case VK_SPACE:                     ed->ent_show_all    = pressed; break;
         case 'G': case 'g':
             /* KeyHit(G) flips editor_grid without saving it (FUN_1402bf960) */
             if (pressed && !editor_window_open(ed)) ed->disp[CS2D_ED_DISP_GRID] = !ed->disp[CS2D_ED_DISP_GRID];
@@ -980,8 +1393,16 @@ static void editor_handle_mouse(cs2d_client_t *client, float mx, float my, int b
         client->mouse_fire = pressed;
         s_mouse_down = pressed;
         if (pressed) s_mouse_hit = true;
+        if (!pressed) ed->minimap_drag = false;
     }
+    if (button == 2 && pressed) s_mouse_rhit = true;
     if (button == 0) return;
+
+    /* Right click on an entity: its properties (the original opens a context menu first, not reconstructed) */
+    if (button == 2 && pressed && !ed->pointer_on_ui && !editor_window_open(ed) && ed->ent_hover >= 0) {
+        editor_entprop_show(client, ed->ent_hover);
+        return;
+    }
 
     if (button == 1 && !pressed) {
         int tx, ty;
@@ -996,6 +1417,11 @@ static void editor_handle_mouse(cs2d_client_t *client, float mx, float my, int b
 
     if (ed->pointer_on_ui) return; /* An editor window takes the click */
     if (editor_sidebar_click(client, mx, my, screen_h)) return;
+    if (over_minimap(client)) {
+        ed->minimap_drag = true;
+        minimap_navigate(client);
+        return;
+    }
 
     int tx, ty;
     if (!hovered_tile(client, &tx, &ty)) return;
@@ -1023,6 +1449,7 @@ static void editor_handle_escape(cs2d_client_t *client)
 {
     cs2d_ed_state_t *ed = &client->editor;
     if (ed->color_open)    { ed->color_open = false; return; }
+    if (ed->entprop_open)  { ed->entprop_open = false; return; }
     if (ed->file_open)     { ed->file_open = false; return; }
     if (ed->disp_open)     { ed->disp_open = false; return; }
     if (ed->tileprop_open) { ed->tileprop_open = false; return; }

@@ -196,11 +196,16 @@ uint8_t  cs2d_render_tileblend_neighbour(const cs2d_map_t *map, int tx, int ty, 
 uint32_t cs2d_render_tileblend_mix(uint32_t a, uint32_t b, uint8_t mask);
 int      cs2d_render_tileblend_mask(int frame, int x, int y);
 void cs2d_texture_free(cs2d_texture_t *tex);
+/* Creates or refreshes an unfiltered texture from (a << 24) | (b << 16) | (g << 8) | r pixels (Max2D CreateImage
+ * with DYNAMICIMAGE only: no filtering, e.g. the 1 px per tile minimap) */
+bool cs2d_texture_upload_rgba(cs2d_texture_t *tex, const uint32_t *rgba, int w, int h);
 /* RGBA pixels of an image file (mask mode 0), (a << 24) | (b << 16) | (g << 8) | r per pixel; free() the result */
 uint32_t *cs2d_image_load_rgba(const char *path, int *out_w, int *out_h);
 
 /* 2D Primitives */
 void cs2d_render_rect(float x, float y, float w, float h, float r, float g, float b, float a, bool fill);
+/* Same with SetBlend LIGHTBLEND (additive) */
+void cs2d_render_rect_add(float x, float y, float w, float h, float r, float g, float b, float a, bool fill);
 /* One tileset frame at (x, y) scaled to size px, with its modifier (rotation, brightness), color (or NULL)
  * and a gray tint (Tgui_tilelist: 0.78 = 200/255, 1 when hovered) */
 void cs2d_render_tile_frame(const cs2d_texture_t *tileset_tex, uint8_t frame, uint8_t mod, const uint8_t *rgb,
