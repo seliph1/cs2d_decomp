@@ -17,8 +17,8 @@ Source: REA / dump `docs/dump/cs2d/TSmartRadar.c`, `TSmartMinimap.c`, `_global/1
 - **Blips** (`cs2d_draw_line_3`, 0x1401262c0) use `gfx/hud_radar_icons.png` (32x32, 24 frames,
   `PTR_bbNullObject_140a0de00`): frame 0 = player dot, 2 = dot (bomb spots), 3 = dot (hostage), 4 = death "X",
   8/9 = 'A'/'B' (Info_RadarIcon `ints[0]`). `DrawIcon` (0x140010370) packs the colour as RGBA (`R<<24|G<<16|B<<8|A`).
-  Player colours (`FUN_140291c58`): local player red (pulsing), Terrorist `0xff9696ff` (light red), Counter-Terrorist
-  `0x9696ffff` (light blue); enemies are hidden in team modes (radarhack check "SE02RD") and shown in Deathmatch
+  Player colours: see the icon queue below (the old "local red, T 0xff9696 / CT 0x9696ff" reading was wrong:
+  those two are flag carriers); enemies are hidden in team modes (radarhack check "SE02RD") and shown in Deathmatch
   (`team_game()` == 0). Escape/rescue/bomb spots pulse with `sin/cos` of the tick.
 - **Full minimap (big map) = `TSmartMinimap`.** `Init` (0x1400865f0) computes `MapScale`/`MapLoadScale` from the map
   size so the whole map fits the screen height (`(height - 100) / (max dim * 32)`). `Draw` -> `FUN_1402696b0`
@@ -30,3 +30,17 @@ Source: REA / dump `docs/dump/cs2d/TSmartRadar.c`, `TSmartMinimap.c`, `_global/1
   Player blips match the original colours; enemy blips hidden outside Deathmatch. Not reproduced: the full-screen
   `TSmartMinimap` overlay, and tile rotation/brightness are not applied to the radar minimap (2 px/tile makes them
   negligible).
+
+## Icon queue (FUN_140291bd0, 0x140291bd0) — `cs2d_radar.c`, test_radar_icons
+
+Icons are queued (max 49) and drawn in order by `cs2d_draw_line_3`: image scale 0.5, alpha = packed A / 255, ALPHABLEND;
+an icon past `BufferSize / 2 - 5` is put on that circle. Position = world px (tile * 32 + 16 for entities / items).
+- Te.list: Dom_Point (17) frame 2, ints[0] 1 red `ff0000ff`, 2 blue `0000ffff`, else yellow `ffff00ff`; CTF_Flag (15) only
+  `state == 0`, ints[0] != 0 blue else red; RadarIcon (81) `state == 0`, frame ints[0] 0..23, RGB ints[1..3], A ff.
+- Tpl.list (health > 0) shown when same team, both teams > 1, carrying a flag (`Tpl.flag` +0x2f8) or not a team game.
+  Frame 0. Flag carrier: T `9696ffff`, else `ff9696ff`; local: green `00ff00`, alpha |sin(ms/3 deg)| * 205 + 50;
+  bomb (`Tpl.bomb` +0x2f4) or team 3: orange `ff8000ff`; others `c8c8ffff`; `Tpl.radarblink` (+0x98) > 0: red
+  R = 2 * (cos(t/5 deg) * 50 + 75). DAT_140ddf4b4 && net_lastmsg < 4000 ms: `ffff0001`.
+- Thostage.list (my team > 1): frame 3 `ffff00ff`. Terrorists (DAT_140ddf078 > 0): first ground item 55 frame 1
+  `ffc800ff`, or once planted item 63 frame 1 (`ffff00ff`, red if DAT_140ddf4b4). DAT_140ddf074 > 0: ground items
+  70 red / 71 blue, frame 2. Then `Thud_radar_blink::update` (beeps) and death icons (frame 4, red, own team).

@@ -131,14 +131,15 @@ void cs2d_weapons_init(void)
     set_wep(78, "Claw",             CS2D_SLOT_MELEE,     3, 0,    50, 90,  0,   0,   0,   9,  0,   18,  0,   0.0f, 0, 0,    0,  false);
     set_wep(85, "Chainsaw",         CS2D_SLOT_MELEE,     3, 0,    60, 0,   0,   0,   0,   2,  0,   25,  0,  -1.0f, 0, 0,    0,  true);
 
-    /* Grenades (CS2D slot 4 -> CS2D_SLOT_GRENADE) */
+    /* Grenades (CS2D slot 4 -> CS2D_SLOT_GRENADE). Clip = the most a player carries (init_weapons 0x140a017a8:
+     * Flashbang 2, Snowball 10, Mines 3), reserve 0 (0x140a017b0) */
     set_wep(51, "HE",               CS2D_SLOT_GRENADE,   4, 300,  105, 0,  0,   1,   0,   15, 0,   160, 0,   0.0f, 0, 0,    0,  false);
-    set_wep(52, "Flashbang",        CS2D_SLOT_GRENADE,   4, 200,  0,  0,   0,   1,   1,   15, 0,   300, 0,   0.0f, 0, 0,    0,  false);
+    set_wep(52, "Flashbang",        CS2D_SLOT_GRENADE,   4, 200,  0,  0,   0,   2,   0,   15, 0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(53, "Smoke Grenade",    CS2D_SLOT_GRENADE,   4, 300,  0,  0,   0,   1,   0,   15, 0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(54, "Flare",            CS2D_SLOT_GRENADE,   4, 150,  0,  0,   0,   1,   0,   15, 0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(72, "Gas Grenade",      CS2D_SLOT_GRENADE,   4, 300,  9,  0,   0,   1,   0,   15, 0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(73, "Molotov Cocktail", CS2D_SLOT_GRENADE,   4, 300,  4,  0,   0,   1,   0,   15, 0,   300, 0,   0.0f, 0, 0,    0,  false);
-    set_wep(75, "Snowball",         CS2D_SLOT_GRENADE,   4, 50,   35, 0,   0,   1,   2,   15, 0,   16,  0,   0.0f, 0, 0,    0,  false);
+    set_wep(75, "Snowball",         CS2D_SLOT_GRENADE,   4, 50,   35, 0,   0,   10,  0,   15, 0,   16,  0,   0.0f, 0, 0,    0,  false);
     set_wep(76, "Air Strike",       CS2D_SLOT_GRENADE,   4, 500,  1500, 0, 0,   1,   0,   15, 0,   250, 0,   0.0f, 0, 0,    0,  false);
     set_wep(86, "Gut Bomb",         CS2D_SLOT_GRENADE,   4, 150,  50, 0,   0,   1,   0,   15, 0,   96,  0,   0.0f, 0, 0,    0,  false);
 
@@ -154,8 +155,8 @@ void cs2d_weapons_init(void)
     set_wep(63, "Gold",             CS2D_SLOT_ITEM,      6, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(70, "Red Flag",         CS2D_SLOT_ITEM,      6, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
     set_wep(71, "Blue Flag",        CS2D_SLOT_ITEM,      6, 0,    0,  0,   0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
-    set_wep(77, "Mine",             CS2D_SLOT_BOMB,      5, 400,  150, 0,  0,   1,   2,   15, 0,   96,  0,   0.0f, 0, 0,    0,  false);
-    set_wep(87, "Laser Mine",       CS2D_SLOT_BOMB,      5, 400,  150, 0,  0,   1,   2,   15, 0,   96,  0,   0.0f, 0, 0,    0,  false);
+    set_wep(77, "Mine",             CS2D_SLOT_BOMB,      5, 400,  150, 0,  0,   3,   0,   15, 0,   96,  0,   0.0f, 0, 0,    0,  false);
+    set_wep(87, "Laser Mine",       CS2D_SLOT_BOMB,      5, 400,  150, 0,  0,   3,   0,   15, 0,   96,  0,   0.0f, 0, 0,    0,  false);
     set_wep(88, "Portal Gun",       CS2D_SLOT_BOMB,      5, 10000, 0,  0,  0,   100, 0,   5,  0,   300, 0,   0.0f, 0, -899, 0,  false);
     set_wep(89, "Medikit",          CS2D_SLOT_BOMB,      5, 300,  100, 0,  0,   0,   0,   0,  0,   300, 0,   0.0f, 0, 0,    0,  false);
 

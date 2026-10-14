@@ -53,7 +53,7 @@ typedef struct cs2d_gen_s {
     int                 ents[CS2D_GEN_MAX_ENTS];   /* Gen_* entity indices of the map */
     int                 ent_count;
     int                 counter[CS2D_GEN_MAX_ENTS]; /* Te.ints[9]: thunder countdown / Gen_FX last spawn (ms) */
-    int                 noweather[CS2D_GEN_MAX_ENTS]; /* Info_NoWeather indices */
+    int                 noweather[CS2D_GEN_MAX_ENTS]; /* Info_NoWeather and Env_Room indices */
     int                 noweather_count;
 
     int                 quake[CS2D_GEN_MAX_ENTS]; /* Info_Quake indices */
@@ -64,6 +64,8 @@ typedef struct cs2d_gen_s {
     float               flash;     /* White screen flash (0x140a17ff0, drawn by FUN_140131710) */
     int                 thunder;   /* Thunder claps so far (the sound is not played yet) */
     float               step_acc;  /* Seconds not yet simulated */
+    int                 second_ms; /* time_ms of the last 1 s tick */
+    bool                second_tick; /* This frame is a 1 s tick (DAT_140ddf540, main loop 1000 ms timer) */
     int                 time_ms;   /* Simulated g_time_ms */
     uint32_t            seed;
 } cs2d_gen_t;

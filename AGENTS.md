@@ -68,6 +68,7 @@ Our client must be able to play on the original dedicated server without the ser
 | `src/cs2d_serverlist.c` | Server browser (Find Servers): server list, `svl.cache`, info/ping queries, LAN scan |
 | `src/cs2d_editor.c` | Map editor model: brush / modifier byte, painting, tile properties and `.inf`, entity tables |
 | `src/cs2d_transfer.c` | Join-time file transfer `[252,50]`: file list checks, requests, blocks, zlib, saving, `dls.cache` |
+| `src/cs2d_radar.c` | Radar icon queue (`FUN_140291bd0`): which blips the HUD radar draws, and their colours |
 | `src/cs2d_render.c` | OpenGL 1.x immediate mode, GDI+ TrueType text, shadows, HUD |
 | `src/cs2d_image.c` | Portable asset decoding (BMP / PNG / ICO) on the vendored `stb_image`; replaced the GDI+ image path |
 | `src/cs2d_hudmen.c` | Hud menus (`Tgui_hudmen`): window, `button` / `fbutton` / `box`, and the Buy menu (pages, weapon info, previews) |

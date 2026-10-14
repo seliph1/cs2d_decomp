@@ -32,6 +32,7 @@ static void center_camera_on_local_player(cs2d_client_t *client)
 #define SPEC_BTN_H 25.0f /* 25 * font height / 13 */
 
 static cs2d_texture_t s_tex_shade; /* gfx/gui_shade.bmp (0x140a0de78) */
+static cs2d_texture_t s_tex_shade_c; /* gfx/hud_shade_c.bmp 250x20, maskMode 3, top-left handle (0x140a0dd28) */
 static cs2d_texture_t s_tex_gui_c;  /* gfx/gui_c.bmp: 4 rounded corners of 16x16, maskMode 3 (0x140a0dea0) */
 
 /* DAT_140ddf344: HUD windows open (the console does not count) */
@@ -399,6 +400,55 @@ static void render_spec_map(cs2d_client_t *client)
 }
 
 /* Spectator HUD (FUN_14029ac10): bands, "Spectating", Menu / Map / Fog, name box and mode button */
+/*
+ * The small round timer and money of the spectator HUD, in the top band (FUN_14029ac10 at 0x14029c5xx), sized by
+ * TextHeight("0") and TextWidth("ITEM:0000"); hud_symbols (0x140a0dd50) frames are drawn additive:
+ * - mp_hud 4 (time): (155, 155, 155) frame 2 (clock; 6 = C4 while the bomb is planted) at (w - TextWidth, 2),
+ *   TextHeight + 4 square; mp_roundtime 100 without a bomb shows frame 11 (infinity) at w - 17, else "M:SS" right
+ *   aligned at w - 2, y 4.
+ * - mp_hud 16 (money): (150, 150, 150) frame 4 (cart) at (w - TextWidth + 2, 40 - TextHeight - 2), TextHeight + 2
+ *   square; the local player's money right aligned at w - 2, y 40 - TextHeight - 1.
+ * Assumed: mp_hud bits on, DAT_140ddf1cc 0 and the game mode table 0x1409f77e8 1 (like our main HUD timer); the text
+ * is drawn with alpha blending (the original keeps the additive blend for it).
+ */
+static void render_spectator_time_money(cs2d_client_t *client, int screen_w)
+{
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    if (!bank || !bank->tex_hud_symbols.id) return;
+    const cs2d_game_t *game = &client->game;
+    const cs2d_font_id_t f = CS2D_FONT_REGULAR;
+    int cell = bank->tex_hud_symbols.height >= 64 ? 64 : 32;
+    float tw0, th;
+    cs2d_render_text_measure(f, "0", &tw0, &th);
+    int text_h = (int)th, ref_w = (int)cs2d_render_text_width_ex(f, "ITEM:0000");
+    char buf[32];
+
+    float sz = (float)(text_h + 4), g = 155.0f / 255.0f;
+    int frame = game->bomb_planted ? 6 : 2;
+    cs2d_render_sprite_frame(&bank->tex_hud_symbols, cell, cell, frame, (float)(screen_w - ref_w) + sz * 0.5f,
+                             2.0f + sz * 0.5f, sz, sz, 0.0f, g, g, g, 1.0f, 4);
+    if (!game->bomb_planted && game->cfg_roundtime == 6000.0f) {
+        cs2d_render_sprite_frame(&bank->tex_hud_symbols, cell, cell, 11, (float)(screen_w - 17) + sz * 0.5f,
+                                 2.0f + sz * 0.5f, sz, sz, 0.0f, g, g, g, 1.0f, 4);
+    } else {
+        int sec = (int)(game->bomb_planted ? game->c4_time : game->round_time);
+        if (sec < 0) sec = 0;
+        snprintf(buf, sizeof(buf), "%d:%02d", sec / 60, sec % 60);
+        float x = (float)(screen_w - 2 - (int)cs2d_render_text_width_ex(f, buf));
+        cs2d_render_text_ex(f, x, 4.0f, buf, g, g, g, 1.0f);
+    }
+
+    const cs2d_player_t *me = &client->game.players[client->local_player_id];
+    if (me->id == 0) return;
+    sz = (float)(text_h + 2);
+    g = 150.0f / 255.0f;
+    cs2d_render_sprite_frame(&bank->tex_hud_symbols, cell, cell, 4, (float)(screen_w - ref_w + 2) + sz * 0.5f,
+                             SPEC_BAR_H - (float)text_h - 2.0f + sz * 0.5f, sz, sz, 0.0f, g, g, g, 1.0f, 4);
+    snprintf(buf, sizeof(buf), "%d", me->money);
+    float x = (float)(screen_w - 2 - (int)cs2d_render_text_width_ex(f, buf));
+    cs2d_render_text_ex(f, x, SPEC_BAR_H - (float)text_h - 1.0f, buf, g, g, g, 1.0f);
+}
+
 static void render_spectator_hud(cs2d_client_t *client, int screen_w, int screen_h)
 {
     const cs2d_spec_t *s = &client->spec;
@@ -444,6 +494,7 @@ static void render_spectator_hud(cs2d_client_t *client, int screen_w, int screen
     cs2d_render_text_measure(f, spectating, &tw, &th);
     float gray = 150.0f / 255.0f;
     cs2d_render_text_ex(f, (float)(screen_w / 2 - (int)tw / 2), SPEC_BAR_H - th - 3.0f, spectating, gray, gray, gray, 1.0f);
+    render_spectator_time_money(client, screen_w);
 
     /* Menu, Map and Fog (the last only with sv_fow and sv_specmode 1); Map toggles the minimap, the Menu and Fog
      * windows are not reconstructed */
@@ -963,6 +1014,7 @@ static void game_enter(cs2d_client_t *client)
     cs2d_texture_load_ex(&client->tex_m4a1,   "gfx/weapons/m4a1.bmp",   2);
     cs2d_texture_load_ex(&client->tex_deagle, "gfx/weapons/deagle.bmp", 2);
     cs2d_texture_load_ex(&s_tex_shade,        "gfx/gui_shade.bmp",      3);
+    cs2d_texture_load_ex(&s_tex_shade_c,      "gfx/hud_shade_c.bmp",    3);
     cs2d_hudmen_load();
 
     if (!joining) cs2d_client_connect(client, client->config.server_ip, client->config.server_port);
@@ -988,6 +1040,7 @@ static void game_leave(cs2d_client_t *client)
     cs2d_texture_free(&client->tex_m4a1);
     cs2d_texture_free(&client->tex_deagle);
     cs2d_texture_free(&s_tex_shade);
+    cs2d_texture_free(&s_tex_shade_c);
     cs2d_hudmen_unload();
 
     cs2d_game_free(&client->game);
@@ -1475,6 +1528,144 @@ static void render_center_msgs(cs2d_client_t *client, int screen_w, int screen_h
     }
 }
 
+/* Max2D TextWidth of a string (int) */
+static int kill_tw(const char *s)
+{
+    return (int)cs2d_render_text_width_ex(CS2D_FONT_REGULAR, s);
+}
+
+/* Text with its black shadow (the shadow at x + 1, sy) */
+static void kill_text(const char *s, int x, float y, float sy, const uint8_t *rgb, float a)
+{
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, (float)(x + 1), sy, s, 0.0f, 0.0f, 0.0f, a);
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, (float)x, y, s, rgb[0] / 255.0f, rgb[1] / 255.0f, rgb[2] / 255.0f, a);
+}
+
+/*
+ * Thud_msg.draw_kill (0x14010f8d0), right aligned at screen_w - 3. Rows start at y 3, or below the spectator
+ * minimap (25 + 15 = 40, + map height * scale while it is shown) when the local player is not alive. A row stays
+ * hud_deathnotice_time s, then fades by 0.05 per 60 Hz frame and its height (TextHeight("I") + 4) shrinks by 1 per
+ * frame. deathnoticeimg 1: "killer[ + assist] <weapon _k.bmp> victim" on a mirrored hud_shade_c bar (black,
+ * fade * 0.35, scaled to row width / 350 and offset / 10); the weapon image is additive (230, 180, 0) and scaled to
+ * fit offset - 2. deathnoticeimg 0: "killer [+ assist ]weapon victim" as text.
+ * Not done: the small font under 700 px (DAT_140a14f88), the mp_hud kill flag (0x40, assumed on), Lua images (-1).
+ */
+static void render_kill_msgs(cs2d_client_t *client, int screen_w)
+{
+    static uint32_t last_ms;
+    uint32_t now = GetTickCount();
+    float dtf = last_ms ? (float)(now - last_ms) * 0.06f : 0.0f; /* g_dt: 1 per 60 Hz frame */
+    last_ms = now;
+
+    const cs2d_player_t *local_pl = &client->game.players[client->local_player_id];
+    int y0 = 3;
+    if (!local_pl->alive) {
+        y0 = 40;
+        if (s_spec_map && client->game.map.tiles) y0 += (int)client->game.map.height * spec_map_scale(&client->game.map);
+    }
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    float tw_i, th;
+    cs2d_render_text_measure(CS2D_FONT_REGULAR, "I", &tw_i, &th);
+
+    for (int i = 0; i < client->killmsg_count; ) {
+        cs2d_killmsg_t *m = &client->killmsgs[i];
+        float y = (float)y0;
+        char buf[3 * (CS2D_MAX_NAME_LEN + 32) + 8];
+        if (m->fade > 0.0f && client->config.deathnoticeimg) {
+            y = (float)(y0 + 1);
+            const cs2d_texture_t *img = (bank && m->wpn >= 1 && m->wpn <= 99 && m->wpn < CS2D_MAX_WEAPONS &&
+                                         bank->tex_weapons_k[m->wpn].id) ? &bank->tex_weapons_k[m->wpn] : NULL;
+            float sc = 1.0f;
+            if (img) {
+                sc = m->offset - 2.0f;
+                if (sc <= 1.0f) sc = 1.0f;
+                sc /= (float)img->height;
+                if (sc >= 1.0f) sc = 1.0f;
+            }
+            snprintf(buf, sizeof(buf), "%s ", m->txt[0]);
+            int x = screen_w - 3 - kill_tw(buf);
+            if (img) {
+                x = (int)((float)x - (float)(img->width + kill_tw(" ")) * sc);
+            } else {
+                snprintf(buf, sizeof(buf), "%s ", m->txt[1]);
+                x -= kill_tw(buf);
+            }
+            x -= kill_tw(m->txt[2]);
+            if (m->txt[3][0]) {
+                snprintf(buf, sizeof(buf), "%s + ", m->txt[3]);
+                x -= kill_tw(buf);
+            }
+            /* Shade bar: two mirrored halves from the row's center (the image is symmetric vertically, so the
+             * mirrored half is the image turned by 180 degrees) */
+            float w = (float)(screen_w - x), hw = 250.0f * w / 350.0f, h = 20.0f * m->offset * 0.1f;
+            float cx = (float)x + w * 0.5f, top = (float)(y0 - 2) - m->offset * 0.5f;
+            cs2d_render_sprite_frame(&s_tex_shade_c, 0, 0, 0, cx + hw * 0.5f, top + h * 0.5f, hw, h, 0.0f,
+                                     0.0f, 0.0f, 0.0f, m->fade * 0.35f, 0);
+            cs2d_render_sprite_frame(&s_tex_shade_c, 0, 0, 0, cx - hw * 0.5f, top + h * 0.5f, hw, h, 180.0f,
+                                     0.0f, 0.0f, 0.0f, m->fade * 0.35f, 0);
+
+            float sy = (float)(y0 + 2);
+            kill_text(m->txt[0], x, y, sy, m->rgb[0], m->fade);
+            if (m->txt[3][0]) {
+                x += kill_tw(m->txt[0]);
+                kill_text(" + ", x, y, sy, m->rgb[1], m->fade);
+                x += kill_tw(" + ");
+                kill_text(m->txt[3], x, y, sy, m->rgb[3], m->fade);
+                snprintf(buf, sizeof(buf), "%s ", m->txt[3]);
+            } else {
+                snprintf(buf, sizeof(buf), "%s ", m->txt[0]);
+            }
+            x += kill_tw(buf);
+            if (img) {
+                float iw = (float)img->width * sc, ih = (float)img->height * sc;
+                cs2d_render_sprite_frame(img, 0, 0, 0, (float)x + iw * 0.5f, (m->offset - ih) * 0.5f + y + ih * 0.5f,
+                                         iw, ih, 0.0f, 230.0f / 255.0f, 180.0f / 255.0f, 0.0f, m->fade, 4);
+                x = (int)((float)(kill_tw(" ") + img->width) * sc + (float)x);
+            } else {
+                kill_text(m->txt[1], x, y, sy, m->rgb[1], m->fade);
+                snprintf(buf, sizeof(buf), "%s ", m->txt[1]);
+                x += kill_tw(buf);
+            }
+            kill_text(m->txt[2], x, y, sy, m->rgb[2], m->fade);
+        } else if (m->fade > 0.0f) {
+            snprintf(buf, sizeof(buf), "%s %s %s", m->txt[0], m->txt[1], m->txt[2]);
+            int x = screen_w - 3 - kill_tw(buf);
+            if (m->txt[3][0]) {
+                snprintf(buf, sizeof(buf), "%s + ", m->txt[3]);
+                x -= kill_tw(buf);
+            }
+            float sy = (float)(y0 + 1);
+            kill_text(m->txt[0], x, y, sy, m->rgb[0], m->fade);
+            snprintf(buf, sizeof(buf), "%s ", m->txt[0]);
+            x += kill_tw(buf);
+            if (m->txt[3][0]) {
+                kill_text("+ ", x, y, sy, m->rgb[1], m->fade);
+                x += kill_tw("+ ");
+                snprintf(buf, sizeof(buf), "%s ", m->txt[3]);
+                kill_text(buf, x, y, sy, m->rgb[3], m->fade);
+                x += kill_tw(buf);
+            }
+            kill_text(m->txt[1], x, y, sy, m->rgb[1], m->fade);
+            snprintf(buf, sizeof(buf), "%s ", m->txt[1]);
+            kill_text(m->txt[2], x + kill_tw(buf), y, sy, m->rgb[2], m->fade);
+        }
+
+        if (now - m->timer_ms > m->show_ms) {
+            m->fade -= dtf * 0.05f;
+            if (m->fade <= 0.0f && (m->offset -= dtf) <= 0.0f) {
+                memmove(&client->killmsgs[i], &client->killmsgs[i + 1],
+                        sizeof(cs2d_killmsg_t) * (size_t)(client->killmsg_count - 1 - i));
+                client->killmsg_count--;
+                continue;
+            }
+        } else {
+            m->offset = (float)((int)th + 4);
+        }
+        y0 = (int)(y + m->offset + 2.0f);
+        i++;
+    }
+}
+
 /*
  * In-game HUD Chat log (Thud_msg.draw_chat 0x14024d8a0, FUN_14029f7b0):
  * Starts at screen_h - 85 - (line_h * 2), stacking upwards.
@@ -1622,12 +1813,13 @@ static void render_ground_items(const cs2d_client_t *client)
     }
 }
 
-/* Projectiles resting on ground (glist in CS2D.exe) and ambient fields (fire, gas, smoke) */
-static void render_projectiles_ground(const cs2d_client_t *client)
+/* Ambient fields (fire, gas, smoke) over the players: the smoke cloud is a Tp 0x1b, drawn by Tp.draw
+ * after Tpl.draw, so it hides whoever stands in it */
+static void render_fields(const cs2d_client_t *client)
 {
     float cx = roundf(client->cam_x), cy = roundf(client->cam_y);
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
 
-    /* Render persistent fields first */
     for (int i = 0; i < CS2D_MAX_FIELDS; i++) {
         const cs2d_field_t *f = &client->projectiles.fields[i];
         if (!f->active) continue;
@@ -1636,16 +1828,28 @@ static void render_projectiles_ground(const cs2d_client_t *client)
             cs2d_render_circle(fx, fy, f->radius, 1.0f, 0.35f, 0.05f, 0.25f, true);
         } else if (f->type == CS2D_FIELD_GAS) {
             cs2d_render_circle(fx, fy, f->radius, 0.2f, 0.85f, 0.1f, 0.25f, true);
-        } else if (f->type == CS2D_FIELD_SMOKE) {
-            cs2d_render_circle(fx, fy, f->radius, 0.75f, 0.75f, 0.75f, 0.40f, true);
+        } else if (f->type == CS2D_FIELD_SMOKE && bank) {
+            /* Tp 0x1b draw: sgsmoke at scale 4, ALPHABLEND, grey Rand(50,70); fades out after 30 s */
+            float a = f->lifetime / CS2D_SMOKE_FADE_SECONDS;
+            if (a > 1.0f) a = 1.0f;
+            float w = (float)bank->tex_sgsmoke.width * 4.0f, h = (float)bank->tex_sgsmoke.height * 4.0f;
+            cs2d_render_sprite_frame(&bank->tex_sgsmoke, 0, 0, 0, fx, fy, w, h, f->rot,
+                                     f->shade, f->shade, f->shade, a, 0);
         }
     }
+
+}
+
+/* Projectiles resting on ground (glist in CS2D.exe) */
+static void render_projectiles_ground(const cs2d_client_t *client)
+{
+    float cx = roundf(client->cam_x), cy = roundf(client->cam_y);
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
 
     /* Render ground projectiles (Tpro.draw 0x140288702) */
     bool do_shadow = cs2d_render_get_shadows_enabled() && cs2d_render_get_item_shadows() &&
                      cs2d_render_get_shadow_intensity() > 0;
     float shadow_a = do_shadow ? ((float)cs2d_render_get_shadow_intensity() * 0.01f) : 0.0f;
-    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
     const cs2d_texture_t *stex = (bank && bank->tex_shadow.id) ? &bank->tex_shadow : (bank ? &bank->tex_leaf : NULL);
 
     for (int i = 0; i < CS2D_MAX_PROJECTILES; i++) {
@@ -1830,13 +2034,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
         client->cam_x += (float)shake_x;
         client->cam_y += (float)shake_y;
     }
-    for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
-        const cs2d_player_t *p = &client->game.players[i];
-        if (p->alive) {
-            cs2d_render_player_light_shadow(p, (p->team == CS2D_TEAM_CT) ? &client->tex_ct : &client->tex_t,
-                                            roundf(client->cam_x), roundf(client->cam_y));
-        }
-    }
+    /* The player silhouettes are drawn under the bodies by cs2d_render_player, not in the day shadows */
     uint64_t freq = SDL_GetPerformanceFrequency();
     uint64_t t0 = SDL_GetPerformanceCounter();
     cs2d_light_frame(&client->game.map, (int)roundf(client->cam_x), (int)roundf(client->cam_y), light_dt);
@@ -1854,17 +2052,8 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_OBSTACLE, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
     cs2d_light_draw_floor();   /* DrawLayer1: floor occlusion after the items (FUN_140281fd0) */
 
-    /* Floor & Map shadows (CPU shadow chunks when light 0; drawn onto the floor before players) */
+    /* CPU shadow chunks (light 0): FUN_1401165a0 runs right after Te.draw(1), before the players */
     cs2d_render_map_shadows(&client->game.map, client->cam_x, client->cam_y);
-    cs2d_light_draw_buffer();  /* DrawLayer2: the light buffer over the world, before players so shadows sit under bodies */
-    cs2d_light_draw_color();   /* DrawLightsColorList: additive light color */
-
-    render_projectiles_flying(client);
-    cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_WALL, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
-
-    /* Breakable debris and explosions */
-    cs2d_render_fx(&client->fx, &client->game.map, &client->tex_tileset, client->cam_x, client->cam_y);
-    uint64_t t3 = SDL_GetPerformanceCounter();
 
     /* 2. Players (Tpl.draw: shadow, legs, torso frame, armor/helmet, held weapon, objective icon) */
     for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
@@ -1883,6 +2072,14 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
             render_carried_flag(p, client->cam_x, client->cam_y);
         }
     }
+    cs2d_light_draw_color();   /* DrawLightsColorList: additive light color after the players (FUN_140281fd0) */
+    render_projectiles_flying(client);
+    render_fields(client);
+    cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_WALL, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
+
+    /* Breakable debris and explosions */
+    cs2d_render_fx(&client->fx, &client->game.map, &client->tex_tileset, client->cam_x, client->cam_y);
+    uint64_t t3 = SDL_GetPerformanceCounter();
 
     /* 3. Map Pass 2 (Overhead entities: Env_Sprite, Env_Image over players, Env_Object trees/lamps) */
     cs2d_render_map_overhead(&client->game.map, client->cam_x, client->cam_y, screen_w, screen_h);
@@ -1890,6 +2087,10 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     /* Gen_* particles: Tp lists 5, 7 and 6 follow Te.draw pass 2 (FUN_1402802xx), then the thunder flash */
     cs2d_render_gen(&client->gen, CS2D_GEN_LAYER_TOP, client->cam_x, client->cam_y, screen_w, screen_h);
     cs2d_render_gen(&client->gen, CS2D_GEN_LAYER_FOG, client->cam_x, client->cam_y, screen_w, screen_h);
+    /* DrawLayer2: the light buffer (day shadows of walls, obstacles and buildings) multiplied over the whole world,
+     * players included, last in FUN_140281fd0 */
+    cs2d_light_draw_buffer();
+    /* Rain and snow (Tp list 6) over the light buffer, so the day shadows do not darken them */
     cs2d_render_gen(&client->gen, CS2D_GEN_LAYER_WEATHER, client->cam_x, client->cam_y, screen_w, screen_h);
     cs2d_render_gen_flash(&client->gen, screen_w, screen_h);
     client->cam_x = world_cam_x;
@@ -1909,7 +2110,12 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     }
     if (!render_player_hover(client, screen_w, screen_h)) render_building_hover(client, screen_w, screen_h);
     if (local_pl->alive) {
-        cs2d_render_hud(local_pl, &client->game, &client->tex_tileset, screen_w, screen_h);
+        /* FUN_140291bd0 fills the radar icon queue, cs2d_draw_line_3 draws it */
+        cs2d_radar_env_t renv = { client->ground_items, CS2D_MAX_GROUND_ITEMS, team_game(client),
+                                  (uint32_t)SDL_GetTicks() };
+        cs2d_radar_blip_t blips[CS2D_RADAR_MAX_BLIPS];
+        int nblips = cs2d_radar_collect(&client->game, local_pl, &renv, blips);
+        cs2d_render_hud(local_pl, &client->game, &client->tex_tileset, blips, nblips, screen_w, screen_h);
         /* Right of the radar (drawradar != 0: radarsize + 100 + 8), else at 8 (FUN_140295190) */
         float sel_x = client->config.drawradar ? (float)(client->config.radarsize + 108) : 8.0f;
         cs2d_render_weapon_select(local_pl, &client->invsel, sel_x);
@@ -1936,6 +2142,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
                                                  screen_w, screen_h);
         else client->buy.menu = 0;
     }
+    render_kill_msgs(client, screen_w);
     render_chat(client, screen_w, screen_h);
     render_center_msgs(client, screen_w, screen_h);
     /* Thud_scoreboard.draw(1) after the chat and the HUD menus (0x1402a0000 game HUD) */

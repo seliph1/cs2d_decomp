@@ -51,6 +51,7 @@ void cs2d_player_spawn(cs2d_player_t *player, cs2d_team_t team, cs2d_vec2_t spaw
 
     /* Clear inventory */
     memset(player->inventory, 0, sizeof(player->inventory));
+    memset(player->owned, 0, sizeof(player->owned));
 
     /* Always give knife */
     cs2d_player_give_weapon(player, CS2D_WEP_KNIFE);
@@ -140,8 +141,9 @@ bool cs2d_player_give_weapon(cs2d_player_t *player, uint8_t weapon_id)
         return true;
     }
 
-    /* Assign to inventory slot */
+    /* Assign to inventory slot; another item of the slot (e.g. a second grenade type) stays owned */
     player->inventory[wep->slot] = weapon_id;
+    player->owned[weapon_id] = 1;
     player->clip_ammo[weapon_id] = (int16_t)wep->clip_size;
     player->reserve_ammo[weapon_id] = (int16_t)wep->max_reserve;
 
@@ -155,6 +157,55 @@ bool cs2d_player_give_weapon(cs2d_player_t *player, uint8_t weapon_id)
     return true;
 }
 
+/* Bought items that stack: HE, Flashbang, Smoke, Flare and Medikit ([23] handler 0x1402008xx: 0x33..0x36, 0x59) */
+static bool buy_stacks(uint8_t weapon_id)
+{
+    return (weapon_id >= CS2D_WEP_HE && weapon_id <= CS2D_WEP_FLARE) || weapon_id == CS2D_WEP_MEDIKIT;
+}
+
+void cs2d_player_add_bought(cs2d_player_t *player, uint8_t weapon_id)
+{
+    if (!player || weapon_id == CS2D_WEP_NONE || weapon_id >= CS2D_MAX_WEAPONS) return;
+    if (!buy_stacks(weapon_id)) {
+        cs2d_player_give_weapon(player, weapon_id);
+        return;
+    }
+    /* Owned: Titem +0x18 (ammoin) + 1; else Titem.give(id, type, 0, 1). Then setweapon */
+    if (player->owned[weapon_id]) {
+        player->clip_ammo[weapon_id]++;
+    } else {
+        cs2d_player_give_weapon(player, weapon_id);
+        player->clip_ammo[weapon_id]    = 1;
+        player->reserve_ammo[weapon_id] = 0;
+    }
+    cs2d_player_select_weapon(player, weapon_id);
+}
+
+bool cs2d_player_add_collected(cs2d_player_t *player, uint8_t weapon_id, int clip, int reserve)
+{
+    if (!player || weapon_id == CS2D_WEP_NONE || weapon_id >= CS2D_MAX_WEAPONS) return true;
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(weapon_id);
+    if (wep && cs2d_weapon_hud_slot(weapon_id) == 4 && player->owned[weapon_id]) {
+        /* FUN_14020ce60 (client path): an owned grenade takes ammoin up to the max (0x140a017a8); when that is
+         * exceeded and some is left, Titem.freedropped is skipped and the ground item stays as it was */
+        int have = player->clip_ammo[weapon_id];
+        if (have + clip > wep->clip_size) {
+            int add = wep->clip_size - have;
+            player->clip_ammo[weapon_id] = (int16_t)(have + add);
+            return clip - add <= 0;
+        }
+        player->clip_ammo[weapon_id] = (int16_t)(have + clip);
+        return true;
+    }
+    uint8_t held = player->current_weapon;
+    if (cs2d_player_give_weapon(player, weapon_id) && wep && wep->slot != CS2D_SLOT_ITEM) {
+        player->clip_ammo[weapon_id]    = (int16_t)clip;
+        player->reserve_ammo[weapon_id] = (int16_t)reserve;
+        player->current_weapon          = held ? held : weapon_id; /* The server reports a switch (9) itself */
+    }
+    return true;
+}
+
 bool cs2d_player_buy_weapon(cs2d_player_t *player, uint8_t weapon_id)
 {
     if (!player || !player->alive) return false;
@@ -163,8 +214,12 @@ bool cs2d_player_buy_weapon(cs2d_player_t *player, uint8_t weapon_id)
     if (!wep) return false;
 
     if (player->money < wep->price) return false;
+    /* Offline: a full stack (e.g. 2 Flashbangs) cannot be bought again (the server decides online) */
+    if (buy_stacks(weapon_id) && player->owned[weapon_id] && wep->clip_size > 0 &&
+        player->clip_ammo[weapon_id] >= wep->clip_size) return false;
 
-    if (!cs2d_player_give_weapon(player, weapon_id)) return false;
+    if (buy_stacks(weapon_id)) cs2d_player_add_bought(player, weapon_id);
+    else if (!cs2d_player_give_weapon(player, weapon_id)) return false;
 
     player->money -= wep->price;
     return true;
@@ -195,7 +250,7 @@ uint8_t cs2d_player_drop_weapon(cs2d_player_t *player)
     if (!wep || wep->slot == CS2D_SLOT_MELEE) return CS2D_WEP_NONE;
 
     uint8_t dropped = player->current_weapon;
-    player->inventory[wep->slot] = CS2D_WEP_NONE;
+    cs2d_player_remove_item(player, dropped);
 
     /* Switch to knife or secondary */
     if (player->inventory[CS2D_SLOT_SECONDARY] != CS2D_WEP_NONE) {
@@ -215,6 +270,24 @@ void cs2d_player_clear_inventory(cs2d_player_t *player)
     memset(player->reserve_ammo, 0, sizeof(player->reserve_ammo));
     player->current_weapon = CS2D_WEP_NONE;
     player->reload_timer   = 0.0f;
+}
+
+bool cs2d_player_remove_item(cs2d_player_t *player, uint8_t weapon_id)
+{
+    if (!player || weapon_id == CS2D_WEP_NONE || weapon_id >= CS2D_MAX_WEAPONS) return false;
+    bool found = player->owned[weapon_id] != 0;
+    player->owned[weapon_id] = 0;
+    for (int s = 0; s < CS2D_SLOT_COUNT; s++) {
+        if (player->inventory[s] != weapon_id) continue;
+        found = true;
+        /* Another item of the same slot becomes its main item */
+        player->inventory[s] = CS2D_WEP_NONE;
+        for (int w = 1; w < CS2D_MAX_WEAPONS; w++) {
+            const cs2d_weapon_def_t *def = player->owned[w] ? cs2d_weapon_get((uint8_t)w) : NULL;
+            if (def && (int)def->slot == s) { player->inventory[s] = (uint8_t)w; break; }
+        }
+    }
+    return found;
 }
 
 /* Best weapon left after losing the held one: primary, secondary, melee, then anything */
@@ -239,14 +312,7 @@ static void select_fallback_weapon(cs2d_player_t *player)
 bool cs2d_player_strip_weapon(cs2d_player_t *player, uint8_t weapon_id)
 {
     if (!player || weapon_id == CS2D_WEP_NONE) return false;
-    bool found = false;
-    for (int s = 0; s < CS2D_SLOT_COUNT; s++) {
-        if (player->inventory[s] == weapon_id) {
-            player->inventory[s] = CS2D_WEP_NONE;
-            found = true;
-        }
-    }
-    if (!found) return false;
+    if (!cs2d_player_remove_item(player, weapon_id)) return false;
     player->clip_ammo[weapon_id]    = 0;
     player->reserve_ammo[weapon_id] = 0;
     if (player->current_weapon == weapon_id) {
@@ -259,19 +325,18 @@ bool cs2d_player_strip_weapon(cs2d_player_t *player, uint8_t weapon_id)
 bool cs2d_player_select_weapon(cs2d_player_t *player, uint8_t weapon_id)
 {
     if (!player || weapon_id == CS2D_WEP_NONE) return false;
-    for (int s = 0; s < CS2D_SLOT_COUNT; s++) {
-        if (player->inventory[s] == weapon_id) {
-            if (player->current_weapon != weapon_id) {
-                player->fire_cooldown = 0.0f;
-                player->reload_timer = 0.0f;
-                player->slash_timer = 0.0f;
-                player->draw_angle = player->angle;
-            }
-            player->current_weapon = weapon_id;
-            return true;
-        }
+    if (weapon_id >= CS2D_MAX_WEAPONS || !player->owned[weapon_id]) return false;
+    /* The held item becomes its slot's main item (several grenades share a slot) */
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(weapon_id);
+    if (wep && wep->slot < CS2D_SLOT_COUNT) player->inventory[wep->slot] = weapon_id;
+    if (player->current_weapon != weapon_id) {
+        player->fire_cooldown = 0.0f;
+        player->reload_timer = 0.0f;
+        player->slash_timer = 0.0f;
+        player->draw_angle = player->angle;
     }
-    return false;
+    player->current_weapon = weapon_id;
+    return true;
 }
 
 /* Tile at pixel (px, py) blocks players: wall / obstacle collision (tile modes 1..9, DynWall, Breakable) */
@@ -295,9 +360,8 @@ static int invsel_wrap(int slot)
 int cs2d_invsel_count(const cs2d_player_t *player, int slot)
 {
     int n = 0;
-    for (int s = 0; s < CS2D_SLOT_COUNT; s++) {
-        uint8_t w = player->inventory[s];
-        if (w != CS2D_WEP_NONE && cs2d_weapon_hud_slot(w) == slot && cs2d_weapon_hud_order(w) < 10) n++;
+    for (int w = 1; w < CS2D_MAX_WEAPONS; w++) {
+        if (player->owned[w] && cs2d_weapon_hud_slot((uint8_t)w) == slot && cs2d_weapon_hud_order((uint8_t)w) < 10) n++;
     }
     return n;
 }
@@ -306,10 +370,10 @@ uint8_t cs2d_invsel_item(const cs2d_player_t *player, int slot, int index)
 {
     int i = 0;
     for (int order = 0; order < 10; order++) {
-        for (int s = 0; s < CS2D_SLOT_COUNT; s++) {
-            uint8_t w = player->inventory[s];
-            if (w == CS2D_WEP_NONE || cs2d_weapon_hud_slot(w) != slot || cs2d_weapon_hud_order(w) != order) continue;
-            if (i == index) return w;
+        for (int w = 1; w < CS2D_MAX_WEAPONS; w++) {
+            if (!player->owned[w] || cs2d_weapon_hud_slot((uint8_t)w) != slot ||
+                cs2d_weapon_hud_order((uint8_t)w) != order) continue;
+            if (i == index) return (uint8_t)w;
             i++;
         }
     }

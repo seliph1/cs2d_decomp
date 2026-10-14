@@ -31,7 +31,9 @@ original on fun_roleplay by day and at night (`tools/agent/lua/light_probe.lua`,
   `ints[2]`, color `ints[3..5]`, day `1 - ints[6]`.
 - **Frame** (`FUN_140281fd0`): `FUN_140262ed0` builds the light buffer first; floor, entities, items, then the **floor
   occlusion** (`DrawTilesFloor`), `Te.draw(1)`, players, the **light color** (`DrawLightsColorList`: each light's buffer
-  added in color x alpha x 0.65), overhead, then the **light buffer** multiplied over the world before the HUD.
+  added in color x alpha x 0.65), overhead, then the **light buffer** multiplied over the world before the HUD. Ours draws the player silhouette under the
+  body instead of in the buffer (else the 4 px offset silhouette darkens the player); light 0: CPU shadows (`FUN_1401165a0`)
+  before the players.
 - **Light buffer** (`GenerateMainBuffer`, 854 x 480 / scale): white; by day `GenerateDayBuffer` + floor light sprites
   (added); rooms (alpha blend, their color); toning (multiply by `gfx_toning.png` row 0 at index
   ((ShadowRotation + 200) mod 360) / 360 x 1024, then add the night color); light sprites; each light's buffer added in

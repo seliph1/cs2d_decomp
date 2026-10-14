@@ -258,6 +258,11 @@ cs2d_field_t *cs2d_field_spawn(
     f->lifetime = lifetime;
     f->max_lifetime = lifetime;
     f->tick_timer = 0.0f;
+    /* Smoke cloud = Tp 0x1b (Tp.Create 0x14004ac20): rot Rnd(0,360), grey Rand(50,70);
+     * rots Rnd(-0.3,0.3) (Tpro.draw case 0x35) */
+    f->rot   = (float)(rand() % 360);
+    f->rots  = ((float)rand() / (float)RAND_MAX - 0.5f) * 0.6f;
+    f->shade = (float)(50 + rand() % 21) / 255.0f;
 
     return f;
 }
@@ -328,7 +333,8 @@ static void detonate_projectile(cs2d_client_t *client, cs2d_projectile_t *p)
 
         case CS2D_WEP_SMOKE:
             /* Spawn smoke field */
-            cs2d_field_spawn(&client->projectiles, CS2D_FIELD_SMOKE, p->player, p->x, p->y, 64.0f, 30.0f);
+            cs2d_field_spawn(&client->projectiles, CS2D_FIELD_SMOKE, p->player, p->x, p->y, 64.0f, 30.0f + CS2D_SMOKE_FADE_SECONDS);
+            /* Cover radius 64: Tpro.smokegren_cover 0x140046090 (dist^2 < 4096); 30 s: Tpro time = 30.0 */
             break;
 
         case CS2D_WEP_GAS:
@@ -527,13 +533,8 @@ void cs2d_projectile_update(struct cs2d_client *client, float dt)
 
         switch (f->type) {
             case CS2D_FIELD_SMOKE:
-                /* Emit smoke particles */
-                if (f->tick_timer >= 0.15f) {
-                    f->tick_timer = 0.0f;
-                    float ox = ((float)(rand() % (int)f->radius) - f->radius * 0.5f);
-                    float oy = ((float)(rand() % (int)f->radius) - f->radius * 0.5f);
-                    cs2d_fx_smoke_puff(&client->fx, f->x + ox, f->y + oy, 0.75f, 0.75f, 0.75f, 24.0f, 10.0f);
-                }
+                /* One slowly spinning cloud sprite, no puffs (Tp 0x1b: rot += rots * g_dt) */
+                f->rot += f->rots * dt * 60.0f;
                 break;
 
             case CS2D_FIELD_GAS:
@@ -593,7 +594,7 @@ bool cs2d_projectile_smoke_cover(const cs2d_projectile_world_t *pw, float x, flo
     if (!pw) return false;
     for (int i = 0; i < CS2D_MAX_FIELDS; i++) {
         const cs2d_field_t *f = &pw->fields[i];
-        if (!f->active || f->type != CS2D_FIELD_SMOKE) continue;
+        if (!f->active || f->type != CS2D_FIELD_SMOKE || f->lifetime <= CS2D_SMOKE_FADE_SECONDS) continue;
         float dx = f->x - x;
         float dy = f->y - y;
         if (dx * dx + dy * dy <= f->radius * f->radius) return true;

@@ -44,9 +44,6 @@ the same one.
     with `light 0`; packing the light engine's internal texture set (room map, roof layers, occlusion,
     blur, stripes) remains the next atlasing target. Entity sprites (`Env_Sprite` / `Env_Image`) are
     already atlased (2026-10-13).
-  - **the radar's unconditional upload** — `ensure_minimap_texture` (`cs2d_render.c:3481`) builds a
-    128x128 RGBA buffer in a nested loop and calls `glTexImage2D` (new storage) on **every frame**, from
-    the HUD draw at `cs2d_render.c:3643`; the minimap only changes when the player moves a tile;
   - **per-entity sprite draws** (up to ~1000 considered per frame on `fun_roleplay` after the entity
     index) and the per-entity margin decisions in `cs2d_render.c`.
 - **Audio:** there is no audio system (material sounds, shots, `Env_Sound`).
@@ -72,15 +69,25 @@ the same one.
   - The setting `DAT_140ddf17f` that turns tile blending off is not read; we always blend. In the editor, painting does
     not re-run `updatetile` (we compute the neighbour every frame, so a cleared 0x40 flag never stays cleared).
   - `test_file_transfer` "Transfer list" fails while `maps/fun_roleplay.map` / `gfx/c4/` exist locally.
-- **Kill feed:** `[19]` updates scores and deaths, but the kill messages (`Thud_msg.add_kill`) are not drawn.
+- **Radar (2026-10-14, `cs2d_radar.c`):** icon queue ported from FUN_140291bd0; minimap texture now uploaded once per
+  map. Missing: hostages (no client hostage objects), death icons (`DeathIcon`, frame 4), beeps (`Thud_radar_blink`),
+  `Tpl.radarblink` red pulse, `Mode 2` pulsing bomb / rescue / escape tiles, and the full map (`TSmartMinimap`).
+  Assumed: DAT_140ddf4b4 = 0, DAT_140ddf078 / 074 = Info_BombSpot / Info_CTF_Flag counts, item 63 = planted C4.
+  Our radar is 128 px vs the original BufferSize 100: icon size (16 px) and edge circle (51) not compared with a screenshot.
+- **Kill feed (2026-10-14):** not compared with a screenshot of the original. Missing: the small font under 700 px
+  (DAT_140a14f88), the mp_hud kill flag (0x40), Lua `customkill` images (`[226]`-style case 4 in FUN_1401de400, wpnimg
+  -1) and offline kills (our offline damage has no killer). Specials 0xfd / 0xfe / 0xff assume 0x1409f79f8 is indexed
+  by building type (Turret / Gate Field / Barbed Wire).
 - **Opcode 40:** "kill dropped weapon"; its format is unknown.
 - **Round start and ground items:** whether dropped weapons are removed at round start is unknown.
 - **Spray:** our client sends a blank spray logo.
 - **Dedicated broadcast quirk:** after some round restarts the dedicated stops broadcasting entity
   changes; the original client shows the same, so it is server behaviour.
 - **Weapon selection HUD, not reconstructed** (KNOWLEDGE "Weapon selection HUD"):
-  - Our inventory holds one weapon per `cs2d_weapon_slot_t`, so slot 4 lists one grenade (the original lists HE,
-    Flashbang and Smoke with their counts, e.g. "2 x").
+  - Grenade counts (fixed 2026-10-14): not checked on a screenshot of the original. The Medikit (89) keeps clip 0
+    in our table although 0x140a017a8 gives 5 (using it would then consume a count: not verified). Partial pickup
+    (2026-10-14) follows FUN_14020ce60 but was not reproduced against the dedicated (does it send [25] for a stack
+    that only partly fits?).
   - "clip | INF" under infinite ammo (`0x140a14e38[1]`, language 0762) and "0 x - Remote" (0763, slot 6).
   - The HUD sounds (`0x140a0d628` / `d630` / `d640`), `lastinv`, and the gamepad path (`FUN_140239bd0`).
   - Bindings: only the weapon selection commands go through `sys/controls.cfg`; movement, reload, use, buy, drop and
@@ -127,7 +134,8 @@ the same one.
   - Respawn game modes: "Click to respawn" sends nothing (`FUN_140298b30`), and the respawn countdown text
     (0767) is missing.
   - Avatars: the name box always shows the "?" placeholder (Steam / U.S.G.N. avatars, `DAT_140a14fe8`).
-  - While spectating our HUD (timer, money, radar) is hidden; the original keeps its timer, money and minimap.
+  - Spectator time / money (2026-10-14): mp_hud bits, DAT_140ddf1cc and the mode table 0x1409f77e8 are assumed on;
+    the text uses alpha blending instead of the original's additive blend; not compared with a screenshot.
   - Clicking a player on the scoreboard or the minimap to follow it (`FUN_14029fc70`, `0x140299e7a`).
   - Snapshot section 1: the steam / usgn name strings are assumed to be u16 count + UTF-16 (always empty so far).
 - **Map editor, not reconstructed yet** (KNOWLEDGE "Map editor" has the layouts):

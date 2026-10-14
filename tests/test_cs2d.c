@@ -25,6 +25,7 @@
 #include "cs2d_transfer.h"
 #include "cs2d_editor.h"
 #include "cs2d_spectate.h"
+#include "cs2d_radar.h"
 #include "cs2d_dynobj.h"
 #include "cs2d_bind.h"
 #include "cs2d_scoreboard.h"
@@ -295,7 +296,7 @@ static bool test_game_loop(void)
     /* Move T_Alpha to Bombspot */
     game.players[1].pos.x = bombspot_px;
     game.players[1].pos.y = bombspot_py;
-    game.players[1].inventory[CS2D_SLOT_BOMB] = CS2D_WEP_BOMB;
+    cs2d_player_give_weapon(&game.players[1], CS2D_WEP_BOMB);
 
     if (!cs2d_game_start_plant(&game, 1)) {
         TEST_FAIL("Bomb Plant Start", "Failed to start bomb plant on Info_BombSpot");
@@ -1417,6 +1418,50 @@ static void tm_click(cs2d_ui_id_t id)
     cs2d_client_build_ui(&s_tm, 850, 480);
 }
 
+/* Thud_msg.add_kill (0x1401aef60) texts and colors, fed by [19] (FUN_1401eaf60) */
+static bool test_kill_messages(void)
+{
+    printf("\n=== Testing kill messages (Thud_msg.add_kill) ===\n");
+    cs2d_weapons_init();
+    memset(&s_tm, 0, sizeof(s_tm));
+    s_tm.net_sv_gamemode = 0;
+    s_tm.config.hud_deathnotice_time = 8;
+    const char *names[] = {"", "Alice", "Bob", "Carl"};
+    cs2d_team_t teams[] = {0, CS2D_TEAM_T, CS2D_TEAM_CT, CS2D_TEAM_T};
+    for (int i = 1; i <= 3; i++) {
+        s_tm.game.players[i].id = (uint8_t)i;
+        s_tm.game.players[i].team = teams[i];
+        snprintf(s_tm.game.players[i].name, sizeof(s_tm.game.players[i].name), "%s", names[i]);
+    }
+    cs2d_client_add_kill(&s_tm, 1, 30, 2, 3);
+    const cs2d_killmsg_t *m = &s_tm.killmsgs[0];
+    if (s_tm.killmsg_count != 1 || strcmp(m->txt[0], "Alice") != 0 || strcmp(m->txt[1], "AK-47") != 0 ||
+        strcmp(m->txt[2], "Bob") != 0 || strcmp(m->txt[3], "Carl") != 0 || m->wpn != 30 ||
+        m->rgb[0][0] != 255 || m->rgb[0][1] != 25 || m->rgb[2][2] != 255 || m->rgb[1][1] != 220 ||
+        m->show_ms != 8000 || m->offset != 17.0f || m->fade != 1.0f) {
+        TEST_FAIL("Kill", "Expected Alice + Carl, AK-47, Bob in T / CT colors, 8 s, offset 17");
+    }
+    cs2d_client_add_kill(&s_tm, 2, 0xfb, 2, 0);
+    m = &s_tm.killmsgs[1];
+    if (strcmp(m->txt[0], "Bob") != 0 || strcmp(m->txt[1], "Explosion") != 0 || m->txt[2][0] || m->wpn != 0xfb) {
+        TEST_FAIL("Suicide", "Expected Bob, Explosion (0735), no victim");
+    }
+    cs2d_client_add_kill(&s_tm, 0, 0, 3, 0);
+    m = &s_tm.killmsgs[2];
+    if (strcmp(m->txt[0], "Carl") != 0 || strcmp(m->txt[1], "died") != 0 || m->wpn != 0) {
+        TEST_FAIL("Died", "Expected Carl, died (0738) without image");
+    }
+    s_tm.net_sv_gamemode = 1; /* Deathmatch: tintTeamColor green */
+    for (int i = 0; i < 3; i++) cs2d_client_add_kill(&s_tm, 1, 0xfd, 2, 0);
+    m = &s_tm.killmsgs[4];
+    if (s_tm.killmsg_count != 5 || strcmp(s_tm.killmsgs[0].txt[1], "Explosion") != 0 ||
+        strcmp(m->txt[1], "Turret") != 0 || m->rgb[0][0] != 0 || m->rgb[0][1] != 255) {
+        TEST_FAIL("Limit", "Expected 5 messages at most (oldest dropped), Turret, green in deathmatch");
+    }
+    TEST_PASS("Kill, suicide, died, specials, team colors and the 5 message limit");
+    return true;
+}
+
 static bool test_server_info_and_team_menu(void)
 {
     printf("\n=== Testing Server Info & Select Team / Character Subcategory UI ===\n");
@@ -2434,7 +2479,47 @@ static bool test_weapon_select(void)
         TEST_FAIL("wheel confirm", "The click must hold the USP, close the HUD, not fire, and wait 400 ms");
     }
 
-    TEST_PASS("Weapon selection HUD: slot tables, invnext / invprev / slotN / attack confirm, controls.cfg binds");
+    /* Grenades share HUD slot 4, listed by order (HE 0, Flashbang 1, Smoke 2); removing one keeps the others */
+    cs2d_player_t gp;
+    cs2d_player_init(&gp, 2, "G");
+    gp.alive = true;
+    cs2d_player_give_weapon(&gp, CS2D_WEP_KNIFE);
+    cs2d_player_give_weapon(&gp, CS2D_WEP_SMOKE);
+    cs2d_player_give_weapon(&gp, CS2D_WEP_HE);
+    cs2d_player_give_weapon(&gp, CS2D_WEP_FLASHBANG);
+    if (cs2d_invsel_count(&gp, 4) != 3 || cs2d_invsel_item(&gp, 4, 0) != CS2D_WEP_HE ||
+        cs2d_invsel_item(&gp, 4, 1) != CS2D_WEP_FLASHBANG || cs2d_invsel_item(&gp, 4, 2) != CS2D_WEP_SMOKE ||
+        !cs2d_player_select_weapon(&gp, CS2D_WEP_SMOKE)) {
+        TEST_FAIL("grenade stack", "HE, Flashbang and Smoke must all be listed in slot 4 and selectable");
+    }
+    if (!cs2d_player_strip_weapon(&gp, CS2D_WEP_SMOKE) || cs2d_invsel_count(&gp, 4) != 2 ||
+        gp.inventory[CS2D_SLOT_GRENADE] == CS2D_WEP_NONE || gp.inventory[CS2D_SLOT_GRENADE] == CS2D_WEP_SMOKE ||
+        gp.current_weapon != CS2D_WEP_KNIFE) {
+        TEST_FAIL("grenade strip", "Stripping the held Smoke must keep HE / Flashbang and fall back to the knife");
+    }
+
+    /* Counts: a bought Flashbang adds 1 ([23], Titem +0x18), a picked up Snowball adds up to 10 (0x140a017a8) */
+    cs2d_player_add_bought(&gp, CS2D_WEP_FLASHBANG);
+    cs2d_player_add_bought(&gp, CS2D_WEP_FLASHBANG);
+    bool t1 = cs2d_player_add_collected(&gp, CS2D_WEP_SNOWBALL, 1, 0);
+    bool t2 = cs2d_player_add_collected(&gp, CS2D_WEP_SNOWBALL, 8, 0);
+    bool t3 = cs2d_player_add_collected(&gp, CS2D_WEP_SNOWBALL, 5, 0); /* Only 1 fits: the stack stays on the ground */
+    if (!t1 || !t2 || t3 || gp.clip_ammo[CS2D_WEP_FLASHBANG] != 4 || gp.current_weapon != CS2D_WEP_FLASHBANG ||
+        gp.clip_ammo[CS2D_WEP_SNOWBALL] != 10 || !gp.owned[CS2D_WEP_SNOWBALL] ||
+        cs2d_weapon_get(CS2D_WEP_FLASHBANG)->clip_size != 2) {
+        TEST_FAIL("grenade count", "Flashbang given (2) + 1 + 1 bought = 4, Snowball 1 + 8 + 5 picked up = 10 (max), the last one partly taken");
+    }
+    gp.money = 16000;
+    cs2d_player_t op;
+    cs2d_player_init(&op, 3, "O");
+    op.alive = true;
+    op.money = 16000;
+    if (!cs2d_player_buy_weapon(&op, CS2D_WEP_FLASHBANG) || !cs2d_player_buy_weapon(&op, CS2D_WEP_FLASHBANG) ||
+        cs2d_player_buy_weapon(&op, CS2D_WEP_FLASHBANG) || op.clip_ammo[CS2D_WEP_FLASHBANG] != 2 || op.money != 15600) {
+        TEST_FAIL("offline buy", "Offline: two Flashbangs stack to 2 x, a third is refused");
+    }
+
+    TEST_PASS("Weapon selection HUD: slot tables, invnext / invprev / slotN / attack confirm, controls.cfg binds, grenade stack and counts");
     return true;
 }
 
@@ -2645,6 +2730,90 @@ static bool test_env_decal(void)
     }
     TEST_PASS("Env_Decal: frame clamp and one decal per tile (TDecal)");
     return true;
+}
+
+/* Radar icon queue (FUN_140291bd0): entity, player, bomb and flag icons with the original colours */
+static bool test_radar_icons(void)
+{
+    printf("\n=== Testing the Radar Icon Queue ===\n");
+
+    static cs2d_game_t game;   /* static: too big for the stack */
+    memset(&game, 0, sizeof(game));
+    cs2d_map_t *map = &game.map;
+    static const struct { uint8_t type; int x, y, i0, i1, i2, i3; } spec[] = {
+        { CS2D_ENT_INFO_DOM_POINT, 1, 1, 1,   0,   0,  0 },  /* red */
+        { CS2D_ENT_INFO_DOM_POINT, 2, 1, 0,   0,   0,  0 },  /* neutral: yellow */
+        { CS2D_ENT_INFO_CTF_FLAG,  3, 1, 1,   0,   0,  0 },  /* CT base at home: blue */
+        { CS2D_ENT_INFO_CTF_FLAG,  4, 1, 0,   0,   0,  0 },  /* T base, taken (state 1): no icon */
+        { CS2D_ENT_INFO_RADARICON, 5, 1, 8, 255, 128, 64 },  /* 'A' in ints[1..3] */
+        { CS2D_ENT_INFO_RADARICON, 6, 1, 24, 255, 255, 255 },/* frame out of range: no icon */
+        { CS2D_ENT_INFO_BOMBSPOT,  7, 1, 0,   0,   0,  0 }
+    };
+    int ne = (int)(sizeof(spec) / sizeof(spec[0]));
+    for (int i = 0; i < ne; i++) {
+        map->entities[i].type = (cs2d_entity_type_t)spec[i].type;
+        map->entities[i].x = spec[i].x;
+        map->entities[i].y = spec[i].y;
+        map->entities[i].int_settings[0] = spec[i].i0;
+        map->entities[i].int_settings[1] = spec[i].i1;
+        map->entities[i].int_settings[2] = spec[i].i2;
+        map->entities[i].int_settings[3] = spec[i].i3;
+    }
+    map->entity_count = (uint32_t)ne;
+    map->entity_state[3] = 1;
+
+    /* 1 local T, 2 T mate, 3 CT enemy (hidden), 4 CT carrying the red flag (shown), 5 T with the bomb */
+    static const struct { int team; float x, y; int item; } pl[] = {
+        { CS2D_TEAM_T, 100.7f, 200.2f, 0 }, { CS2D_TEAM_T, 300, 300, 0 }, { CS2D_TEAM_CT, 400, 400, 0 },
+        { CS2D_TEAM_CT, 500, 500, CS2D_WEP_REDFLAG }, { CS2D_TEAM_T, 600, 600, CS2D_WEP_BOMB }
+    };
+    for (int i = 0; i < 5; i++) {
+        cs2d_player_t *p = &game.players[i + 1];
+        p->id = (uint8_t)(i + 1);
+        p->team = (cs2d_team_t)pl[i].team;
+        p->alive = true;
+        p->health = 100;
+        p->pos.x = pl[i].x;
+        p->pos.y = pl[i].y;
+        if (pl[i].item) p->owned[pl[i].item] = 1;
+    }
+
+    static cs2d_ground_item_t items[4];
+    memset(items, 0, sizeof(items));
+    items[0] = (cs2d_ground_item_t){ true, 1, CS2D_WEP_BOMB,     48.0f, 80.0f, 0, 0 };
+    items[1] = (cs2d_ground_item_t){ true, 2, CS2D_WEP_BOMB,     16.0f, 16.0f, 0, 0 }; /* only the first bomb */
+    items[2] = (cs2d_ground_item_t){ true, 3, CS2D_WEP_BLUEFLAG, 112.0f, 16.0f, 0, 0 };
+
+    /* ms = 270: |sin(90 deg)| * 205 + 50 = 255 for the local player's alpha */
+    cs2d_radar_env_t env = { items, 4, true, 270 };
+    cs2d_radar_blip_t out[CS2D_RADAR_MAX_BLIPS];
+    int n = cs2d_radar_collect(&game, &game.players[1], &env, out);
+
+    static const struct { float x, y; int frame; uint32_t rgba; } want[] = {
+        {  48,  48, 2, 0xff0000ffu }, {  80,  48, 2, 0xffff00ffu }, { 112,  48, 2, 0x0000ffffu },
+        { 176,  48, 8, 0xff8040ffu },
+        { 100, 200, 0, 0x00ff00ffu }, { 300, 300, 0, 0xc8c8ffffu }, { 500, 500, 0, 0xff9696ffu },
+        { 600, 600, 0, 0xff8000ffu },
+        {  48,  80, 1, 0xffc800ffu }, { 112,  16, 2, 0x0000ffffu }
+    };
+    int nw = (int)(sizeof(want) / sizeof(want[0]));
+    bool ok = (n == nw);
+    if (!ok) printf("  FAIL: %d icons, expected %d\n", n, nw);
+    for (int i = 0; ok && i < nw; i++) {
+        if (out[i].x != want[i].x || out[i].y != want[i].y || out[i].frame != want[i].frame || out[i].rgba != want[i].rgba) {
+            printf("  FAIL: icon %d = (%g, %g) f%d %08x, expected (%g, %g) f%d %08x\n", i, out[i].x, out[i].y,
+                   out[i].frame, out[i].rgba, want[i].x, want[i].y, want[i].frame, want[i].rgba);
+            ok = false;
+        }
+    }
+
+    /* Deathmatch (not a team game): the enemy shows up too */
+    env.team_game = false;
+    n = cs2d_radar_collect(&game, &game.players[1], &env, out);
+    if (n != nw + 1) { printf("  FAIL: deathmatch gives %d icons, expected %d\n", n, nw + 1); ok = false; }
+
+    if (ok) printf("  PASS: radar icon queue\n");
+    return ok;
 }
 
 static bool test_entity_culling(void)
@@ -4120,6 +4289,18 @@ static bool test_gen_entities(void)
     if (gen.count != 5) TEST_FAIL("Info_NoWeather", "no rain outside the zone");
     TEST_PASS("Rain: ints[1] / 2 drops per frame, none while the screen centre is in Info_NoWeather");
 
+    /* Gen_Weather fog, 3 particles: spawned only on the 1 s tick (DAT_140ddf540), so 3 in 60 frames, not 180 */
+    memset(e, 0, 2 * sizeof(e[0]));
+    e[0].type = CS2D_ENT_GEN_WEATHER; e[0].x = 13; e[0].y = 7; e[0].int_settings[0] = 2; e[0].int_settings[1] = 3;
+    map.entity_count = 1;
+    cs2d_gen_init(&gen, &map);
+    for (int i = 0; i < 60; i++) cs2d_gen_step(&gen, &map, cx, cy, hw, hh);
+    int fog = 0;
+    for (int i = 0; i < gen.count; i++) fog += gen.p[i].typ == 21;
+    if (fog != 3) { snprintf(msg, sizeof(msg), "%d fog puffs in 60 frames (expected 3)", fog); TEST_FAIL("Gen_Weather fog", msg); }
+    TEST_PASS("Fog: max(ints[1], 1) Tp 21 once per second");
+
+    e[0].type = CS2D_ENT_GEN_WEATHER; e[0].x = 0; e[0].y = 0;
     /* Thunder: the flash Rnd(0.3, 0.4) comes 10..30 frames after the countdown starts, then the clap */
     e[0].int_settings[0] = 5;
     map.entity_count = 1;
@@ -4234,7 +4415,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 41;
+    int total = 43;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -4253,6 +4434,7 @@ int main(void)
     if (test_player_physics()) passed++;
     if (test_breakables()) passed++;
     if (test_server_info_and_team_menu()) passed++;
+    if (test_kill_messages()) passed++;
     if (test_recoil_and_swing()) passed++;
     if (test_serverlist()) passed++;
     if (test_file_transfer()) passed++;
@@ -4264,6 +4446,7 @@ int main(void)
     if (test_buy_menu()) passed++;
     if (test_shadow_chunks()) passed++;
     if (test_entity_culling()) passed++;
+    if (test_radar_icons()) passed++;
     if (test_chat_and_server_messages()) passed++;
     if (test_projectiles_and_fields()) passed++;
     if (test_item_and_player_shadows()) passed++;

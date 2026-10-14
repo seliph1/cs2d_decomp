@@ -45,6 +45,9 @@ typedef enum {
     CS2D_FIELD_SMOKE = 3    /* Smoke grenade cloud (blocks line of sight / provides cover) */
 } cs2d_field_type_t;
 
+/* Smoke cloud fade-out after the 30 s: Tp 0x1b a -= 0.01 per 60 Hz frame (Tp.draw 0x140263cc0) */
+#define CS2D_SMOKE_FADE_SECONDS (100.0f / 60.0f)
+
 /* Persistent area effect object */
 typedef struct cs2d_field_s {
     bool              active;
@@ -56,6 +59,8 @@ typedef struct cs2d_field_s {
     float             lifetime;      /* Remaining lifetime in seconds */
     float             max_lifetime;  /* Initial lifetime */
     float             tick_timer;    /* Damage / particle tick timer */
+    float             rot, rots;     /* Smoke cloud sprite angle (deg) and spin (deg per 60 Hz frame) */
+    float             shade;         /* Smoke cloud grey level 0..1 */
 } cs2d_field_t;
 
 /* World container holding all active projectiles and fields */

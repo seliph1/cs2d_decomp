@@ -97,3 +97,4 @@ Status of each entity type in the reimplementation (2026-10-13). [x] done, [~] p
 - [x] Info_RadarIcon (81)
 - [x] Trigger_Start (90), Trigger_Move (91), Trigger_Use (93), Trigger_Delay (94), Trigger_Once (95), Trigger_If (96)
 - [ ] Trigger_Hit (92)
+- Gen_Weather fog/dust/smog (2..4) spawn only on frames where DAT_140ddf540 = 1: the main loop's 1000 ms timer (0x140236801), i.e. max(ints[1],1) Tp 21 once per second, not per frame. Rain/snow are per frame.

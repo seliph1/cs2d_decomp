@@ -39,6 +39,12 @@ Source: REA `FUN_14025aa60` (camera), `FUN_1401698a0` (target picker), `FUN_1401
     the name in the team color (white in Deathmatch), `hud_symbols` frame 0 + health and frame 1 + armor
     (additive (255,255,32); value color ((100-v) x 5.1, v x 5.1, 0); armors 201..206 by name). Under
     sv_specmode 2 an enemy shows only its name. Left click = next player, right click = previous.
+- **Time and money** (FUN_14029ac10 0x14029c5xx; the alive HUD FUN_140295190 is not drawn while dead): sized by
+  TextHeight("0") / TextWidth("ITEM:0000"), `hud_symbols` additive. mp_hud 4: (155,155,155) frame 2 (6 with the bomb
+  planted) at (w - TW, 2), TH + 4 square; mp_roundtime 100 without bomb: frame 11 at w - 17, else "M:SS" right
+  aligned at w - 2, y 4. mp_hud 16: (150,150,150) frame 4 (cart, not the $ 7 of the alive HUD) at
+  (w - TW + 2, 40 - TH - 2), TH + 2 square, money (0x140a18378 +0x278) right aligned at w - 2, y 40 - TH - 1.
+  mp_hud bits: 1 health, 2 armor, 4 time, 8 ammo, 16 money, 32 icons, 64 kill messages.
 - **Minimap** (`FUN_140299d70`, called with y = 40 while `DAT_140a15478` is 1; the Map button toggles it; it is 1 in
   .data; `DAT_140ddf195` selects `TSmartMinimap` instead): the editor pixmap scaled s = 5/4/3/2/1 for max(xmax, ymax)
   < 21/31/61/121/else at x = w - (xmax - 1) * s, alpha 0.75, white frame; living players as s x s dots (T (255,25,0),

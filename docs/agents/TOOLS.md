@@ -185,6 +185,7 @@ Debug console commands:
 | `consolebench` | Console performance benchmark |
 | `light n`, `mapshadows n` | Light engine settings (`light 0` = off) |
 | `lightdump [path]` | Writes the light engine scene for `emu_light.py` (default `tools/agent/out/light.scene`) |
+| `killmsg k w v [a]` | Adds a kill message (killer, weapon id, victim, assist) like `[19]` |
 | `sun n` / `daylight n` | Sets the map's sun angle (`daylight_time`, 0..360) |
 
 With `CS2D_NET_LOG=1`, the client prints every datagram and every console line to stdout.

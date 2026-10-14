@@ -21,6 +21,8 @@ bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
     cfg->download = 1;
     /* Shipped sys/config.cfg values */
     cfg->hud_fastswitch = true;
+    cfg->deathnoticeimg = true;
+    cfg->hud_deathnotice_time = 8;
     cfg->drawradar = 4;
     cfg->radarsize = 0;
     cfg->shadows = 50;
@@ -66,6 +68,10 @@ bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
                 cfg->download = atoi(val);
             } else if (strcmp(key, "hud_fastswitch") == 0) {
                 cfg->hud_fastswitch = (atoi(val) != 0);
+            } else if (strcmp(key, "deathnoticeimg") == 0) {
+                cfg->deathnoticeimg = (atoi(val) != 0);
+            } else if (strcmp(key, "hud_deathnotice_time") == 0) {
+                cfg->hud_deathnotice_time = atoi(val);
             } else if (strcmp(key, "drawradar") == 0) {
                 cfg->drawradar = atoi(val);
             } else if (strcmp(key, "radarsize") == 0) {

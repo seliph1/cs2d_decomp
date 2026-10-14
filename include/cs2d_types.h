@@ -270,7 +270,9 @@ typedef struct {
 
     /* Inventory */
     uint8_t     current_weapon;
-    uint8_t     inventory[CS2D_SLOT_COUNT];
+    uint8_t     inventory[CS2D_SLOT_COUNT];     /* Main item of each slot (the last one given) */
+    uint8_t     owned[CS2D_MAX_WEAPONS];        /* Every item held, 1 per id (Titem.list): HE, Flashbang and
+                                                 * Smoke share CS2D_SLOT_GRENADE; grenade counts are clip_ammo */
     int16_t     clip_ammo[CS2D_MAX_WEAPONS];
     int16_t     reserve_ammo[CS2D_MAX_WEAPONS];
     float       fire_cooldown;
@@ -357,6 +359,16 @@ typedef struct {
     uint8_t      *object_collision;      /* Building overlay (cs2d_dynobj.c), applied over the entities; 0 = none */
     uint8_t      *object_shadow;         /* 1 where a solid building casts a wall shadow (shadow map) */
 } cs2d_map_t;
+
+/* Weapon / item lying on the ground (server: spawnitem 33, drop 24, collect 25) */
+#define CS2D_MAX_GROUND_ITEMS 256
+typedef struct {
+    bool     active;
+    uint16_t id;        /* Server item id */
+    uint8_t  type;      /* Weapon / item type */
+    float    x, y;      /* Tile center in px */
+    int16_t  clip, reserve;
+} cs2d_ground_item_t;
 
 /* Game Simulation State */
 typedef struct {

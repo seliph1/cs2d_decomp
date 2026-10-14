@@ -15,7 +15,7 @@ Source: REA `CS2D.exe` class `Tpro` (`0x14001c900`, `add 0x1400a8b30`, `addgroun
     - Snowball: spawns snow puff particles.
     - Gut Bomb: spawns blood particles.
     - Gas Grenade: grenade bounce + spawns persistent `CS2D_FIELD_GAS` (radius 64 px, duration 15s).
-    - Smoke Grenade: grenade bounce + spawns persistent `CS2D_FIELD_SMOKE` (radius 75 px, duration 30s) providing smoke cover.
+    - Smoke Grenade: grenade bounce + spawns persistent `CS2D_FIELD_SMOKE` (cover radius 64 px, duration 30s) providing smoke cover.
     - Flare: settles on ground, stays for ~60s emitting bright sparkle particles, then disappears silently.
     - Air Strike: stays on ground for ~7s emitting marker smoke puffs, then creates massive cluster explosions.
 - **Visuals:** Items without dedicated projectile sprite fallback to their dropped ground sprite (`tex_weapons_d[type]`).
@@ -28,3 +28,4 @@ Source: REA `CS2D.exe` class `Tpro` (`0x14001c900`, `add 0x1400a8b30`, `addgroun
   - Kill / Detonate projectile: `[41, id u8, player u8]` (3 bytes).
   - Silent kill projectile: `[55, id u8, player u8]` (3 bytes).
   - Snapshot section 6: `[252, 7, 6, count u8, count * { id u8, type u8, player u8, x u16, y u16 }]` (7 bytes each).
+- 2026-10-14: smoke grenade cloud = one Tp 0x1b sprite (sgsmoke.bmp x4, grey 50-70, alpha blend, spin Rnd(-0.3,0.3)/frame, fade 0.01/frame after 30 s); replaced white disc + puffs. Cover radius 64 (Tpro.smokegren_cover).

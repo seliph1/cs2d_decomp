@@ -29,3 +29,13 @@ Source: REA / dump (`FUN_140166fb0` invnext / invprev, `FUN_1401cc180` slotN, `F
   in (100,0,0) when empty; column 15 wide. Infinite ammo shows "clip | INF" (0762).
 - **Bindings** (`sys/controls.cfg`, `bind "<key>" "<command>"`): `mwheelup` invprev, `mwheeldown` invnext, `0`..`9`
   slot10 / slot1..slot9.
+- **Our model** (2026-10-14): `cs2d_player_t.owned[id]` is the item list (`Titem.list`); `inventory[slot]` is only the
+  slot's main item (last given / held). The HUD lists `owned` by slot and order; "n x" is `clip_ammo[id]`.
+- **Counts** (`Titem` +0x14 ammo, +0x18 ammoin; "n x" = ammoin = our clip_ammo): `Titem.give(pid, type, ammo,
+  ammoin)` reuses the player's item of that type; -1 = defaults (ammoin 0x140a017a8: Flashbang 2, Snowball 10, Mine /
+  Laser Mine 3, Medikit 5, other grenades 1; ammo 0x140a017b0: 0 for all of them). `[23]` buy of 0x33..0x36 / 0x59
+  (1402008xx): owned -> ammoin + 1, else give(0, 1). Pickup `[25]` (client path of FUN_14020ce60): only HUD
+  slot 4 already owned: ammoin + n > max -> ammoin = max, and if n - added > 0 `Titem.freedropped` is skipped (the
+  ground item stays, its count unchanged on the client); else ammoin += n. Other items: give, ammoin / ammo = the
+  packet's values, the ground item freed. (The host path, DAT_140ddf400, also lowers the ground item's ammoin.) Proxy (de_dust, dedicated): three `[23,52,0]` -> two `[23,1,52,money]` answers, no ammo
+  message, the third ignored; our client then shows 2 x.

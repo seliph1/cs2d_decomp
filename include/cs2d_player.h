@@ -20,6 +20,11 @@ bool cs2d_player_give_weapon(cs2d_player_t *player, uint8_t weapon_id);
 
 /* Purchase a weapon: checks money and gives weapon */
 bool cs2d_player_buy_weapon(cs2d_player_t *player, uint8_t weapon_id);
+/* A bought item ([23]): HE, Flashbang, Smoke, Flare and Medikit add 1 to the count when already owned */
+void cs2d_player_add_bought(cs2d_player_t *player, uint8_t weapon_id);
+/* A picked up item ([25]): an owned grenade (HUD slot 4) adds its count up to the maximum (clip size). Returns
+ * false when part of it did not fit: the ground item then stays */
+bool cs2d_player_add_collected(cs2d_player_t *player, uint8_t weapon_id, int clip, int reserve);
 
 /* Switch current active weapon to inventory slot */
 bool cs2d_player_switch_weapon(cs2d_player_t *player, cs2d_weapon_slot_t slot);
@@ -32,6 +37,8 @@ void cs2d_player_clear_inventory(cs2d_player_t *player);
 
 /* Removes weapon_id (and its ammo); if it was held, the best weapon left is taken. False if not owned. */
 bool cs2d_player_strip_weapon(cs2d_player_t *player, uint8_t weapon_id);
+/* Removes one owned item; the next owned item of its slot becomes the slot's main item. False if it was not held */
+bool cs2d_player_remove_item(cs2d_player_t *player, uint8_t weapon_id);
 
 /* Holds weapon_id if the player owns it */
 bool cs2d_player_select_weapon(cs2d_player_t *player, uint8_t weapon_id);

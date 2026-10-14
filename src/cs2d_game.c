@@ -207,7 +207,7 @@ bool cs2d_game_tick_plant(cs2d_game_t *game, uint8_t player_id, float delta_time
     if (pl->plant_progress >= 3.0f) { /* Plant takes 3 seconds */
         pl->is_planting = false;
         pl->plant_progress = 0.0f;
-        pl->inventory[CS2D_SLOT_BOMB] = CS2D_WEP_NONE; /* Consume bomb */
+        cs2d_player_remove_item(pl, CS2D_WEP_BOMB); /* Consume bomb */
 
         game->bomb_planted = true;
         game->bomb_pos = pl->pos;

@@ -29,16 +29,6 @@
 #define CS2D_CONSOLE_HIST_MAX      32
 #define CS2D_SERVER_INFO_MAX_LINES 128
 
-/* Weapon / item lying on the ground (server: spawnitem 33, drop 24, collect 25) */
-#define CS2D_MAX_GROUND_ITEMS 256
-typedef struct {
-    bool     active;
-    uint16_t id;        /* Server item id */
-    uint8_t  type;      /* Weapon / item type */
-    float    x, y;      /* Tile center in px */
-    int16_t  clip, reserve;
-} cs2d_ground_item_t;
-
 typedef struct {
     char    text[CS2D_CONSOLE_LINE_LEN];
     uint8_t r;
@@ -57,6 +47,18 @@ typedef struct {
     uint32_t    time_ms;                      /* When received */
     float       fade;                         /* 1.0 down to 0.0 */
 } cs2d_chat_line_t;
+
+/* Kill message (Thud_msg fields of add_kill / draw_kill 0x14010f8d0): txt 0 killer (or the one who died), 1 weapon
+ * name (or "died"), 2 victim, 3 assist ("killer + assist"); wpn is the weapon whose _k.bmp replaces txt 1 */
+typedef struct {
+    char     txt[4][CS2D_MAX_NAME_LEN + 32];
+    uint8_t  rgb[4][3];
+    int      wpn;      /* wpnimg[1]: 1..99 has an image, 0 text only */
+    uint32_t timer_ms; /* g_time_ms when added */
+    uint32_t show_ms;  /* hud_deathnotice_time * 1000 */
+    float    fade;     /* 1, then -0.05 per 60 Hz frame once shown */
+    float    offset;   /* Row height: TextHeight("I") + 4 while shown (17 at first), then -1 per frame */
+} cs2d_killmsg_t;
 
 /* New Game "Map" list (Tgui_ml::Load 0x1400af1d0): the .map files in maps/ grouped under the sys/maptypes.lst titles */
 #define CS2D_MAPLIST_MAX_ROWS  512
@@ -120,6 +122,11 @@ struct cs2d_client {
     char            center_msg[4][96];
     uint8_t         center_rgb[4][3];
     uint32_t        center_ms[4];
+
+    /* Thud_msg.add_kill (0x1401aef60): kill messages in the top right corner, oldest first (5 at most) */
+#define CS2D_KILLMSG_MAX 5
+    cs2d_killmsg_t  killmsgs[CS2D_KILLMSG_MAX];
+    int             killmsg_count;
 
     /* In-game chat (Thud_msg.add_chat / draw_chat 0x14024d8a0, FUN_14029f7b0) */
 #define CS2D_CHAT_MAX_LINES 32
@@ -316,6 +323,9 @@ void cs2d_client_console_print(cs2d_client_t *client, uint8_t r, uint8_t g, uint
 /* Thud_msg.add_center: a message in the screen center; the same text again restarts its timer */
 void cs2d_client_center_msg(cs2d_client_t *client, uint8_t r, uint8_t g, uint8_t b, const char *text);
 void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line);
+/* Thud_msg.add_kill (0x1401aef60): a kill message (and its console line) for [19]; killer == victim is a suicide,
+ * a weapon without name "<victim> died" */
+void cs2d_client_add_kill(cs2d_client_t *client, int killer, int weapon, int victim, int assist);
 /* In-game chat (Thud_msg.add_chat / draw_chat 0x14024d8a0, FUN_1401de400) */
 void cs2d_client_add_chat(cs2d_client_t *client, uint8_t sender_id, uint8_t mode, uint8_t r, uint8_t g, uint8_t b, const char *text);
 void cs2d_client_send_chat(cs2d_client_t *client, uint8_t mode, const char *text);

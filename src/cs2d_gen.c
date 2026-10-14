@@ -131,7 +131,8 @@ void cs2d_gen_init(cs2d_gen_t *g, const cs2d_map_t *map)
             double ang = (double)e->int_settings[0] * 0.017453292519943295;
             g->wind_x = (float)((double)e->int_settings[1] * 0.1 * sin(ang));
             g->wind_y = (float)((double)e->int_settings[1] * -0.1 * cos(ang));
-        } else if (t == CS2D_ENT_INFO_NOWEATHER && g->noweather_count < CS2D_GEN_MAX_ENTS) {
+        } else if ((t == CS2D_ENT_INFO_NOWEATHER || t == CS2D_ENT_ENV_ROOM) && g->noweather_count < CS2D_GEN_MAX_ENTS) {
+            /* Env_Room (ints[0] x ints[1] tiles) also stops rain and snow: user request, not traced in REA */
             g->noweather[g->noweather_count++] = (int)i;
         }
     }
@@ -192,7 +193,9 @@ static void spawn(cs2d_gen_t *g, const cs2d_map_t *map, int k, float cam_x, floa
                 int n = kind == 0 ? (v[1] < 2 ? 1 : v[1] >> 1) : (v[1] > 0 ? v[1] : 1);
                 for (int i = 0; i < n; i++) create(g, kind == 0 ? 20 : 19, 0.0f, 0.0f);
             } else if (kind >= 2 && kind <= 4) {
-                /* Fog / dust / smog: max(ints[1], 1) Tp 21 within 50 px of the tile centre */
+                /* Fog / dust / smog: once per second (DAT_140ddf540 gate), max(ints[1], 1) Tp 21
+                 * within 50 px of the tile centre */
+                if (!g->second_tick) break;
                 if (fabsf(wx - cam_x) >= 960.0f || fabsf(wy - cam_y) >= 720.0f) break;
                 int n = v[1] > 0 ? v[1] : 1;
                 for (int i = 0; i < n; i++) {
@@ -369,6 +372,9 @@ void cs2d_gen_step(cs2d_gen_t *g, const cs2d_map_t *map, float cam_x, float cam_
 {
     if (!g || !map) return;
     g->time_ms += 17; /* 1000 / 60, rounded like a 60 Hz millisecs() */
+    /* DAT_140ddf540: 1 on the one frame per second the main loop's 1000 ms timer fires (0x140236801) */
+    g->second_tick = g->time_ms - g->second_ms >= 1000;
+    if (g->second_tick) g->second_ms = g->time_ms;
     for (int k = 0; k < g->ent_count; k++) {
         if (map->entity_state[g->ents[k]] != 0) continue;
         spawn(g, map, k, cam_x, cam_y, half_w, half_h);

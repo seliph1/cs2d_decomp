@@ -714,6 +714,81 @@ void cs2d_client_center_msg(cs2d_client_t *client, uint8_t r, uint8_t g, uint8_t
     client->center_ms[slot] = GetTickCount() | 1;
 }
 
+/* Thud_msg.tintTeamColor (0x140083a40): spectator gold, T red and CT blue in team games, green otherwise */
+static void killmsg_tint(const cs2d_client_t *client, cs2d_killmsg_t *m, int i, const cs2d_player_t *p)
+{
+    static const uint8_t gold[3] = {255, 220, 0}, t[3] = {255, 25, 0}, ct[3] = {50, 150, 255}, dm[3] = {0, 255, 0};
+    const uint8_t *c = p->team == CS2D_TEAM_SPEC ? gold
+                     : client->net_sv_gamemode == 1 ? dm
+                     : p->team == CS2D_TEAM_T ? t : ct;
+    memcpy(m->rgb[i], c, 3);
+}
+
+/* Weapon name of a kill (0x1409fff98, or the specials of add_kill: sys/language 0737 / 0736 / 0735 and the building
+ * names 0x1409f79f8 [8] / [6] / [2]); "" for an unknown weapon */
+static const char *killmsg_weapon_name(int weapon)
+{
+    switch (weapon) {
+    case 0xf8: return "NPC";
+    case 0xf9: return "Creature";
+    case 0xfb: return "Explosion";
+    case 0xfd: return "Turret";
+    case 0xfe: return "Gate Field";
+    case 0xff: return "Barbed Wire";
+    }
+    const cs2d_weapon_def_t *def = (weapon > 0 && weapon < 0xf8) ? cs2d_weapon_get((uint8_t)weapon) : NULL;
+    return def && def->name ? def->name : "";
+}
+
+static const cs2d_player_t *killmsg_player(const cs2d_client_t *client, int id)
+{
+    if (id <= 0 || id > CS2D_MAX_PLAYERS || client->game.players[id].id == 0) return NULL; /* Tpl::get */
+    return &client->game.players[id];
+}
+
+void cs2d_client_add_kill(cs2d_client_t *client, int killer, int weapon, int victim, int assist)
+{
+    if (!client) return;
+    if (client->killmsg_count >= CS2D_KILLMSG_MAX) { /* Count > 4: the oldest goes */
+        memmove(&client->killmsgs[0], &client->killmsgs[1], sizeof(cs2d_killmsg_t) * (CS2D_KILLMSG_MAX - 1));
+        client->killmsg_count = CS2D_KILLMSG_MAX - 1;
+    }
+    cs2d_killmsg_t *m = &client->killmsgs[client->killmsg_count++];
+    memset(m, 0, sizeof(*m));
+    const char *wname = killmsg_weapon_name(weapon);
+    const cs2d_player_t *k = killmsg_player(client, killer);
+    const cs2d_player_t *v = killmsg_player(client, victim);
+    static const uint8_t gold[3] = {255, 220, 0};
+    memcpy(m->rgb[1], gold, 3);
+
+    if (killer == victim) {
+        if (k) { snprintf(m->txt[0], sizeof(m->txt[0]), "%s", k->name); killmsg_tint(client, m, 0, k); }
+        m->wpn = weapon;
+        snprintf(m->txt[1], sizeof(m->txt[1]), "%s", wname);
+        cs2d_client_console_print(client, 255, 255, 255, "%s killed himself with %s", m->txt[0], wname);
+    } else if (!wname[0]) {
+        if (v) { snprintf(m->txt[0], sizeof(m->txt[0]), "%s", v->name); killmsg_tint(client, m, 0, v); }
+        snprintf(m->txt[1], sizeof(m->txt[1]), "died"); /* 0738 */
+        cs2d_client_console_print(client, 255, 255, 255, "%s died", m->txt[0]);
+    } else {
+        if (k) { snprintf(m->txt[0], sizeof(m->txt[0]), "%s", k->name); killmsg_tint(client, m, 0, k); }
+        m->wpn = weapon;
+        snprintf(m->txt[1], sizeof(m->txt[1]), "%s", wname);
+        if (v) {
+            snprintf(m->txt[2], sizeof(m->txt[2]), "%s", v->name);
+            killmsg_tint(client, m, 2, v);
+            const cs2d_player_t *a = assist > 0 ? killmsg_player(client, assist) : NULL;
+            if (a) { snprintf(m->txt[3], sizeof(m->txt[3]), "%s", a->name); killmsg_tint(client, m, 3, a); }
+        }
+        if (!m->txt[0][0]) cs2d_client_console_print(client, 255, 255, 255, "%s killed by %s", m->txt[2], wname);
+        else cs2d_client_console_print(client, 255, 255, 255, "%s killed %s with %s", m->txt[0], m->txt[2], wname);
+    }
+    m->timer_ms = GetTickCount();
+    m->show_ms  = (uint32_t)client->config.hud_deathnotice_time * 1000u;
+    m->fade     = 1.0f;
+    m->offset   = 17.0f;
+}
+
 /*
  * Adds an in-game chat message to the client's HUD chat log (Thud_msg.add_chat 0x140117a90).
  * Team colors (tintTeamColor 0x140083a40):
@@ -1442,17 +1517,11 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 uint8_t  type = buffer[pos + 4];
                 int16_t  clip = (int16_t)(buffer[pos + 5] | (buffer[pos + 6] << 8));
                 int16_t  res  = (int16_t)(buffer[pos + 7] | (buffer[pos + 8] << 8));
-                remove_ground_item(client, iid);
+                bool taken = true;
                 if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
-                    cs2d_player_t *p = &client->game.players[pid];
-                    const cs2d_weapon_def_t *w = cs2d_weapon_get(type);
-                    uint8_t held = p->current_weapon;
-                    if (cs2d_player_give_weapon(p, type) && w && w->slot != CS2D_SLOT_ITEM) {
-                        p->clip_ammo[type]    = clip;
-                        p->reserve_ammo[type] = res;
-                        p->current_weapon     = held ? held : type; /* The server reports a switch (9) itself */
-                    }
+                    taken = cs2d_player_add_collected(&client->game.players[pid], type, clip, res);
                 }
+                if (taken) remove_ground_item(client, iid); /* A partly taken grenade stack stays (FUN_14020ce60) */
                 pos += 10;
             } else if (opcode == CS2D_NET_SPAWNITEM) {
                 /* Server -> Client: [33, type u8, item id u16, tile x u16, tile y u16, clip u16, reserve u16] (12 bytes) */
@@ -1520,7 +1589,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     if (type != 250) {
                         const cs2d_weapon_def_t *w = cs2d_weapon_get(type);
                         /* Bought armor arrives as playerdata (armor); weapons go into their slot */
-                        if (w && w->slot != CS2D_SLOT_ITEM) cs2d_player_give_weapon(p, type);
+                        if (w && w->slot != CS2D_SLOT_ITEM) cs2d_player_add_bought(p, type);
                         else if (type == CS2D_WEP_DEFUSEKIT) p->has_defuse_kit = true;
                         else if (type == CS2D_WEP_KEVLARHELM) p->has_helmet = true;
                     } else if (pid == client->local_player_id) {
@@ -1742,8 +1811,18 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 if (victim > 0 && victim <= CS2D_MAX_PLAYERS) {
                     cs2d_player_t *v = &client->game.players[victim];
                     if (v->alive && victim == client->local_player_id) client->death_ms = GetTickCount();
-                    cs2d_game_apply_kill(&client->game, victim, buffer[pos + 2], buffer[pos + 3], buffer[pos + 4],
-                                         client->net_sv_gamemode != 1);
+                    int killer = buffer[pos + 2], assist = buffer[pos + 3], weapon = buffer[pos + 4];
+                    /* FUN_1401eaf60: Thud_msg.add_kill(killer, weapon, victim, assist, -1, "") unless the weapon is
+                     * 0xfa / 0xfc; the assist only shows when killer and victim are T against CT. Read the teams
+                     * before cs2d_game_apply_kill */
+                    if ((weapon - 0xfa) & ~2) {
+                        const cs2d_player_t *k = (killer > 0 && killer <= CS2D_MAX_PLAYERS)
+                                               ? &client->game.players[killer] : NULL;
+                        bool enemies = k && k->id && ((v->team == CS2D_TEAM_T && k->team >= CS2D_TEAM_CT) ||
+                                                      (v->team >= CS2D_TEAM_CT && k->team == CS2D_TEAM_T));
+                        cs2d_client_add_kill(client, killer, weapon, victim, enemies ? assist : 0);
+                    }
+                    cs2d_game_apply_kill(&client->game, victim, killer, assist, weapon, client->net_sv_gamemode != 1);
                 }
                 pos += 9;
             } else if (opcode == CS2D_NET_SETTEAMSCORES) {
@@ -2328,6 +2407,14 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
             }
         }
         cs2d_client_console_print(client, 255, 220, 0, "Killed %d bot(s).", killed);
+    } else if (_stricmp(cmd, "killmsg") == 0) {
+        /* Debug: killmsg <killer> <weapon> <victim> [assist] adds a kill message like [19] */
+        int k = 0, w = 0, v = 0, a = 0;
+        if (sscanf(cmd_line, "%*s %d %d %d %d", &k, &w, &v, &a) < 3) {
+            cs2d_client_console_print(client, 255, 45, 45, "killmsg <killer> <weapon> <victim> [assist]");
+        } else {
+            cs2d_client_add_kill(client, k, w, v, a);
+        }
     } else if (_stricmp(cmd, "status") == 0 || _stricmp(cmd, "info") == 0) {
         cs2d_client_console_print(client, 255, 220, 0, "Scene: %s", cs2d_scene_get(client->scene)->name);
         if (map) {
@@ -3108,8 +3195,18 @@ static void cs2d_client_build_create_server_ui(cs2d_client_t *client, int screen
                             cs2d_ui_scroll_wheel(ui, &client->srv_maplist_scroll, &list_box, 3, max_vis, total);
                             cs2d_ui_scroll_clamp(&client->srv_maplist_scroll, max_vis, total);
                             int first = client->srv_maplist_scroll.top;
-                            int last  = first + max_vis;
-                            if (last > total) last = total;
+                            /* Fill the box with the real row heights (16 px items, 18 px headers, 1 px gap)
+                             * instead of the conservative 19 px estimate, which left a gap at the bottom */
+                            int last = first;
+                            float used = 0.0f;
+                            while (last < total) {
+                                float h = (client->srv_maplist.rows[last].header ? 18.0f : 16.0f)
+                                        + (last > first ? 1.0f : 0.0f);
+                                if (used + h > list_h - 4.0f) break;
+                                used += h;
+                                last++;
+                            }
+                            if (last - first > max_vis) max_vis = last - first;
 
                             CS2D_UI_ELEMENT(ui, CS2D_UI_ID("MapListRow"), {
                                 .layout = {
