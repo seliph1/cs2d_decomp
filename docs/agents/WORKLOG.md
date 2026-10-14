@@ -10,6 +10,15 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-14 — Claude — Game sounds (cs2d_sound)
+
+- New `src/cs2d_sound.c`: SDL3 audio stream mixer, WAV (SDL_LoadWAV) + OGG (vendored `third_party/stb_vorbis.c`),
+  port of `cs2d_sound_play_at` 0x1401191c0 / FUN_140109d30 (gain, pan, 20 per frame), TPosSound tracking.
+- Hooks: weapon fire (+ silenced), wall ricochet, material hit / break, building hit, explosions, hit / die, item
+  pickup / drop, build, [65], Env_Sound, thunder, flashbang, hostage, HUD slot keys. Config `mapsounds`, `soundmode`.
+- Verified: `test_sound` (formula, table); client starts with audio. Not compared by ear with the original.
+- Left: see OPEN_ISSUES "Audio".
+
 ## 2026-10-14 — Claude — spawnobject buildings missing ([65] positional sound)
 - Changed: client skips `[65]` positional sound (`FUN_1402de5f0`); before, the unknown opcode cut the datagram and dropped the
   `[49]` that follows it. New console `objlist`; `udp_proxy.py` survives WinError 10054; probes `spawnobj_probe.lua`,
@@ -41,11 +50,4 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - Verified: build, `test_game_menu`; capture against the offline dedicated (screens: menu, vote, briefing, leaderboard;
   `[230,0]` answered, `[43,1,1]` self-vote refused with 0xfff4). Harness step `!esc` added.
 - Light engine test still fails (unrelated, pre-existing).
-
-## 2026-10-14 — Claude — Lua menu height, serveraction, F-key binds
-
-- Lua menu (menu 120) window is 440 tall, centred vertically (`Tgui_hudmen.update` 0x1b8); 330 clipped item 9 over Cancel.
-- `serveraction1..3` (F2..F4) send `[240, 4, 1, "N"]` (0x1401b1446 → FUN_1401de400); F1 `serverinfo`, F6 `console` via binds.
-  Removed the hardcoded F1 console / F2 New Game / F3 Options keys. F-keys use `CS2D_KEY_F1` (VK_F* collide with 'p'..'{').
-- Verified: build, tests (light engine test `light_fun_roleplay_15_20_floor` fails, unrelated). Not proxied against original yet.
 

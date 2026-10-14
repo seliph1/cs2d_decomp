@@ -13,6 +13,8 @@ bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
     cfg->window_height = 480;
     cfg->windowed = true;
     cfg->sound_volume = 10;
+    cfg->mapsounds = true;
+    cfg->soundmode = true;
     strncpy(cfg->language, "English", sizeof(cfg->language));
     strncpy(cfg->spray_logo, "unrealsoftware.bmp", sizeof(cfg->spray_logo));
     cfg->recoil_enabled = true;
@@ -60,6 +62,10 @@ bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
                 cfg->windowed = (atoi(val) != 0);
             } else if (strcmp(key, "volume") == 0) {
                 cfg->sound_volume = atoi(val);
+            } else if (strcmp(key, "mapsounds") == 0) {
+                cfg->mapsounds = (atoi(val) != 0);
+            } else if (strcmp(key, "soundmode") == 0) {
+                cfg->soundmode = (atoi(val) != 0);
             } else if (strcmp(key, "language") == 0) {
                 strncpy(cfg->language, val, sizeof(cfg->language) - 1);
             } else if (strcmp(key, "recoil") == 0) {

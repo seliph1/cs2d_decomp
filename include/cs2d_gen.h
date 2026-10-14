@@ -63,7 +63,7 @@ typedef struct cs2d_gen_s {
     float               wind_x;    /* Info_Storm wind, px per frame (_DAT_140ddf028), added to Tp 3 / 14 */
     float               wind_y;    /* (_DAT_140ddf024) */
     float               flash;     /* White screen flash (0x140a17ff0, drawn by FUN_140131710) */
-    int                 thunder;   /* Thunder claps so far (the sound is not played yet) */
+    int                 thunder;   /* Thunder claps so far */
     float               step_acc;  /* Seconds not yet simulated */
     int                 second_ms; /* time_ms of the last 1 s tick */
     bool                second_tick; /* This frame is a 1 s tick (DAT_140ddf540, main loop 1000 ms timer) */

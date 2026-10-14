@@ -6,6 +6,7 @@
 #include "cs2d_scoreboard.h"
 #include "cs2d_editor.h"
 #include "cs2d_hudmen.h"
+#include "cs2d_sound.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,8 @@
 #include "cs2d_light.h"
 #include "cs2d_atlas.h"
 #include <SDL3/SDL.h>
+
+static void env_sounds_reset(cs2d_client_t *client);
 
 /*
  * Game scene: a loaded map with the local player, practice bots, HUD and the
@@ -597,6 +600,7 @@ static bool game_load_map(cs2d_client_t *client, const char *map_name)
     cs2d_ents_init(&client->ents, &client->game.map);
     cs2d_ents_round_start(&client->ents);
     cs2d_fx_clear(&client->fx);
+    env_sounds_reset(client);
     cs2d_gen_init(&client->gen, &client->game.map);
     cs2d_hudtxt_reset(&client->hudtxt);
     memset(client->ground_items, 0, sizeof(client->ground_items));
@@ -779,7 +783,26 @@ static void building_hit_debris(cs2d_client_t *client, const cs2d_player_t *pl, 
             if (same) continue;
         }
         cs2d_fx_building_hit(&client->fx, px, py, pl->angle);
+        cs2d_sound_play_rand_at("sfx/materials/stone", 3, ".wav", px, py); /* Tp.breakable material 1 */
     }
+}
+
+/* Fire sound of a shot (FUN_14018c6b0): the weapon's sound at the shooter; silenced USP / M4A1 at flags 100 */
+static void shot_sound(const cs2d_player_t *pl)
+{
+    bool silenced = pl->zoom_mode == 3 && (pl->current_weapon == CS2D_WEP_USP || pl->current_weapon == CS2D_WEP_M4A1);
+    const char *f = cs2d_sound_weapon_file(pl->current_weapon, silenced);
+    if (f) cs2d_sound_play_at(f, pl->pos.x, pl->pos.y, 1.0f, silenced ? 100 : 0);
+}
+
+/* Bullet impact sounds: a wall ricochets 1 in 3 (Tshoot.WallImpactFx 0x14011aeb0, with "particles" > 3;
+ * shipped 4), a breakable plays its material (Tp.breakable 0x1401197c0: wood, stone, metal, flesh, glass) */
+static void impact_sound(float hx, float hy, bool hit_wall, int material)
+{
+    static const char *const mat[5] = { "sfx/materials/wood", "sfx/materials/stone", "sfx/materials/metal",
+                                        "sfx/materials/flesh", "sfx/materials/glass" };
+    if (hit_wall && rand() % 3 == 0) cs2d_sound_play_rand_at("sfx/weapons/ric", 5, ".ogg", hx, hy);
+    if (material >= 0 && material < 5) cs2d_sound_play_rand_at(mat[material], 3, ".wav", hx, hy);
 }
 
 /*
@@ -858,6 +881,7 @@ static void fire_shot(cs2d_client_t *client, const cs2d_player_t *pl)
         cs2d_client_send_udp(client, fire_pkt, sizeof(fire_pkt), false);
     }
 
+    shot_sound(pl);
     float hx, hy;
     float reach = cs2d_weapon_shot_reach(wep);
     int hit = cs2d_ents_trace_shot(&client->ents, pl->pos.x, pl->pos.y, pl->angle, reach, &hx, &hy);
@@ -874,10 +898,12 @@ static void fire_shot(cs2d_client_t *client, const cs2d_player_t *pl)
                     (wep->slot == CS2D_SLOT_SECONDARY ? 0 : 1);
         float muzzle = (wep->slot == CS2D_SLOT_SECONDARY) ? 22.0f : 30.0f;
         cs2d_fx_shot(&client->fx, pl->pos.x, pl->pos.y, pl->angle, muzzle, hx, hy, hit_wall, shell);
+        if (hit < 0) impact_sound(hx, hy, hit_wall, -1);
     }
     building_hit_debris(client, pl, wep, hx, hy);
     if (hit < 0) return;
     const cs2d_entity_t *e = &client->game.map.entities[hit];
+    impact_sound(hx, hy, false, e->int_settings[2]);
     cs2d_fx_breakable_hit(&client->fx, hx, hy, e->int_settings[2], pl->angle);
     if (!client->connected) cs2d_ents_damage_breakable(&client->ents, hit, wep->damage);
 }
@@ -906,6 +932,7 @@ void cs2d_scene_game_remote_shot(cs2d_client_t *client, cs2d_player_t *pl)
         cs2d_fx_knifeslash(&client->fx, pl->pos.x, pl->pos.y, pl->angle);
     }
 
+    shot_sound(pl);
     float hx, hy, reach = cs2d_weapon_shot_reach(wep);
     int hit = cs2d_ents_trace_shot(&client->ents, pl->pos.x, pl->pos.y, pl->angle, reach, &hx, &hy);
     if (!melee) {
@@ -915,9 +942,13 @@ void cs2d_scene_game_remote_shot(cs2d_client_t *client, cs2d_player_t *pl)
                     (wep->slot == CS2D_SLOT_SECONDARY ? 0 : 1);
         cs2d_fx_shot(&client->fx, pl->pos.x, pl->pos.y, pl->angle, wep->slot == CS2D_SLOT_SECONDARY ? 22.0f : 30.0f,
                      hx, hy, hit_wall, shell);
+        if (hit < 0) impact_sound(hx, hy, hit_wall, -1);
     }
     building_hit_debris(client, pl, wep, hx, hy);
-    if (hit >= 0) cs2d_fx_breakable_hit(&client->fx, hx, hy, client->game.map.entities[hit].int_settings[2], pl->angle);
+    if (hit >= 0) {
+        cs2d_fx_breakable_hit(&client->fx, hx, hy, client->game.map.entities[hit].int_settings[2], pl->angle);
+        impact_sound(hx, hy, false, client->game.map.entities[hit].int_settings[2]);
+    }
 }
 
 /* Explosion of an Env_Breakable (offline): players and breakables in range take power * (1 - d / range) */
@@ -938,6 +969,61 @@ static void breakable_explode(cs2d_client_t *client, const cs2d_entity_t *e)
     cs2d_ents_explode(&client->ents, cx, cy, range, power);
 }
 
+/*
+ * Env_Sound (Te.update case 0x17, with "mapsounds" on): strs[0] is the file under sfx/ (Tres.add type 2),
+ * strs[1] the volume. ints[2] = 1 plays it everywhere (FUN_140109d30), else at the tile centre and
+ * re-attenuated while it plays. A looping one (ints[1] = 0) plays while its state equals ints[0] and is
+ * restarted when it ends; a one-shot plays when triggered, or once at start when ints[0] = 0.
+ */
+static int s_env_voice[CS2D_MAX_ENTITIES];
+
+static void env_sound_path(const cs2d_entity_t *e, char *out, size_t n)
+{
+    if (strncmp(e->str_settings[0], "sfx/", 4) == 0) snprintf(out, n, "%s", e->str_settings[0]);
+    else snprintf(out, n, "sfx/%s", e->str_settings[0]);
+}
+
+static int env_sound_start(const cs2d_entity_t *e)
+{
+    if (!e->str_settings[0][0]) return -1;
+    char path[160];
+    env_sound_path(e, path, sizeof(path));
+    float vol = strtof(e->str_settings[1], NULL);
+    if (e->int_settings[2] == 1) return cs2d_sound_play(path, vol, false);
+    return cs2d_sound_play_tracked(path, (float)e->x * CS2D_TILE_SIZE + 16.0f, (float)e->y * CS2D_TILE_SIZE + 16.0f,
+                                   vol, false);
+}
+
+static void env_sounds_reset(cs2d_client_t *client)
+{
+    cs2d_sound_stop_all();
+    memset(s_env_voice, 0xff, sizeof(s_env_voice));
+    if (!client->config.mapsounds) return;
+    const cs2d_map_t *map = &client->game.map;
+    for (uint32_t i = 0; i < map->entity_count; i++) {
+        const cs2d_entity_t *e = &map->entities[i];
+        if (e->type == CS2D_ENT_ENV_SOUND && e->int_settings[1] != 0 && e->int_settings[0] == 0) {
+            s_env_voice[i] = env_sound_start(e);
+        }
+    }
+}
+
+static void env_sounds_update(cs2d_client_t *client)
+{
+    if (!client->config.mapsounds) return;
+    const cs2d_map_t *map = &client->game.map;
+    for (uint32_t i = 0; i < map->entity_count; i++) {
+        const cs2d_entity_t *e = &map->entities[i];
+        if (e->type != CS2D_ENT_ENV_SOUND || e->int_settings[1] != 0) continue;
+        if (e->int_settings[0] == map->entity_state[i]) {
+            if (!cs2d_sound_playing(s_env_voice[i])) s_env_voice[i] = env_sound_start(e);
+        } else if (s_env_voice[i] >= 0) {
+            cs2d_sound_stop(s_env_voice[i]);
+            s_env_voice[i] = -1;
+        }
+    }
+}
+
 /* Effects of entity logic: break debris both ways; the rest only offline (online the server performs them) */
 static void drain_entity_events(cs2d_client_t *client)
 {
@@ -947,8 +1033,15 @@ static void drain_entity_events(cs2d_client_t *client)
         if (ev.type == CS2D_ENT_EVENT_STATE && e->type == CS2D_ENT_ENV_BREAKABLE &&
             client->game.map.entity_state[ev.entity] == 1) {
             cs2d_fx_breakable_break(&client->fx, e);
+            /* Tp.killbreakable (0x140119d20): wood bursts, glass shatters at the tile centre */
+            float bx = (float)e->x * CS2D_TILE_SIZE + 16.0f, by = (float)e->y * CS2D_TILE_SIZE + 16.0f;
+            if (e->int_settings[2] == 0) cs2d_sound_play_at("sfx/materials/burstwood.wav", bx, by, 1.0f, 0);
+            else if (e->int_settings[2] == 4) cs2d_sound_play_at("sfx/materials/bustglass.wav", bx, by, 1.0f, 0);
         } else if (ev.type == CS2D_ENT_EVENT_BREAK && !client->connected && e->int_settings[3]) {
             breakable_explode(client, e);
+        } else if (ev.type == CS2D_ENT_EVENT_SOUND && e->int_settings[1] != 0 && client->config.mapsounds) {
+            cs2d_sound_stop(s_env_voice[ev.entity]);
+            s_env_voice[ev.entity] = env_sound_start(e);
         } else if (ev.type == CS2D_ENT_EVENT_MESSAGE && e->str_settings[0][0]) {
             cs2d_client_console_print(client, (uint8_t)e->int_settings[2], (uint8_t)e->int_settings[3],
                                       (uint8_t)e->int_settings[4], "%s", e->str_settings[0]);
@@ -1239,6 +1332,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
     drain_entity_events(client);
     update_dynobjs(client, delta_time);
     cs2d_fx_update(&client->fx, delta_time);
+    env_sounds_update(client);
     cs2d_hudtxt_update(&client->hudtxt, (uint32_t)SDL_GetTicks()); /* Ttween.update */
     cs2d_gen_update(&client->gen, &client->game.map, client->cam_x, client->cam_y,
                     (float)client->config.window_width * 0.5f, (float)client->config.window_height * 0.5f, delta_time);
@@ -2392,8 +2486,9 @@ static void hold_weapon(cs2d_client_t *client, cs2d_player_t *pl, uint8_t weapon
 
 /*
  * Command dispatcher at 0x1401b3e30: invprev -> FUN_140166fb0(-1), invnext -> FUN_140166fb0(1), slotN ->
- * FUN_1401cc180(N, 0), only in game (DAT_140ddf418 1..2). The HUD sounds (0x140a0d628 / d630 / d640) are not played:
- * there is no audio yet.
+ * FUN_1401cc180(N, 0), only in game (DAT_140ddf418 1..2). FUN_1401cc180 plays a 2D HUD sound: wpn_select
+ * (0x140a0d628) when fast switch takes the only item, wpn_moveselect (d630) on the open slot, wpn_hudon (d640)
+ * when it opens another slot.
  */
 bool cs2d_scene_game_inv_cmd(cs2d_client_t *client, const char *cmd)
 {
@@ -2409,6 +2504,9 @@ bool cs2d_scene_game_inv_cmd(cs2d_client_t *client, const char *cmd)
     if (dir != 0) {
         cs2d_invsel_cycle(&client->invsel, pl, dir);
     } else {
+        int s = (slot < 0 || slot > 9) ? 0 : slot;
+        cs2d_sound_play(client->config.hud_fastswitch && cs2d_invsel_count(pl, s) == 1 ? "sfx/wpn_select.wav"
+                        : client->invsel.slot == s ? "sfx/wpn_moveselect.wav" : "sfx/wpn_hudon.wav", 1.0f, false);
         hold_weapon(client, pl, cs2d_invsel_slot(&client->invsel, pl, slot, client->config.hud_fastswitch));
     }
     return true;

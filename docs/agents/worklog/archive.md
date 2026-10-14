@@ -1,5 +1,12 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-14 — Claude — Lua menu height, serveraction, F-key binds
+
+- Lua menu (menu 120) window is 440 tall, centred vertically (`Tgui_hudmen.update` 0x1b8); 330 clipped item 9 over Cancel.
+- `serveraction1..3` (F2..F4) send `[240, 4, 1, "N"]` (0x1401b1446 → FUN_1401de400); F1 `serverinfo`, F6 `console` via binds.
+  Removed the hardcoded F1 console / F2 New Game / F3 Options keys. F-keys use `CS2D_KEY_F1` (VK_F* collide with 'p'..'{').
+- Verified: build, tests (light engine test `light_fun_roleplay_15_20_floor` fails, unrelated). Not proxied against original yet.
+
 ## 2026-10-14 — Antigravity — Lua server menu (menu(), opcode 235 CS2D_NET_LUAMENU)
 
 - **Changed:**

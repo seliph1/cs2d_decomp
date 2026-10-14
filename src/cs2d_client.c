@@ -1,4 +1,5 @@
 #include "cs2d_client.h"
+#include "cs2d_sound.h"
 #include "cs2d_weapons.h"
 #include "cs2d_player.h"
 #include "cs2d_map.h"
@@ -1756,6 +1757,12 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 uint8_t victim = 0, attacker = 0, new_hp = 0, new_arm = 0;
                 if (cs2d_net_parse_damage_packet(buffer + pos, 5, &victim, &attacker, &new_hp, &new_arm)) {
                     if (victim > 0 && victim <= CS2D_MAX_PLAYERS) {
+                        cs2d_player_t *vp = &client->game.players[victim];
+                        /* FUN_1401ec180 plays a random sfx/player/hit1..3 at the victim (array 0x140a0d950);
+                         * when exactly is not traced: here on any health loss that does not kill */
+                        if (vp->alive && new_hp > 0 && new_hp < vp->health) {
+                            cs2d_sound_play_rand_at("sfx/player/hit", 3, ".wav", vp->pos.x, vp->pos.y);
+                        }
                         client->game.players[victim].health = new_hp;
                         client->game.players[victim].armor  = new_arm;
                         if (new_hp == 0) {
@@ -1865,6 +1872,12 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 int16_t  res  = (int16_t)(buffer[pos + 7] | (buffer[pos + 8] << 8));
                 bool taken = true;
                 if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
+                    /* Titem.give (0x1401feeb0): ammo for 60..62, kevlar for armour, else pickup */
+                    const cs2d_player_t *cp = &client->game.players[pid];
+                    const char *snd = (type >= 60 && type <= 62) ? "sfx/items/ammo.wav"
+                                    : (type == CS2D_WEP_KEVLAR || type == CS2D_WEP_KEVLARHELM || (type >= 79 && type <= 84))
+                                    ? "sfx/items/kevlar.wav" : "sfx/items/pickup.wav";
+                    cs2d_sound_play_at(snd, cp->pos.x, cp->pos.y, 1.0f, 0);
                     if (type == CS2D_WEP_REDFLAG || type == CS2D_WEP_BLUEFLAG) collect_flag(client, pid, type);
                     else taken = cs2d_player_add_collected(&client->game.players[pid], type, clip, res);
                 }
@@ -1981,6 +1994,9 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     if (type == CS2D_WEP_REDFLAG || type == CS2D_WEP_BLUEFLAG) drop_flag(client, pid, type);
                     else cs2d_player_strip_weapon(&client->game.players[pid], type);
                 }
+                /* FUN_1401f8350 (drop): sfx/items/drop.wav at the tile centre */
+                cs2d_sound_play_at("sfx/items/drop.wav", (float)((buffer[pos + 10] | (buffer[pos + 11] << 8)) * 32 + 16),
+                                   (float)((buffer[pos + 12] | (buffer[pos + 13] << 8)) * 32 + 16), 1.0f, 0);
                 add_ground_item(client, (uint16_t)(buffer[pos + 8] | (buffer[pos + 9] << 8)), type,
                                 buffer[pos + 10] | (buffer[pos + 11] << 8), buffer[pos + 12] | (buffer[pos + 13] << 8),
                                 clip, res);
@@ -2239,6 +2255,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 int n = cs2d_dynobj_net_message(&client->dynobj, buffer, recvd, pos, &dfx);
                 if (n < 0) break;
                 if (dfx.kind == 1) cs2d_fx_explosion(&client->fx, dfx.x, dfx.y, 32.0f);
+                else if (dfx.kind == 2) cs2d_sound_play_at("sfx/player/build.wav", dfx.x, dfx.y, 1.0f, 0);
                 pos += n;
             } else if (opcode == CS2D_NET_BUILD) {
                 if (!net_build_result(client, buffer, recvd, pos)) break;
@@ -2263,6 +2280,15 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                                                       (v->team >= CS2D_TEAM_CT && k->team == CS2D_TEAM_T));
                         cs2d_client_add_kill(client, killer, weapon, victim, enemies ? assist : 0);
                     }
+                    /* FUN_14019a530: die1..3 (array 0x140a0d958) at the kill position; a zombie in zombie mode
+                     * (gamemode 4) plays zm_die instead */
+                    float kx = (float)(buffer[pos + 5] | (buffer[pos + 6] << 8));
+                    float ky = (float)(buffer[pos + 7] | (buffer[pos + 8] << 8));
+                    if (client->net_sv_gamemode == 4 && v->team == CS2D_TEAM_T) {
+                        cs2d_sound_play_at("sfx/player/zm_die.wav", kx, ky, 1.0f, 0);
+                    } else {
+                        cs2d_sound_play_rand_at("sfx/player/die", 3, ".wav", kx, ky);
+                    }
                     cs2d_game_apply_kill(&client->game, victim, killer, assist, weapon, client->net_sv_gamemode != 1);
                 }
                 pos += 9;
@@ -2275,8 +2301,20 @@ void cs2d_client_poll_network(cs2d_client_t *client)
             } else if (opcode == CS2D_NET_POSITIONALSOUND) {
                 /* [65, x u16 + 32768, y u16 + 32768, len, path] (FUN_1402de5f0 -> FUN_1401e3890(x, y, path, 0)).
                  * Lua servers send it with sfx/player/build.wav right before a spawnobject [49] in the same
-                 * datagram (proxy, 157.90.170.75:10003). No audio yet: the message is only skipped */
+                 * datagram (proxy, 157.90.170.75:10003). Played as a TPosSound (0x1401e3640): "sfx/" + path */
                 if (pos + 6 > recvd || pos + 6 + buffer[pos + 5] > recvd) break;
+                {
+                    int sx = (buffer[pos + 1] | (buffer[pos + 2] << 8)) - 32768;
+                    int sy = (buffer[pos + 3] | (buffer[pos + 4] << 8)) - 32768;
+                    char file[256], path[264];
+                    int len = buffer[pos + 5];
+                    memcpy(file, buffer + pos + 6, (size_t)len);
+                    file[len] = 0;
+                    char *bar = strchr(file, '|'); /* "file|volume": FUN_1401e3890 splits it */
+                    if (bar) *bar = 0;
+                    snprintf(path, sizeof(path), strncmp(file, "sfx/", 4) == 0 ? "%s" : "sfx/%s", file);
+                    cs2d_sound_play_tracked(path, (float)sx, (float)sy, 1.0f, false);
+                }
                 pos += 6 + buffer[pos + 5];
             } else if (opcode == CS2D_NET_PINGLIST) {
                 /* [247, n, ticks u8, u16, u16, n x {pid, ping u16}] (FUN_140060f80): server ticks (DAT_140ddf3e0) and

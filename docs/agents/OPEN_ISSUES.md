@@ -6,8 +6,8 @@ the same one.
 
 ## Known gaps
 - **Hostages / bomb (2026-10-14, `knowledge/hostages-bomb.md`):** done: use ray (hostage, planted bomb, Trigger_Use),
-  [26] echo, [29], [30], snapshot section 2, plant / defuse online, `[22]` special byte. Missing: sounds (no audio:
-  hos1..4, c4 plant / defuse), own Dispenser / Teleporter menu on E (Tdo 9 / 15), the green "following me" marker
+  [26] echo, [29], [30], snapshot section 2, plant / defuse online, `[22]` special byte. Missing: c4 plant / defuse
+  sounds, own Dispenser / Teleporter menu on E (Tdo 9 / 15), the green "following me" marker
   (Tp 100 at the hostage, mp_hovertext-like), [29] kind 4 blood (Tp 0x18) and the bomb blast particles (FUN_1401f1130,
   screenshake 50; ours uses cs2d_fx_explosion), hostage money HUD messages (Thud_msg.add_money), hostage legs (the original
   never sets `lastmove` on the client, so it likely draws no legs: compare a screenshot), hostage step is 4 px per drawn
@@ -20,8 +20,7 @@ the same one.
   Not checked: what the original sends on Disconnect (we send `[253,0]` like before).
 - **Lua HUD texts (2026-10-14, `src/cs2d_hudtxt.c`):** `mp_hudscale` implemented (modes 0..3, zoom, aspect letterbox, and sharpness scaling when screen_h > 589); [54] tweens of Tdo targets (Lua images) are parsed and skipped; `®path` inline images not
   compared with the original; texts are cleared on map load (original reset point not checked).
-- **Gen_* entities (2026-10-13, `src/cs2d_gen.c`):** not screenshot-compared with CS2D.exe. Missing: the thunder
-  sound (no audio system; `gen.thunder` counts claps), wind on Tp 22 / 0x20 (not spawned by us), screen shake
+- **Gen_* entities (2026-10-13, `src/cs2d_gen.c`):** not screenshot-compared with CS2D.exe. Missing: wind on Tp 22 / 0x20 (not spawned by us), screen shake
   from explosions / Lua (only Info_Quake feeds `gen.shake`),
   the FOW hiding (`FUN_140146fd0`) and the lighting sprites (`TLightingSprite::DrawSprite` when DAT_140ddf185).
   Settings gating rain / snow / effects (DAT_140a1b068, 140a1b05c, 140ddf540) are assumed on, "particles" = 4.
@@ -61,7 +60,11 @@ the same one.
     already atlased (2026-10-13).
   - **per-entity sprite draws** (up to ~1000 considered per frame on `fun_roleplay` after the entity
     index) and the per-entity margin decisions in `cs2d_render.c`.
-- **Audio:** there is no audio system (material sounds, shots, `Env_Sound`).
+- **Audio (2026-10-14, `knowledge/sound.md`):** engine + shots, impacts, explosions, hit / die, items, Env_Sound,
+  [65], thunder, flashbang, hostage, HUD slot sounds. Not compared by ear with CS2D.exe; pan law and the hit trigger
+  are estimates. Missing: footsteps (`pl_*` arrays 0x140a0d910..8e0), reload clip sounds (`w_clipout` / `w_clipin`
+  timing in 0x14021xxxx), c4 beeps / plant / defuse, grenade bounce, radio, kill-streak `sfx/fun`, menu music,
+  GUI clicks, sv_sound (`Tserversound.playServer`), Env_Sound one-shots triggered online, `volume` options slider.
 - **Shots:** offline shots have no spread, and the reach of weapons other than the knife and the AK-47
   is not measured.
 - **Muzzle offsets:** the per-weapon muzzle offset table (`0x1409f5d20` in `CS2D.exe`) is now recovered
@@ -104,7 +107,7 @@ the same one.
     (2026-10-14) follows FUN_14020ce60 but was not reproduced against the dedicated (does it send [25] for a stack
     that only partly fits?).
   - "clip | INF" under infinite ammo (`0x140a14e38[1]`, language 0762) and "0 x - Remote" (0763, slot 6).
-  - The HUD sounds (`0x140a0d628` / `d630` / `d640`), `lastinv`, and the gamepad path (`FUN_140239bd0`).
+  - The HUD sound on closing / confirming (`wpn_hudoff` d638), `lastinv`, and the gamepad path (`FUN_140239bd0`).
   - Bindings: only the weapon selection commands go through `sys/controls.cfg`; movement, reload, use, buy, drop and
     the spectator keys are still hardcoded in `game_handle_key`. `cs2d_bind_key_name` knows only digits, letters,
     space, leftctrl and leftshift. The HUD font scale is fixed at 1 (13 px).
@@ -179,7 +182,7 @@ the same one.
     passes x = 16: one of the two is wrong (check on a screenshot).
   - Not drawn: portals (22 / 23), NPCs (30), Lua images (40, `Tdo` image fields and `[252,7,7]` image data),
     laser mine beams, Construction Site smoke particles, dynamic lights; turret tracers use a calibrated 300 px reach.
-  - Building hit debris (`cs2d_fx_building_hit`): no hit sound (array 0x140a0d890 not identified), fragments do not
+  - Building hit debris (`cs2d_fx_building_hit`): fragments do not
     stop at walls, the `particles` setting is fixed at 4, and the look is not compared with a screenshot yet.
   - Building hover text (KNOWLEDGE "Construction mode"): not compared with a screenshot of the original; the text
     height uses our 15 px line height for Max2D `TextHeight`. Hostage (bit 4) hover text and the ground item hover

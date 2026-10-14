@@ -37,6 +37,7 @@
 #include "cs2d_hudtxt.h"
 #include "cs2d_hostage.h"
 #include "cs2d_hudmen.h"
+#include "cs2d_sound.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -4768,6 +4769,36 @@ static bool test_hostages(void)
     return true;
 }
 
+/*
+ * Sound attenuation of cs2d_sound_play_at (0x1401191c0): listener at camera + (425, 240),
+ * gain = vol - (|dx| + |dy| + flags) * 0.001, dropped below 0.0001, pan = dx * 0.002;
+ * fire sounds from the weapon array 0x1409f4a20 (FUN_14018c6b0)
+ */
+static bool test_sound(void)
+{
+    printf("\n--- Testing sound attenuation ---\n");
+    float g, pan;
+    if (!cs2d_sound_attenuate(1.0f, 425.0f, 240.0f, 0, 0.0f, 0.0f, &g, &pan) || fabsf(g - 1.0f) > 1e-6f || pan != 0.0f)
+        TEST_FAIL("Sound", "a sound at the screen centre plays at full volume");
+    if (!cs2d_sound_attenuate(1.0f, 625.0f, 140.0f, 0, 0.0f, 0.0f, &g, &pan) || fabsf(g - 0.7f) > 1e-5f ||
+        fabsf(pan - 0.4f) > 1e-5f)
+        TEST_FAIL("Sound", "manhattan distance 300 -> 0.7, 200 px right -> pan 0.4");
+    if (!cs2d_sound_attenuate(1.0f, 1100.0f, 600.0f, 100, 500.0f, 300.0f, &g, NULL) || fabsf(g - 0.665f) > 1e-5f)
+        TEST_FAIL("Sound", "camera offset and silencer flags 100");
+    if (cs2d_sound_attenuate(1.0f, 1425.0f, 240.0f, 0, 0.0f, 0.0f, &g, NULL) ||
+        !cs2d_sound_attenuate(1.0f, 1424.0f, 240.0f, 0, 0.0f, 0.0f, &g, NULL))
+        TEST_FAIL("Sound", "out of range at 1000 px (gain < 0.0001)");
+    if (cs2d_sound_play_at("sfx/weapons/ak47.wav", 425.0f, 240.0f, 1.0f, 0) != -1)
+        TEST_FAIL("Sound", "no audio device: play is a no-op");
+    const char *ak = cs2d_sound_weapon_file(CS2D_WEP_AK47, false), *usp = cs2d_sound_weapon_file(CS2D_WEP_USP, true);
+    const char *knife = cs2d_sound_weapon_file(CS2D_WEP_KNIFE, false);
+    if (!ak || strcmp(ak, "sfx/weapons/ak47.wav") || !usp || strcmp(usp, "sfx/weapons/usp_silenced.wav") ||
+        !knife || strcmp(knife, "sfx/weapons/knife_slash.wav") || cs2d_sound_weapon_file(CS2D_WEP_HE, false))
+        TEST_FAIL("Sound", "weapon fire sound table");
+    TEST_PASS("Sound: attenuation, pan, range and weapon sounds match the original");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -4775,7 +4806,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 48;
+    int total = 49;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -4825,6 +4856,7 @@ int main(void)
     if (test_hudscale()) passed++;
     if (test_game_menu()) passed++;
     if (test_hostages()) passed++;
+    if (test_sound()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

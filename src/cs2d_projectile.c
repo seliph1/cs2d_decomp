@@ -3,6 +3,7 @@
 #include "cs2d_weapons.h"
 #include "cs2d_fx.h"
 #include "cs2d_gen.h"
+#include "cs2d_sound.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -320,7 +321,8 @@ static void detonate_projectile(cs2d_client_t *client, cs2d_projectile_t *p)
             break;
 
         case CS2D_WEP_FLASHBANG: {
-            /* Flashbang sound & flash particles */
+            /* Flash particles; Tpro.draw_ground (0x140288460) plays sfx/weapons/g_flash.wav at the grenade */
+            cs2d_sound_play_at("sfx/weapons/g_flash.wav", p->x, p->y, 1.0f, 0);
             cs2d_fx_sparkle(&client->fx, p->x, p->y, 1.0f, 1.0f, 1.0f);
             for (int i = 0; i < 8; i++) {
                 cs2d_fx_smoke_puff(&client->fx, p->x, p->y, 0.9f, 0.9f, 0.9f, 16.0f, 40.0f);

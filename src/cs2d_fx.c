@@ -1,4 +1,5 @@
 #include "cs2d_fx.h"
+#include "cs2d_sound.h"
 #include <math.h>
 #include <string.h>
 
@@ -109,6 +110,7 @@ void cs2d_fx_building_hit(cs2d_fx_t *fx, float x, float y, float angle_deg)
 void cs2d_fx_explosion(cs2d_fx_t *fx, float x, float y, float range)
 {
     if (!fx) return;
+    cs2d_sound_play_rand_at("sfx/weapons/explode", 6, ".wav", x, y); /* Tp.explosion (0x14011a500): array 0x140a0d650 */
     cs2d_fx_particle_t *p = alloc_particle(fx);
     p->kind     = CS2D_FX_EXPLOSION;
     p->x        = x;

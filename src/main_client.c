@@ -9,6 +9,7 @@
 #include "cs2d_client.h"
 #include "cs2d_render.h"
 #include "cs2d_gl.h"
+#include "cs2d_sound.h"
 
 static cs2d_client_t g_client;
 static bool          g_running = true;
@@ -273,6 +274,12 @@ static int run_client_app(const char *cmdline)
         return 1;
     }
 
+    /* Sound effects: no device only means silence */
+    if (cs2d_sound_init()) {
+        cs2d_sound_set_volume(g_client.config.sound_volume);
+        cs2d_sound_set_stereo(g_client.config.soundmode);
+    }
+
     uint64_t freq = SDL_GetPerformanceFrequency();
     uint64_t last_time = SDL_GetPerformanceCounter();
 
@@ -371,7 +378,9 @@ static int run_client_app(const char *cmdline)
 
         /* Update */
         uint64_t t_up0 = SDL_GetPerformanceCounter();
+        cs2d_sound_frame();
         cs2d_client_update(&g_client, delta_time);
+        cs2d_sound_set_camera(g_client.cam_x, g_client.cam_y);
         uint64_t t_up1 = SDL_GetPerformanceCounter();
 
         /* Render */
@@ -496,6 +505,7 @@ static int run_client_app(const char *cmdline)
     SDL_StopTextInput(window);
     cs2d_render_shutdown(window);
     cs2d_client_shutdown(&g_client);
+    cs2d_sound_shutdown();
     SDL_DestroyWindow(window);
     SDL_Quit();
 

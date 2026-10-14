@@ -9,7 +9,9 @@ typedef struct {
     int  window_width;
     int  window_height;
     bool windowed;
-    int  sound_volume;
+    int  sound_volume;   /* "volume" 0..100 (DAT_140ddf17d): sounds play at volume * 0.01 */
+    bool mapsounds;      /* "mapsounds" 0|1 Env_Sound entities play (DAT_140ddf17b) */
+    bool soundmode;      /* "soundmode" 0|1 stereo panning of positional sounds (DAT_140ddf17a) */
     char language[32];
     char spray_logo[64];
     bool recoil_enabled;

@@ -1,5 +1,6 @@
 #include "cs2d_gen.h"
 #include "cs2d_map.h"
+#include "cs2d_sound.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -217,7 +218,10 @@ static void spawn(cs2d_gen_t *g, const cs2d_map_t *map, int k, float cam_x, floa
                 } else {
                     (*c)--;
                     if (*c == 2) g->flash = rnd(g, 0.3f, 0.4f);
-                    else if (*c == 1) g->thunder++;
+                    else if (*c == 1) {
+                        g->thunder++;
+                        cs2d_sound_play("sfx/env/thunder.wav", 1.0f, false); /* FUN_140109d30, 2D (volume operand not recovered: 1) */
+                    }
                 }
             }
             break;

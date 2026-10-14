@@ -87,7 +87,7 @@ Status of each entity type in the reimplementation (2026-10-13). [x] done, [~] p
 - [x] Env_Room (32), Env_Light (33), Env_LightStripe (34): light engine
 - [x] Gen_Particles (50)
 - [x] Gen_Sprites (51)
-- [~] Gen_Weather (52): thunder sound missing
+- [x] Gen_Weather (52)
 - [x] Gen_FX (53)
 - [x] Func_Teleport (70)
 - [x] Func_DynWall (71)

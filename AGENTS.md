@@ -72,13 +72,14 @@ Our client must be able to play on the original dedicated server without the ser
 | `src/cs2d_radar.c` | Radar icon queue (`FUN_140291bd0`): which blips the HUD radar draws, and their colours |
 | `src/cs2d_hudtxt.c` | Lua HUD texts: hudtxt `[234]`, their move / alpha / colour tweens `[54]`, inline colour / image tags |
 | `src/cs2d_render.c` | OpenGL 1.x immediate mode, GDI+ TrueType text, shadows, HUD |
+| `src/cs2d_sound.c` | Sound effects: SDL3 mixer, WAV / OGG loading, positional attenuation (`cs2d_sound_play_at`), weapon sounds |
 | `src/cs2d_image.c` | Portable asset decoding (BMP / PNG / ICO) on the vendored `stb_image`; replaced the GDI+ image path |
 | `src/cs2d_hudmen.c` | Hud menus (`Tgui_hudmen`): window, `button` / `fbutton` / `box`, and the Buy menu (pages, weapon info, previews) |
 | `src/cs2d_ui.c` | Immediate-mode UI library (textbox, dropdown, numberbox, shared scrolling `cs2d_ui_scroll_*` / `cs2d_ui_scrollbar`) |
 | `tests/test_cs2d.c` | Regression suite (`test_cs2d.exe`) |
 | `tools/agent/` | Capture and reverse-engineering scripts (see `docs/agents/TOOLS.md`) |
 | `tools/entity_truth/` | Generator of the entity fixture from the dedicated's Lua |
-| `third_party/` | Vendored single-header libraries (`stb_image.h`, `stb_truetype.h`) — `-Ithird_party` in `build.bat` |
+| `third_party/` | Vendored single-header libraries (`stb_image.h`, `stb_truetype.h`, `stb_vorbis.c`) — `-Ithird_party` in `build.bat` |
 | `docs/` | Scraped references (`cs2d_entities_db`, `cs2d_help_db`, `cs2d_gfx_descriptors.json`) |
 | `docs/dump/` | Ghidra decompilation of `CS2D.exe`, one file per BlitzMax class (git-ignored, client only) |
 | `docs/agents/` | **Shared agent memory**: `TOOLS.md`, `KNOWLEDGE.md` (index) + `knowledge/<topic>.md`, `WORKLOG.md` (5 newest) + `worklog/archive.md`, `OPEN_ISSUES.md` |

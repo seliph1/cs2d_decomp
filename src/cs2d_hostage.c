@@ -1,4 +1,5 @@
 #include "cs2d_hostage.h"
+#include "cs2d_sound.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -100,7 +101,8 @@ bool cs2d_hostages_use(cs2d_hostage_world_t *w, int id, cs2d_player_t *user, int
         user->money += 150;
         if (user->money > 16000) user->money = 16000;
     }
-    h->follow = pid; /* + a random sfx/hostage/hos1..4.wav at the hostage (no audio in this client yet) */
+    h->follow = pid;
+    cs2d_sound_play_rand_at("sfx/hostage/hos", 5, ".wav", h->x, h->y); /* Thostage: Rand(0, 4) of array 0x140a0d5c0 */
     return first;
 }
 
