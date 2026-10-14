@@ -34,6 +34,8 @@ static int sdl_key_to_cs2d_key(SDL_Keycode key)
         return '1' + (int)(key - SDLK_KP_1);
     }
     if (key == SDLK_KP_0) return '0';
+    /* Function keys (bound in sys/controls.cfg: F1 serverinfo, F2..F4 serveraction1..3, F6 console) */
+    if (key >= SDLK_F1 && key <= SDLK_F12) return CS2D_KEY_F1 + (int)(key - SDLK_F1);
 
     switch (key) {
         case SDLK_COMMA:     return ',';
@@ -112,6 +114,7 @@ static void save_gl_screenshot_bmp(const char *filepath, int w, int h)
  * One --capture step: a console command, or a UI test action
  *   !console                      open the console (stays open for the capture)
  *   !text <text>                  type text into the focused textbox
+ *   !esc                                 Escape as the game sees it (ingame menu)
  *   !key <SDL key name> [shift] [ctrl]   press a key with modifiers (e.g. "!key Left shift ctrl")
  *   !wheel <n>                    mouse wheel (positive = up)
  *   !mouse <x> <y> [down|up|rdown|rup]  move the pointer, optionally pressing / releasing the left (or right) button
@@ -146,6 +149,9 @@ static void run_capture_step(const char *cmd)
         }
     } else if (strncmp(cmd, "!wait ", 6) == 0) {
         /* Handled by the capture scheduler */
+    } else if (strcmp(cmd, "!esc") == 0) {
+        /* Escape outside the UI windows (scene escape: the ingame menu) */
+        cs2d_client_handle_escape(&g_client);
     } else if (strncmp(cmd, "!wheel ", 7) == 0) {
         cs2d_client_handle_mouse_wheel(&g_client, atoi(cmd + 7));
     } else if (strncmp(cmd, "!key ", 5) == 0) {
@@ -307,8 +313,7 @@ static int run_client_app(const char *cmdline)
                     break;
 
                 case SDL_EVENT_KEY_DOWN:
-                    if ((event.key.key == SDLK_GRAVE || event.key.key == SDLK_F1 ||
-                         event.key.key == SDLK_F2    || event.key.key == SDLK_F3) && !event.key.repeat) {
+                    if (event.key.key == SDLK_GRAVE && !event.key.repeat) {
                         cs2d_client_handle_console_key(&g_client, (int)event.key.key);
                         break;
                     }

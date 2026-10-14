@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "cs2d_render.h"
 
 /*
@@ -106,5 +107,108 @@ cs2d_buy_act_t cs2d_buymenu_key(cs2d_buymenu_t *m, const cs2d_buyctx_t *ctx, int
 
 void cs2d_buymenu_render(cs2d_buymenu_t *m, const cs2d_buyctx_t *ctx, float mx, float my,
                          int screen_w, int screen_h);
+
+/* ---------------------------------------------------------------------------
+ * Lua server menu: menu 120 (0x78) (FUN_14015c320, opcode 235 CS2D_NET_LUAMENU)
+ * Format: "Title[@b|@i],Btn1|Right1,(Btn2|Right2),..."
+ * --------------------------------------------------------------------------- */
+#define CS2D_LUAMENU_MAX_ITEMS 9
+
+typedef struct {
+    char label[64];
+    char right[64];
+    bool enabled;
+} cs2d_luamenu_item_t;
+
+typedef struct {
+    bool                open;
+    int                 mode;       /* 0 = default left (x=20, w=272, h=330), 1 = big center (w=600, h=330), 2 = hide (x=10000) */
+    char                title[64];  /* Window title */
+    cs2d_luamenu_item_t items[CS2D_LUAMENU_MAX_ITEMS]; /* 1..9 (index 0..8) */
+} cs2d_luamenu_t;
+
+/* Parses raw Lua menu string (from opcode 235) into cs2d_luamenu_t */
+void cs2d_luamenu_parse(cs2d_luamenu_t *menu, const char *raw);
+
+/* Renders the Lua menu (if open) */
+void cs2d_luamenu_render(const cs2d_luamenu_t *menu, float mx, float my, int screen_w, int screen_h);
+
+/* Handles mouse click; returns 0..9 selection (0 = Cancel / Close, 1..9 = button, -1 = no hit) */
+int cs2d_luamenu_click(cs2d_luamenu_t *menu, float mx, float my, int screen_w, int screen_h);
+
+/* Handles digit key 0..9; returns 0..9 selection, or -1 if not handled / disabled */
+int cs2d_luamenu_key(cs2d_luamenu_t *menu, int digit);
+
+/* ---------------------------------------------------------------------------
+ * Ingame menu (Tgui_hudmen.draw menu 2, opened by Esc) and vote screen (menu 100)
+ * --------------------------------------------------------------------------- */
+typedef enum {
+    CS2D_GM_NONE = 0,
+    CS2D_GM_BRIEFING,     /* 1 Show Briefing */
+    CS2D_GM_TEAM,         /* 2 Change Team (menu 10) */
+    CS2D_GM_LEADERBOARD,  /* 3 Leaderboard ([230,0]) */
+    CS2D_GM_VOTE,         /* 4 Vote (menu 100) */
+    CS2D_GM_OPTIONS,      /* 5 Options */
+    CS2D_GM_DISCONNECT,   /* 9 Disconnect / Quit */
+    CS2D_GM_CLOSE,        /* 0 Close */
+    CS2D_GM_SERVERINFO,   /* Server Info (the F1 window) */
+    CS2D_GM_FAVORITE      /* Favorite row: toggles the server in sys/favorites.lst */
+} cs2d_gm_act_t;
+
+/* What the right-hand info box shows ([252,6] settings, Tgui_hudmen.draw 0x14021f6d0 menu 2) */
+typedef struct {
+    const char *server_name;
+    const char *address;     /* "ip:port" */
+    const char *map;
+    int         os;          /* 1 Windows, 2 MacOS, 3 Linux */
+    int         ticks;
+    int         players, bots, max_players;
+    int         gamemode;
+    bool        ff, forcelight, recoil, offscreen, physics, lua;
+    int         voicechat, fow;
+    int         lagcomp, lag_ticks;
+    bool        leaderboard; /* Button 3 enabled */
+    bool        favorite;
+} cs2d_gamemenu_info_t;
+
+void          cs2d_gamemenu_render(const cs2d_gamemenu_info_t *info, float mx, float my, float wx, float wy);
+cs2d_gm_act_t cs2d_gamemenu_click(const cs2d_gamemenu_info_t *info, float mx, float my, float wx, float wy);
+cs2d_gm_act_t cs2d_gamemenu_key(const cs2d_gamemenu_info_t *info, int digit);
+
+/* Player value of the info box: "N/max" plus " (B Bot)" / " (B Bots)" */
+void cs2d_gamemenu_players_text(int players, int bots, int max_players, char *out, size_t n);
+/* "200ms (62 ticks)": lagcomp * 100 ms and 1000 / ticks */
+void cs2d_gamemenu_lag_text(int lagcomp, int lag_ticks, char *out, size_t n);
+
+#define CS2D_VOTE_LIST_MAX 64
+
+typedef struct {
+    char label[64];
+    int  value;       /* Player id or map cycle index */
+    int  votes;
+    bool current;     /* The current map: (150,255,0) */
+    bool mark;        /* Yellow '<': the local player / the current map */
+} cs2d_vote_entry_t;
+
+typedef struct {
+    cs2d_vote_entry_t e[CS2D_VOTE_LIST_MAX];
+    int               n;
+} cs2d_vote_list_t;
+
+/* Tgui_hudmen.votesetup (0x140087a50): sorted by the key "99 - votes" + label, i.e. most votes first */
+void cs2d_vote_list_sort(cs2d_vote_list_t *l);
+/* getVoteBrightness (0x140064830): 0 -> 125, 1 -> 200, 2 -> 220, 3 -> 240, more -> 255 */
+int  cs2d_vote_brightness(int votes);
+
+/* Vote screen; click returns 1 = kick row (*value = player), 2 = map row (*value = index), 0 = Close, -1 none */
+void cs2d_votemenu_render(const cs2d_vote_list_t *kick, const cs2d_vote_list_t *maps, float mx, float my,
+                          float wx, float wy);
+int  cs2d_votemenu_click(const cs2d_vote_list_t *kick, const cs2d_vote_list_t *maps, float mx, float my,
+                         float wx, float wy, int *value);
+
+/* Leaderboard formats: FUN_140199930 ("42 s", "3 m 5 s", "8 h 4 m", "29 d 15 h") and FUN_1402e2ef0 (UTC
+ * "YYYY/MM/DD HH:MM") */
+void cs2d_format_playtime(int seconds, char *out, size_t n);
+void cs2d_format_timestamp(int32_t unix_time, char *out, size_t n);
 
 #endif /* CS2D_HUDMEN_H */

@@ -31,6 +31,8 @@ void cs2d_binds_set(cs2d_binds_t *b, const char *key, const char *cmd);
 /* Command bound to key, or NULL */
 const char *cs2d_binds_find(const cs2d_binds_t *b, const char *key);
 /* controls.cfg name of one of our key codes (cs2d_client_handle_key), or NULL */
+/* Key codes F1..F12 (CS2D_KEY_F1 + n): outside the ASCII / VK range, where VK_F1.. would collide with 'p'..'{' */
+#define CS2D_KEY_F1 0x1000
 const char *cs2d_bind_key_name(int key);
 
 #endif /* CS2D_BIND_H */

@@ -1,6 +1,7 @@
 #include "cs2d_hudtxt.h"
 #include "cs2d_render.h"
 #include <string.h>
+#include <math.h>
 
 /*
  * Lua HUD texts. Sources (CS2D.exe): receive [234] FUN_1400a3530, tweens Ttween.receive 0x1400b4420 /
@@ -8,7 +9,9 @@
  * FUN_14027fb80, draw FUN_14024f5a0 (called from the game HUD 0x1402a0000 after the radar / HUD, before the chat)
  * and the inline tag drawer FUN_14024cc00.
  *
- * Not reconstructed: mp_hudscale (0x140a14de8[1] in 1..2 with screen_h > 589 scales size and position by g_zoom).
+ * mp_hudscale transform (FUN_140291080 / FUN_14024f5a0 / 1402b0000.c:6760-6785):
+ * modes 0 (1:1 pixels), 1 (850x480 zoom/aspect), 2 (640x480 stretch), 3 (640x480 centered);
+ * font sharpness at screen_h > 589 under modes 1 and 2.
  */
 
 #define TAG_COLOR 0x00A9 /* "©RRRGGGBBB" */
@@ -261,16 +264,95 @@ static int utf16_to_utf8(const uint16_t *s, int n, char *out, int cap)
     return o;
 }
 
-/* DrawText with the black drop shadow at (+1, +1); returns the advance */
-static float draw_piece(cs2d_font_id_t font, const uint16_t *s, int n, float x, float y, int r, int g, int b,
-                        float a, bool draw)
+void cs2d_hudscale_compute(int hudscale, int screen_w, int screen_h, int in_x, int in_y, int in_size,
+                           cs2d_hudscale_calc_t *out)
+{
+    if (!out) return;
+    if (screen_w < 1) screen_w = 850;
+    if (screen_h < 1) screen_h = 480;
+
+    /* g_zoom and letterbox offsets (CS2D.exe 1402b0000.c:6760-6785) */
+    float f_h = (float)screen_h * 0.0020833334f; /* screen_h / 480.0f */
+    float f_w = (float)screen_w / 850.0f;
+    float g_zoom = (f_w <= f_h) ? f_w : f_h;
+    float off_x = 0.0f;
+    float off_y = 0.0f;
+    if (f_h <= f_w) {
+        if ((float)screen_w / (float)screen_h > 1.78f) {
+            off_x = fabsf(850.0f * g_zoom - (float)screen_w) * 0.5f;
+        }
+    } else {
+        off_y = fabsf(g_zoom * 480.0f - (float)screen_h) * 0.5f;
+    }
+
+    /* Font sharpness & raster font size selection (CS2D.exe FUN_14024f5a0 / 140240000.c:8645-8656) */
+    float f_scale = 1.0f;
+    int font_size = in_size;
+    if ((hudscale == 1 || hudscale == 2) && (screen_h > 589)) {
+        float scaled_sz = (float)font_size * g_zoom;
+        if (scaled_sz >= 100.0f) {
+            f_scale = (float)font_size * 0.01f;
+            font_size = 100;
+        } else {
+            font_size = (int)scaled_sz;
+            f_scale = 1.0f / g_zoom;
+        }
+    }
+    if (font_size < 10) font_size = 10;
+    if (font_size > 100) font_size = 100;
+
+    out->font_size = font_size;
+    out->f_scale = f_scale;
+
+    switch (hudscale) {
+    case 1:
+        /* Mode 1: 850x480 virtual resolution scaled by g_zoom */
+        out->x = (float)in_x * g_zoom + off_x;
+        out->y = (float)in_y * g_zoom + off_y;
+        out->scale_x = f_scale * g_zoom;
+        out->scale_y = f_scale * g_zoom;
+        break;
+
+    case 2:
+        /* Mode 2: 640x480 virtual resolution stretched across viewport (FUN_140291080) */
+        out->x = (float)in_x * ((float)screen_w / 640.0f);
+        out->y = (float)in_y * ((float)screen_h / 480.0f);
+        out->scale_x = f_scale * ((float)screen_w / 640.0f);
+        out->scale_y = f_scale * ((float)screen_h / 480.0f);
+        break;
+
+    case 3: {
+        /* Mode 3: 640x480 virtual resolution centered unscaled (FUN_140291080:695) */
+        float center_x = (float)((int)(((float)screen_w - 640.0f) * 0.5f));
+        float center_y = (float)((int)(((float)screen_h - 480.0f) * 0.5f));
+        out->x = (float)in_x + center_x;
+        out->y = (float)in_y + center_y;
+        out->scale_x = 1.0f;
+        out->scale_y = 1.0f;
+        break;
+    }
+
+    case 0:
+    default:
+        /* Mode 0: 1:1 screen pixels */
+        out->x = (float)in_x;
+        out->y = (float)in_y;
+        out->scale_x = 1.0f;
+        out->scale_y = 1.0f;
+        break;
+    }
+}
+
+/* DrawText with the black drop shadow at (+scale_x, +scale_y); returns the advance in font units */
+static float draw_piece(cs2d_font_id_t font, const uint16_t *s, int n, float x, float y,
+                        float scale_x, float scale_y, int r, int g, int b, float a, bool draw)
 {
     if (n <= 0) return 0.0f;
     char u8[CS2D_HUDTXT_TEXT_LEN * 3 + 1];
     utf16_to_utf8(s, n, u8, (int)sizeof(u8));
     if (draw) {
-        cs2d_render_text_ex(font, x + 1.0f, y + 1.0f, u8, 0.0f, 0.0f, 0.0f, a);
-        cs2d_render_text_ex(font, x, y, u8, (float)r / 255.0f, (float)g / 255.0f, (float)b / 255.0f, a);
+        cs2d_render_text_transform_ex(font, x + scale_x, y + scale_y, u8, scale_x, scale_y, 0.0f, 0.0f, 0.0f, a);
+        cs2d_render_text_transform_ex(font, x, y, u8, scale_x, scale_y, (float)r / 255.0f, (float)g / 255.0f, (float)b / 255.0f, a);
     }
     return cs2d_render_text_width_ex(font, u8);
 }
@@ -281,7 +363,7 @@ static float draw_piece(cs2d_font_id_t font, const uint16_t *s, int n, float x, 
  * (FUN_14024c8b0 for the alignment).
  */
 static float draw_tagged(cs2d_font_id_t font, const cs2d_hudtxt_line_t *l, float x, float y, float line_h,
-                         bool draw)
+                         float scale_x, float scale_y, bool draw)
 {
     uint16_t s[CS2D_HUDTXT_TEXT_LEN + 1];
     int n = 0;
@@ -302,7 +384,7 @@ static float draw_tagged(cs2d_font_id_t font, const cs2d_hudtxt_line_t *l, float
         for (int guard = 0; guard < 40; guard++) {
             int k = find16(p, pl, TAG_IMAGE, 0);
             if (k < 0) break;
-            x += draw_piece(font, p, k, x, y, r, g, b, l->alpha, draw);
+            x += draw_piece(font, p, k, x, y, scale_x, scale_y, r, g, b, l->alpha, draw) * scale_x;
             p += k + 1;
             pl -= k + 1;
             int dot = find16(p, pl, '.', 0);
@@ -318,36 +400,44 @@ static float draw_tagged(cs2d_font_id_t font, const cs2d_hudtxt_line_t *l, float
             utf16_to_utf8(p, dot + 4, path, (int)sizeof(path));
             const cs2d_texture_t *tex = cs2d_gfx_get_sprite(cs2d_render_get_gfx_bank(), path, false);
             if (tex && tex->id && tex->height > 0) {
-                float w = line_h * (float)tex->width / (float)tex->height;
-                if (draw) cs2d_render_sprite(tex, x + w * 0.5f, y + line_h * 0.5f, w, line_h, 0.0f, 1.0f, 1.0f, 1.0f, l->alpha);
+                float w = (line_h * (float)tex->width / (float)tex->height) * scale_x;
+                float h = line_h * scale_y;
+                if (draw) cs2d_render_sprite(tex, x + w * 0.5f, y + h * 0.5f, w, h, 0.0f, 1.0f, 1.0f, 1.0f, l->alpha);
                 x += w;
                 p += dot + 4;
                 pl -= dot + 4;
             }
         }
-        x += draw_piece(font, p, pl, x, y, r, g, b, l->alpha, draw);
+        x += draw_piece(font, p, pl, x, y, scale_x, scale_y, r, g, b, l->alpha, draw) * scale_x;
     }
     return x - x0;
 }
 
-void cs2d_hudtxt_render(const cs2d_hudtxt_t *h)
+void cs2d_hudtxt_render(const cs2d_hudtxt_t *h, int screen_w, int screen_h, int hudscale)
 {
     if (h->count == 0) return;
     for (int i = 0; i <= h->last; i++) {
         const cs2d_hudtxt_line_t *l = &h->line[i];
         if (l->len <= 0) continue;
-        cs2d_font_id_t font = CS2D_FONT_SIZED(l->size);
+
+        cs2d_hudscale_calc_t tr;
+        cs2d_hudscale_compute(hudscale, screen_w, screen_h, l->x, l->y, l->size, &tr);
+
+        cs2d_font_id_t font = CS2D_FONT_SIZED(tr.font_size);
         float line_h = cs2d_render_font_line_height(font);
-        float x = (float)l->x, y = (float)l->y;
+        float x = tr.x, y = tr.y;
+
         if (l->tags) {
             /* FUN_14024cc00: float alignment, valign by (int)(TextHeight / 2) */
-            if (l->align == 1) x -= 0.5f * draw_tagged(font, l, 0.0f, 0.0f, line_h, false);
-            else if (l->align == 2) x -= draw_tagged(font, l, 0.0f, 0.0f, line_h, false);
-            if (l->valign == 1) y -= (float)((int)line_h / 2);
-            else if (l->valign == 2) y -= line_h;
-            draw_tagged(font, l, x, y, line_h, true);
+            float total_w = draw_tagged(font, l, 0.0f, 0.0f, line_h, tr.scale_x, tr.scale_y, false);
+            if (l->align == 1) x -= 0.5f * total_w;
+            else if (l->align == 2) x -= total_w;
+            if (l->valign == 1) y -= (float)((int)line_h / 2) * tr.scale_y;
+            else if (l->valign == 2) y -= line_h * tr.scale_y;
+            draw_tagged(font, l, x, y, line_h, tr.scale_x, tr.scale_y, true);
             continue;
         }
+
         const uint16_t *s = l->text;
         int n = l->len;
         int r = 255, g = 220, b = 0;
@@ -360,12 +450,13 @@ void cs2d_hudtxt_render(const cs2d_hudtxt_t *h)
             s += n >= 10 ? 10 : n;
             n -= n >= 10 ? 10 : n;
         }
-        int ix = l->x, iy = l->y;
-        float w = draw_piece(font, s, n, 0.0f, 0.0f, 0, 0, 0, 0.0f, false);
-        if (l->align == 1) ix -= (int)w / 2;
-        else if (l->align == 2) ix -= (int)w;
-        if (l->valign == 1) iy -= (int)line_h / 2;
-        else if (l->valign == 2) iy -= (int)line_h;
-        draw_piece(font, s, n, (float)ix, (float)iy, r, g, b, l->alpha, true);
+
+        float w = draw_piece(font, s, n, 0.0f, 0.0f, tr.scale_x, tr.scale_y, 0, 0, 0, 0.0f, false) * tr.scale_x;
+        if (l->align == 1) x -= (float)((int)w / 2);
+        else if (l->align == 2) x -= (float)((int)w);
+        if (l->valign == 1) y -= (float)((int)(line_h * tr.scale_y) / 2);
+        else if (l->valign == 2) y -= (float)((int)(line_h * tr.scale_y));
+
+        draw_piece(font, s, n, x, y, tr.scale_x, tr.scale_y, r, g, b, l->alpha, true);
     }
 }

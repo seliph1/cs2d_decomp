@@ -37,6 +37,8 @@ When you confirm or refute something, update the topic file (or add one and list
 | [buy-menu.md](knowledge/buy-menu.md) | Buy menu | 4 KB |
 | [chat.md](knowledge/chat.md) | In-game chat and server messages | 2 KB |
 | [hud-text.md](knowledge/hud-text.md) | Lua HUD texts (hudtxt [234], Ttween [54]) | 3 KB |
+| [lua-menu.md](knowledge/lua-menu.md) | Lua Server Menu (menu() / opcode 235) | 2 KB |
+| [game-menu.md](knowledge/game-menu.md) | Ingame menu (Esc), vote [43], leaderboard [230], map briefing, [252,6] tail | 4 KB |
 | [scoreboard.md](knowledge/scoreboard.md) | Scoreboard | 2 KB |
 | [env-object-tileblend.md](knowledge/env-object-tileblend.md) | Env_Object and tile blending | 2 KB |
 | [rendering-notes.md](knowledge/rendering-notes.md) | Rendering notes | 3 KB |

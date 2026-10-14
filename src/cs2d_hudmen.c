@@ -556,3 +556,542 @@ void cs2d_buymenu_render(cs2d_buymenu_t *m, const cs2d_buyctx_t *ctx, float mx, 
     cs2d_render_text_measure(CS2D_FONT_REGULAR, money, &tw, &th);
     cs2d_render_text_ex(CS2D_FONT_REGULAR, wx + 579.0f - (float)(int)tw, wy + 33.0f, money, c, c, c, 1.0f);
 }
+
+/* ---------------------------------------------------------------------------
+ * Lua server menu: menu 120 (0x78) (FUN_14015c320, Tgui_hudmen.update / draw)
+ * --------------------------------------------------------------------------- */
+
+/* Helper to unescape "\," -> "," and "\\)" -> "\)" if any, and "\(" -> "(" */
+static void unescape_inplace(char *s)
+{
+    char *r = s, *w = s;
+    while (*r) {
+        if (*r == '\\' && (r[1] == '(' || r[1] == ')' || r[1] == '|' || r[1] == ',')) {
+            r++;
+        }
+        *w++ = *r++;
+    }
+    *w = '\0';
+}
+
+void cs2d_luamenu_parse(cs2d_luamenu_t *menu, const char *raw)
+{
+    if (!menu) return;
+    memset(menu, 0, sizeof(*menu));
+    if (!raw || !raw[0]) {
+        menu->open = false;
+        return;
+    }
+
+    /* Split raw string by unescaped ',' */
+    char buf[1024];
+    strncpy(buf, raw, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    char *tokens[16];
+    int ntokens = 0;
+    char *p = buf;
+    tokens[ntokens++] = p;
+
+    while (*p && ntokens < 16) {
+        if (*p == '\\' && p[1] != '\0') {
+            p += 2; /* Skip escaped char */
+            continue;
+        }
+        if (*p == ',') {
+            *p = '\0';
+            tokens[ntokens++] = p + 1;
+        }
+        p++;
+    }
+
+    if (ntokens < 1) {
+        menu->open = false;
+        return;
+    }
+
+    /* Token 0: Title */
+    char title_buf[64];
+    strncpy(title_buf, tokens[0], sizeof(title_buf) - 1);
+    title_buf[sizeof(title_buf) - 1] = '\0';
+    unescape_inplace(title_buf);
+
+    size_t tlen = strlen(title_buf);
+    int mode = 0;
+    if (tlen >= 2 && title_buf[tlen - 2] == '@') {
+        char tag = title_buf[tlen - 1];
+        if (tag == 'b' || tag == 'B') {
+            mode = 1;
+            title_buf[tlen - 2] = '\0';
+        } else if (tag == 'i' || tag == 'I') {
+            mode = 2;
+            title_buf[tlen - 2] = '\0';
+        }
+    }
+    menu->mode = mode;
+    strncpy(menu->title, title_buf, sizeof(menu->title) - 1);
+
+    /* Items 1..9 (tokens 1..ntokens-1) */
+    for (int i = 1; i < ntokens && i <= CS2D_LUAMENU_MAX_ITEMS; i++) {
+        cs2d_luamenu_item_t *item = &menu->items[i - 1];
+        char *tok = tokens[i];
+        if (!tok || !tok[0]) continue;
+
+        /* Check for '|' separator */
+        char *bar = NULL;
+        for (char *c = tok; *c; c++) {
+            if (*c == '\\' && c[1] != '\0') {
+                c++;
+                continue;
+            }
+            if (*c == '|') {
+                bar = c;
+                break;
+            }
+        }
+
+        char left_str[64] = "";
+        char right_str[64] = "";
+        if (bar) {
+            *bar = '\0';
+            strncpy(left_str, tok, sizeof(left_str) - 1);
+            strncpy(right_str, bar + 1, sizeof(right_str) - 1);
+        } else {
+            strncpy(left_str, tok, sizeof(left_str) - 1);
+        }
+
+        /* Check disabled: starts with '(' */
+        bool enabled = true;
+        char *l = left_str;
+        while (*l == ' ') l++; /* skip spaces if any */
+
+        if (l[0] == '(') {
+            enabled = false;
+            l++;
+            /* If ends with ')', strip it */
+            size_t rlen = strlen(right_str);
+            if (rlen > 0 && right_str[rlen - 1] == ')') {
+                right_str[rlen - 1] = '\0';
+            } else {
+                size_t llen = strlen(l);
+                if (llen > 0 && l[llen - 1] == ')') {
+                    l[llen - 1] = '\0';
+                }
+            }
+        }
+
+        unescape_inplace(l);
+        unescape_inplace(right_str);
+
+        strncpy(item->label, l, sizeof(item->label) - 1);
+        strncpy(item->right, right_str, sizeof(item->right) - 1);
+        item->enabled = enabled;
+    }
+
+    menu->open = true;
+}
+
+static void get_luamenu_geometry(const cs2d_luamenu_t *menu, int screen_w, int screen_h,
+                                 float *wx, float *wy, float *ww, float *wh, float *btn_w)
+{
+    /* Tgui_hudmen.update (0x14002ec04): every menu starts 600 x 440 (0x1b8), centred vertically; menu 120 only
+     * changes x and width */
+    *wh = 440.0f;
+    *wy = (float)((screen_h - 440) / 2);
+    if (menu->mode == 1) {
+        /* Big centered */
+        *ww = 600.0f;
+        *wx = (float)((screen_w - 600) / 2);
+        *btn_w = 568.0f; /* 0x238 */
+    } else if (menu->mode == 2) {
+        /* Hidden off-screen */
+        *ww = 272.0f;
+        *wx = 10000.0f;
+        *btn_w = 240.0f; /* 0xf0 */
+    } else {
+        /* Default left */
+        *ww = 272.0f; /* 0x110 */
+        *wx = 20.0f;
+        *btn_w = 240.0f; /* 0xf0 */
+    }
+}
+
+void cs2d_luamenu_render(const cs2d_luamenu_t *menu, float mx, float my, int screen_w, int screen_h)
+{
+    if (!menu || !menu->open || menu->mode == 2) return;
+
+    float wx, wy, ww, wh, btn_w;
+    get_luamenu_geometry(menu, screen_w, screen_h, &wx, &wy, &ww, &wh, &btn_w);
+
+    /* Window frame with custom dimensions */
+    cs2d_render_rect(wx, wy, ww, wh, 58.0f / 255.0f, 58.0f / 255.0f, 58.0f / 255.0f, 228.0f / 255.0f, true);
+    cs2d_render_rect(wx, wy, ww, wh, 96.0f / 255.0f, 96.0f / 255.0f, 96.0f / 255.0f, 245.0f / 255.0f, false);
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, wx + 11.0f, wy + 4.0f, menu->title, 1.0f, 1.0f, 1.0f, 1.0f);
+
+    /* Close 'X' button in top-right header */
+    float close_x = wx + ww - 19.0f;
+    float close_y = wy + 4.0f;
+    bool close_hov = inside(mx, my, close_x, close_y, 14.0f, 14.0f);
+    if (close_hov) {
+        cs2d_render_rect(close_x, close_y, 14.0f, 14.0f, 110.0f / 255.0f, 45.0f / 255.0f, 45.0f / 255.0f, 220.0f / 255.0f, true);
+    }
+    float cross_c = close_hov ? 1.0f : (185.0f / 255.0f);
+    float ins = 3.0f;
+    cs2d_render_line(close_x + ins, close_y + ins, close_x + 14.0f - ins - 1.0f, close_y + 14.0f - ins - 1.0f,
+                     cross_c, cross_c, cross_c, 1.0f);
+    cs2d_render_line(close_x + 14.0f - ins - 1.0f, close_y + ins, close_x + ins, close_y + 14.0f - ins - 1.0f,
+                     cross_c, cross_c, cross_c, 1.0f);
+
+    /* Buttons 1..9 (y = wy + 30, step 30) */
+    for (int i = 0; i < CS2D_LUAMENU_MAX_ITEMS; i++) {
+        const cs2d_luamenu_item_t *item = &menu->items[i];
+        if (!item->label[0]) continue;
+        float by = wy + 30.0f + (float)i * 30.0f;
+        cs2d_hudmen_button(mx, my, wx + 16.0f, by, btn_w, i + 1, item->label, item->right, item->enabled, NULL);
+    }
+
+    /* Button 0 (Cancel) at bottom (y = wy + wh - 46 = wy + 394) */
+    float cancel_y = wy + wh - 46.0f;
+    cs2d_hudmen_button(mx, my, wx + 16.0f, cancel_y, 240.0f, 0, "Cancel", "", true, NULL);
+}
+
+int cs2d_luamenu_click(cs2d_luamenu_t *menu, float mx, float my, int screen_w, int screen_h)
+{
+    if (!menu || !menu->open || menu->mode == 2) return -1;
+
+    float wx, wy, ww, wh, btn_w;
+    get_luamenu_geometry(menu, screen_w, screen_h, &wx, &wy, &ww, &wh, &btn_w);
+
+    /* Check close 'X' button */
+    float close_x = wx + ww - 19.0f;
+    float close_y = wy + 4.0f;
+    if (inside(mx, my, close_x, close_y, 14.0f, 14.0f)) {
+        menu->open = false;
+        return 0;
+    }
+
+    /* Check buttons 1..9 */
+    for (int i = 0; i < CS2D_LUAMENU_MAX_ITEMS; i++) {
+        const cs2d_luamenu_item_t *item = &menu->items[i];
+        if (!item->label[0] || !item->enabled) continue;
+        float by = wy + 30.0f + (float)i * 30.0f;
+        if (inside(mx, my, wx + 16.0f, by, btn_w, 25.0f)) {
+            menu->open = false;
+            return i + 1;
+        }
+    }
+
+    /* Check Cancel button (key 0) */
+    float cancel_y = wy + wh - 46.0f;
+    if (inside(mx, my, wx + 16.0f, cancel_y, 240.0f, 25.0f)) {
+        menu->open = false;
+        return 0;
+    }
+
+    return -1;
+}
+
+int cs2d_luamenu_key(cs2d_luamenu_t *menu, int digit)
+{
+    if (!menu || !menu->open) return -1;
+
+    if (digit == 0) {
+        menu->open = false;
+        return 0;
+    }
+    if (digit >= 1 && digit <= CS2D_LUAMENU_MAX_ITEMS) {
+        const cs2d_luamenu_item_t *item = &menu->items[digit - 1];
+        if (item->label[0] && item->enabled) {
+            menu->open = false;
+            return digit;
+        }
+    }
+    return -1;
+}
+
+
+/* ---------------------------------------------------------------------------
+ * Ingame menu (menu 2) and vote screen (menu 100), Tgui_hudmen.draw 0x14021f6d0
+ * --------------------------------------------------------------------------- */
+
+static cs2d_texture_t s_tex_icons; /* gfx/gui_icons.bmp: 24 icons of 16x16, maskMode 3 (0x140a0de88) */
+
+typedef struct {
+    int           x, y, w, key; /* y < 0: from the window bottom (440 + y) */
+    const char   *label;
+    cs2d_gm_act_t act;
+} gm_btn_t;
+
+/* Online client layout (DAT_140ddf400 == 0). Buttons 7 / 8 (lang 0279 / 0163) need DAT_140ddf0d4 == 1 and are
+ * not shown; F12 "Back to Editor" only after a test run from the editor */
+static const gm_btn_t s_gm_btns[] = {
+    { 16,   63, 240, 1,  "Show Briefing",     CS2D_GM_BRIEFING },     /* lang 0232 */
+    { 16,   93, 240, 2,  "Change Team",       CS2D_GM_TEAM },         /* 0234 */
+    { 16,  123, 240, 3,  "Leaderboard",       CS2D_GM_LEADERBOARD },
+    { 16,  153, 240, 4,  "Vote",              CS2D_GM_VOTE },         /* 0235 */
+    { 16,  183, 240, 5,  "Options",           CS2D_GM_OPTIONS },      /* 0014 */
+    { 16, -106, 240, 9,  "Disconnect / Quit", CS2D_GM_DISCONNECT },   /* 0280, h - 0x6a */
+    { 16,  -46, 240, 0,  "Close",             CS2D_GM_CLOSE },        /* 0031, h - 0x2e */
+    { 275, -46, 305, -1, "Server Info",       CS2D_GM_SERVERINFO }    /* 0728, (0x113, h - 0x2e) w 0x131 */
+};
+#define GM_BTN_COUNT ((int)(sizeof(s_gm_btns) / sizeof(s_gm_btns[0])))
+
+static float gm_btn_y(const gm_btn_t *b)
+{
+    return (float)(b->y < 0 ? CS2D_HUDMEN_WIN_H + b->y : b->y);
+}
+
+static bool gm_btn_enabled(const cs2d_gamemenu_info_t *info, const gm_btn_t *b)
+{
+    return b->act != CS2D_GM_LEADERBOARD || info->leaderboard;
+}
+
+void cs2d_gamemenu_players_text(int players, int bots, int max_players, char *out, size_t n)
+{
+    if (bots > 0) {
+        snprintf(out, n, "%d/%d (%d %s)", players, max_players, bots, bots == 1 ? "Bot" : "Bots");
+    } else {
+        snprintf(out, n, "%d/%d", players, max_players);
+    }
+}
+
+void cs2d_gamemenu_lag_text(int lagcomp, int lag_ticks, char *out, size_t n)
+{
+    int ms = lagcomp * 100;
+    if (ms < 1) ms = 1;
+    int ticks = lag_ticks > 0 ? (int)(1000.0f / (float)lag_ticks) : 0;
+    snprintf(out, n, "%dms (%d ticks)", ms, ticks);
+}
+
+/* One info row: label "<text>:" at x 280 in 150, the value right-aligned on x 575 */
+static void gm_row(float wx, float wy, int y, const char *label, const char *value, int r, int g, int b)
+{
+    char l[64];
+    snprintf(l, sizeof(l), "%s:", label);
+    float c = 150.0f / 255.0f;
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, wx + 280.0f, wy + (float)y, l, c, c, c, 1.0f);
+    float tw = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, value);
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, wx + 575.0f - floorf(tw), wy + (float)y, value, r / 255.0f, g / 255.0f,
+                        b / 255.0f, 1.0f);
+}
+
+/* On (0,255,0) / Off (255,0,0) (lang 0209 / 0210) */
+static void gm_onoff(float wx, float wy, int y, const char *label, bool on)
+{
+    gm_row(wx, wy, y, label, on ? "On" : "Off", on ? 0 : 255, on ? 255 : 0, 0);
+}
+
+void cs2d_gamemenu_render(const cs2d_gamemenu_info_t *info, float mx, float my, float wx, float wy)
+{
+    cs2d_hudmen_window(wx, wy, "Menu"); /* lang 0231 */
+    for (int i = 0; i < GM_BTN_COUNT; i++) {
+        const gm_btn_t *b = &s_gm_btns[i];
+        cs2d_hudmen_button(mx, my, wx + (float)b->x, wy + gm_btn_y(b), (float)b->w, b->key, b->label, NULL,
+                           gm_btn_enabled(info, b), NULL);
+    }
+
+    cs2d_hudmen_box(wx + 275.0f, wy + 63.0f, 305.0f, 326.0f);
+    /* Server row in the normal font at full brightness, the others in g_font_medium at 150 */
+    cs2d_render_text_ex(CS2D_FONT_MENU, wx + 280.0f, wy + 63.0f, "Server:", 1.0f, 1.0f, 1.0f, 1.0f); /* 0281 */
+    float tw = cs2d_render_text_width_ex(CS2D_FONT_MENU, info->server_name);
+    cs2d_render_text_ex(CS2D_FONT_MENU, wx + 575.0f - floorf(tw), wy + 63.0f, info->server_name, 1.0f, 1.0f, 1.0f, 1.0f);
+
+    static const char *os_names[] = { "Unknown", "Windows", "MacOS", "Linux" };
+    char buf[64];
+    gm_row(wx, wy, 83, "Address", info->address, 150, 150, 150);                                   /* 0282 */
+    gm_row(wx, wy, 100, "Operating System", os_names[(info->os >= 1 && info->os <= 3) ? info->os : 0],
+           150, 150, 150);                                                                         /* 0945 */
+    snprintf(buf, sizeof(buf), "%d", info->ticks);
+    gm_row(wx, wy, 117, "Ticks", buf, 150, 150, 150);                                              /* 0946 */
+    gm_row(wx, wy, 142, "Map", info->map, 150, 255, 0);                                            /* 0200 */
+    cs2d_gamemenu_players_text(info->players, info->bots, info->max_players, buf, sizeof(buf));
+    bool full = info->players >= info->max_players;
+    gm_row(wx, wy, 159, "Players", buf, full ? 255 : 150, 150, full ? 150 : 255);                 /* 0201 */
+    /* Game mode names: the original's array (0x140a1ccf8) is filled at runtime; "DM" seen on a screenshot */
+    static const char *modes[] = { "Normal", "DM", "TDM", "Construction", "Zombies" };
+    gm_row(wx, wy, 176, "Game Mode", modes[(info->gamemode >= 0 && info->gamemode <= 4) ? info->gamemode : 0],
+           255, 150, 150);                                                                         /* 0145 */
+    gm_onoff(wx, wy, 201, "Friendly Fire", info->ff);                                              /* 0140 */
+    gm_onoff(wx, wy, 218, "Force Lighting", info->forcelight);                                     /* 0890 */
+    /* sv_voicechat 1..3: names from 0x140a14ed0 (runtime array; only "For All" seen on a screenshot) */
+    static const char *voice[] = { "Off", "For All", "Team", "Team" };
+    if (info->voicechat >= 1 && info->voicechat <= 3) gm_row(wx, wy, 235, "Voice Chat", voice[info->voicechat], 0, 255, 0);
+    else gm_row(wx, wy, 235, "Voice Chat", "Off", 255, 0, 0);                                      /* 0930 */
+    /* sv_fow: lang 0883 "Off|Hide characters only|Hide characters and effects|Hide everything" */
+    static const char *fow[] = { "Off", "Hide characters only", "Hide characters and effects", "Hide everything" };
+    if (info->fow >= 1 && info->fow <= 3) gm_row(wx, wy, 252, "Fog of War", fow[info->fow], 0, 255, 0);
+    else gm_row(wx, wy, 252, "Fog of War", "Off", 255, 0, 0);                                      /* 0139 */
+    gm_onoff(wx, wy, 269, "Recoil influences accuracy", info->recoil);                             /* 0900 */
+    gm_onoff(wx, wy, 286, "Off-Screen Damage", info->offscreen);                                   /* 0959 */
+    gm_onoff(wx, wy, 303, "Physics (experimental)", info->physics);                                /* 0961 */
+    gm_onoff(wx, wy, 320, "Lua Scripts", info->lua);                                               /* 0947 */
+    cs2d_gamemenu_lag_text(info->lagcomp, info->lag_ticks, buf, sizeof(buf));
+    gm_row(wx, wy, 337, "Lag Compensation", buf, 0, 255, 0);                                       /* 0943 */
+
+    /* Favorite row at y 0x53 + 0x117 (online only): text 150 (200 hovered), star icon at x 0x22f */
+    float fy = wy + 362.0f;
+    bool hot = mx >= wx + 280.0f && mx <= wx + 575.0f && my >= fy && my < fy + 20.0f;
+    float c = (hot ? 200.0f : 150.0f) / 255.0f;
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, wx + 280.0f, fy, "Favorite:", c, c, c, 1.0f);           /* 0283 */
+    const char *ft = info->favorite ? "Favorite! (click to remove)" : "No favorite (click to add)"; /* 0285 / 0284 */
+    tw = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, ft);
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, wx + 557.0f - floorf(tw), fy, ft, c, c, c, 1.0f);
+    if (!s_tex_icons.id) cs2d_texture_load_grid(&s_tex_icons, "gfx/gui_icons.bmp", 3, 16, 16);
+    if (s_tex_icons.id) {
+        /* Favorite: SetColor(255, 255, 0); else the text color */
+        float sc = info->favorite ? 1.0f : c, sb = info->favorite ? 0.0f : c;
+        cs2d_render_sprite_frame(&s_tex_icons, 16, 16, 19, wx + 567.0f, fy + 8.0f, 16.0f, 16.0f, 0.0f,
+                                 sc, sc, sb, 1.0f, 0);
+    }
+}
+
+cs2d_gm_act_t cs2d_gamemenu_click(const cs2d_gamemenu_info_t *info, float mx, float my, float wx, float wy)
+{
+    for (int i = 0; i < GM_BTN_COUNT; i++) {
+        const gm_btn_t *b = &s_gm_btns[i];
+        if (gm_btn_enabled(info, b) && inside(mx, my, wx + (float)b->x, wy + gm_btn_y(b), (float)b->w, 25.0f)) {
+            return b->act;
+        }
+    }
+    if (mx >= wx + 280.0f && mx <= wx + 575.0f && my >= wy + 362.0f && my < wy + 382.0f) return CS2D_GM_FAVORITE;
+    return CS2D_GM_NONE;
+}
+
+cs2d_gm_act_t cs2d_gamemenu_key(const cs2d_gamemenu_info_t *info, int digit)
+{
+    for (int i = 0; i < GM_BTN_COUNT; i++) {
+        const gm_btn_t *b = &s_gm_btns[i];
+        if (b->key == digit && gm_btn_enabled(info, b)) return b->act;
+    }
+    return CS2D_GM_NONE;
+}
+
+int cs2d_vote_brightness(int votes)
+{
+    if (votes < 1) return 125;
+    if (votes == 1) return 200;
+    if (votes == 2) return 220;
+    if (votes == 3) return 240;
+    return 255;
+}
+
+void cs2d_vote_list_sort(cs2d_vote_list_t *l)
+{
+    /* Insertion sort on (votes desc, label asc): the BlitzMax list sorts "99 - votes" (2 digits) + label */
+    for (int i = 1; i < l->n; i++) {
+        cs2d_vote_entry_t t = l->e[i];
+        int j = i - 1;
+        while (j >= 0 && (l->e[j].votes < t.votes || (l->e[j].votes == t.votes && strcmp(l->e[j].label, t.label) > 0))) {
+            l->e[j + 1] = l->e[j];
+            j--;
+        }
+        l->e[j + 1] = t;
+    }
+}
+
+/* Tgui_slist (16,50) / (305,50), 279 x 330 (0x1401a6800); rows 16 px (calibrated on a screenshot) */
+#define VOTE_LIST_Y   50.0f
+#define VOTE_LIST_W  279.0f
+#define VOTE_LIST_H  330.0f
+#define VOTE_ROW_H    16.0f
+
+static int vote_rows(void)
+{
+    return (int)((VOTE_LIST_H - 4.0f) / VOTE_ROW_H);
+}
+
+/* Count at +5 in getVoteBrightness, name at +30 (players 150, maps by votes, the current map (150,255,0)),
+ * '<' 5 px from the right in yellow */
+static void vote_list_render(const cs2d_vote_list_t *l, bool players, float x, float y, float mx, float my)
+{
+    cs2d_hudmen_box(x, y, VOTE_LIST_W - 16.0f, VOTE_LIST_H);
+    cs2d_hudmen_box(x + VOTE_LIST_W - 16.0f, y, 16.0f, VOTE_LIST_H); /* scrollbar track */
+    for (int i = 0; i < l->n && i < vote_rows(); i++) {
+        const cs2d_vote_entry_t *e = &l->e[i];
+        float ry = y + 2.0f + VOTE_ROW_H * (float)i;
+        if (inside(mx, my, x, ry, VOTE_LIST_W - 16.0f, VOTE_ROW_H)) {
+            cs2d_render_rect(x + 1.0f, ry, VOTE_LIST_W - 18.0f, VOTE_ROW_H, 1.0f, 1.0f, 1.0f, 0.1f, true);
+        }
+        char cnt[12];
+        snprintf(cnt, sizeof(cnt), "%d", e->votes);
+        float b = (float)cs2d_vote_brightness(e->votes) / 255.0f;
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, x + 5.0f, ry, cnt, b, b, b, 1.0f);
+        if (players) {
+            float c = 150.0f / 255.0f;
+            cs2d_render_text_ex(CS2D_FONT_REGULAR, x + 30.0f, ry, e->label, c, c, c, 1.0f);
+        } else if (e->current) {
+            cs2d_render_text_ex(CS2D_FONT_REGULAR, x + 30.0f, ry, e->label, 150.0f / 255.0f, 1.0f, 0.0f, 1.0f);
+        } else {
+            cs2d_render_text_ex(CS2D_FONT_REGULAR, x + 30.0f, ry, e->label, b, b, b, 1.0f);
+        }
+        if (e->mark) {
+            float mw = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, "<");
+            cs2d_render_text_ex(CS2D_FONT_REGULAR, x + VOTE_LIST_W - 21.0f - mw, ry, "<", 1.0f, 1.0f, 0.0f, 1.0f);
+        }
+    }
+}
+
+void cs2d_votemenu_render(const cs2d_vote_list_t *kick, const cs2d_vote_list_t *maps, float mx, float my,
+                          float wx, float wy)
+{
+    cs2d_hudmen_window(wx, wy, "Vote"); /* lang 0235 */
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, wx + 16.0f, wy + 30.0f, "Vote to kick a Player", 1.0f, 1.0f, 1.0f, 1.0f); /* 0236 */
+    cs2d_render_text_ex(CS2D_FONT_REGULAR, wx + 26.0f + VOTE_LIST_W, wy + 30.0f, "Vote a Map", 1.0f, 1.0f, 1.0f, 1.0f); /* 0239 */
+    vote_list_render(kick, true, wx + 16.0f, wy + VOTE_LIST_Y, mx, my);
+    vote_list_render(maps, false, wx + 305.0f, wy + VOTE_LIST_Y, mx, my);
+    cs2d_hudmen_button(mx, my, wx + 16.0f, wy + CS2D_HUDMEN_WIN_H - 46.0f, 240.0f, 0, "Close", NULL, true, NULL);
+}
+
+static int vote_list_hit(const cs2d_vote_list_t *l, float x, float y, float mx, float my)
+{
+    for (int i = 0; i < l->n && i < vote_rows(); i++) {
+        if (inside(mx, my, x, y + 2.0f + VOTE_ROW_H * (float)i, VOTE_LIST_W - 16.0f, VOTE_ROW_H)) return i;
+    }
+    return -1;
+}
+
+int cs2d_votemenu_click(const cs2d_vote_list_t *kick, const cs2d_vote_list_t *maps, float mx, float my,
+                        float wx, float wy, int *value)
+{
+    int i = vote_list_hit(kick, wx + 16.0f, wy + VOTE_LIST_Y, mx, my);
+    if (i >= 0) {
+        *value = kick->e[i].value;
+        return 1;
+    }
+    i = vote_list_hit(maps, wx + 305.0f, wy + VOTE_LIST_Y, mx, my);
+    if (i >= 0) {
+        *value = maps->e[i].value;
+        return 2;
+    }
+    if (inside(mx, my, wx + 16.0f, wy + CS2D_HUDMEN_WIN_H - 46.0f, 240.0f, 25.0f)) return 0;
+    return -1;
+}
+
+void cs2d_format_playtime(int s, char *out, size_t n)
+{
+    if (s < 60) {
+        snprintf(out, n, "%d s", s);
+    } else if (s < 3600) {
+        snprintf(out, n, "%d m %d s", s / 60, s % 60);
+    } else if (s < 86400) {
+        snprintf(out, n, "%d h %d m", s / 3600, s / 60 - (s / 3600) * 60);
+    } else {
+        snprintf(out, n, "%d d %d h", s / 86400, s / 3600 - (s / 86400) * 24);
+    }
+}
+
+void cs2d_format_timestamp(int32_t t, char *out, size_t n)
+{
+    /* FUN_1402e2ef0: days since 1970 to a civil date (UTC), then hours and minutes */
+    int days = t / 86400, rem = t % 86400;
+    int z = days + 719468;
+    int era = z / 146097;
+    int doe = z - era * 146097;
+    int yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    int mp = (5 * doy + 2) / 153;
+    int d = doy - (153 * mp + 2) / 5 + 1;
+    int m = mp < 10 ? mp + 3 : mp - 9;
+    int y = yoe + era * 400 + (m <= 2);
+    snprintf(out, n, "%04d/%02d/%02d %02d:%02d", y, m, d, rem / 3600, (rem / 60) % 60);
+}

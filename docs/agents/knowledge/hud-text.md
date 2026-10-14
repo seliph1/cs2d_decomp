@@ -27,4 +27,11 @@ Source: CS2D.exe receive `FUN_1400a3530` ([234]), `Ttween.receive 0x1400b4420` /
   = RRRGGGBBB + text; `®path.ext` (up to the first `.` + 4 chars) draws that image TextHeight high, aspect kept.
   Alignment uses the float width of the joined parts.
 - Draw order: game HUD (0x1402a0000) after the radar / HUD bars, before chat, kill feed and GUI windows.
-- Not reconstructed: `mp_hudscale` (0x140a14de8[1] in 1..2 with screen_h > 589 scales by g_zoom); Tdo tweens.
+- **mp_hudscale (0x140a14de8[1], FUN_140291080 / FUN_14024f5a0 / 1402b0000.c:6760-6785):**
+  - **Mode 0 (default):** 1:1 screen pixels (`player(id, "screenw") x player(id, "screenh")`), unscaled.
+  - **Mode 1:** 850x480 reference resolution, scaled by `g_zoom = min(screen_w / 850, screen_h / 480)`; pillarbox offset if aspect > 1.78: `off_x = (screen_w - 850 * g_zoom) * 0.5`.
+  - **Mode 2:** 640x480 stretched to viewport: `x *= screen_w / 640`, `y *= screen_h / 480`.
+  - **Mode 3:** 640x480 centered unscaled: `x += (screen_w - 640) / 2`, `y += (screen_h - 480) / 2`.
+  - **Font sharpness (FUN_14024f5a0:8645):** when `mp_hudscale` in 1..2 and `screen_h > 589`, target font size is `size * g_zoom`. If `< 100`, raster font size is `(int)(size * g_zoom)` and local transform scale is `1.0 / g_zoom`, producing a 1:1 crisp rasterized font on screen; if `>= 100`, clamped to font 100 with scale `size * 0.01 * g_zoom`.
+  - **Network:** join packet `[252, 6]` byte at offset `b + 16` (`0x140a14de8[1]`), `[237, 22, val]` (`changesettings` case 0x16 in FUN_1401e3f10), console command `mp_hudscale [0..3]` (FUN_1401bbc89).
+- Not reconstructed: Tdo tweens (Lua image tweens).

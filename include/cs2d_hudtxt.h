@@ -55,7 +55,21 @@ bool cs2d_hudtxt_on_tween(cs2d_hudtxt_t *h, const uint8_t *buf, int len, int *po
 /* Ttween.update for the hud text tweens */
 void cs2d_hudtxt_update(cs2d_hudtxt_t *h, uint32_t now_ms);
 
-/* FUN_14024f5a0, screen coordinates */
-void cs2d_hudtxt_render(const cs2d_hudtxt_t *h);
+/* Transformation result computed for a HUD text or HUD image under mp_hudscale */
+typedef struct {
+    float x;           /* transformed base x */
+    float y;           /* transformed base y */
+    float scale_x;     /* horizontal render scale */
+    float scale_y;     /* vertical render scale */
+    int   font_size;   /* raster font size (10..100) */
+    float f_scale;     /* scale factor (fVar9) used for alignment */
+} cs2d_hudscale_calc_t;
+
+/* Computes HUD scaling transform (CS2D.exe FUN_140291080 / FUN_14024f5a0 / 1402b0000.c:6760-6785) */
+void cs2d_hudscale_compute(int hudscale, int screen_w, int screen_h, int in_x, int in_y, int in_size,
+                           cs2d_hudscale_calc_t *out);
+
+/* FUN_14024f5a0: Lua HUD texts with mp_hudscale transform (0 pixel, 1 850x480, 2 640x480 stretched, 3 640x480 centered) */
+void cs2d_hudtxt_render(const cs2d_hudtxt_t *h, int screen_w, int screen_h, int hudscale);
 
 #endif /* CS2D_HUDTXT_H */

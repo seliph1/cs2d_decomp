@@ -166,24 +166,21 @@ void cs2d_client_serverinfo_add_utf16(cs2d_client_t *client, const uint8_t *utf1
     utf16_to_colored_utf8(utf16_le, char_len, &ln->r, &ln->g, &ln->b, ln->text, sizeof(ln->text));
 }
 
-bool cs2d_client_load_serverinfo(cs2d_client_t *client, const char *filepath)
+/* Text file lines (UTF-8 or Latin-1) with the '©RRRGGGBBB' / '»' prefixes of utf16_to_colored_utf8 */
+static int load_text_lines(const char *filepath, cs2d_console_line_t *lines, int max)
 {
-    if (!client || !filepath) return false;
     FILE *f = fopen(filepath, "rb");
-    if (!f) return false;
-
-    client->server_info_line_count = 0;
-    client->server_info_scroll.top = 0;
-
+    if (!f) return -1;
+    int count = 0;
     char raw_line[256];
-    while (fgets(raw_line, sizeof(raw_line), f) && client->server_info_line_count < CS2D_SERVER_INFO_MAX_LINES) {
+    while (fgets(raw_line, sizeof(raw_line), f) && count < max) {
         uint8_t wbuf[512];
         int wlen = 0;
         for (size_t i = 0; raw_line[i] != '\0' && wlen < 250; i++) {
             uint8_t b0 = (uint8_t)raw_line[i];
             if (b0 == '\r' || b0 == '\n') continue;
             uint16_t wc = b0;
-            /* Support both UTF-8 (0xC2/0xC3 prefix) and raw Latin-1 / CP1252 in sys/serverinfo.txt */
+            /* Support both UTF-8 (0xC2/0xC3 prefix) and raw Latin-1 / CP1252 */
             if ((b0 == 0xC2 || b0 == 0xC3) && ((uint8_t)raw_line[i + 1] & 0xC0) == 0x80) {
                 wc = (uint16_t)(((b0 & 0x1F) << 6) | ((uint8_t)raw_line[i + 1] & 0x3F));
                 i++;
@@ -192,10 +189,39 @@ bool cs2d_client_load_serverinfo(cs2d_client_t *client, const char *filepath)
             wbuf[wlen * 2 + 1] = (uint8_t)(wc >> 8);
             wlen++;
         }
-        cs2d_client_serverinfo_add_utf16(client, wbuf, wlen);
+        cs2d_console_line_t *ln = &lines[count++];
+        utf16_to_colored_utf8(wbuf, wlen, &ln->r, &ln->g, &ln->b, ln->text, sizeof(ln->text));
     }
-
     fclose(f);
+    return count;
+}
+
+bool cs2d_client_load_serverinfo(cs2d_client_t *client, const char *filepath)
+{
+    if (!client || !filepath) return false;
+    int n = load_text_lines(filepath, client->server_info_lines, CS2D_SERVER_INFO_MAX_LINES);
+    if (n < 0) return false;
+    client->server_info_line_count = n;
+    client->server_info_scroll.top = 0;
+    return true;
+}
+
+/*
+ * Menu button 1: the "Map Briefing" window shows maps/<map>.txt, which the original loads with the map
+ * (0x1401d3450). Without lines it prints "there is no briefing for this map" (lang 0233) and returns false.
+ */
+bool cs2d_client_briefing_open(cs2d_client_t *client)
+{
+    char path[192];
+    snprintf(path, sizeof(path), "maps/%s.txt", client->net_map_name);
+    int n = load_text_lines(path, client->briefing_lines, CS2D_SERVER_INFO_MAX_LINES);
+    client->briefing_line_count = n > 0 ? n : 0;
+    client->briefing_scroll.top = 0;
+    if (client->briefing_line_count < 1) {
+        cs2d_client_center_msg(client, 255, 0, 0, "there is no briefing for this map");
+        return false;
+    }
+    client->briefing_open = true;
     return true;
 }
 
@@ -310,6 +336,7 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
     /* Default Server Info state (overwritten by [252, 6] and [240] when joining a server) */
     strncpy(client->net_server_name, "CS2D Server", sizeof(client->net_server_name) - 1);
     client->net_hovertext = 31; /* The dedicated's default mp_hovertext (proxy capture of [252,6]) */
+    client->net_hudscale  = 0;  /* mp_hudscale default (0x140a14de8) */
     client->net_daylight = -1;
     client->net_ticks     = -1;
     cs2d_client_load_serverinfo(client, "sys/serverinfo.txt");
@@ -935,6 +962,31 @@ void cs2d_client_send_chat(cs2d_client_t *client, uint8_t mode, const char *text
     }
 }
 
+/* Sends Lua menu response [235, pid, slen:u16, title:u16*, button:u8] (FUN_14015c320) */
+void cs2d_client_send_luamenu(cs2d_client_t *client, uint8_t button)
+{
+    if (!client || !client->connected) return;
+    const char *title = client->luamenu.title;
+    uint16_t slen = (uint16_t)strlen(title);
+    if (slen > 400) slen = 400;
+
+    /* Packet: 1 byte opcode (235), 1 byte pid, 2 bytes slen (LE), slen*2 bytes UTF-16LE, 1 byte button */
+    size_t pkt_len = 1 + 1 + 2 + slen * 2 + 1;
+    uint8_t pkt[1024];
+    if (pkt_len > sizeof(pkt)) return;
+
+    pkt[0] = (uint8_t)CS2D_NET_LUAMENU; /* 235 */
+    pkt[1] = client->local_player_id;
+    pkt[2] = (uint8_t)(slen & 0xFF);
+    pkt[3] = (uint8_t)((slen >> 8) & 0xFF);
+    for (uint16_t i = 0; i < slen; i++) {
+        pkt[4 + i * 2]     = (uint8_t)title[i];
+        pkt[4 + i * 2 + 1] = 0;
+    }
+    pkt[4 + slen * 2] = button;
+
+    cs2d_client_send_udp(client, pkt, pkt_len, true);
+}
 
 static void remove_ground_item(cs2d_client_t *client, uint16_t id)
 {
@@ -1058,6 +1110,12 @@ static bool net_build_result(cs2d_client_t *client, const uint8_t *buf, int len,
  *   health, armor, special byte, weapon, weapon mode, votekick, votemap u16
  * The local player's own record is skipped. Without it a spectator has nobody to follow.
  */
+/* Tpl.votemap as stored (index + 1, 0 = none); the dedicated sends 0xffff and other codes >= 0xff9b for none */
+static int vote_map_slot(int v)
+{
+    return (v < 0xff9b) ? v + 1 : 0;
+}
+
 static void join_players(cs2d_client_t *client, const uint8_t *buf, int len, int *pos)
 {
     int p = *pos;
@@ -1098,6 +1156,8 @@ static void join_players(cs2d_client_t *client, const uint8_t *buf, int len, int
         pl->health = r[18];
         pl->armor  = r[19];
         pl->alive  = pl->team != CS2D_TEAM_SPEC && pl->health > 0;
+        pl->votekick = r[23];
+        pl->votemap  = vote_map_slot(r[24] | (r[25] << 8));
         if (r[21] != 0) {
             cs2d_player_give_weapon(pl, r[21]);
             cs2d_player_select_weapon(pl, r[21]);
@@ -1117,6 +1177,164 @@ static void join_transfer(cs2d_client_t *client, const uint8_t *buf, int len, in
     } else if (ev == CS2D_XFER_EV_MAP_FAILED) {
         join_abort(client, 0);
     }
+}
+
+void cs2d_client_leaderboard_reset(cs2d_client_t *client)
+{
+    memset(client->lb_rows, 0, sizeof(client->lb_rows));
+    memset(client->lb_requested, 0, sizeof(client->lb_requested));
+    client->lb_queue_count = 0;
+    client->lb_queue_timer = 0;
+}
+
+/* Menu button 3 (Tgui_hudmen.draw menu 2): [230,0] asks for the timestamp, then the window opens */
+void cs2d_client_leaderboard_open(cs2d_client_t *client)
+{
+    uint8_t pkt[2] = { (uint8_t)CS2D_NET_LEADERBOARD, 0 };
+    cs2d_client_send_udp(client, pkt, sizeof(pkt), false);
+    client->leaderboard_open = true;
+    client->lb_scroll.top    = 0;
+}
+
+/* Tgui_leadlist.draw: every visible rank not asked yet joins LeaderboardRequest.list */
+static void leaderboard_request_rows(cs2d_client_t *client, int top, int rows)
+{
+    for (int r = top + 1; r <= top + rows && r <= CS2D_LEADERBOARD_MAX; r++) {
+        if (r < 1 || client->lb_requested[r]) continue;
+        client->lb_requested[r] = true;
+        if (client->lb_queue_count < CS2D_LEADERBOARD_MAX) client->lb_queue[client->lb_queue_count++] = (uint8_t)r;
+    }
+}
+
+/* LeaderboardRequest.update (FUN_14005eab0), once per 60 Hz frame: the first request waits 6 frames, then [230,1,rank] */
+static void leaderboard_update(cs2d_client_t *client)
+{
+    if (client->lb_queue_count == 0) return;
+    if (client->lb_queue_timer < 6) {
+        client->lb_queue_timer++;
+        return;
+    }
+    cs2d_pkt_t p = { .pos = 0 };
+    cs2d_pkt_w_byte(&p, (uint8_t)CS2D_NET_LEADERBOARD);
+    cs2d_pkt_w_byte(&p, 1);
+    cs2d_pkt_w_short(&p, client->lb_queue[0]);
+    cs2d_client_send_udp(client, p.buf, (size_t)p.pos, false);
+    memmove(&client->lb_queue[0], &client->lb_queue[1], (size_t)(client->lb_queue_count - 1));
+    client->lb_queue_count--;
+    client->lb_queue_timer = 0;
+}
+
+/* TVote.sendVoteAsClient (0x1400536b0): [43, type (1 kick, 2 map), value u16] */
+void cs2d_client_send_vote(cs2d_client_t *client, int type, int value)
+{
+    cs2d_pkt_t p = { .pos = 0 };
+    cs2d_pkt_w_byte(&p, (uint8_t)CS2D_NET_VOTE);
+    cs2d_pkt_w_byte(&p, (uint8_t)type);
+    cs2d_pkt_w_short(&p, (uint16_t)value);
+    cs2d_client_send_udp(client, p.buf, (size_t)p.pos, true);
+}
+
+/* TVote.votekick / votemap (0x1401c98b0 / 0x1401be500) for a vote the server forwarded */
+void cs2d_client_on_vote(cs2d_client_t *client, int voter, int type, int value)
+{
+    if (voter < 1 || voter > CS2D_MAX_PLAYERS || client->game.players[voter].id == 0) return;
+    cs2d_player_t *v = &client->game.players[voter];
+    bool self = voter == client->local_player_id;
+    char line[160];
+    if (type == 1) {
+        if (value < 0xff9b) {
+            if (value < 1 || value > CS2D_MAX_PLAYERS || client->game.players[value].id == 0) return;
+            /* "$voter votes to kick $target" (lang 0723) */
+            snprintf(line, sizeof(line), "votes to kick %s", client->game.players[value].name);
+            cs2d_client_add_chat(client, (uint8_t)voter, 0, 255, 150, 0, line);
+            cs2d_client_console_print(client, 255, 150, 0, "%s votes to kick %s", v->name,
+                                      client->game.players[value].name);
+            v->votekick = value;
+        } else if (self) {
+            /* 0xfff5: lang 0720, 0xfff4: 0911, 0xfffe: 0722 */
+            const char *msg = value == 0xfff5 ? "Kick voting is disabled on this server"
+                            : value == 0xfff4 ? "You can't vote to kick yourself!"
+                            : value == 0xfffe ? "Please wait 15 seconds before voting again" : NULL;
+            if (msg) cs2d_client_center_msg(client, 255, 0, 0, msg);
+        }
+    } else if (type == 2) {
+        if (value < 0xff9b) {
+            if (value >= client->vote_map_count) return;
+            /* "$voter votes the map $map" (lang 0725) */
+            snprintf(line, sizeof(line), "votes the map %s", client->vote_maps[value]);
+            cs2d_client_add_chat(client, (uint8_t)voter, 0, 255, 150, 0, line);
+            cs2d_client_console_print(client, 255, 150, 0, "%s votes the map %s", v->name, client->vote_maps[value]);
+            v->votemap = value + 1;
+        } else if (self) {
+            /* 0xffeb: lang 0721, 0xfffe: 0722 */
+            const char *msg = value == 0xffeb ? "Map voting is disabled on this server"
+                            : value == 0xfffe ? "Please wait 15 seconds before voting again" : NULL;
+            if (msg) cs2d_client_center_msg(client, 255, 0, 0, msg);
+        }
+    }
+}
+
+/* Latin-1 bytes (rstr names) to UTF-8 */
+static void latin1_to_utf8(const uint8_t *in, int n, char *out, size_t max)
+{
+    size_t o = 0;
+    for (int i = 0; i < n && o + 3 < max; i++) {
+        uint8_t c = in[i];
+        if (c < 0x80) {
+            out[o++] = (char)c;
+        } else {
+            out[o++] = (char)(0xC0 | (c >> 6));
+            out[o++] = (char)(0x80 | (c & 0x3F));
+        }
+    }
+    if (max > 0) out[o < max ? o : max - 1] = '\0';
+}
+
+/*
+ * [230] leaderboard (FUN_1402e4220): [230,0, timestamp i32] answers the opening request; [230,1, rank u16,
+ * timestamp i32, name (u16 len), id type u8 (0 usgn, 1 steam), id i64, score, kills, deaths, assists, mvp,
+ * time played (i32 each)] one rank. A new timestamp drops the rows (LeaderboardPlayer.list_top).
+ */
+static bool leaderboard_on_message(cs2d_client_t *client, const uint8_t *buf, int len, int *pos)
+{
+    int p = *pos + 1;
+    if (p >= len) return false;
+    int sub = buf[p++];
+    if (sub == 0) {
+        if (p + 4 > len) return false;
+        int32_t ts = (int32_t)(buf[p] | (buf[p + 1] << 8) | (buf[p + 2] << 16) | ((uint32_t)buf[p + 3] << 24));
+        p += 4;
+        if (ts != client->lb_timestamp) cs2d_client_leaderboard_reset(client);
+        client->lb_timestamp = ts;
+    } else if (sub == 1) {
+        if (p + 8 > len) return false;
+        int rank = buf[p] | (buf[p + 1] << 8);
+        int32_t ts = (int32_t)(buf[p + 2] | (buf[p + 3] << 8) | (buf[p + 4] << 16) | ((uint32_t)buf[p + 5] << 24));
+        int nlen = buf[p + 6] | (buf[p + 7] << 8);
+        p += 8;
+        if (p + nlen + 1 + 8 + 24 > len) return false;
+        if (ts != client->lb_timestamp) cs2d_client_leaderboard_reset(client);
+        client->lb_timestamp = ts;
+        cs2d_lb_row_t row = { .have = true };
+        latin1_to_utf8(&buf[p], nlen, row.name, sizeof(row.name));
+        p += nlen;
+        row.id_type = buf[p++];
+        uint64_t id = 0;
+        for (int i = 7; i >= 0; i--) id = (id << 8) | buf[p + i];
+        row.id = (int64_t)id;
+        p += 8;
+        int32_t v[6];
+        for (int i = 0; i < 6; i++, p += 4) {
+            v[i] = (int32_t)(buf[p] | (buf[p + 1] << 8) | (buf[p + 2] << 16) | ((uint32_t)buf[p + 3] << 24));
+        }
+        row.score = v[0]; row.kills = v[1]; row.deaths = v[2]; row.assists = v[3]; row.mvp = v[4];
+        row.time_played = v[5];
+        if (rank >= 1 && rank <= CS2D_LEADERBOARD_MAX) client->lb_rows[rank] = row;
+    } else {
+        return false;
+    }
+    *pos = p;
+    return true;
 }
 
 void cs2d_client_poll_network(cs2d_client_t *client)
@@ -1269,6 +1487,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         }
                         int s = pos + 2 + 2 + 3 + 4 + 2;
                         if (recvd - s > 5) {
+                            client->net_maxplayers   = buffer[s];
                             client->net_sv_fow       = buffer[s + 1];
                             client->spec.server_mode = buffer[s + 2];
                             client->net_sv_gamemode  = buffer[s + 3];
@@ -1280,6 +1499,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                                 int h = s + 8 + buffer[s + 7];
                                 if (h < recvd) h += 1 + buffer[h];
                                 if (h + 3 < recvd) client->net_hovertext = buffer[h + 3];
+                                if (h + 4 < recvd) client->net_ff = buffer[h + 4] != 0;
                                 /* Then a u8, the background image (str), its scroll x / y and a header i32, sv_forcelight
                                  * u8 and sv_daylighttime + 1 as u16 (0x1402d1144; proxy: 0 = the map's own time) */
                                 int b = h + 5;
@@ -1288,6 +1508,28 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                                     client->net_forcelight = buffer[b + 12] != 0;
                                     client->net_daylight = (buffer[b + 13] | (buffer[b + 14] << 8)) - 1;
                                     apply_light_config(client);
+                                    /* buffer[b + 15] is setting 21 (0x140a14df0); buffer[b + 16] is mp_hudscale (1402d0000.c:1169) */
+                                    if (b + 17 <= recvd) {
+                                        client->net_hudscale = buffer[b + 16];
+                                    }
+                                    /* Shown by the ingame menu (Tgui_hudmen.draw menu 2): b + 15 recoil (0x140a14df0),
+                                     * b + 17 sv_voicechat (0x140a14ed8), b + 18 OS, b + 19 lag compensation, b + 20 Lua,
+                                     * b + 21 ticks (DAT_140ddf13c), then n u16 Lua binds, seed i32, off-screen damage
+                                     * (0x140a14de0), leaderboard (0x140a14dd8), physics (0x140a14df8) (0x1402d1144..) */
+                                    if (b + 23 <= recvd) {
+                                        client->net_recoil    = buffer[b + 15] == 1;
+                                        client->net_voicechat = buffer[b + 17];
+                                        client->net_os        = buffer[b + 18];
+                                        client->net_lagcomp   = buffer[b + 19];
+                                        client->net_lua       = buffer[b + 20] != 0;
+                                        client->net_lag_ticks = buffer[b + 21];
+                                        int t = b + 23 + 2 * buffer[b + 22] + 4;
+                                        if (t + 3 <= recvd) {
+                                            client->net_offscreen   = buffer[t] == 1;
+                                            client->net_leaderboard = buffer[t + 1] != 0;
+                                            client->net_physics     = buffer[t + 2] == 1;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1352,6 +1594,29 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                                                                                      (float)rx, (float)ry, 0.0f, 0.0f, 0.0f, lifetime);
                                 if (p) {
                                     p->state = CS2D_PROJ_STATE_GROUND;
+                                }
+                            }
+                        }
+                    } else if (snap_type == 9) {
+                        /* Map cycle for the vote screen (FUN_1402ce7c0 case 9): n = 0xff then u16 size; n = 0 done;
+                         * else n * {index u16, name (u8 len)} into 0x140a0fd98 */
+                        if (pos < recvd) {
+                            int n = buffer[pos++];
+                            if (n == 0xff) {
+                                if (pos + 2 <= recvd) {
+                                    int size = buffer[pos] | (buffer[pos + 1] << 8);
+                                    client->vote_map_count = size < CS2D_VOTE_MAX_MAPS ? size : CS2D_VOTE_MAX_MAPS;
+                                    for (int k = 0; k < client->vote_map_count; k++) client->vote_maps[k][0] = '\0';
+                                }
+                            } else {
+                                for (int k = 0; k < n && pos + 2 <= recvd; k++) {
+                                    int idx = buffer[pos] | (buffer[pos + 1] << 8);
+                                    pos += 2;
+                                    char name[64];
+                                    cs2d_pkt_r_str(buffer, recvd, &pos, name, sizeof(name));
+                                    if (idx < client->vote_map_count) {
+                                        snprintf(client->vote_maps[idx], sizeof(client->vote_maps[idx]), "%s", name);
+                                    }
                                 }
                             }
                         }
@@ -1935,6 +2200,9 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         client->net_daylight = value;   /* sv_daylighttime (case 0x14) */
                         apply_light_config(client);
                     }
+                    if (setting == 22) {
+                        client->net_hudscale = value;   /* mp_hudscale (FUN_1401e3f10 case 0x16) */
+                    }
                     pos += 6;
                 } else {
                     break;
@@ -1945,6 +2213,35 @@ void cs2d_client_poll_network(cs2d_client_t *client)
             } else if (opcode == CS2D_NET_TWEEN) {
                 /* Server -> Client: [54] Ttween.receive: hudtxtmove / hudtxtalphafade / hudtxtcolorfade */
                 if (!cs2d_hudtxt_on_tween(&client->hudtxt, buffer, recvd, &pos, (uint32_t)SDL_GetTicks())) break;
+            } else if (opcode == CS2D_NET_VOTE) {
+                /* Server -> Client: [43, voter, type u8 (1 kick, 2 map), value u16] (FUN_1402db210 -> TVote.votekick /
+                 * votemap with p3 = 0). Values >= 0xff9b are refusals: 0xfffe / 0xfff5 / 0xfff4 (lang 0720..0722, 0911) */
+                if (pos + 5 > recvd) break;
+                cs2d_client_on_vote(client, buffer[pos + 1], buffer[pos + 2], buffer[pos + 3] | (buffer[pos + 4] << 8));
+                pos += 5;
+            } else if (opcode == CS2D_NET_LEADERBOARD) {
+                if (!leaderboard_on_message(client, buffer, recvd, &pos)) break;
+            } else if (opcode == CS2D_NET_LUAMENU) {
+                /* Server -> Client: [235, pid:u8, slen:u16, text:u16*] (FUN_1402e4820 / FUN_14015c320) */
+                if (pos + 4 > recvd) break;
+                uint8_t pid = buffer[pos + 1];
+                uint16_t slen = (uint16_t)(buffer[pos + 2] | (buffer[pos + 3] << 8));
+                if (pos + 4 + slen * 2 > recvd) break;
+
+                /* Decode UTF-16LE string into UTF-8 */
+                char raw_text[1024];
+                utf16_to_colored_utf8(buffer + pos + 4, slen, NULL, NULL, NULL, raw_text, sizeof(raw_text));
+                pos += 4 + slen * 2;
+
+                /* Check if optional button byte follows (server->client might have 0xff) */
+                if (pos < recvd) {
+                    pos++; /* consume trailing byte (0xff) */
+                }
+
+                /* Check if target player matches local player (or broadcast pid == 0) */
+                if (pid == 0 || pid == client->local_player_id) {
+                    cs2d_luamenu_parse(&client->luamenu, raw_text);
+                }
             } else if (opcode == CS2D_NET_PING_INGAME) {
                 /* Server -> Client: [249, int32_t ts] -> Reply [249, int32_t ts] (0x1401d9f10) */
                 if (pos + 5 > recvd) break;
@@ -2584,6 +2881,16 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         } else {
             cs2d_client_send_chat(client, is_team ? 2 : 1, p);
         }
+    } else if (_stricmp(cmd, "mp_hudscale") == 0) {
+        if (n >= 2) {
+            int v = atoi(arg1);
+            if (v < 0) v = 0;
+            if (v > 3) v = 3;
+            client->net_hudscale = v;
+            cs2d_client_console_print(client, 255, 220, 0, "mp_hudscale: %d", v);
+        } else {
+            cs2d_client_console_print(client, 170, 170, 170, "mp_hudscale: %d", client->net_hudscale);
+        }
     } else if (_stricmp(cmd, "quit") == 0 || _stricmp(cmd, "exit") == 0) {
         client->quit_requested = true;
     } else {
@@ -2594,7 +2901,8 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
 bool cs2d_client_any_ui_open(const cs2d_client_t *client)
 {
     return client && (client->console_open || client->create_server_open ||
-                      client->options_open || client->server_info_open ||
+                      client->options_open || client->server_info_open || client->briefing_open ||
+                      client->leaderboard_open ||
                       client->team_menu_open || client->servers_open || client->connect_ip_open ||
                       client->download_open || client->join_menu != 0 || client->chat_open);
 }
@@ -2688,7 +2996,7 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
     }
 
 
-    if (sdl_key == SDLK_GRAVE || sdl_key == SDLK_F1) {
+    if (sdl_key == SDLK_GRAVE) {
         client->console_open = !client->console_open;
         if (client->console_open) {
             client->ui.focused_id = CS2D_UI_ID("ConsoleInput");
@@ -2698,26 +3006,6 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
             client->key_right     = false;
             client->mouse_fire    = false;
             client->mouse_attack2 = false;
-        }
-        return;
-    }
-
-    if (sdl_key == SDLK_F2) {
-        client->create_server_open = !client->create_server_open;
-        if (client->create_server_open) {
-            client->options_open = false;
-            client->console_open = false;
-            client->ui.focused_id = CS2D_UI_ID("SrvNameInput");
-        }
-        return;
-    }
-
-    if (sdl_key == SDLK_F3) {
-        client->options_open = !client->options_open;
-        if (client->options_open) {
-            client->create_server_open = false;
-            client->console_open       = false;
-            client->ui.focused_id      = CS2D_UI_ID("OptPlayerName");
         }
         return;
     }
@@ -2784,6 +3072,37 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
                 case SDLK_PAGEDOWN: server_info_scroll_by(client, 1, true); break;
                 default:
                     break;
+            }
+            return;
+        }
+
+        if (client->briefing_open) {
+            int visible = client->briefing_visible_lines > 0 ? client->briefing_visible_lines : 1;
+            switch (sdl_key) {
+                case SDLK_ESCAPE:
+                case SDLK_RETURN:
+                case SDLK_KP_ENTER:
+                case SDLK_SPACE:
+                case SDLK_0:
+                    client->briefing_open = false;
+                    break;
+                case SDLK_UP:       cs2d_ui_scroll_by(&client->briefing_scroll, -1, visible, client->briefing_line_count); break;
+                case SDLK_DOWN:     cs2d_ui_scroll_by(&client->briefing_scroll, 1, visible, client->briefing_line_count); break;
+                case SDLK_PAGEUP:   cs2d_ui_scroll_page(&client->briefing_scroll, -1, visible, client->briefing_line_count); break;
+                case SDLK_PAGEDOWN: cs2d_ui_scroll_page(&client->briefing_scroll, 1, visible, client->briefing_line_count); break;
+                default:
+                    break;
+            }
+            return;
+        }
+
+        if (client->leaderboard_open) {
+            if (sdl_key == SDLK_ESCAPE || sdl_key == SDLK_RETURN || sdl_key == SDLK_KP_ENTER || sdl_key == SDLK_0) {
+                client->leaderboard_open = false;
+            } else if (sdl_key == SDLK_UP || sdl_key == SDLK_DOWN) {
+                cs2d_ui_scroll_by(&client->lb_scroll, sdl_key == SDLK_UP ? -1 : 1, 16, CS2D_LEADERBOARD_MAX);
+            } else if (sdl_key == SDLK_PAGEUP || sdl_key == SDLK_PAGEDOWN) {
+                cs2d_ui_scroll_page(&client->lb_scroll, sdl_key == SDLK_PAGEUP ? -1 : 1, 16, CS2D_LEADERBOARD_MAX);
             }
             return;
         }
@@ -2930,6 +3249,13 @@ void cs2d_client_update(cs2d_client_t *client, float delta_time)
     }
 
     apply_pending_scene(client);
+
+    /* LeaderboardRequest.update runs once per 60 Hz frame */
+    client->lb_frame_accum += delta_time * 60.0f;
+    if (client->lb_frame_accum > 4.0f) client->lb_frame_accum = 4.0f;
+    for (; client->lb_frame_accum >= 1.0f; client->lb_frame_accum -= 1.0f) {
+        if (client->connected) leaderboard_update(client);
+    }
 
     /* Server browser queries (pingServers) for the visible tab, LAN scan and replies */
     if (client->servers_open) {
@@ -3781,9 +4107,11 @@ static void cs2d_client_build_team_menu_ui(cs2d_client_t *client, int screen_w, 
  *   - 553x374 scrollable text box + 15x374 scrollbar on the right
  *   - Full-width 568x20 "Close" button at the bottom
  */
-static void cs2d_client_build_server_info_ui(cs2d_client_t *client, int screen_w, int screen_h)
+static void build_text_window(cs2d_client_t *client, int screen_w, int screen_h, int kind, const char *win_title,
+                              const cs2d_console_line_t *lines, int total, cs2d_ui_scroll_t *scroll,
+                              int *visible_lines, bool *open)
 {
-    if (!client->server_info_open) return;
+    if (!*open) return;
 
     cs2d_ui_context_t *ui = &client->ui;
     float win_w = 600.0f;
@@ -3791,19 +4119,15 @@ static void cs2d_client_build_server_info_ui(cs2d_client_t *client, int screen_w
     float win_x = floorf(((float)screen_w - win_w) * 0.5f);
     float win_y = floorf(((float)screen_h - win_h) * 0.5f);
 
-    char win_title[96];
-    snprintf(win_title, sizeof(win_title), "%s - Info",
-             client->net_server_name[0] ? client->net_server_name : "CS2D Server");
-
-    if (cs2d_ui_window_begin(ui, CS2D_UI_ID("ServerInfoWin"), win_title,
-                             win_x, win_y, win_w, win_h, &client->server_info_open)) {
+    if (cs2d_ui_window_begin(ui, CS2D_UI_IDI("ServerInfoWin", kind), win_title,
+                             win_x, win_y, win_w, win_h, open)) {
         /* 1px horizontal divider separating the title bar from the window body */
         CS2D_UI_ELEMENT(ui, 0, {
             .layout   = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(1.0f) } },
             .bg_color = CS2D_UI_RGBA(96, 96, 96, 245)
         }) {}
 
-        CS2D_UI_ELEMENT(ui, CS2D_UI_ID("ServerInfoBody"), {
+        CS2D_UI_ELEMENT(ui, CS2D_UI_IDI("ServerInfoBody", kind), {
             .layout = {
                 .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_GROW(0, 0) },
                 .padding   = CS2D_UI_PAD(10, 10, 2, 4),
@@ -3811,7 +4135,7 @@ static void cs2d_client_build_server_info_ui(cs2d_client_t *client, int screen_w
                 .dir       = CS2D_UI_TOP_TO_BOTTOM
             }
         }) {
-            CS2D_UI_ELEMENT(ui, CS2D_UI_ID("ServerInfoRow"), {
+            CS2D_UI_ELEMENT(ui, CS2D_UI_IDI("ServerInfoRow", kind), {
                 .layout = {
                     .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_GROW(0, 0) },
                     .child_gap = 0.0f,
@@ -3822,21 +4146,20 @@ static void cs2d_client_build_server_info_ui(cs2d_client_t *client, int screen_w
                 const float line_h = 15.0f;
                 int max_vis = (int)((box_h - 8.0f) / line_h);
                 if (max_vis < 1) max_vis = 1;
-                client->server_info_visible_lines = max_vis;
+                *visible_lines = max_vis;
 
-                int total = client->server_info_line_count;
                 if (!client->console_open) {
-                    cs2d_ui_rect_t win = cs2d_ui_get_box(ui, CS2D_UI_ID("ServerInfoWin"));
-                    cs2d_ui_scroll_wheel(ui, &client->server_info_scroll, &win, 3, max_vis, total);
+                    cs2d_ui_rect_t win = cs2d_ui_get_box(ui, CS2D_UI_IDI("ServerInfoWin", kind));
+                    cs2d_ui_scroll_wheel(ui, scroll, &win, 3, max_vis, total);
                 }
-                cs2d_ui_scroll_clamp(&client->server_info_scroll, max_vis, total);
+                cs2d_ui_scroll_clamp(scroll, max_vis, total);
 
-                int start_idx = client->server_info_scroll.top;
+                int start_idx = scroll->top;
                 int end_idx   = start_idx + max_vis;
                 if (end_idx > total) end_idx = total;
 
                 /* Left 553x374 dark text box */
-                CS2D_UI_ELEMENT(ui, CS2D_UI_ID("ServerInfoBox"), {
+                CS2D_UI_ELEMENT(ui, CS2D_UI_IDI("ServerInfoBox", kind), {
                     .layout = {
                         .sizing    = { CS2D_UI_GROW(0, 0), CS2D_UI_GROW(0, 0) },
                         .padding   = CS2D_UI_PAD(6, 6, 4, 4),
@@ -3848,7 +4171,7 @@ static void cs2d_client_build_server_info_ui(cs2d_client_t *client, int screen_w
                     .clip     = { .enabled = true }
                 }) {
                     for (int i = start_idx; i < end_idx; i++) {
-                        const cs2d_console_line_t *ln = &client->server_info_lines[i];
+                        const cs2d_console_line_t *ln = &lines[i];
                         if (ln->text[0] == '\0') {
                             CS2D_UI_ELEMENT(ui, 0, {
                                 .layout = { .sizing = { CS2D_UI_FIXED(1.0f), CS2D_UI_FIXED(line_h) } }
@@ -3866,15 +4189,148 @@ static void cs2d_client_build_server_info_ui(cs2d_client_t *client, int screen_w
                     .thumb = { 66, 66, 66, 245 }, .thumb_hot = { 104, 104, 104, 250 },
                     .thumb_border = { 140, 140, 140, 245 }
                 };
-                cs2d_ui_scrollbar(ui, CS2D_UI_ID("ServerInfoScrollbar"), &client->server_info_scroll, max_vis, total,
+                cs2d_ui_scrollbar(ui, CS2D_UI_IDI("ServerInfoScrollbar", kind), scroll, max_vis, total,
                                   box_h, &sb_style);
             }
 
-            if (cs2d_ui_button(ui, CS2D_UI_ID("BtnServerInfoClose"), "Close", 568.0f, 20.0f)) {
-                client->server_info_open = false;
+            if (cs2d_ui_button(ui, CS2D_UI_IDI("BtnServerInfoClose", kind), "Close", 568.0f, 20.0f)) {
+                *open = false;
             }
         }
 
+        cs2d_ui_window_end(ui);
+    }
+}
+
+static void cs2d_client_build_server_info_ui(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    char title[96];
+    snprintf(title, sizeof(title), "%s - Info", client->net_server_name[0] ? client->net_server_name : "CS2D Server");
+    build_text_window(client, screen_w, screen_h, 0, title, client->server_info_lines, client->server_info_line_count,
+                      &client->server_info_scroll, &client->server_info_visible_lines, &client->server_info_open);
+}
+
+/* "Map Briefing" (lang 0727): the same window as Server Info (Tgui_tb (16,25) 568x374, Close (16,404) 568, 0x1401a6850) */
+static void cs2d_client_build_briefing_ui(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    build_text_window(client, screen_w, screen_h, 1, "Map Briefing", client->briefing_lines, client->briefing_line_count,
+                      &client->briefing_scroll, &client->briefing_visible_lines, &client->briefing_open);
+}
+
+/* Floating text at an absolute position over a window (z 11, above the window's z 10) */
+static void lb_text(cs2d_ui_context_t *ui, float x, float y, float w, const char *text, cs2d_ui_color_t c)
+{
+    CS2D_UI_ELEMENT(ui, 0, {
+        .layout   = { .sizing = { CS2D_UI_FIXED(w), CS2D_UI_FIXED(16.0f) } },
+        .floating = { .enabled = true, .x = x, .y = y, .z_index = 11 },
+        .clip     = { .enabled = true }
+    }) {
+        cs2d_ui_text(ui, text, CS2D_FONT_REGULAR, c);
+    }
+}
+
+/*
+ * "Server Leaderboard" window (0x1401a6c00): Tgui_leadlist (16,26) 568x340 with a header row, 20 px rows,
+ * scroll 1..100 (Tgui_leadlist.draw 0x1402e3150), Close (16,404) 568. Columns: rank +5, name +55 (squeezed to
+ * 120 px, MVP star after it), score +210, kills +270, assists +330, deaths +390, time played +460.
+ * The avatars (+36, 18x18) are not drawn.
+ */
+static void cs2d_client_build_leaderboard_ui(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    if (!client->leaderboard_open) return;
+    cs2d_ui_context_t *ui = &client->ui;
+    float win_x = floorf(((float)screen_w - 600.0f) * 0.5f);
+    float win_y = floorf(((float)screen_h - 440.0f) * 0.5f);
+    const int rows = 16;
+
+    if (cs2d_ui_window_begin(ui, CS2D_UI_ID("LeaderboardWin"), "Server Leaderboard", win_x, win_y, 600.0f, 440.0f,
+                             &client->leaderboard_open)) {
+        CS2D_UI_ELEMENT(ui, 0, {
+            .layout   = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIXED(1.0f) } },
+            .bg_color = CS2D_UI_RGBA(96, 96, 96, 245)
+        }) {}
+        float lx = win_x + 16.0f, ly = win_y + 26.0f;
+        const cs2d_ui_color_t gray = CS2D_UI_RGB(150, 150, 150);
+        static const char *heads[] = { "Player", "Score", "Kills", "Assists", "Deaths", "Time Played" };
+        static const float cols[]  = { 35.0f, 210.0f, 270.0f, 330.0f, 390.0f, 460.0f };
+        for (int i = 0; i < 6; i++) lb_text(ui, lx + cols[i], ly, 100.0f, heads[i], gray);
+
+        /* Rows box: black at 0.5 with a 150 frame */
+        CS2D_UI_ELEMENT(ui, 0, {
+            .layout   = { .sizing = { CS2D_UI_FIXED(552.0f), CS2D_UI_FIXED(320.0f) } },
+            .floating = { .enabled = true, .x = lx, .y = ly + 20.0f, .z_index = 11 },
+            .bg_color = CS2D_UI_RGBA(0, 0, 0, 128),
+            .border   = { .width = 1.0f, .color = gray }
+        }) {}
+
+        cs2d_ui_rect_t area = { lx, ly + 20.0f, 568.0f, 320.0f };
+        cs2d_ui_scroll_wheel(ui, &client->lb_scroll, &area, 1, rows, CS2D_LEADERBOARD_MAX);
+        cs2d_ui_scroll_clamp(&client->lb_scroll, rows, CS2D_LEADERBOARD_MAX);
+        int top = client->lb_scroll.top;
+        leaderboard_request_rows(client, top, rows);
+
+        for (int i = 0; i < rows; i++) {
+            int rank = top + 1 + i;
+            if (rank > CS2D_LEADERBOARD_MAX) break;
+            const cs2d_lb_row_t *r = &client->lb_rows[rank];
+            if (!client->lb_requested[rank]) continue;
+            float y = ly + 21.0f + 20.0f * (float)i;
+            char buf[48];
+            snprintf(buf, sizeof(buf), "%d", rank);
+            lb_text(ui, lx + 5.0f, y, 48.0f, buf, gray);
+            if (!r->have) continue;
+            if (r->name[0] == '\0') {
+                lb_text(ui, lx + 55.0f, y, 150.0f, "???", gray);
+                continue;
+            }
+            float nw = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, r->name);
+            lb_text(ui, lx + 55.0f, y, 120.0f, r->name, gray);
+            if (r->mvp != 0) {
+                /* MVP: star (gui_icons frame 19 in the original) and the count in (255,200,0) */
+                snprintf(buf, sizeof(buf), "*%d", r->mvp);
+                lb_text(ui, lx + 57.0f + fminf(nw, 120.0f), y - 2.0f, 50.0f, buf, CS2D_UI_RGB(255, 200, 0));
+            }
+            snprintf(buf, sizeof(buf), "%d", r->score);   lb_text(ui, lx + 210.0f, y, 60.0f, buf, gray);
+            snprintf(buf, sizeof(buf), "%d", r->kills);   lb_text(ui, lx + 270.0f, y, 60.0f, buf, gray);
+            snprintf(buf, sizeof(buf), "%d", r->assists); lb_text(ui, lx + 330.0f, y, 60.0f, buf, gray);
+            snprintf(buf, sizeof(buf), "%d", r->deaths);  lb_text(ui, lx + 390.0f, y, 70.0f, buf, gray);
+            cs2d_format_playtime(r->time_played, buf, sizeof(buf));
+            lb_text(ui, lx + 460.0f, y, 90.0f, buf, gray);
+        }
+
+        static const cs2d_ui_scrollbar_style_t sb_style = {
+            .width = 16.0f, .pad = 2.0f, .min_thumb = 24.0f,
+            .track_bg = { 32, 32, 32, 246 }, .track_border = { 140, 140, 140, 245 },
+            .thumb = { 66, 66, 66, 245 }, .thumb_hot = { 104, 104, 104, 250 },
+            .thumb_border = { 140, 140, 140, 245 }
+        };
+        cs2d_ui_scrollbar_at(ui, CS2D_UI_ID("LeaderboardScroll"), &client->lb_scroll, rows, CS2D_LEADERBOARD_MAX,
+                             lx + 552.0f, ly + 20.0f, 320.0f, 11, &sb_style);
+
+        /* Below the list: "Last updated <date>" (lang 0963) in 155, or "Leaderboard is unavailable" (0962) in red */
+        char foot[96];
+        cs2d_ui_color_t fc = CS2D_UI_RGB(155, 155, 155);
+        if (client->lb_timestamp < 1) {
+            snprintf(foot, sizeof(foot), "Leaderboard is unavailable");
+            fc = CS2D_UI_RGB(255, 0, 0);
+        } else {
+            char date[32];
+            cs2d_format_timestamp(client->lb_timestamp, date, sizeof(date));
+            snprintf(foot, sizeof(foot), "Last updated %s", date);
+        }
+        float fw = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, foot);
+        lb_text(ui, floorf(lx + 284.0f - fw * 0.5f), ly + 350.0f, fw + 4.0f, foot, fc);
+
+        CS2D_UI_ELEMENT(ui, 0, {
+            .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_GROW(0, 0) } }
+        }) {}
+        CS2D_UI_ELEMENT(ui, 0, {
+            .layout = { .sizing = { CS2D_UI_GROW(0, 0), CS2D_UI_FIT(0, 0) }, .padding = CS2D_UI_PAD(10, 10, 0, 4) }
+        }) {
+            if (cs2d_ui_button(ui, CS2D_UI_ID("BtnLeaderboardClose"), "Close", 568.0f, 20.0f)) {
+                client->leaderboard_open = false;
+            }
+        }
         cs2d_ui_window_end(ui);
     }
 }
@@ -4612,6 +5068,8 @@ void cs2d_client_build_ui(cs2d_client_t *client, int screen_w, int screen_h)
     if (client->scene == CS2D_SCENE_EDITOR) cs2d_scene_editor_build_ui(client, screen_w, screen_h);
     cs2d_client_build_team_menu_ui(client, screen_w, screen_h);
     cs2d_client_build_server_info_ui(client, screen_w, screen_h);
+    cs2d_client_build_briefing_ui(client, screen_w, screen_h);
+    cs2d_client_build_leaderboard_ui(client, screen_w, screen_h);
     cs2d_client_build_console_ui(client, screen_w, screen_h);
     cs2d_client_build_create_server_ui(client, screen_w, screen_h);
     cs2d_client_build_options_ui(client, screen_w, screen_h);

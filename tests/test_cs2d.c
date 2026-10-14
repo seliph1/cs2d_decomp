@@ -35,6 +35,7 @@
 #include "cs2d_tilefx.h"
 #include "cs2d_gen.h"
 #include "cs2d_hudtxt.h"
+#include "cs2d_hudmen.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -2625,6 +2626,86 @@ static bool test_buy_menu(void)
 }
 
 /* ---------------------------------------------------------------------------
+ * Lua Server Menu (menu 120, opcode 235 CS2D_NET_LUAMENU, FUN_14015c320)
+ * --------------------------------------------------------------------------- */
+static bool test_lua_menu(void)
+{
+    printf("\n=== Testing Lua Server Menu (menu() / opcode 235) ===\n");
+
+    cs2d_luamenu_t m;
+    /* Test 1: standard menu with enabled, disabled with right text, unescaped chars */
+    cs2d_luamenu_parse(&m, "Main Menu,CHOOSE MAP|0,(LIKE),,(INVENTORY),ACHIEVEMENTS,,SHOW COUNTRIES,CHOOSE LANGUAGE,MORE..");
+    if (!m.open || m.mode != 0 || strcmp(m.title, "Main Menu") != 0) {
+        TEST_FAIL("luamenu parse", "Expected open, mode 0, title 'Main Menu'");
+    }
+    if (strcmp(m.items[0].label, "CHOOSE MAP") != 0 || strcmp(m.items[0].right, "0") != 0 || !m.items[0].enabled) {
+        TEST_FAIL("luamenu item 1", "Item 1 should be CHOOSE MAP | 0, enabled");
+    }
+    if (strcmp(m.items[1].label, "LIKE") != 0 || m.items[1].enabled) {
+        TEST_FAIL("luamenu item 2", "Item 2 should be LIKE, disabled");
+    }
+    if (m.items[2].label[0] != '\0') {
+        TEST_FAIL("luamenu item 3", "Item 3 should be empty");
+    }
+    if (strcmp(m.items[3].label, "INVENTORY") != 0 || m.items[3].enabled) {
+        TEST_FAIL("luamenu item 4", "Item 4 should be INVENTORY, disabled");
+    }
+    if (strcmp(m.items[4].label, "ACHIEVEMENTS") != 0 || !m.items[4].enabled) {
+        TEST_FAIL("luamenu item 5", "Item 5 should be ACHIEVEMENTS, enabled");
+    }
+    if (strcmp(m.items[6].label, "SHOW COUNTRIES") != 0 || !m.items[6].enabled) {
+        TEST_FAIL("luamenu item 7", "Item 7 should be SHOW COUNTRIES, enabled");
+    }
+    if (strcmp(m.items[8].label, "MORE..") != 0 || !m.items[8].enabled) {
+        TEST_FAIL("luamenu item 9", "Item 9 should be MORE.., enabled");
+    }
+
+    /* Test 2: @b (big center) and @i (invisible/hidden) */
+    cs2d_luamenu_parse(&m, "Vote Title@b,Option A,Option B");
+    if (!m.open || m.mode != 1 || strcmp(m.title, "Vote Title") != 0) {
+        TEST_FAIL("luamenu @b", "Mode should be 1 (big), title stripped of @b");
+    }
+    cs2d_luamenu_parse(&m, "Hidden Menu@i,Option 1,Option 2");
+    if (!m.open || m.mode != 2 || strcmp(m.title, "Hidden Menu") != 0) {
+        TEST_FAIL("luamenu @i", "Mode should be 2 (hidden), title stripped of @i");
+    }
+
+    /* F-keys resolve to their sys/controls.cfg names (F2 "serveraction1") without colliding with 'p'..'{' */
+    if (strcmp(cs2d_bind_key_name(CS2D_KEY_F1 + 1), "F2") != 0 || strcmp(cs2d_bind_key_name(CS2D_KEY_F1 + 11), "F12") != 0 ||
+        strcmp(cs2d_bind_key_name('y'), "Y") != 0) {
+        TEST_FAIL("bind key name", "CS2D_KEY_F1 + n should name F<n+1>");
+    }
+
+    /* Test 3: Key inputs (digit 0 = Cancel, 1 = Option A, 2 = disabled -> -1) */
+    cs2d_luamenu_parse(&m, "Test,Active,(Disabled)");
+    int k_dis = cs2d_luamenu_key(&m, 2);
+    if (k_dis != -1 || !m.open) {
+        TEST_FAIL("luamenu key disabled", "Disabled option must not trigger selection");
+    }
+    int k_act = cs2d_luamenu_key(&m, 1);
+    if (k_act != 1 || m.open) {
+        TEST_FAIL("luamenu key active", "Active option 1 must return 1 and close menu");
+    }
+    cs2d_luamenu_parse(&m, "Test,Active,(Disabled)");
+    int k_cancel = cs2d_luamenu_key(&m, 0);
+    if (k_cancel != 0 || m.open) {
+        TEST_FAIL("luamenu key cancel", "Digit 0 must return 0 (Cancel) and close menu");
+    }
+
+    /* Test 4: Mouse click */
+    cs2d_luamenu_parse(&m, "Test,Active,(Disabled)");
+    /* wx = 20, wy = 20, button 1 is at x = 36, y = 50, w = 240, h = 25 */
+    int click_act = cs2d_luamenu_click(&m, 50.0f, 60.0f, 850, 480);
+    if (click_act != 1 || m.open) {
+        TEST_FAIL("luamenu click active", "Click on button 1 must return 1 and close menu");
+    }
+
+    TEST_PASS("Lua server menu: parse, @b/@i modes, items 1..9, disabled (parentheses), key and click handling");
+    return true;
+}
+
+
+/* ---------------------------------------------------------------------------
  * Chunk-Based Shadow Map & Fast Incremental Invalidation
  * --------------------------------------------------------------------------- */
 static bool test_shadow_chunks(void)
@@ -4487,6 +4568,132 @@ static bool test_hudtxt(void)
     return ok;
 }
 
+/* mp_hudscale: Modes 0 (1:1), 1 (850x480 scaled), 2 (640x480 stretched), 3 (640x480 centered)
+ * and font sharpness (FUN_140291080, FUN_14024f5a0, 1402b0000.c:6760-6785) */
+static bool test_hudscale(void)
+{
+    printf("\n=== Testing mp_hudscale HUD Scaling & Sharpness ===\n");
+    bool ok = true;
+    cs2d_hudscale_calc_t tr;
+
+    /* Mode 0: 1:1 screen pixels */
+    cs2d_hudscale_compute(0, 1920, 1080, 100, 200, 20, &tr);
+    if (tr.x != 100.0f || tr.y != 200.0f || tr.scale_x != 1.0f || tr.scale_y != 1.0f || tr.font_size != 20) {
+        printf("  FAIL: Mode 0 at 1920x1080: x=%.1f y=%.1f sx=%.2f sy=%.2f sz=%d\n", tr.x, tr.y, tr.scale_x, tr.scale_y, tr.font_size);
+        ok = false;
+    }
+
+    /* Mode 1 at native 850x480: 1:1 scale */
+    cs2d_hudscale_compute(1, 850, 480, 425, 240, 20, &tr);
+    if (tr.x != 425.0f || tr.y != 240.0f || tr.scale_x != 1.0f || tr.scale_y != 1.0f || tr.font_size != 20) {
+        printf("  FAIL: Mode 1 at 850x480: x=%.1f y=%.1f sx=%.2f sy=%.2f sz=%d\n", tr.x, tr.y, tr.scale_x, tr.scale_y, tr.font_size);
+        ok = false;
+    }
+
+    /* Mode 1 at 1700x960 (2x scale, screen_h > 589): font sharpness selects raster size 40, render scale 1.0 */
+    cs2d_hudscale_compute(1, 1700, 960, 425, 240, 20, &tr);
+    if (tr.x != 850.0f || tr.y != 480.0f || tr.font_size != 40 || fabsf(tr.scale_x - 1.0f) > 0.001f ||
+        fabsf(tr.scale_y - 1.0f) > 0.001f) {
+        printf("  FAIL: Mode 1 at 1700x960: x=%.1f y=%.1f sx=%.2f sy=%.2f sz=%d\n", tr.x, tr.y, tr.scale_x, tr.scale_y, tr.font_size);
+        ok = false;
+    }
+
+    /* Mode 1 at 1700x960 with large font 60px (60 * 2 = 120 >= 100): clamped to 100px with scale 1.2 */
+    cs2d_hudscale_compute(1, 1700, 960, 425, 240, 60, &tr);
+    if (tr.x != 850.0f || tr.y != 480.0f || tr.font_size != 100 || fabsf(tr.scale_x - 1.2f) > 0.001f ||
+        fabsf(tr.scale_y - 1.2f) > 0.001f) {
+        printf("  FAIL: Mode 1 large font at 1700x960: x=%.1f y=%.1f sx=%.2f sy=%.2f sz=%d\n", tr.x, tr.y, tr.scale_x, tr.scale_y, tr.font_size);
+        ok = false;
+    }
+
+    /* Mode 1 at 1920x1080: g_zoom = 1080 / 480 = 2.25 */
+    cs2d_hudscale_compute(1, 1920, 1080, 425, 240, 20, &tr);
+    if (fabsf(tr.x - 956.25f) > 0.01f || fabsf(tr.y - 540.0f) > 0.01f || tr.font_size != 45 ||
+        fabsf(tr.scale_x - 1.0f) > 0.001f) {
+        printf("  FAIL: Mode 1 at 1920x1080: x=%.2f y=%.2f sx=%.2f sz=%d\n", tr.x, tr.y, tr.scale_x, tr.font_size);
+        ok = false;
+    }
+
+    /* Mode 1 at 2560x1080 ultrawide (> 1.78 aspect): pillarbox offset (2560 - 850 * 2.25) / 2 = 323.75 */
+    cs2d_hudscale_compute(1, 2560, 1080, 0, 0, 20, &tr);
+    if (fabsf(tr.x - 323.75f) > 0.01f || tr.y != 0.0f) {
+        printf("  FAIL: Mode 1 ultrawide offset: x=%.2f y=%.2f (expected 323.75, 0)\n", tr.x, tr.y);
+        ok = false;
+    }
+
+    /* Mode 2 at 640x480: 1:1 scale */
+    cs2d_hudscale_compute(2, 640, 480, 320, 240, 16, &tr);
+    if (tr.x != 320.0f || tr.y != 240.0f || tr.scale_x != 1.0f || tr.scale_y != 1.0f || tr.font_size != 16) {
+        printf("  FAIL: Mode 2 at 640x480: x=%.1f y=%.1f sx=%.2f sy=%.2f sz=%d\n", tr.x, tr.y, tr.scale_x, tr.scale_y, tr.font_size);
+        ok = false;
+    }
+
+    /* Mode 2 at 1280x960: stretched 2x horizontally and vertically */
+    cs2d_hudscale_compute(2, 1280, 960, 320, 240, 20, &tr);
+    if (fabsf(tr.x - 640.0f) > 0.01f || fabsf(tr.y - 480.0f) > 0.01f) {
+        printf("  FAIL: Mode 2 at 1280x960: x=%.1f y=%.1f\n", tr.x, tr.y);
+        ok = false;
+    }
+
+    /* Mode 3 at 850x480: 640x480 centered -> offset (850 - 640)/2 = 105, (480 - 480)/2 = 0 */
+    cs2d_hudscale_compute(3, 850, 480, 0, 0, 20, &tr);
+    if (tr.x != 105.0f || tr.y != 0.0f || tr.scale_x != 1.0f || tr.scale_y != 1.0f || tr.font_size != 20) {
+        printf("  FAIL: Mode 3 at 850x480: x=%.1f y=%.1f (expected 105, 0)\n", tr.x, tr.y);
+        ok = false;
+    }
+
+    /* Mode 3 at 1920x1080: offset (1920 - 640)/2 = 640, (1080 - 480)/2 = 300 */
+    cs2d_hudscale_compute(3, 1920, 1080, 10, 20, 16, &tr);
+    if (tr.x != 650.0f || tr.y != 320.0f || tr.scale_x != 1.0f || tr.scale_y != 1.0f || tr.font_size != 16) {
+        printf("  FAIL: Mode 3 at 1920x1080: x=%.1f y=%.1f (expected 650, 320)\n", tr.x, tr.y);
+        ok = false;
+    }
+
+    if (ok) TEST_PASS("mp_hudscale: modes 0..3, zoom, aspect letterbox, and font sharpness");
+    return ok;
+}
+
+/* Ingame menu (Tgui_hudmen menu 2 / 100) helpers: leaderboard formats (FUN_140199930, FUN_1402e2ef0, matching
+ * "29 d 15 h", "8 h 4 m" and "2026/10/14 16:21" on the original's screenshots), vote order and brightness
+ * (votesetup 0x140087a50, getVoteBrightness 0x140064830), info box texts ("3/28 (2 Bots)", "200ms (62 ticks)") */
+static bool test_game_menu(void)
+{
+    printf("\n=== Testing the ingame menu (menu, vote, leaderboard) ===\n");
+    char b[64];
+    cs2d_format_playtime(42, b, sizeof(b));
+    if (strcmp(b, "42 s") != 0) TEST_FAIL("Game menu", b);
+    cs2d_format_playtime(185, b, sizeof(b));
+    if (strcmp(b, "3 m 5 s") != 0) TEST_FAIL("Game menu", b);
+    cs2d_format_playtime(8 * 3600 + 4 * 60 + 59, b, sizeof(b));
+    if (strcmp(b, "8 h 4 m") != 0) TEST_FAIL("Game menu", b);
+    cs2d_format_playtime(29 * 86400 + 15 * 3600 + 100, b, sizeof(b));
+    if (strcmp(b, "29 d 15 h") != 0) TEST_FAIL("Game menu", b);
+    cs2d_format_timestamp(1700000000, b, sizeof(b));
+    if (strcmp(b, "2023/11/14 22:13") != 0) TEST_FAIL("Game menu", b);
+    cs2d_format_timestamp(1791994860, b, sizeof(b));
+    if (strcmp(b, "2026/10/14 16:21") != 0) TEST_FAIL("Game menu", b);
+    cs2d_gamemenu_players_text(3, 2, 28, b, sizeof(b));
+    if (strcmp(b, "3/28 (2 Bots)") != 0) TEST_FAIL("Game menu", b);
+    cs2d_gamemenu_lag_text(2, 16, b, sizeof(b));
+    if (strcmp(b, "200ms (62 ticks)") != 0) TEST_FAIL("Game menu", b);
+    if (cs2d_vote_brightness(0) != 125 || cs2d_vote_brightness(1) != 200 || cs2d_vote_brightness(3) != 240 ||
+        cs2d_vote_brightness(7) != 255) TEST_FAIL("Game menu", "vote brightness");
+    static cs2d_vote_list_t l;
+    memset(&l, 0, sizeof(l));
+    const char *names[] = { "real", "[b]Gun", "zz", "aa" };
+    const int votes[]   = { 0, 0, 2, 1 };
+    for (int i = 0; i < 4; i++) {
+        snprintf(l.e[i].label, sizeof(l.e[i].label), "%s", names[i]);
+        l.e[i].votes = votes[i];
+    }
+    l.n = 4;
+    cs2d_vote_list_sort(&l);
+    if (strcmp(l.e[0].label, "zz") != 0 || strcmp(l.e[1].label, "aa") != 0 || strcmp(l.e[2].label, "[b]Gun") != 0 ||
+        strcmp(l.e[3].label, "real") != 0) TEST_FAIL("Game menu", "vote list order");
+    TEST_PASS("Ingame menu texts, leaderboard formats and vote list order");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -4494,7 +4701,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 44;
+    int total = 47;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -4523,6 +4730,7 @@ int main(void)
     if (test_construction()) passed++;
     if (test_weapon_select()) passed++;
     if (test_buy_menu()) passed++;
+    if (test_lua_menu()) passed++;
     if (test_shadow_chunks()) passed++;
     if (test_entity_culling()) passed++;
     if (test_radar_icons()) passed++;
@@ -4540,6 +4748,8 @@ int main(void)
     if (test_gen_entities()) passed++;
     if (test_tilefx()) passed++;
     if (test_hudtxt()) passed++;
+    if (test_hudscale()) passed++;
+    if (test_game_menu()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

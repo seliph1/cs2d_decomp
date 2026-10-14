@@ -4782,8 +4782,9 @@ void cs2d_render_text_ex(cs2d_font_id_t font_id, float x, float y, const char *t
     cs2d_render_text_scaled_ex(font_id, x, y, text, 1.0f, r, g, b, a);
 }
 
-void cs2d_render_text_scaled_ex(cs2d_font_id_t font_id, float x, float y, const char *text, float scale_x,
-                                float r, float g, float b, float a)
+void cs2d_render_text_transform_ex(cs2d_font_id_t font_id, float x, float y, const char *text,
+                                    float scale_x, float scale_y,
+                                    float r, float g, float b, float a)
 {
     cs2d_text_cache_entry_t *e = get_or_create_text_entry(font_id, text);
     if (!e || e->tex_id == 0) return;
@@ -4791,10 +4792,16 @@ void cs2d_render_text_scaled_ex(cs2d_font_id_t font_id, float x, float y, const 
     float rx = floorf(x);
     float ry = floorf(y);
     float rw = (float)e->tex_w * scale_x;
-    float rh = (float)e->tex_h;
+    float rh = (float)e->tex_h * scale_y;
 
     cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
     cs2d_gl_quad(e->tex_id, rx, ry, rw, rh, 0.0f, 0.0f, 1.0f, 1.0f, r, g, b, a);
+}
+
+void cs2d_render_text_scaled_ex(cs2d_font_id_t font_id, float x, float y, const char *text, float scale_x,
+                                float r, float g, float b, float a)
+{
+    cs2d_render_text_transform_ex(font_id, x, y, text, scale_x, 1.0f, r, g, b, a);
 }
 
 void cs2d_render_text_measure(cs2d_font_id_t font_id, const char *text, float *out_w, float *out_h)

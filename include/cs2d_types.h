@@ -290,6 +290,8 @@ typedef struct {
     float       assists_inc_time;    /* Same for the assists (Tpl +0x290) */
     float       dead_time;           /* 60 Hz frames since death (Tpl +0x29c; scoreboard fade < 130) */
     uint32_t    usgn_id;
+    int         votekick;            /* Tpl.votekick: voted player id, 0 = none */
+    int         votemap;             /* Tpl.votemap + 1: voted map cycle index + 1, 0 = none */
 } cs2d_player_t;
 
 /* Entity (exact structure from cs2d_spec_map_format.txt section 5) */

@@ -29,6 +29,23 @@
 #define CS2D_CONSOLE_LINE_LEN      192
 #define CS2D_CONSOLE_HIST_MAX      32
 #define CS2D_SERVER_INFO_MAX_LINES 128
+#define CS2D_LEADERBOARD_MAX       100 /* Ranks 1..100 (LeaderboardRequest.add: p1 - 1 < 100) */
+#define CS2D_VOTE_MAX_MAPS         64
+
+/* Ingame menu (Tgui_hudmen menu 2) and vote screen (menu 100) */
+enum {
+    CS2D_GAMEMENU_MAIN = 2,
+    CS2D_GAMEMENU_VOTE = 100
+};
+
+/* LeaderboardPlayer (FUN_14005b790), filled by [230,1] */
+typedef struct {
+    bool    have;
+    char    name[64];
+    uint8_t id_type;    /* 0 U.S.G.N., 1 Steam */
+    int64_t id;
+    int     score, kills, deaths, assists, mvp, time_played;
+} cs2d_lb_row_t;
 
 typedef struct {
     char    text[CS2D_CONSOLE_LINE_LEN];
@@ -114,6 +131,8 @@ struct cs2d_client {
     int             build_ty;
     float           build_rot;         /* DAT_140ddf468: player rotation when the menu opened */
     cs2d_buymenu_t  buy;               /* Buy menu (Tgui_hudmen menus 20..26, "buy" / "buyequip" commands) */
+    int             game_menu;         /* CS2D_GAMEMENU_*: ESC menu or vote screen, 0 closed */
+    cs2d_luamenu_t  luamenu;           /* Lua server menu (Tgui_hudmen menu 120, opcode 235 CS2D_NET_LUAMENU) */
 
     /* Respawn game modes: mp_respawndelay ([252,6], 0x140a14e40[1]) and the local player's death time
      * (Tpl +0x350 timer) for "Respawn possible in $1 sec" */
@@ -200,6 +219,18 @@ struct cs2d_client {
     bool                net_infammo;       /* mp_infammo (0x140a14e38[1], [252,6] after the respawn delay) */
     bool                net_forcelight;    /* sv_forcelight (0x140a14ee0[1], [252,6] / [237,19]): light engine at least 1 */
     int                 net_daylight;      /* sv_daylighttime (0x140a14ec8[1], [252,6] / [237,20]): sun angle, -1 = map */
+    int                 net_hudscale;      /* mp_hudscale (0x140a14de8[1], [252,6] / [237,22]): 0 pixel, 1 850x480, 2 640x480 stretched, 3 640x480 centered */
+    int                 net_maxplayers;    /* [252,6] (0x140a14f20) */
+    bool                net_ff;            /* mp_friendlyfire (0x140a14f10) */
+    int                 net_voicechat;     /* sv_voicechat (0x140a14ed8) */
+    bool                net_recoil;        /* mp_recoil influences accuracy (0x140a14df0) */
+    bool                net_offscreen;     /* sv_offscreendamage (0x140a14de0) */
+    bool                net_physics;       /* physics (0x140a14df8) */
+    bool                net_lua;           /* Lua scripts (DAT_140ddf3e4) */
+    int                 net_os;            /* 1 Windows, 2 MacOS, 3 Linux (DAT_140ddf3f0) */
+    int                 net_lag_ticks;     /* DAT_140ddf13c */
+    int                 net_lagcomp;       /* DAT_140ddf140 */
+    bool                net_leaderboard;   /* Leaderboard available (0x140a14dd8) */
     int                 net_ticks;         /* Server ticks from [247] (DAT_140ddf3e0), -1 until received */
     char                net_password[64];  /* Server password sent in [252,1] (connect <ip> <port> [password]) */
     uint8_t             net_seen_seq[8192]; /* Reliable sequence numbers already handled (1 bit each) */
@@ -221,6 +252,22 @@ struct cs2d_client {
     int                 server_info_line_count;
     cs2d_ui_scroll_t    server_info_scroll;        /* Top visible line (0 = top of serverinfo) */
     int                 server_info_visible_lines;
+    bool                briefing_open;             /* "Map Briefing": maps/<map>.txt (Tgui_tb 0x140a164b8) */
+    cs2d_console_line_t briefing_lines[CS2D_SERVER_INFO_MAX_LINES];
+    int                 briefing_line_count;
+    cs2d_ui_scroll_t    briefing_scroll;
+    int                 briefing_visible_lines;
+    bool                leaderboard_open;          /* "Server Leaderboard" (Tgui_leadlist 0x140a15490) */
+    cs2d_lb_row_t       lb_rows[CS2D_LEADERBOARD_MAX + 1];
+    bool                lb_requested[CS2D_LEADERBOARD_MAX + 1]; /* LeaderboardRequest.list_top */
+    uint8_t             lb_queue[CS2D_LEADERBOARD_MAX];         /* LeaderboardRequest.list: ranks to request */
+    int                 lb_queue_count;
+    int                 lb_queue_timer;            /* LeaderboardRequest.timer: 6 updates before each [230,1] */
+    float               lb_frame_accum;
+    int32_t             lb_timestamp;              /* LeaderboardPlayer.timestamp, 0 = no answer */
+    cs2d_ui_scroll_t    lb_scroll;
+    char                vote_maps[CS2D_VOTE_MAX_MAPS][64]; /* Server map cycle 0x140a0fd98 ([252,7,9]) */
+    int                 vote_map_count;
     bool                team_menu_open;
     int                 team_menu_page;            /* 0 = Select Team, 1 = Terrorists, 2 = Counter-Terrorists */
     bool                servers_open;              /* "Servers" window (Find Servers) */
@@ -336,7 +383,14 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line);
 void cs2d_client_add_kill(cs2d_client_t *client, int killer, int weapon, int victim, int assist);
 /* In-game chat (Thud_msg.add_chat / draw_chat 0x14024d8a0, FUN_1401de400) */
 void cs2d_client_add_chat(cs2d_client_t *client, uint8_t sender_id, uint8_t mode, uint8_t r, uint8_t g, uint8_t b, const char *text);
+/* Ingame menu actions: leaderboard [230], votes [43], map briefing (maps/<map>.txt) */
+void cs2d_client_leaderboard_reset(cs2d_client_t *client);
+void cs2d_client_leaderboard_open(cs2d_client_t *client);
+void cs2d_client_send_vote(cs2d_client_t *client, int type, int value);
+void cs2d_client_on_vote(cs2d_client_t *client, int voter, int type, int value);
+bool cs2d_client_briefing_open(cs2d_client_t *client);
 void cs2d_client_send_chat(cs2d_client_t *client, uint8_t mode, const char *text);
+void cs2d_client_send_luamenu(cs2d_client_t *client, uint8_t button);
 bool cs2d_parse_color_code(const char *in, uint8_t *out_r, uint8_t *out_g, uint8_t *out_b, const char **out_text);
 bool cs2d_strip_center_tag(char *text);
 void cs2d_client_handle_server_msg(cs2d_client_t *client, uint8_t sender_id, uint8_t mode, uint8_t r, uint8_t g, uint8_t b, const char *text);

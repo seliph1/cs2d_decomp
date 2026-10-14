@@ -5,6 +5,7 @@
 #include "cs2d_network.h"
 #include "cs2d_scoreboard.h"
 #include "cs2d_editor.h"
+#include "cs2d_hudmen.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +35,11 @@ static void center_camera_on_local_player(cs2d_client_t *client)
 static cs2d_texture_t s_tex_shade; /* gfx/gui_shade.bmp (0x140a0de78) */
 static cs2d_texture_t s_tex_shade_c; /* gfx/hud_shade_c.bmp 250x20, maskMode 3, top-left handle (0x140a0dd28) */
 static cs2d_texture_t s_tex_gui_c;  /* gfx/gui_c.bmp: 4 rounded corners of 16x16, maskMode 3 (0x140a0dea0) */
+
+/* Ingame menu and vote screen (defined near game_handle_escape) */
+static void game_menu_render(cs2d_client_t *client, int screen_w, int screen_h);
+static void game_menu_click(cs2d_client_t *client, float mx, float my);
+static void game_menu_key(cs2d_client_t *client, int digit);
 
 /* DAT_140ddf344: HUD windows open (the console does not count) */
 static bool spec_menu_open(const cs2d_client_t *client)
@@ -2299,8 +2305,13 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
                                                  screen_w, screen_h);
         else client->buy.menu = 0;
     }
-    /* FUN_14024f5a0: Lua HUD texts after the HUD, before the chat (0x1402a0000 game HUD) */
-    cs2d_hudtxt_render(&client->hudtxt);
+    if (client->luamenu.open) {
+        cs2d_luamenu_render(&client->luamenu, client->mouse_screen_x, client->mouse_screen_y,
+                            screen_w, screen_h);
+    }
+    if (client->game_menu) game_menu_render(client, screen_w, screen_h);
+    /* FUN_14024f5a0: Lua HUD texts with mp_hudscale transform after the HUD, before the chat (0x1402a0000 game HUD) */
+    cs2d_hudtxt_render(&client->hudtxt, screen_w, screen_h, client->net_hudscale);
     render_kill_msgs(client, screen_w);
     render_chat(client, screen_w, screen_h);
     render_center_msgs(client, screen_w, screen_h);
@@ -2370,6 +2381,10 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
         if (pressed) build_menu_key(client, key - '0');
         return;
     }
+    if (client->game_menu && key >= '0' && key <= '9') {
+        if (pressed) game_menu_key(client, key - '0');
+        return;
+    }
     /* Number keys pick Buy menu buttons (Tgui_hudmen.button: DAT_140ddf340 == key) */
     if (client->buy.menu && key >= '0' && key <= '9') {
         if (pressed) {
@@ -2377,6 +2392,16 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
             cs2d_buyctx_t ctx = buy_ctx(client);
             cs2d_buy_act_t act = cs2d_buymenu_key(&client->buy, &ctx, key - '0', &item);
             buy_menu_result(client, act, item);
+        }
+        return;
+    }
+    /* Number keys in Lua server menu */
+    if (client->luamenu.open && key >= '0' && key <= '9') {
+        if (pressed) {
+            int sel = cs2d_luamenu_key(&client->luamenu, key - '0');
+            if (sel >= 0) {
+                cs2d_client_send_luamenu(client, (uint8_t)sel);
+            }
         }
         return;
     }
@@ -2391,6 +2416,17 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
     if (bound) {
         if (_stricmp(bound, "say") == 0 || _stricmp(bound, "sayteam") == 0) {
             cs2d_client_console_exec(client, bound);
+            return;
+        }
+        if (_stricmp(bound, "serverinfo") == 0 || _stricmp(bound, "console") == 0) {
+            if (_stricmp(bound, "console") == 0) cs2d_client_handle_console_key(client, SDLK_GRAVE);
+            else cs2d_client_console_exec(client, bound);
+            return;
+        }
+        /* "serveraction1..3" (0x1401b1446..): FUN_1401de400(local id, 4, "1".."3") sends them as a [240] message of
+         * mode 4 with the action digit as text; the dedicated turns it into the Lua serveraction hook */
+        if (_strnicmp(bound, "serveraction", 12) == 0 && bound[12] >= '1' && bound[12] <= '3' && !bound[13]) {
+            if (client->connected && client->join_stage == 5) cs2d_client_send_chat(client, 4, bound + 12);
             return;
         }
         if (cs2d_scene_game_inv_cmd(client, bound) || cs2d_scene_game_buy_cmd(client, bound)) return;
@@ -2478,6 +2514,11 @@ static void game_handle_mouse(cs2d_client_t *client, float mx, float my, int but
         if (!pressed) { client->mouse_fire = false; client->mouse_attack2 = false; }
         return;
     }
+    if (client->game_menu) {
+        if (pressed && button == 1) game_menu_click(client, mx, my);
+        if (!pressed) { client->mouse_fire = false; client->mouse_attack2 = false; }
+        return;
+    }
     if (client->buy.menu) {
         /* The menu is modal: clicks never reach the game */
         if (pressed && button == 1) {
@@ -2486,6 +2527,16 @@ static void game_handle_mouse(cs2d_client_t *client, float mx, float my, int but
             cs2d_buy_act_t act = cs2d_buymenu_click(&client->buy, &ctx, mx, my, client->config.window_width,
                                                     client->config.window_height, &item);
             buy_menu_result(client, act, item);
+        }
+        if (!pressed) { client->mouse_fire = false; client->mouse_attack2 = false; }
+        return;
+    }
+    if (client->luamenu.open) {
+        if (pressed && button == 1) {
+            int sel = cs2d_luamenu_click(&client->luamenu, mx, my, client->config.window_width, client->config.window_height);
+            if (sel >= 0) {
+                cs2d_client_send_luamenu(client, (uint8_t)sel);
+            }
         }
         if (!pressed) { client->mouse_fire = false; client->mouse_attack2 = false; }
         return;
@@ -2521,6 +2572,210 @@ static void game_handle_mouse(cs2d_client_t *client, float mx, float my, int but
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * Ingame menu (Esc, Tgui_hudmen menu 2) and vote screen (menu 100)
+ * --------------------------------------------------------------------------- */
+
+static void server_address(const cs2d_client_t *client, char *out, size_t n)
+{
+    uint32_t ip = ntohl(client->server_addr.sin_addr.s_addr);
+    snprintf(out, n, "%u.%u.%u.%u:%u", (ip >> 24) & 255, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255,
+             (unsigned)ntohs(client->server_addr.sin_port));
+}
+
+/* sys/favorites.lst: one "ip:port" per line (the server browser favorites, toggled by the menu's Favorite row) */
+static bool favorite_has(const char *addr)
+{
+    FILE *f = fopen("sys/favorites.lst", "rb");
+    if (!f) return false;
+    char line[128];
+    bool found = false;
+    while (!found && fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        found = strcmp(line, addr) == 0;
+    }
+    fclose(f);
+    return found;
+}
+
+static void favorite_toggle(const char *addr)
+{
+    static char lines[256][128];
+    int n = 0;
+    bool found = false;
+    FILE *f = fopen("sys/favorites.lst", "rb");
+    if (f) {
+        while (n < 256 && fgets(lines[n], sizeof(lines[n]), f)) {
+            lines[n][strcspn(lines[n], "\r\n")] = '\0';
+            if (strcmp(lines[n], addr) == 0) found = true;
+            else n++;
+        }
+        fclose(f);
+    }
+    if (!found && n < 256) snprintf(lines[n++], sizeof(lines[0]), "%s", addr);
+    f = fopen("sys/favorites.lst", "wb");
+    if (!f) return;
+    for (int i = 0; i < n; i++) fprintf(f, "%s\r\n", lines[i]);
+    fclose(f);
+}
+
+static cs2d_gamemenu_info_t game_menu_info(const cs2d_client_t *client, char *addr, size_t addr_n)
+{
+    server_address(client, addr, addr_n);
+    cs2d_gamemenu_info_t info = {
+        .server_name = client->net_server_name, .address = addr, .map = client->net_map_name,
+        .os = client->net_os, .ticks = client->net_ticks < 0 ? 0 : client->net_ticks,
+        .max_players = client->net_maxplayers, .gamemode = client->net_sv_gamemode,
+        .ff = client->net_ff, .forcelight = client->net_forcelight, .recoil = client->net_recoil,
+        .offscreen = client->net_offscreen, .physics = client->net_physics, .lua = client->net_lua,
+        .voicechat = client->net_voicechat, .fow = client->net_sv_fow,
+        .lagcomp = client->net_lagcomp, .lag_ticks = client->net_lag_ticks,
+        .leaderboard = client->net_leaderboard, .favorite = favorite_has(addr)
+    };
+    for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
+        const cs2d_player_t *p = &client->game.players[i];
+        if (p->id == 0) continue;
+        info.players++;
+        if (p->bot) info.bots++;
+    }
+    return info;
+}
+
+/* Tgui_hudmen.votesetup (0x140087a50): non-bot players in a team, then the server map cycle */
+static void vote_lists(const cs2d_client_t *client, cs2d_vote_list_t *kick, cs2d_vote_list_t *maps)
+{
+    kick->n = maps->n = 0;
+    for (int i = 1; i <= CS2D_MAX_PLAYERS && kick->n < CS2D_VOTE_LIST_MAX; i++) {
+        const cs2d_player_t *p = &client->game.players[i];
+        if (p->id == 0 || p->team == CS2D_TEAM_SPEC || p->bot) continue;
+        cs2d_vote_entry_t *e = &kick->e[kick->n++];
+        memset(e, 0, sizeof(*e));
+        snprintf(e->label, sizeof(e->label), "%s", p->name);
+        e->value = i;
+        e->mark  = i == client->local_player_id;
+        for (int k = 1; k <= CS2D_MAX_PLAYERS; k++) {   /* TVote.getVotesForPlayer */
+            const cs2d_player_t *q = &client->game.players[k];
+            if (q->id != 0 && q->team != CS2D_TEAM_SPEC && q->votekick == i) e->votes++;
+        }
+    }
+    for (int i = 0; i < client->vote_map_count && maps->n < CS2D_VOTE_LIST_MAX; i++) {
+        cs2d_vote_entry_t *e = &maps->e[maps->n++];
+        memset(e, 0, sizeof(*e));
+        snprintf(e->label, sizeof(e->label), "%s", client->vote_maps[i]);
+        e->value   = i;
+        e->current = e->mark = strcmp(client->vote_maps[i], client->net_map_name) == 0;
+        for (int k = 1; k <= CS2D_MAX_PLAYERS; k++) {   /* TVote.getVotesForMap */
+            const cs2d_player_t *q = &client->game.players[k];
+            if (q->id != 0 && q->team != CS2D_TEAM_SPEC && q->votemap == i + 1) e->votes++;
+        }
+    }
+    cs2d_vote_list_sort(kick);
+    cs2d_vote_list_sort(maps);
+}
+
+static void game_menu_render(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    float wx, wy;
+    cs2d_hudmen_origin(screen_w, screen_h, &wx, &wy);
+    if (client->game_menu == CS2D_GAMEMENU_MAIN) {
+        char addr[32];
+        cs2d_gamemenu_info_t info = game_menu_info(client, addr, sizeof(addr));
+        cs2d_gamemenu_render(&info, client->mouse_screen_x, client->mouse_screen_y, wx, wy);
+    } else if (client->game_menu == CS2D_GAMEMENU_VOTE) {
+        cs2d_vote_list_t kick, maps;
+        vote_lists(client, &kick, &maps);
+        cs2d_votemenu_render(&kick, &maps, client->mouse_screen_x, client->mouse_screen_y, wx, wy);
+    }
+}
+
+/* The other windows replace the menu (the original opens them on top of it at the same place) */
+static void game_menu_act(cs2d_client_t *client, cs2d_gm_act_t act)
+{
+    char addr[32];
+    switch (act) {
+        case CS2D_GM_BRIEFING:
+            client->game_menu = 0;
+            cs2d_client_briefing_open(client);
+            break;
+        case CS2D_GM_TEAM:
+            client->game_menu      = 0;
+            client->team_menu_open = true;
+            client->team_menu_page = 0;
+            break;
+        case CS2D_GM_LEADERBOARD:
+            client->game_menu = 0;
+            cs2d_client_leaderboard_open(client);
+            break;
+        case CS2D_GM_VOTE:
+            client->game_menu = CS2D_GAMEMENU_VOTE;
+            break;
+        case CS2D_GM_OPTIONS:
+            client->game_menu     = 0;
+            client->options_open  = true;
+            client->ui.focused_id = CS2D_UI_ID("OptPlayerName");
+            break;
+        case CS2D_GM_DISCONNECT:
+            client->game_menu = 0;
+            cs2d_client_set_scene(client, CS2D_SCENE_LOBBY);
+            cs2d_client_console_print(client, 255, 220, 0, "Disconnected from server.");
+            break;
+        case CS2D_GM_CLOSE:
+            client->game_menu = 0;
+            break;
+        case CS2D_GM_SERVERINFO:
+            /* Without serverinfo lines: "there is no additional server information" in red */
+            client->game_menu = 0;
+            if (client->server_info_line_count > 0) {
+                client->server_info_open = true;
+                client->server_info_scroll.top = 0;
+            } else {
+                cs2d_client_center_msg(client, 255, 0, 0, "there is no additional server information");
+            }
+            break;
+        case CS2D_GM_FAVORITE:
+            server_address(client, addr, sizeof(addr));
+            favorite_toggle(addr);
+            break;
+        default:
+            break;
+    }
+}
+
+/* Vote screen: a row runs "vote <player>" / "votemap <map>" ([43, 1|2, value]) and closes the menu */
+static void vote_menu_result(cs2d_client_t *client, int type, int value)
+{
+    if (type > 0) cs2d_client_send_vote(client, type, value);
+    if (type >= 0) client->game_menu = 0;
+}
+
+static void game_menu_click(cs2d_client_t *client, float mx, float my)
+{
+    float wx, wy;
+    cs2d_hudmen_origin(client->config.window_width, client->config.window_height, &wx, &wy);
+    if (client->game_menu == CS2D_GAMEMENU_MAIN) {
+        char addr[32];
+        cs2d_gamemenu_info_t info = game_menu_info(client, addr, sizeof(addr));
+        game_menu_act(client, cs2d_gamemenu_click(&info, mx, my, wx, wy));
+    } else {
+        cs2d_vote_list_t kick, maps;
+        vote_lists(client, &kick, &maps);
+        int value = 0;
+        int type = cs2d_votemenu_click(&kick, &maps, mx, my, wx, wy, &value);
+        vote_menu_result(client, type, value);
+    }
+}
+
+static void game_menu_key(cs2d_client_t *client, int digit)
+{
+    if (client->game_menu == CS2D_GAMEMENU_MAIN) {
+        char addr[32];
+        cs2d_gamemenu_info_t info = game_menu_info(client, addr, sizeof(addr));
+        game_menu_act(client, cs2d_gamemenu_key(&info, digit));
+    } else if (digit == 0) {
+        client->game_menu = 0;
+    }
+}
+
 static void game_handle_escape(cs2d_client_t *client)
 {
     if (client->buy.menu) {
@@ -2531,9 +2786,12 @@ static void game_handle_escape(cs2d_client_t *client)
         client->build_menu_open = client->build_mode = false;
         return;
     }
-    /* Leaving the game disconnects and returns to the main menu */
-    cs2d_client_set_scene(client, CS2D_SCENE_LOBBY);
-    cs2d_client_console_print(client, 255, 220, 0, "Disconnected from server.");
+    if (client->luamenu.open) {
+        client->luamenu.open = false;
+        return;
+    }
+    /* Esc toggles the ingame menu (Tgui_hudmen menu 2); "Disconnect / Quit" leaves the server */
+    client->game_menu = client->game_menu ? 0 : CS2D_GAMEMENU_MAIN;
 }
 
 const cs2d_scene_t cs2d_scene_game = {

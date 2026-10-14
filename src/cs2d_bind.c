@@ -102,6 +102,12 @@ const char *cs2d_bind_key_name(int key)
         case VK_SHIFT:    return "leftshift";
         case VK_TAB:      return "tab";
         case VK_BACK:     return "backspace";
-        default:          return NULL;
+        default:          break;
     }
+    if (key >= CS2D_KEY_F1 && key < CS2D_KEY_F1 + 12) {
+        static char fname[4];
+        snprintf(fname, sizeof(fname), "F%d", key - CS2D_KEY_F1 + 1);
+        return fname;
+    }
+    return NULL;
 }
