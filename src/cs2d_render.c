@@ -28,46 +28,9 @@ bool cs2d_render_has_context(void)
     return g_gl_ctx != NULL;
 }
 
-/*
- * Image files are decoded by the portable asset decoder (src/cs2d_image.c). GDI+ is no longer part
- * of that path: the only thing still starting gdiplus.dll is the TrueType text engine further down.
- */
+/* Image files are decoded by the portable asset decoder (src/cs2d_image.c), text by src/cs2d_font.c */
 #include "cs2d_image.h"
-
-/* Minimal GDI+ Flat API bindings — still used by the TrueType text engine (see the font block) */
-typedef int GpStatus;
-typedef void GpBitmap;
-typedef void GpImage;
-typedef uint32_t ARGB;
-
-typedef struct {
-    uint32_t GdiplusVersion;
-    void    *DebugEventCallback;
-    BOOL     SuppressBackgroundThread;
-    BOOL     SuppressExternalCodecs;
-} GdiplusStartupInput;
-
-typedef GpStatus (WINAPI *PFN_GdiplusStartup)(ULONG_PTR *token, const GdiplusStartupInput *input, void *output);
-
-static HMODULE            g_gdiplus_mod = NULL;
-static ULONG_PTR          g_gdiplus_token = 0;
-static PFN_GdiplusStartup pGdiplusStartup = NULL;
-
-static bool init_gdiplus_once(void)
-{
-    if (pGdiplusStartup) return true;
-    g_gdiplus_mod = LoadLibraryA("gdiplus.dll");
-    if (!g_gdiplus_mod) return false;
-
-    pGdiplusStartup = (PFN_GdiplusStartup)(void *)GetProcAddress(g_gdiplus_mod, "GdiplusStartup");
-    if (!pGdiplusStartup) return false;
-
-    GdiplusStartupInput input = { 1, NULL, FALSE, FALSE };
-    if (pGdiplusStartup(&g_gdiplus_token, &input, NULL) != 0) {
-        return false;
-    }
-    return true;
-}
+#include "cs2d_font.h"
 
 #ifndef GL_CLAMP_TO_EDGE
 #define GL_CLAMP_TO_EDGE 0x812F
@@ -523,7 +486,9 @@ bool cs2d_render_init(SDL_Window *window, int width, int height)
         return false;
     }
 
+#ifndef __EMSCRIPTEN__ /* WebGL: multisampling is a context attribute, there is no enable */
     glEnable(GL_MULTISAMPLE);
+#endif
     cs2d_render_resize(width, height);
 
     /* Automatically initialize the global CS2D graphics bank now that GL context is active */
@@ -4527,64 +4492,10 @@ void cs2d_render_scope(float mx, float my, int level, int screen_w, int screen_h
 }
 
 /*
- * High-Quality CS2D TrueType Font Engine (gfx/fonts/liberationsans.ttf & sourcesans.ttf)
- * Uses GDI+ PrivateFontCollection + TextRenderingHintAntiAlias (unhinted 256-level grayscale
- * to avoid broken TrueType GridFit bytecode instructions in liberationsans.ttf) with a
- * FreeType-style stem-darkening gamma curve (pow(a, 0.62)) and a 512-entry GPU String Texture Cache.
+ * TrueType text: src/cs2d_font.c measures and rasterizes one line (GDI+ on the Windows desktop,
+ * stb_truetype elsewhere); this block keeps a 512-entry GPU string texture cache on top of it and
+ * applies a FreeType-style stem-darkening gamma curve to the coverage.
  */
-typedef void GpGraphics;
-typedef void GpFontCollection;
-typedef void GpFontFamily;
-typedef void GpFont;
-typedef void GpStringFormat;
-typedef void GpBrush;
-typedef void GpSolidFill;
-
-typedef struct {
-    float X;
-    float Y;
-    float Width;
-    float Height;
-} GpRectF;
-
-typedef GpStatus (WINAPI *PFN_GdipCreateBitmapFromScan0)(INT width, INT height, INT stride, INT format, BYTE *scan0, GpBitmap **bitmap);
-typedef GpStatus (WINAPI *PFN_GdipGetImageGraphicsContext)(GpImage *image, GpGraphics **graphics);
-typedef GpStatus (WINAPI *PFN_GdipDeleteGraphics)(GpGraphics *graphics);
-typedef GpStatus (WINAPI *PFN_GdipGraphicsClear)(GpGraphics *graphics, ARGB color);
-typedef GpStatus (WINAPI *PFN_GdipSetTextRenderingHint)(GpGraphics *graphics, INT mode);
-typedef GpStatus (WINAPI *PFN_GdipNewPrivateFontCollection)(GpFontCollection **fontCollection);
-typedef GpStatus (WINAPI *PFN_GdipPrivateAddFontFile)(GpFontCollection *fontCollection, const WCHAR *filename);
-typedef GpStatus (WINAPI *PFN_GdipCreateFontFamilyFromName)(const WCHAR *name, GpFontCollection *fontCollection, GpFontFamily **fontFamily);
-typedef GpStatus (WINAPI *PFN_GdipCreateFont)(const GpFontFamily *fontFamily, float emSize, INT style, INT unit, GpFont **font);
-typedef GpStatus (WINAPI *PFN_GdipDeleteFont)(GpFont *font);
-typedef GpStatus (WINAPI *PFN_GdipCreateSolidFill)(ARGB color, GpSolidFill **brush);
-typedef GpStatus (WINAPI *PFN_GdipDeleteBrush)(GpBrush *brush);
-typedef GpStatus (WINAPI *PFN_GdipStringFormatGetGenericTypographic)(GpStringFormat **format);
-typedef GpStatus (WINAPI *PFN_GdipCloneStringFormat)(const GpStringFormat *format, GpStringFormat **newFormat);
-typedef GpStatus (WINAPI *PFN_GdipSetStringFormatFlags)(GpStringFormat *format, INT flags);
-typedef GpStatus (WINAPI *PFN_GdipDeleteStringFormat)(GpStringFormat *format);
-typedef GpStatus (WINAPI *PFN_GdipDrawString)(GpGraphics *graphics, const WCHAR *string, INT length, const GpFont *font, const GpRectF *layoutRect, const GpStringFormat *stringFormat, const GpBrush *brush);
-typedef GpStatus (WINAPI *PFN_GdipMeasureString)(GpGraphics *graphics, const WCHAR *string, INT length, const GpFont *font, const GpRectF *layoutRect, const GpStringFormat *stringFormat, GpRectF *boundingBox, INT *codepointsFitted, INT *linesFilled);
-
-static PFN_GdipCreateBitmapFromScan0             pGdipCreateBitmapFromScan0 = NULL;
-static PFN_GdipGetImageGraphicsContext           pGdipGetImageGraphicsContext = NULL;
-static PFN_GdipDeleteGraphics                    pGdipDeleteGraphics = NULL;
-static PFN_GdipGraphicsClear                     pGdipGraphicsClear = NULL;
-static PFN_GdipSetTextRenderingHint              pGdipSetTextRenderingHint = NULL;
-static PFN_GdipNewPrivateFontCollection          pGdipNewPrivateFontCollection = NULL;
-static PFN_GdipPrivateAddFontFile                pGdipPrivateAddFontFile = NULL;
-static PFN_GdipCreateFontFamilyFromName          pGdipCreateFontFamilyFromName = NULL;
-static PFN_GdipCreateFont                        pGdipCreateFont = NULL;
-static PFN_GdipDeleteFont                        pGdipDeleteFont = NULL;
-static PFN_GdipCreateSolidFill                   pGdipCreateSolidFill = NULL;
-static PFN_GdipDeleteBrush                       pGdipDeleteBrush = NULL;
-static PFN_GdipStringFormatGetGenericTypographic pGdipStringFormatGetGenericTypographic = NULL;
-static PFN_GdipCloneStringFormat                 pGdipCloneStringFormat = NULL;
-static PFN_GdipSetStringFormatFlags              pGdipSetStringFormatFlags = NULL;
-static PFN_GdipDeleteStringFormat                pGdipDeleteStringFormat = NULL;
-static PFN_GdipDrawString                        pGdipDrawString = NULL;
-static PFN_GdipMeasureString                     pGdipMeasureString = NULL;
-
 #define CS2D_TEXT_SCRATCH_W  1024
 #define CS2D_TEXT_SCRATCH_H  128 /* hudtxt sizes up to 100 px */
 #define CS2D_TEXT_CACHE_SIZE 512
@@ -4603,17 +4514,9 @@ typedef struct {
 } cs2d_text_cache_entry_t;
 
 static bool                    s_fonts_loaded = false;
-static GpFontCollection       *s_font_collection = NULL;
-static GpFont                 *s_gp_fonts[CS2D_FONT_COUNT] = {0};
-static GpFontFamily           *s_fam_lib = NULL;
-static GpFont                 *s_gp_sized[101] = {0};   /* CS2D_FONT_SIZED(px), created on first use */
 static float                   s_sized_line_h[101] = {0};
 static float                   s_font_line_h[CS2D_FONT_COUNT] = { 15.0f, 10.0f, 15.0f, 22.0f, 18.0f };
-static GpStringFormat         *s_str_format = NULL;
-static GpSolidFill            *s_white_brush = NULL;
-static uint32_t               *s_scratch_pixels = NULL;
-static GpBitmap               *s_scratch_bitmap = NULL;
-static GpGraphics             *s_scratch_gfx = NULL;
+static uint8_t                *s_scratch_cov = NULL;
 static uint8_t                 s_gamma_lut[256];
 static cs2d_text_cache_entry_t s_text_cache[CS2D_TEXT_CACHE_SIZE];
 static uint32_t                s_text_cache_tick = 0;
@@ -4621,32 +4524,7 @@ static uint32_t                s_text_cache_tick = 0;
 static void ensure_ui_fonts(void)
 {
     if (s_fonts_loaded || !g_gl_ctx) return;
-    if (!init_gdiplus_once() || !g_gdiplus_mod) return;
-
-    pGdipCreateBitmapFromScan0             = (PFN_GdipCreateBitmapFromScan0)(void *)GetProcAddress(g_gdiplus_mod, "GdipCreateBitmapFromScan0");
-    pGdipGetImageGraphicsContext           = (PFN_GdipGetImageGraphicsContext)(void *)GetProcAddress(g_gdiplus_mod, "GdipGetImageGraphicsContext");
-    pGdipDeleteGraphics                    = (PFN_GdipDeleteGraphics)(void *)GetProcAddress(g_gdiplus_mod, "GdipDeleteGraphics");
-    pGdipGraphicsClear                     = (PFN_GdipGraphicsClear)(void *)GetProcAddress(g_gdiplus_mod, "GdipGraphicsClear");
-    pGdipSetTextRenderingHint              = (PFN_GdipSetTextRenderingHint)(void *)GetProcAddress(g_gdiplus_mod, "GdipSetTextRenderingHint");
-    pGdipNewPrivateFontCollection          = (PFN_GdipNewPrivateFontCollection)(void *)GetProcAddress(g_gdiplus_mod, "GdipNewPrivateFontCollection");
-    pGdipPrivateAddFontFile                = (PFN_GdipPrivateAddFontFile)(void *)GetProcAddress(g_gdiplus_mod, "GdipPrivateAddFontFile");
-    pGdipCreateFontFamilyFromName          = (PFN_GdipCreateFontFamilyFromName)(void *)GetProcAddress(g_gdiplus_mod, "GdipCreateFontFamilyFromName");
-    pGdipCreateFont                        = (PFN_GdipCreateFont)(void *)GetProcAddress(g_gdiplus_mod, "GdipCreateFont");
-    pGdipDeleteFont                        = (PFN_GdipDeleteFont)(void *)GetProcAddress(g_gdiplus_mod, "GdipDeleteFont");
-    pGdipCreateSolidFill                   = (PFN_GdipCreateSolidFill)(void *)GetProcAddress(g_gdiplus_mod, "GdipCreateSolidFill");
-    pGdipDeleteBrush                       = (PFN_GdipDeleteBrush)(void *)GetProcAddress(g_gdiplus_mod, "GdipDeleteBrush");
-    pGdipStringFormatGetGenericTypographic = (PFN_GdipStringFormatGetGenericTypographic)(void *)GetProcAddress(g_gdiplus_mod, "GdipStringFormatGetGenericTypographic");
-    pGdipCloneStringFormat                 = (PFN_GdipCloneStringFormat)(void *)GetProcAddress(g_gdiplus_mod, "GdipCloneStringFormat");
-    pGdipSetStringFormatFlags              = (PFN_GdipSetStringFormatFlags)(void *)GetProcAddress(g_gdiplus_mod, "GdipSetStringFormatFlags");
-    pGdipDeleteStringFormat                = (PFN_GdipDeleteStringFormat)(void *)GetProcAddress(g_gdiplus_mod, "GdipDeleteStringFormat");
-    pGdipDrawString                        = (PFN_GdipDrawString)(void *)GetProcAddress(g_gdiplus_mod, "GdipDrawString");
-    pGdipMeasureString                     = (PFN_GdipMeasureString)(void *)GetProcAddress(g_gdiplus_mod, "GdipMeasureString");
-
-    if (!pGdipCreateBitmapFromScan0 || !pGdipGetImageGraphicsContext || !pGdipSetTextRenderingHint ||
-        !pGdipNewPrivateFontCollection || !pGdipPrivateAddFontFile || !pGdipCreateFontFamilyFromName ||
-        !pGdipCreateFont || !pGdipCreateSolidFill || !pGdipDrawString || !pGdipMeasureString) {
-        return;
-    }
+    if (!cs2d_font_ready()) return;
 
     /* Precompute FreeType-style stem-darkening gamma curve (pow(a, 0.78)) */
     s_gamma_lut[0] = 0;
@@ -4657,86 +4535,9 @@ static void ensure_ui_fonts(void)
         s_gamma_lut[i] = (uint8_t)val;
     }
 
-    s_scratch_pixels = (uint32_t *)calloc((size_t)CS2D_TEXT_SCRATCH_W * (size_t)CS2D_TEXT_SCRATCH_H, 4);
-    /* PixelFormat32bppARGB = 0x26200A */
-    pGdipCreateBitmapFromScan0(CS2D_TEXT_SCRATCH_W, CS2D_TEXT_SCRATCH_H,
-                               CS2D_TEXT_SCRATCH_W * 4, 0x26200A,
-                               (BYTE *)s_scratch_pixels, &s_scratch_bitmap);
-    if (s_scratch_bitmap) {
-        pGdipGetImageGraphicsContext((GpImage *)s_scratch_bitmap, &s_scratch_gfx);
-        if (s_scratch_gfx) {
-            /* TextRenderingHintAntiAlias = 4 (smooth 256-level grayscale without broken GridFit bytecode) */
-            pGdipSetTextRenderingHint(s_scratch_gfx, 4);
-        }
-    }
-
-    pGdipCreateSolidFill(0xFFFFFFFFu, &s_white_brush);
-
-    const GpStringFormat *generic_typo = NULL;
-    if (pGdipStringFormatGetGenericTypographic &&
-        pGdipStringFormatGetGenericTypographic((GpStringFormat **)&generic_typo) == 0 &&
-        generic_typo && pGdipCloneStringFormat) {
-        pGdipCloneStringFormat(generic_typo, &s_str_format);
-        if (s_str_format && pGdipSetStringFormatFlags) {
-            /* StringFormatFlagsMeasureTrailingSpaces (0x0800) | StringFormatFlagsNoWrap (0x1000) | StringFormatFlagsNoClip (0x4000) */
-            pGdipSetStringFormatFlags(s_str_format, 0x0800 | 0x1000 | 0x4000);
-        }
-    }
-
-    pGdipNewPrivateFontCollection(&s_font_collection);
-    if (s_font_collection) {
-        WCHAR wpath1[MAX_PATH] = {0};
-        WCHAR wpath2[MAX_PATH] = {0};
-        GetFullPathNameW(L"gfx\\fonts\\liberationsans.ttf", MAX_PATH, wpath1, NULL);
-        GetFullPathNameW(L"gfx\\fonts\\sourcesans.ttf",     MAX_PATH, wpath2, NULL);
-        pGdipPrivateAddFontFile(s_font_collection, wpath1);
-        pGdipPrivateAddFontFile(s_font_collection, wpath2);
-    }
-
-    GpFontFamily *fam_lib = NULL;
-    GpFontFamily *fam_src = NULL;
-    if (s_font_collection) {
-        pGdipCreateFontFamilyFromName(L"Liberation Sans",       s_font_collection, &fam_lib);
-        pGdipCreateFontFamilyFromName(L"Source Sans Pro Black", s_font_collection, &fam_src);
-    }
-    if (!fam_lib) {
-        pGdipCreateFontFamilyFromName(L"Segoe UI", NULL, &fam_lib);
-    }
-    if (!fam_lib) {
-        pGdipCreateFontFamilyFromName(L"Arial", NULL, &fam_lib);
-    }
-    if (!fam_src) {
-        fam_src = fam_lib;
-    }
-
-    /* UnitPixel = 2; FontStyleRegular = 0, FontStyleBold = 1 */
-    s_fam_lib = fam_lib;
-    if (fam_lib) {
-        pGdipCreateFont(fam_lib, 13.0f, 0, 2, &s_gp_fonts[CS2D_FONT_REGULAR]);
-        pGdipCreateFont(fam_lib, 10.0f, 0, 2, &s_gp_fonts[CS2D_FONT_SMALL]);
-        pGdipCreateFont(fam_lib, 13.0f, 1, 2, &s_gp_fonts[CS2D_FONT_BOLD]);
-        pGdipCreateFont(fam_lib, 15.0f, 0, 2, &s_gp_fonts[CS2D_FONT_MENU]);
-    }
-    if (fam_src) {
-        pGdipCreateFont(fam_src, 18.0f, 0, 2, &s_gp_fonts[CS2D_FONT_TITLE]);
-    }
-
+    s_scratch_cov = (uint8_t *)malloc((size_t)CS2D_TEXT_SCRATCH_W * (size_t)CS2D_TEXT_SCRATCH_H);
     memset(s_text_cache, 0, sizeof(s_text_cache));
-    s_fonts_loaded = true;
-}
-
-/* Font of a UI id or a CS2D_FONT_SIZED id (same style as CS2D_FONT_REGULAR: both are LoadImageFont flags 5) */
-static GpFont *font_for_id(cs2d_font_id_t font_id)
-{
-    ensure_ui_fonts();
-    if (!s_fonts_loaded) return NULL;
-    if ((int)font_id >= CS2D_FONT_SIZED_BASE + 10 && (int)font_id <= CS2D_FONT_SIZED_BASE + 100) {
-        int px = (int)font_id - CS2D_FONT_SIZED_BASE;
-        if (!s_gp_sized[px] && s_fam_lib) pGdipCreateFont(s_fam_lib, (float)px, 0, 2, &s_gp_sized[px]);
-        if (s_gp_sized[px]) return s_gp_sized[px];
-    }
-    if (font_id < 0 || font_id >= CS2D_FONT_COUNT) font_id = CS2D_FONT_REGULAR;
-    return s_gp_fonts[font_id] ? s_gp_fonts[font_id] : s_gp_fonts[CS2D_FONT_REGULAR];
+    s_fonts_loaded = s_scratch_cov != NULL;
 }
 
 static uint32_t hash_font_string(cs2d_font_id_t font_id, const char *text)
@@ -4752,8 +4553,8 @@ static uint32_t hash_font_string(cs2d_font_id_t font_id, const char *text)
 static cs2d_text_cache_entry_t *get_or_create_text_entry(cs2d_font_id_t font_id, const char *text)
 {
     if (!text || !text[0]) return NULL;
-    GpFont *gp_font = font_for_id(font_id);
-    if (!gp_font || !s_scratch_gfx) return NULL;
+    ensure_ui_fonts();
+    if (!s_fonts_loaded) return NULL;
 
     uint32_t h = hash_font_string(font_id, text);
     s_text_cache_tick++;
@@ -4794,50 +4595,31 @@ static cs2d_text_cache_entry_t *get_or_create_text_entry(cs2d_font_id_t font_id,
     strncpy(entry->text, text, sizeof(entry->text) - 1);
     entry->text[sizeof(entry->text) - 1] = '\0';
 
-    /* Convert UTF-8 (or ANSI fallback) to WCHAR */
-    WCHAR wtext[192] = {0};
-    int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, entry->text, -1, wtext, 191);
-    if (wlen <= 0) {
-        wlen = MultiByteToWideChar(CP_ACP, 0, entry->text, -1, wtext, 191);
-    }
-    if (wlen > 0) wlen--; /* exclude NUL terminator */
-    if (wlen <= 0) return entry;
+    float bw = 0.0f, bh = 0.0f;
+    if (!cs2d_font_measure(font_id, entry->text, -1, &bw, &bh)) return entry;
 
-    GpRectF layout_rect = { 0.0f, 0.0f, (float)(CS2D_TEXT_SCRATCH_W - 4), (float)CS2D_TEXT_SCRATCH_H };
-    GpRectF bbox        = { 0.0f, 0.0f, 0.0f, 0.0f };
-    pGdipMeasureString(s_scratch_gfx, wtext, wlen, gp_font, &layout_rect, s_str_format, &bbox, NULL, NULL);
-
-    int tw = (int)ceilf(bbox.Width) + 2;
-    int th = (int)ceilf(bbox.Height) + 2;
+    int tw = (int)ceilf(bw) + 2;
+    int th = (int)ceilf(bh) + 2;
     if (tw < 2) tw = 2;
     if (th < 2) th = 2;
     if (tw > CS2D_TEXT_SCRATCH_W) tw = CS2D_TEXT_SCRATCH_W;
     if (th > CS2D_TEXT_SCRATCH_H) th = CS2D_TEXT_SCRATCH_H;
 
-    entry->width  = ceilf(bbox.Width);
-    entry->height = ceilf(bbox.Height);
+    entry->width  = ceilf(bw);
+    entry->height = ceilf(bh);
     entry->tex_w  = tw;
     entry->tex_h  = th;
 
-    /* Clear active region to opaque black (0xFF000000) so GDI+ blends white coverage directly into R/G/B */
-    for (int y = 0; y < th; y++) {
-        uint32_t *row = &s_scratch_pixels[y * CS2D_TEXT_SCRATCH_W];
-        for (int x = 0; x < tw; x++) {
-            row[x] = 0xFF000000u;
-        }
-    }
-
-    GpRectF draw_rect = { 0.0f, 0.0f, (float)tw, (float)th };
-    pGdipDrawString(s_scratch_gfx, wtext, wlen, gp_font, &draw_rect, s_str_format, (GpBrush *)s_white_brush);
+    memset(s_scratch_cov, 0, (size_t)tw * (size_t)th);
+    cs2d_font_raster(font_id, entry->text, s_scratch_cov, tw, th);
 
     uint8_t *rgba = (uint8_t *)malloc((size_t)tw * (size_t)th * 4);
     if (rgba) {
         for (int y = 0; y < th; y++) {
-            const uint32_t *src_row = &s_scratch_pixels[y * CS2D_TEXT_SCRATCH_W];
-            uint8_t        *dst_row = &rgba[y * tw * 4];
+            const uint8_t *src_row = &s_scratch_cov[y * tw];
+            uint8_t       *dst_row = &rgba[y * tw * 4];
             for (int x = 0; x < tw; x++) {
-                uint32_t px = src_row[x];
-                uint8_t cov = (uint8_t)((px >> 16) & 0xFF);
+                uint8_t cov = src_row[x];
                 dst_row[x * 4 + 0] = 255;
                 dst_row[x * 4 + 1] = 255;
                 dst_row[x * 4 + 2] = 255;
@@ -4912,20 +4694,11 @@ float cs2d_render_text_width_ex(cs2d_font_id_t font_id, const char *text)
 float cs2d_render_text_prefix_width(cs2d_font_id_t font_id, const char *text, int len)
 {
     if (!text || len <= 0) return 0.0f;
-    GpFont *gp_font = font_for_id(font_id);
-    if (!gp_font || !s_scratch_gfx) return 0.0f;
-
-    WCHAR wtext[256];
-    int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, len, wtext, 255);
-    if (wlen <= 0) {
-        wlen = MultiByteToWideChar(CP_ACP, 0, text, len, wtext, 255);
-    }
-    if (wlen <= 0) return 0.0f;
-
-    GpRectF layout_rect = { 0.0f, 0.0f, (float)(CS2D_TEXT_SCRATCH_W - 4), (float)CS2D_TEXT_SCRATCH_H };
-    GpRectF bbox        = { 0.0f, 0.0f, 0.0f, 0.0f };
-    pGdipMeasureString(s_scratch_gfx, wtext, wlen, gp_font, &layout_rect, s_str_format, &bbox, NULL, NULL);
-    return bbox.Width;
+    ensure_ui_fonts();
+    if (!s_fonts_loaded) return 0.0f;
+    float w = 0.0f;
+    cs2d_font_measure(font_id, text, len, &w, NULL);
+    return w;
 }
 
 float cs2d_render_font_line_height(cs2d_font_id_t font_id)

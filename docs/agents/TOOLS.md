@@ -10,6 +10,12 @@
 | zlib | MSYS2 `libz.a`, linked statically (`-l:libz.a`) so the executables do not need `zlib1.dll` |
 | Python 3.14 | `python` (Pillow installed). Run scripts that read untrusted data with `python -I` |
 | Git Bash + PowerShell 5.1 | Both are available. `drive_orig.ps1` needs PowerShell |
+| Emscripten 4.0.10 | `C:\Users\Gabriel\Documents\GitHub\emsdk` (next to the repo). `. tools/web/emenv.sh` puts emcc / node on PATH (sets `EMSDK_PYTHON`) |
+| Headless Chromium | `%LOCALAPPDATA%\ms-playwright\chromium-1223\chrome-win64\chrome.exe`: REA `capture_browser_scenario` (launch; events console, screenshot at end) loads the web build |
+
+Web port (`tools/web/`): `build_tests.sh` (suite in Wasm under Node, NODERAWFS), `build_client.sh [-g]`
+(`out/web/cs2d.html`), `serve.sh` (http://127.0.0.1:8080/cs2d.html; `?de_dust2` = the client's map argument),
+`font_compare.sh` (GDI+ vs stb_truetype metrics / coverage; PGM samples in `out/font_compare/`).
 
 Quick single-file builds (for example a tool linking only the map loader):
 

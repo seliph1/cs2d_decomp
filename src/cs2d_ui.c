@@ -1,6 +1,6 @@
 #include "cs2d_ui.h"
 #include <SDL3/SDL.h>
-#include <windows.h>
+#include "cs2d_platform.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>

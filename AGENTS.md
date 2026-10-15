@@ -74,6 +74,8 @@ Our client must be able to play on the original dedicated server without the ser
 | `src/cs2d_hudtxt.c` | Lua HUD texts: hudtxt `[234]`, their move / alpha / colour tweens `[54]`, inline colour / image tags |
 | `src/cs2d_render.c` | OpenGL 1.x immediate mode, GDI+ TrueType text, shadows, HUD |
 | `src/cs2d_sound.c` | Sound effects: SDL3 mixer, WAV / OGG loading, positional attenuation (`cs2d_sound_play_at`), weapon sounds |
+| `src/cs2d_platform.c` | Platform layer: the only `windows.h` / `winsock2.h` include, POSIX shims (sockets, `_stricmp`, `VK_*`, `GetTickCount`), dir listing, mkdir |
+| `src/cs2d_font.c` | TrueType text engine (GL-free): GDI+ backend (Windows) and stb_truetype backend (web), same metrics |
 | `src/cs2d_image.c` | Portable asset decoding (BMP / PNG / ICO) on the vendored `stb_image`; replaced the GDI+ image path |
 | `src/cs2d_hudmen.c` | Hud menus (`Tgui_hudmen`): window, `button` / `fbutton` / `box`, and the Buy menu (pages, weapon info, previews) |
 | `src/cs2d_ui.c` | Immediate-mode UI library (textbox, dropdown, numberbox, shared scrolling `cs2d_ui_scroll_*` / `cs2d_ui_scrollbar`) |

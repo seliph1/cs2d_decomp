@@ -1,7 +1,7 @@
 #ifndef CS2D_RENDER_H
 #define CS2D_RENDER_H
 
-#include <windows.h>
+#include "cs2d_platform.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include "cs2d_types.h"

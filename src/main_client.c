@@ -1,8 +1,11 @@
-#include <winsock2.h>
-#include <windows.h>
+#include "cs2d_platform.h"
 #include <SDL3/SDL.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 #include <SDL3/SDL_opengl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
 #include <ctype.h>
@@ -174,16 +177,42 @@ static void run_capture_step(const char *cmd)
     }
 }
 
+/*
+ * Frame-loop state. It lives at file scope because the loop body is one call per frame (client_frame):
+ * the desktop runs it in a while loop, the browser from emscripten_set_main_loop (a page cannot block).
+ */
+static SDL_Window *g_window = NULL;
+static bool        auto_screenshot = false;
+static const char *capture_cmd = NULL; /* --capture[:<cmd>[;<cmd>...]] -> screens/capture.bmp */
+static int         capture_frame = 30;
+static int         capture_resume = 5;   /* Next frame to run a capture step (default 5 frames apart, or !wait <frames>) */
+static double      frame_ms_sum = 0.0, frame_ms_max = 0.0;
+static int         frame_ms_count = 0;
+static uint64_t    freq, last_time;
+/* Dev tool: CS2D_DRAWCALLS=1 reports what the batcher did on the last frame (see cs2d_gl.h).
+ * One line at exit, so a scripted run (tools/agent/perf_gpu_frames.ps1 -DrawCalls) can read it. */
+static bool               gl_stats = false;
+static unsigned long long stats_draws = 0, stats_verts = 0, stats_tex = 0, stats_mode = 0, stats_over = 0;
+static int                stats_max_batch = 0;
+static int                frame_count = 0;
+
+static bool client_frame(void);
+static void client_shutdown(void);
+
+#ifdef __EMSCRIPTEN__
+static void web_frame(void)
+{
+    if (!client_frame()) {
+        emscripten_cancel_main_loop();
+        client_shutdown();
+    }
+}
+#endif
+
 static int run_client_app(const char *cmdline)
 {
     /* No argument opens the main menu; a map name starts a game on that map */
     const char *map_name = NULL;
-    bool auto_screenshot = false;
-    const char *capture_cmd = NULL; /* --capture[:<cmd>[;<cmd>...]] -> screens/capture.bmp */
-    int capture_frame = 30;
-    int capture_resume = 5;   /* Next frame to run a capture step (default 5 frames apart, or !wait <frames>) */
-    double frame_ms_sum = 0.0, frame_ms_max = 0.0;
-    int    frame_ms_count = 0;
     if (cmdline && strlen(cmdline) > 0) {
         if (strstr(cmdline, "--screenshot") != NULL) {
             auto_screenshot = true;
@@ -206,11 +235,20 @@ static int run_client_app(const char *cmdline)
         return 1;
     }
 
-    /* GL 3.3 core profile (the renderer is a shader/batcher backend now, see cs2d_gl.c) */
+    /* GL 3.3 core profile (the renderer is a shader/batcher backend now, see cs2d_gl.c);
+     * in the browser the same calls run on WebGL2, which SDL asks for as OpenGL ES 3.0 */
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+#ifdef __EMSCRIPTEN__
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    /* Keyboard events go to the canvas only, so the page's other keys keep working (set before the window) */
+    SDL_SetHint(SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT, "#canvas");
+#else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+#endif
 
     SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
@@ -280,220 +318,233 @@ static int run_client_app(const char *cmdline)
         cs2d_sound_set_stereo(g_client.config.soundmode);
     }
 
-    uint64_t freq = SDL_GetPerformanceFrequency();
-    uint64_t last_time = SDL_GetPerformanceCounter();
-
-    /* Dev tool: CS2D_DRAWCALLS=1 reports what the batcher did on the last frame (see cs2d_gl.h).
-     * One line at exit, so a scripted run (tools/agent/perf_gpu_frames.ps1 -DrawCalls) can read it. */
-    bool gl_stats = (getenv("CS2D_DRAWCALLS") != NULL);
-    unsigned long long stats_draws = 0, stats_verts = 0, stats_tex = 0, stats_mode = 0, stats_over = 0;
-    int stats_max_batch = 0;
+    g_window  = window;
+    freq      = SDL_GetPerformanceFrequency();
+    last_time = SDL_GetPerformanceCounter();
+    gl_stats  = (getenv("CS2D_DRAWCALLS") != NULL);
     cs2d_gl_stats_reset();
 
-    int frame_count = 0;
-    SDL_Event event;
-    while (g_running) {
-        while (SDL_PollEvent(&event)) {
-            switch (event.type) {
-                case SDL_EVENT_QUIT:
-                case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-                    g_running = false;
-                    break;
-
-                case SDL_EVENT_WINDOW_RESIZED:
-                case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-                    if (event.window.data1 > 0 && event.window.data2 > 0) {
-                        g_client.config.window_width  = event.window.data1;
-                        g_client.config.window_height = event.window.data2;
-                        cs2d_render_resize(event.window.data1, event.window.data2);
-                    }
-                    break;
-
-                case SDL_EVENT_TEXT_INPUT:
-                    if (cs2d_client_any_ui_open(&g_client)) {
-                        cs2d_client_handle_text_input(&g_client, event.text.text);
-                    }
-                    break;
-
-                case SDL_EVENT_MOUSE_WHEEL:
-                    cs2d_client_handle_mouse_wheel(&g_client, (int)event.wheel.y);
-                    break;
-
-                case SDL_EVENT_KEY_DOWN:
-                    if (event.key.key == SDLK_GRAVE && !event.key.repeat) {
-                        cs2d_client_handle_console_key(&g_client, (int)event.key.key);
-                        break;
-                    }
-                    if (cs2d_client_any_ui_open(&g_client)) {
-                        cs2d_client_handle_console_key(&g_client, (int)event.key.key);
-                        break;
-                    }
-                    if (event.key.key == SDLK_ESCAPE && !event.key.repeat) {
-                        cs2d_client_handle_escape(&g_client);
-                        break;
-                    }
-                    if (!event.key.repeat) {
-                        int k = sdl_key_to_cs2d_key(event.key.key);
-                        if (k != 0) cs2d_client_handle_key(&g_client, k, true);
-                    }
-                    break;
-
-                case SDL_EVENT_KEY_UP: {
-                    int k = sdl_key_to_cs2d_key(event.key.key);
-                    if (k != 0) cs2d_client_handle_key(&g_client, k, false);
-                    break;
-                }
-
-                case SDL_EVENT_MOUSE_MOTION:
-                    cs2d_client_handle_mouse(&g_client, event.motion.x, event.motion.y, 0, false);
-                    break;
-
-                case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                case SDL_EVENT_MOUSE_BUTTON_UP: {
-                    bool pressed = (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
-                    int btn = 0;
-                    if (event.button.button == SDL_BUTTON_LEFT)       btn = 1;
-                    else if (event.button.button == SDL_BUTTON_RIGHT) btn = 2;
-                    if (btn != 0) {
-                        cs2d_client_handle_mouse(&g_client, event.button.x, event.button.y, btn, pressed);
-                    }
-                    break;
-                }
-
-                default:
-                    break;
-            }
-        }
-
-        if (g_client.quit_requested) {
-            g_running = false;
-        }
-        if (!g_running) break;
-
-        uint64_t current_time = SDL_GetPerformanceCounter();
-        float delta_time = (float)(current_time - last_time) / (float)freq;
-        last_time = current_time;
-
-        if (delta_time > 0.05f) delta_time = 0.05f;
-
-        /* Update */
-        uint64_t t_up0 = SDL_GetPerformanceCounter();
-        cs2d_sound_frame();
-        cs2d_client_update(&g_client, delta_time);
-        cs2d_sound_set_camera(g_client.cam_x, g_client.cam_y);
-        uint64_t t_up1 = SDL_GetPerformanceCounter();
-
-        /* Render */
-        cs2d_render_begin_frame();
-        cs2d_client_render(&g_client, g_client.config.window_width, g_client.config.window_height);
-        uint64_t t_ren1 = SDL_GetPerformanceCounter();
-        if (capture_cmd) {
-            /* Capture mode: time update + render including GPU work (excludes the 16ms pacing delay) */
-            glFinish();
-            uint64_t t_fin1 = SDL_GetPerformanceCounter();
-            double up_ms  = (double)(t_up1 - t_up0) * 1000.0 / (double)freq;
-            double ren_ms = (double)(t_ren1 - t_up1) * 1000.0 / (double)freq;
-            double gpu_ms = (double)(t_fin1 - t_ren1) * 1000.0 / (double)freq;
-            double work_ms = (double)(t_fin1 - current_time) * 1000.0 / (double)freq;
-            frame_ms_sum += work_ms;
-            frame_ms_count++;
-            if (work_ms > frame_ms_max) frame_ms_max = work_ms;
-            if (frame_count == capture_frame - 1) {
-                printf("[profile] frame %d: total=%.2f ms (update=%.2f ms, render_cpu=%.2f ms, glFinish_gpu=%.2f ms)\n",
-                       frame_count, work_ms, up_ms, ren_ms, gpu_ms);
-            }
-        }
-        if (auto_screenshot && frame_count == 45) {
-            save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot.bmp",
-                                   g_client.config.window_width, g_client.config.window_height);
-            g_client.console_open = true;
-            g_client.mouse_screen_x = 180.0f;
-            g_client.mouse_screen_y = 290.0f;
-        } else if (auto_screenshot && frame_count == 50) {
-            save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_console.bmp",
-                                   g_client.config.window_width, g_client.config.window_height);
-            cs2d_client_console_exec(&g_client, "help");
-            cs2d_client_console_exec(&g_client, "status");
-            strcpy(g_client.console_input, "sun 135");
-            g_client.console_cursor = 7;
-        } else if (auto_screenshot && frame_count == 55) {
-            save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_console_cmd.bmp",
-                                   g_client.config.window_width, g_client.config.window_height);
-            g_client.console_open       = false;
-            g_client.create_server_open = true;
-            g_client.create_server_tab  = 0;
-        } else if (auto_screenshot && frame_count == 60) {
-            save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_createserver.bmp",
-                                   g_client.config.window_width, g_client.config.window_height);
-            g_client.create_server_tab  = 1;
-        } else if (auto_screenshot && frame_count == 65) {
-            save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_map.bmp",
-                                   g_client.config.window_width, g_client.config.window_height);
-            g_client.create_server_open = false;
-            g_client.options_open       = true;
-            g_client.options_tab        = 1;
-        } else if (auto_screenshot && frame_count == 70) {
-            save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_options.bmp",
-                                   g_client.config.window_width, g_client.config.window_height);
-            g_client.options_open = false;
-            cs2d_client_console_exec(&g_client, "map prison_funst3r");
-            cs2d_client_console_exec(&g_client, "tp 44 25");
-        } else if (auto_screenshot && frame_count == 75) {
-            save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_prison.bmp",
-                                   g_client.config.window_width, g_client.config.window_height);
-            cs2d_render_end_frame(window);
-            break;
-        }
-        if (capture_cmd) {
-            /* Runs one ';'-separated console command every 5 frames (or after !wait <frames>), then captures 30 frames later */
-            if (capture_cmd[0] && frame_count >= capture_resume) {
-                char cmd[CS2D_CONSOLE_LINE_LEN];
-                size_t len = strcspn(capture_cmd, ";");
-                snprintf(cmd, sizeof(cmd), "%.*s", (int)len, capture_cmd);
-                capture_cmd += len + (capture_cmd[len] == ';' ? 1 : 0);
-                if (strncmp(cmd, "!wait ", 6) == 0) {
-                    int w = atoi(cmd + 6);
-                    capture_resume = frame_count + (w > 0 ? w : 1);
-                } else if (strncmp(capture_cmd, "!shot ", 6) == 0 || strncmp(capture_cmd, "!wait ", 6) == 0) {
-                    capture_resume = frame_count + 1;
-                } else {
-                    capture_resume = frame_count + 5;
-                }
-                capture_frame = capture_resume + 25;
-                if (strncmp(cmd, "!shot ", 6) == 0) {
-                    save_gl_screenshot_bmp(cmd + 6, g_client.config.window_width, g_client.config.window_height);
-                } else {
-                    run_capture_step(cmd);
-                }
-                if (strncmp(cmd, "!wheel", 6) != 0) { /* Scrolling steps accumulate into one measurement */
-                    frame_ms_sum = frame_ms_max = 0.0;
-                    frame_ms_count = 0;
-                }
-            } else if (frame_count == capture_frame) {
-                CreateDirectoryA("screens", NULL);
-                save_gl_screenshot_bmp("screens/capture.bmp", g_client.config.window_width, g_client.config.window_height);
-                printf("[capture] frame time over last %d frames: avg %.3f ms, max %.3f ms\n",
-                       frame_ms_count, frame_ms_count ? frame_ms_sum / frame_ms_count : 0.0, frame_ms_max);
-                cs2d_render_end_frame(window);
-                break;
-            }
-        }
-        cs2d_render_end_frame(window);
-        if (gl_stats) {
-            cs2d_gl_stats_t st = cs2d_gl_stats_read();
-            stats_draws += st.draws;
-            stats_verts += st.verts;
-            stats_tex   += st.tex_switches;
-            stats_mode  += st.mode_switches;
-            stats_over  += st.overflows;
-            if (st.max_batch > stats_max_batch) stats_max_batch = st.max_batch;
-            cs2d_gl_stats_reset();
-        }
-        frame_count++;
-
+#ifdef __EMSCRIPTEN__
+    /* The browser calls client_frame once per display refresh (requestAnimationFrame) */
+    emscripten_set_main_loop(web_frame, 0, false);
+    return 0;
+#else
+    while (client_frame()) {
         SDL_Delay((auto_screenshot || capture_cmd) ? 16 : 1);
     }
+    client_shutdown();
+    return 0;
+#endif
+}
 
+/* One frame: events, update, render. False once the client quits (or a capture / screenshot run ends). */
+static bool client_frame(void)
+{
+    SDL_Window *window = g_window;
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        switch (event.type) {
+            case SDL_EVENT_QUIT:
+            case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+                g_running = false;
+                break;
+
+            case SDL_EVENT_WINDOW_RESIZED:
+            case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+                if (event.window.data1 > 0 && event.window.data2 > 0) {
+                    g_client.config.window_width  = event.window.data1;
+                    g_client.config.window_height = event.window.data2;
+                    cs2d_render_resize(event.window.data1, event.window.data2);
+                }
+                break;
+
+            case SDL_EVENT_TEXT_INPUT:
+                if (cs2d_client_any_ui_open(&g_client)) {
+                    cs2d_client_handle_text_input(&g_client, event.text.text);
+                }
+                break;
+
+            case SDL_EVENT_MOUSE_WHEEL:
+                cs2d_client_handle_mouse_wheel(&g_client, (int)event.wheel.y);
+                break;
+
+            case SDL_EVENT_KEY_DOWN:
+                if (event.key.key == SDLK_GRAVE && !event.key.repeat) {
+                    cs2d_client_handle_console_key(&g_client, (int)event.key.key);
+                    break;
+                }
+                if (cs2d_client_any_ui_open(&g_client)) {
+                    cs2d_client_handle_console_key(&g_client, (int)event.key.key);
+                    break;
+                }
+                if (event.key.key == SDLK_ESCAPE && !event.key.repeat) {
+                    cs2d_client_handle_escape(&g_client);
+                    break;
+                }
+                if (!event.key.repeat) {
+                    int k = sdl_key_to_cs2d_key(event.key.key);
+                    if (k != 0) cs2d_client_handle_key(&g_client, k, true);
+                }
+                break;
+
+            case SDL_EVENT_KEY_UP: {
+                int k = sdl_key_to_cs2d_key(event.key.key);
+                if (k != 0) cs2d_client_handle_key(&g_client, k, false);
+                break;
+            }
+
+            case SDL_EVENT_MOUSE_MOTION:
+                cs2d_client_handle_mouse(&g_client, event.motion.x, event.motion.y, 0, false);
+                break;
+
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            case SDL_EVENT_MOUSE_BUTTON_UP: {
+                bool pressed = (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+                int btn = 0;
+                if (event.button.button == SDL_BUTTON_LEFT)       btn = 1;
+                else if (event.button.button == SDL_BUTTON_RIGHT) btn = 2;
+                if (btn != 0) {
+                    cs2d_client_handle_mouse(&g_client, event.button.x, event.button.y, btn, pressed);
+                }
+                break;
+            }
+
+            default:
+                break;
+        }
+    }
+
+    if (g_client.quit_requested) {
+        g_running = false;
+    }
+    if (!g_running) return false;
+
+    uint64_t current_time = SDL_GetPerformanceCounter();
+    float delta_time = (float)(current_time - last_time) / (float)freq;
+    last_time = current_time;
+
+    if (delta_time > 0.05f) delta_time = 0.05f;
+
+    /* Update */
+    uint64_t t_up0 = SDL_GetPerformanceCounter();
+    cs2d_sound_frame();
+    cs2d_client_update(&g_client, delta_time);
+    cs2d_sound_set_camera(g_client.cam_x, g_client.cam_y);
+    uint64_t t_up1 = SDL_GetPerformanceCounter();
+
+    /* Render */
+    cs2d_render_begin_frame();
+    cs2d_client_render(&g_client, g_client.config.window_width, g_client.config.window_height);
+    uint64_t t_ren1 = SDL_GetPerformanceCounter();
+    if (capture_cmd) {
+        /* Capture mode: time update + render including GPU work (excludes the 16ms pacing delay) */
+        glFinish();
+        uint64_t t_fin1 = SDL_GetPerformanceCounter();
+        double up_ms  = (double)(t_up1 - t_up0) * 1000.0 / (double)freq;
+        double ren_ms = (double)(t_ren1 - t_up1) * 1000.0 / (double)freq;
+        double gpu_ms = (double)(t_fin1 - t_ren1) * 1000.0 / (double)freq;
+        double work_ms = (double)(t_fin1 - current_time) * 1000.0 / (double)freq;
+        frame_ms_sum += work_ms;
+        frame_ms_count++;
+        if (work_ms > frame_ms_max) frame_ms_max = work_ms;
+        if (frame_count == capture_frame - 1) {
+            printf("[profile] frame %d: total=%.2f ms (update=%.2f ms, render_cpu=%.2f ms, glFinish_gpu=%.2f ms)\n",
+                   frame_count, work_ms, up_ms, ren_ms, gpu_ms);
+        }
+    }
+    if (auto_screenshot && frame_count == 45) {
+        save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot.bmp",
+                               g_client.config.window_width, g_client.config.window_height);
+        g_client.console_open = true;
+        g_client.mouse_screen_x = 180.0f;
+        g_client.mouse_screen_y = 290.0f;
+    } else if (auto_screenshot && frame_count == 50) {
+        save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_console.bmp",
+                               g_client.config.window_width, g_client.config.window_height);
+        cs2d_client_console_exec(&g_client, "help");
+        cs2d_client_console_exec(&g_client, "status");
+        strcpy(g_client.console_input, "sun 135");
+        g_client.console_cursor = 7;
+    } else if (auto_screenshot && frame_count == 55) {
+        save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_console_cmd.bmp",
+                               g_client.config.window_width, g_client.config.window_height);
+        g_client.console_open       = false;
+        g_client.create_server_open = true;
+        g_client.create_server_tab  = 0;
+    } else if (auto_screenshot && frame_count == 60) {
+        save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_createserver.bmp",
+                               g_client.config.window_width, g_client.config.window_height);
+        g_client.create_server_tab  = 1;
+    } else if (auto_screenshot && frame_count == 65) {
+        save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_map.bmp",
+                               g_client.config.window_width, g_client.config.window_height);
+        g_client.create_server_open = false;
+        g_client.options_open       = true;
+        g_client.options_tab        = 1;
+    } else if (auto_screenshot && frame_count == 70) {
+        save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_options.bmp",
+                               g_client.config.window_width, g_client.config.window_height);
+        g_client.options_open = false;
+        cs2d_client_console_exec(&g_client, "map prison_funst3r");
+        cs2d_client_console_exec(&g_client, "tp 44 25");
+    } else if (auto_screenshot && frame_count == 75) {
+        save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_prison.bmp",
+                               g_client.config.window_width, g_client.config.window_height);
+        cs2d_render_end_frame(window);
+        return false;
+    }
+    if (capture_cmd) {
+        /* Runs one ';'-separated console command every 5 frames (or after !wait <frames>), then captures 30 frames later */
+        if (capture_cmd[0] && frame_count >= capture_resume) {
+            char cmd[CS2D_CONSOLE_LINE_LEN];
+            size_t len = strcspn(capture_cmd, ";");
+            snprintf(cmd, sizeof(cmd), "%.*s", (int)len, capture_cmd);
+            capture_cmd += len + (capture_cmd[len] == ';' ? 1 : 0);
+            if (strncmp(cmd, "!wait ", 6) == 0) {
+                int w = atoi(cmd + 6);
+                capture_resume = frame_count + (w > 0 ? w : 1);
+            } else if (strncmp(capture_cmd, "!shot ", 6) == 0 || strncmp(capture_cmd, "!wait ", 6) == 0) {
+                capture_resume = frame_count + 1;
+            } else {
+                capture_resume = frame_count + 5;
+            }
+            capture_frame = capture_resume + 25;
+            if (strncmp(cmd, "!shot ", 6) == 0) {
+                save_gl_screenshot_bmp(cmd + 6, g_client.config.window_width, g_client.config.window_height);
+            } else {
+                run_capture_step(cmd);
+            }
+            if (strncmp(cmd, "!wheel", 6) != 0) { /* Scrolling steps accumulate into one measurement */
+                frame_ms_sum = frame_ms_max = 0.0;
+                frame_ms_count = 0;
+            }
+        } else if (frame_count == capture_frame) {
+            cs2d_platform_mkdir("screens");
+            save_gl_screenshot_bmp("screens/capture.bmp", g_client.config.window_width, g_client.config.window_height);
+            printf("[capture] frame time over last %d frames: avg %.3f ms, max %.3f ms\n",
+                   frame_ms_count, frame_ms_count ? frame_ms_sum / frame_ms_count : 0.0, frame_ms_max);
+            cs2d_render_end_frame(window);
+            return false;
+        }
+    }
+    cs2d_render_end_frame(window);
+    if (gl_stats) {
+        cs2d_gl_stats_t st = cs2d_gl_stats_read();
+        stats_draws += st.draws;
+        stats_verts += st.verts;
+        stats_tex   += st.tex_switches;
+        stats_mode  += st.mode_switches;
+        stats_over  += st.overflows;
+        if (st.max_batch > stats_max_batch) stats_max_batch = st.max_batch;
+        cs2d_gl_stats_reset();
+    }
+    frame_count++;
+    return true;
+}
+
+static void client_shutdown(void)
+{
+    SDL_Window *window = g_window;
     if (gl_stats && frame_count > 0) {
         printf("[gl] frames=%d draws/frame=%.1f verts/frame=%.0f | tex_switch/frame=%.1f "
                "mode_switch/frame=%.1f overflow/frame=%.2f | max_batch=%d\n",
@@ -508,10 +559,9 @@ static int run_client_app(const char *cmdline)
     cs2d_sound_shutdown();
     SDL_DestroyWindow(window);
     SDL_Quit();
-
-    return 0;
 }
 
+#ifdef _WIN32
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
     (void)hInstance;
@@ -519,6 +569,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     (void)nCmdShow;
     return run_client_app(lpCmdLine);
 }
+#endif
 
 int main(int argc, char **argv)
 {

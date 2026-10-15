@@ -77,11 +77,38 @@ original binaries, so nothing in this section is evidence about `CS2D.exe`. Tool
     program then dies with `0xC0000135` ("libwinpthread-1.dll was not found") before `main()`. `cs2d_image.c`
     compiles it with `STBI_NO_THREAD_LOCALS`; after that both exes import only KERNEL32, msvcrt, OPENGL32,
     SDL3 and WS2_32. Check the same thing for every future vendored decoder / rasterizer.
-- **Still GDI+ today — the TrueType text engine** (`cs2d_render.c` font block): `GdipCreateFont` at
-  13 / 10 / 13-bold / 15 px Liberation Sans and 18 px Source Sans Pro Black (unit 2 = pixels),
-  `GdipSetTextRenderingHint(4)` (unhinted anti-alias), `GdipMeasureString`, `GdipDrawString` and string format
-  flags `0x0800 | 0x1000 | 0x4000` (measure trailing spaces, no wrap, no clip). The plan is to replace it with
-  the already vendored `third_party/stb_truetype.h`, comparing advances string by string first.
+- **Text engine: `src/cs2d_font.c` (2026-10-15), two backends, same metrics.** GDI+ (Windows default: the old
+  `cs2d_render.c` code, moved unchanged: `GdipCreateFont` 13 / 10 / 13-bold / 15 px Liberation Sans, 18 px Source
+  Sans Pro Black, unit 2 = pixels, `GdipSetTextRenderingHint(4)`, GenericTypographic + flags `0x0800 | 0x1000 |
+  0x4000`) and stb_truetype (the only one off Windows). `cs2d_render.c` keeps the texture cache and the
+  `pow(a, 0.78)` LUT. Measured with `tools/web/font_compare.sh` (2365 EN + PT-BR language strings x 7 fonts):
+  - **width** = sum of hmtx advances x px / unitsPerEm, no kerning, trailing spaces counted: 100 % equal
+    ceil(width), max error 0.001 px;
+  - **height** = (OS/2 usWinAscent + usWinDescent) x px / upem, *not* the hhea line gap (13 px: 2288 / 2048 x 13
+    = 14.523);
+  - **synthetic bold** (no bold face in the collection): +41 design units (= round(2 % em)) per glyph with an
+    outline, spaces unchanged (13 px: +0.2603 px each); visually the stems are ~1 px heavier;
+  - pixels: GDI+ point-samples (16 coverage levels: 0 12 25 38 51 64 78 92 107 122 139 156 174 195 218 255); no
+    4x4..16x4 grid beat exact area. Best stb placement: fractional pen x, baseline rounded to a whole pixel; mean
+    |coverage| difference 6..12 / 255 per font. GDI+ is itself our approximation (the original draws with
+    BlitzMax `LoadImageFont`), so only the metrics are locked (`test_font_metrics`, 40 strings x 6 fonts);
+  - text bytes: strict UTF-8, else Windows-1252 (= `MultiByteToWideChar` CP_UTF8 + MB_ERR_INVALID_CHARS, then
+    CP_ACP on a Western system).
+- **Platform layer: `include/cs2d_platform.h` + `src/cs2d_platform.c` (2026-10-15)** is the only place that
+  includes `windows.h` / `winsock2.h` (plus the GDI+ block of `cs2d_font.c`). Off Windows it maps `SOCKET`,
+  `closesocket`, `_stricmp`, `strtok_s`, `VK_*` (winuser.h values: they are the game's key ids) and
+  `GetTickCount` (CLOCK_MONOTONIC ms); helpers for WSAStartup, FIONBIO, file / dir exists, mkdir / rmdir and
+  directory listing (`cs2d_platform_list_dir`: FindFirstFileA order on Windows, upper-case sorted elsewhere =
+  NTFS order). The 3 `maps/*.map` scans, `_stat` / `_mkdir`, `GetFileAttributesA` and `CreateDirectoryA`
+  go through it.
+- **Main loop:** `main_client.c` runs one `client_frame()` per frame (state at file scope); the desktop loops
+  it with `SDL_Delay`, the browser uses `emscripten_set_main_loop(web_frame, 0, false)`.
+- **Browser build facts (emcc 4.0.10, SDL3 port):** WebGL2 = `SDL_GL_CONTEXT_PROFILE_ES` 3.0; shaders get
+  `#version 300 es` + `precision highp float` (`CS2D_GLSL_HEADER`, `cs2d_gl.c`); `glEnable(GL_MULTISAMPLE)` is
+  skipped. `-sCASE_INSENSITIVE_FS=1` still exists. The emcc shell wrapper picks the Store `python3` alias, so
+  `tools/web/emenv.sh` sets `EMSDK_PYTHON`. A UDP `socket()` + `sendto` becomes a WebSocket to
+  `ws://<ip>:<port>/` (seen: `ws://127.0.0.1:36963/` refused when a map starts), so the gateway has to speak
+  that. `cs2d.ico` sits at the repo root and must be preloaded explicitly; `incbindata/` is absent from the tree.
 - **File system:** stdio only (`fopen`/`fread`/`fwrite`/`fclose`, one `_mkdir`, in 13 files); writes at
   `cs2d_editor.c:242`, `cs2d_map.c:315`, `cs2d_transfer.c:518`, `main_client.c:71` (BMP screenshot). Emscripten backs
   libc I/O with its own FS and adds IDBFS for persistence (`-lidbfs.js` + `SDL_EMSCRIPTEN_PERSISTENT_PATH`,

@@ -153,19 +153,18 @@ static void editor_save_map(cs2d_client_t *client, const char *name)
 /* Map names in maps (*.map files without the extension), sorted */
 static int cmp_names(const void *a, const void *b) { return _stricmp((const char *)a, (const char *)b); }
 
+static void editor_list_map_add(const char *name, void *user)
+{
+    cs2d_ed_state_t *ed = (cs2d_ed_state_t *)user;
+    const char *dot = strrchr(name, '.');
+    if (!dot || _stricmp(dot, ".map") != 0 || ed->file_count >= CS2D_ED_MAX_FILES) return;
+    snprintf(ed->files[ed->file_count++], sizeof(ed->files[0]), "%.*s", (int)(dot - name < 63 ? dot - name : 63), name);
+}
+
 static void editor_list_maps(cs2d_ed_state_t *ed)
 {
     ed->file_count = 0;
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA("maps\\*.map", &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-    do {
-        if (ed->file_count >= CS2D_ED_MAX_FILES) break;
-        char *dot = strrchr(fd.cFileName, '.');
-        if (dot) *dot = '\0';
-        snprintf(ed->files[ed->file_count++], sizeof(ed->files[0]), "%.63s", fd.cFileName);
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
+    cs2d_platform_list_dir("maps", editor_list_map_add, ed);
     qsort(ed->files, (size_t)ed->file_count, sizeof(ed->files[0]), cmp_names);
 }
 

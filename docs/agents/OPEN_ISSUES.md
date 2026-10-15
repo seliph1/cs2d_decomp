@@ -240,8 +240,10 @@ of scope, and this is *not* the Wasm port — the phases just happen to be the s
   `shlwapi` `SHCreateMemStream` trick for `.ico`; `build.bat` no longer links `-lgdi32`. Locked by
   `test_image_decode` (9 assets, FNV-1a clip vs an independent decode); the measured format inventory is in
   KNOWLEDGE "Image decoding is portable".
-- **Phase 2 — text: the last GDI+ user** (`cs2d_render.c` font block; sizes, flags and hint mode are in
-  KNOWLEDGE "Still GDI+ today"). Replace with the already vendored `third_party/stb_truetype.h`:
+- **Phase 2 — text: DONE off Windows (2026-10-15).** `src/cs2d_font.c` has a GDI+ backend (still the Windows
+  default) and an stb_truetype backend with identical metrics (KNOWLEDGE "Text engine"); the plan below was
+  followed. Left: decide whether the desktop switches to stb too (pixels differ by 6..12 / 255 on average).
+  The original plan:
   - put it in an isolated, GL-free module (`src/cs2d_font.c`) so measurement can be unit-tested with no window;
   - **the risk is metrics, not pixels:** every HUD and dialog measurement goes through
     `cs2d_render_text_width_ex` / `cs2d_render_text_prefix_width`, so the stb advances must equal the
@@ -264,8 +266,7 @@ of scope, and this is *not* the Wasm port — the phases just happen to be the s
     was only eyeballed via a `fun_roleplay` capture — a `light 0..5` / `mapshadows 0..4` screenshot diff is owed.
   - **Fallback removed:** the compatibility context is gone; a machine without a 3.3 core context fails to
     start (clear stderr message). Decide later whether to keep a legacy path.
-  - `include/cs2d_render.h` still includes `<windows.h>` (unguarded) — it goes away with the phase 2 GDI+ text
-    engine; `cs2d_gl.h` deliberately does not include it.
+  - `include/cs2d_render.h` includes `cs2d_platform.h` instead of `<windows.h>` (2026-10-15).
 - **Practical note — the `libwinpthread-1.dll` trap (fixed 2026-10-12):** the first build of phase 1 died on
   launch with *"libwinpthread-1.dll não foi encontrado"* (`0xC0000135`). The vendored `stb_image.h` declares
   some of its settings as `__thread` (`STBI_THREAD_LOCAL`: `stbi__g_failure_reason`,
@@ -278,26 +279,21 @@ of scope, and this is *not* the Wasm port — the phases just happen to be the s
   OPENGL32 / SDL3 / WS2_32 — no extra DLL has to be shipped, and this is where alternative decoders
   (SDL_image, FreeType, a future JPEG decoder) have to be checked too.
 
-## Web port (Emscripten) — not started
-- **Decision (2026-10-12):** viable for the C99 client; the render/font backend is the deciding risk and online play
-  needs a server-side UDP gateway. Evidence: `KNOWLEDGE.md` "Web/Wasm portability" and the `WORKLOG.md` entry of the same
-  date (Cline, second opinion). No source file has been changed for it.
-- **Open decisions:**
-  - **Render:** resolved on the desktop — the renderer is now GL 3.3 core + shaders (`src/cs2d_gl.c`, see the
-    GL 1.x removal section), so `-sLEGACY_GL_EMULATION` / `-sGL_FFP_ONLY` and gl4es / Regal are no longer
-    candidates; the web build targets WebGL2, still to be proven by an in-browser screenshot comparison.
-  - **Font metrics:** `stb_truetype`/FreeType must reproduce the `GdipMeasureString` advances that size the HUD, or the
-    whole layout drifts. Measure on the desktop first, then compare string by string.
-  - **Network:** gateway choice (WebSocket vs. WebTransport over a local UDP socket), where it runs, and how `[229]`
-    latency and the LAN scan (impossible in a browser) are reported.
-  - **Assets:** which set goes into `--preload-file` (the minimum referenced is ~4.1 MB of `gfx` + fonts + one map +
-    `sys/config.cfg`/`controls.cfg`); the CJK fonts (16 MB) are the main candidate for on-demand loading.
-  - **CI:** a separate `ubuntu-latest` + emsdk job (`.github/workflows/build.yml` is Windows-only today).
-- **Obstacles inside the tree:** the two fixed `maps\*.map` scans (`cs2d_client.c:2121`, `cs2d_scene_editor.c:140`), the
-  Windows-hardcoded harness paths (`main_client.c:348`), the case sensitivity of 356 asset names (111 under `gfx/`, 245
-  under `sys/`), and the blocking `while (g_running)` main loop (`main_client.c:248`) that SDL3 replaces with a mainloop.
-- **Phase 0 (cheapest, do first):** `emcc` build of the Win32-free core + `tests/test_cs2d.c` with `-sUSE_ZLIB=1`, run
-  under Node, to measure portability before touching `cs2d_render.c` (`feat/emscripten-poc` branch).
+## Web port (Emscripten) — started 2026-10-15
+- **Done:** phase 0 (the suite under Node: `tools/web/build_tests.sh`, 56/56) and an offline client in WebGL2
+  (`tools/web/build_client.sh` + `serve.sh`, `out/web/cs2d.html?de_dust2`): main menu and de_dust2 render like
+  the desktop capture (headless Chromium screenshots; eyeballed, no pixel diff). Facts in KNOWLEDGE
+  "Web/Wasm portability".
+- **Next: network (the user's decision).** The browser turns our UDP socket into a WebSocket to
+  `ws://<server ip>:<port>/`. A gateway must relay WebSocket binary frames <-> UDP datagrams byte for byte (one
+  UDP socket per browser, so the dedicated sees one client per source port). Open: where it runs (next to the
+  dedicated / the player's machine), whether `cs2d_client.c` talks to it explicitly (a configurable
+  `ws://gateway/?to=ip:port` instead of the implicit per-ip URL), `[229]` latency, the LAN scan (impossible).
+- **Other gaps:** sound starts only after a user gesture (SDL3 uses the deprecated ScriptProcessorNode);
+  persistence of `sys/config.cfg` / maps / downloads (IDBFS) not set up; `gfx/ sys/ maps/ sfx/` are preloaded
+  whole (43.5 MB `.data`; CJK fonts and `gfx/backgrounds` excluded): trim to what is used; screenshot
+  (`glReadPixels` GL_RGB) untested on WebGL; the `--capture` harness is not wired for the browser; no CI job.
+- **Fonts:** CJK / Thai text has no fallback face in either backend (unchanged).
 
 ## Verification debt
 - **Original + our client, one session:** not re-run after the latest join/leave fix (the session ended

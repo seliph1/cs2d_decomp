@@ -1,5 +1,5 @@
 #include "cs2d_bind.h"
-#include <windows.h>
+#include "cs2d_platform.h"
 #include <stdio.h>
 #include <string.h>
 

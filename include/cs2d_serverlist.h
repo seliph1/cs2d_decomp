@@ -1,7 +1,7 @@
 #ifndef CS2D_SERVERLIST_H
 #define CS2D_SERVERLIST_H
 
-#include <winsock2.h>
+#include "cs2d_platform.h"
 #include "cs2d_types.h"
 
 /*

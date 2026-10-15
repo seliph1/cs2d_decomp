@@ -1,5 +1,11 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-14 — Claude — every Lua image mode
+- `<tile:N>`, `<flag:cc>`, `<avatar_N>` (placeholder), `<light>` (new dynamic point lights `cs2d_light_point`),
+  follow-image recoil, mp_hudscale on HUD images (drawn first in the HUD), integer camera; modes 10..12 proven
+  never drawn (parentId never set). NPC shadow now needs mapshadows > 1.
+- Verified: `test_images_and_npcs` (path kinds), screenshots with the extended `image_probe.lua`.
+
 ## 2026-10-14 — Claude — Lua images and NPCs (Tdo 40 / 30)
 - `[51]` 0..9, `[59]`, image `[54]` tweens, snapshot sections 7 / 8 / 10 (Trestable "?" paths), NPC `[36,7]` / `[36,9]`,
   NPC motion / attack fx, image passes (background hook in `cs2d_render_map_floor_ex`, floor, top, overwall, HUD).

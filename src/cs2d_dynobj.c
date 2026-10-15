@@ -2,6 +2,7 @@
 #include "cs2d_entities.h"
 #include "cs2d_map.h"
 #include "cs2d_network.h"
+#include "cs2d_platform.h"
 #include <math.h>
 #include <ctype.h>
 #include <stdio.h>

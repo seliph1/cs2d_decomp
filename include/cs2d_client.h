@@ -1,10 +1,7 @@
 #ifndef CS2D_CLIENT_H
 #define CS2D_CLIENT_H
 
-#ifdef _WIN32
-#include <winsock2.h>
-#include <windows.h>
-#endif
+#include "cs2d_platform.h"
 
 #include "cs2d_types.h"
 #include "cs2d_render.h"

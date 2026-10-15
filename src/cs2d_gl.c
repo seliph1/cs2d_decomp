@@ -141,10 +141,17 @@ static GLuint gl3_compile(GLenum type, const char *src)
     return sh;
 }
 
+/* GLSL 3.30 on the desktop; WebGL2 takes the same shaders as GLSL ES 3.00 with an explicit precision */
+#ifdef __EMSCRIPTEN__
+#define CS2D_GLSL_HEADER "#version 300 es\nprecision highp float;\n"
+#else
+#define CS2D_GLSL_HEADER "#version 330 core\n"
+#endif
+
 static bool gl3_build_program(void)
 {
     static const char *vs_src =
-        "#version 330 core\n"
+        CS2D_GLSL_HEADER
         "layout(location = 0) in vec2 a_pos;\n"
         "layout(location = 1) in vec2 a_uv;\n"
         "layout(location = 2) in vec4 a_col;\n"
@@ -157,7 +164,7 @@ static bool gl3_build_program(void)
         "    gl_Position = u_proj * vec4(a_pos, 0.0, 1.0);\n"
         "}\n";
     static const char *fs_src =
-        "#version 330 core\n"
+        CS2D_GLSL_HEADER
         "in vec2 v_uv;\n"
         "in vec4 v_col;\n"
         "uniform sampler2D u_tex;\n"

@@ -10,6 +10,14 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-15 — Claude — web port: phase 0 + browser client
+- New `cs2d_platform.h/.c` (the Win32 include site; POSIX shims, dir listing, mkdir, net init), `cs2d_font.c`
+  (text engine out of `cs2d_render.c`: GDI+ backend unchanged + stb_truetype backend), `client_frame()` loop,
+  WebGL2 GLSL header, `tools/web/*` (emenv, build_tests, build_client, serve, shell, font_compare).
+- Verified: desktop 56/56 + `--capture` de_dust2 unchanged; Wasm suite under Node 56/56; stb metrics = GDI+ on
+  2365 strings x 7 fonts (`test_font_metrics`); main menu + de_dust2 in headless Chromium (screenshots).
+- Left (OPEN_ISSUES "Web port"): network gateway (decision), IDBFS, asset trimming, sound gesture, CI.
+
 ## 2026-10-15 — Claude — settile
 - New `cs2d_customtile.c` (Tcustomtile addcheck / add / endbatch): `[62]` long and short forms, join section
   `[252,7,9]` (was skipped), local `settile` command (FUN_140195d00 blend byte), collision / light / shadow-chunk update
@@ -41,9 +49,3 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - Shotguns (M3 / XM1014, flag 0x1409efcf8) reload one shell per 450 ms stage (reload x 5 ms) with w_roundin; online the
   shell comes from [16,pid,4] (fallback [16,101]); a shot interrupts; reloadani -> torso frame 3. `test_shell_reload`.
 - Left: mode 4 not proxy-captured; clip reload x 10 ms vs the original's x 5 ms stage; mod item reload sounds.
-
-## 2026-10-14 — Claude — every Lua image mode
-- `<tile:N>`, `<flag:cc>`, `<avatar_N>` (placeholder), `<light>` (new dynamic point lights `cs2d_light_point`),
-  follow-image recoil, mp_hudscale on HUD images (drawn first in the HUD), integer camera; modes 10..12 proven
-  never drawn (parentId never set). NPC shadow now needs mapshadows > 1.
-- Verified: `test_images_and_npcs` (path kinds), screenshots with the extended `image_probe.lua`.

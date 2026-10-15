@@ -1,5 +1,6 @@
 #include "cs2d_weapons.h"
 #include "cs2d_sound.h"
+#include "cs2d_platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

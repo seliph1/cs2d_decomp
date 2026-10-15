@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CS2D (web)</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #aaa; font: 13px sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  /* The canvas keeps the client's pixel size (sys/config.cfg); the page only centres it */
+  canvas { display: block; outline: none; image-rendering: pixelated; }
+  #status { margin-top: 8px; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+<div id="status">Loading...</div>
+<script>
+  var statusEl = document.getElementById('status');
+  var canvasEl = document.getElementById('canvas');
+  var Module = {
+    canvas: canvasEl,
+    /* cs2d.html?de_dust2 is cs2d_client.exe de_dust2 (the one command-line argument the client takes) */
+    arguments: location.search.length > 1 ? [decodeURIComponent(location.search.slice(1).replace(/=$/, ''))] : [],
+    print: function (t) { console.log(t); },
+    printErr: function (t) { console.warn(t); },
+    setStatus: function (t) { statusEl.textContent = t; },
+    monitorRunDependencies: function (left) {
+      if (left === 0) statusEl.textContent = '';
+    }
+  };
+  /* Keyboard focus goes to the canvas when it is clicked (SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT = #canvas) */
+  canvasEl.addEventListener('mousedown', function () { canvasEl.focus(); });
+  window.onerror = function (msg) { statusEl.textContent = 'Error: ' + msg; };
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

@@ -39,6 +39,7 @@
 #include "cs2d_hudmen.h"
 #include "cs2d_sound.h"
 #include "cs2d_customtile.h"
+#include "cs2d_font.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -1015,10 +1016,7 @@ static cs2d_client_t s_con;
 
 static double now_ms(void)
 {
-    LARGE_INTEGER f, c;
-    QueryPerformanceFrequency(&f);
-    QueryPerformanceCounter(&c);
-    return (double)c.QuadPart * 1000.0 / (double)f.QuadPart;
+    return (double)SDL_GetPerformanceCounter() * 1000.0 / (double)SDL_GetPerformanceFrequency();
 }
 
 /* Lays out the console and returns its log box node (children = visible lines) */
@@ -4294,6 +4292,84 @@ static bool image_case(const char *path, bool ico, int w, int h, uint32_t clip, 
     return true;
 }
 
+/*
+ * stb_truetype text backend (src/cs2d_font.c, the only one on the web) against GdipMeasureString.
+ * Expected values: the GDI+ backend on Windows 10 (tools/web/font_compare.sh measures 2365 language
+ * strings x 7 fonts; every ceil(width) and height matched). "Jo\xe3o" is not UTF-8: it decodes as Windows-1252.
+ */
+static bool test_font_metrics(void)
+{
+    printf("\n=== Testing the portable text metrics (stb_truetype vs GDI+) ===\n");
+
+    static const struct { cs2d_font_id_t font; const char *text; float w, h; } cases[] = {
+        { CS2D_FONT_REGULAR, "Console", 47.6963f, 14.5234f },
+        { CS2D_FONT_REGULAR, "Options", 44.8018f, 14.5234f },
+        { CS2D_FONT_REGULAR, "$16000", 43.3799f, 14.5234f },
+        { CS2D_FONT_REGULAR, "Ping", 26.0190f, 14.5234f },
+        { CS2D_FONT_REGULAR, "de_dust2", 53.4917f, 14.5234f },
+        { CS2D_FONT_REGULAR, "iiiiiiii", 23.1055f, 14.5234f },
+        { CS2D_FONT_REGULAR, "Jo\xe3" "o", 28.1899f, 14.5234f },
+        { CS2D_FONT_SMALL, "Find Servers", 56.6846f, 11.1719f },
+        { CS2D_FONT_SMALL, "Counter-Terrorists", 81.1279f, 11.1719f },
+        { CS2D_FONT_SMALL, "Player", 28.3447f, 11.1719f },
+        { CS2D_FONT_SMALL, "Deaths", 31.6846f, 11.1719f },
+        { CS2D_FONT_SMALL, "WWWWWWWW", 75.5078f, 11.1719f },
+        { CS2D_FONT_SMALL, "S\xc3" "\xa3" "o Paulo", 46.1475f, 11.1719f },
+        { CS2D_FONT_BOLD, "New Game", 66.8408f, 14.5234f },
+        { CS2D_FONT_BOLD, "Quit", 24.8828f, 14.5234f },
+        { CS2D_FONT_BOLD, "100", 22.4707f, 14.5234f },
+        { CS2D_FONT_BOLD, "Score", 35.2612f, 14.5234f },
+        { CS2D_FONT_BOLD, "The quick brown fox jumps over the lazy dog", 266.3477f, 14.5234f },
+        { CS2D_FONT_BOLD, "trailing  ", 47.6011f, 14.5234f },
+        { CS2D_FONT_BOLD, "!@#$%^&*()_+-=[]{};':,./<>?", 163.9473f, 14.5234f },
+        { CS2D_FONT_TITLE, "Console", 64.1520f, 22.6260f },
+        { CS2D_FONT_TITLE, "Options", 63.9720f, 22.6260f },
+        { CS2D_FONT_TITLE, "$16000", 58.3200f, 22.6260f },
+        { CS2D_FONT_TITLE, "Ping", 36.6120f, 22.6260f },
+        { CS2D_FONT_TITLE, "de_dust2", 74.8080f, 22.6260f },
+        { CS2D_FONT_TITLE, "iiiiiiii", 41.4720f, 22.6260f },
+        { CS2D_FONT_TITLE, "Jo\xe3" "o", 39.2760f, 22.6260f },
+        { CS2D_FONT_MENU, "Find Servers", 85.0269f, 16.7578f },
+        { CS2D_FONT_MENU, "Counter-Terrorists", 121.6919f, 16.7578f },
+        { CS2D_FONT_MENU, "Player", 42.5171f, 16.7578f },
+        { CS2D_FONT_MENU, "Deaths", 47.5269f, 16.7578f },
+        { CS2D_FONT_MENU, "WWWWWWWW", 113.2617f, 16.7578f },
+        { CS2D_FONT_MENU, "S\xc3" "\xa3" "o Paulo", 69.2212f, 16.7578f },
+        { CS2D_FONT_SIZED(24), "New Game", 120.0352f, 26.8125f },
+        { CS2D_FONT_SIZED(24), "Quit", 44.0156f, 26.8125f },
+        { CS2D_FONT_SIZED(24), "100", 40.0430f, 26.8125f },
+        { CS2D_FONT_SIZED(24), "Score", 62.6953f, 26.8125f },
+        { CS2D_FONT_SIZED(24), "The quick brown fox jumps over the lazy dog", 474.9023f, 26.8125f },
+        { CS2D_FONT_SIZED(24), "trailing  ", 84.0352f, 26.8125f },
+        { CS2D_FONT_SIZED(24), "!@#$%^&*()_+-=[]{};':,./<>?", 289.6992f, 26.8125f },
+    };
+    if (!cs2d_font_backend_ready(CS2D_FONT_BACKEND_STB)) TEST_FAIL("Font metrics", "gfx/fonts not loadable");
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        float w = 0.0f, h = 0.0f;
+        cs2d_font_measure_with(CS2D_FONT_BACKEND_STB, cases[i].font, cases[i].text, -1, &w, &h);
+        if (fabsf(w - cases[i].w) > 0.002f || fabsf(h - cases[i].h) > 0.002f) {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "font %d \"%s\": %.4f x %.4f, GDI+ %.4f x %.4f",
+                     (int)cases[i].font, cases[i].text, w, h, cases[i].w, cases[i].h);
+            TEST_FAIL("Font metrics", msg);
+        }
+    }
+    TEST_PASS("40 strings x 6 fonts: widths and heights equal GdipMeasureString (synthetic bold +41/2048 em per glyph)");
+
+    /* Prefix measurement (text caret) passes a byte length */
+    float wp = 0.0f, wf = 0.0f;
+    cs2d_font_measure_with(CS2D_FONT_BACKEND_STB, CS2D_FONT_REGULAR, "Console", 3, &wp, NULL);
+    cs2d_font_measure_with(CS2D_FONT_BACKEND_STB, CS2D_FONT_REGULAR, "Con", -1, &wf, NULL);
+    if (wp != wf) TEST_FAIL("Font metrics", "prefix width differs from the measured prefix");
+    uint32_t cps[8];
+    int n = cs2d_font_decode("S\xc3\xa3o", -1, cps, 8);
+    if (n != 3 || cps[1] != 0xE3) TEST_FAIL("Font metrics", "UTF-8 decode");
+    n = cs2d_font_decode("\x80\xe3", -1, cps, 8);
+    if (n != 2 || cps[0] != 0x20AC || cps[1] != 0xE3) TEST_FAIL("Font metrics", "Windows-1252 fallback");
+    TEST_PASS("Byte-length prefixes; strict UTF-8, else Windows-1252 (MultiByteToWideChar CP_UTF8 / CP_ACP)");
+    return true;
+}
+
 static bool test_image_decode(void)
 {
     printf("\n=== Testing the portable asset decoder (PNG / palette / 24-32-bit BMP / ICO) ===\n");
@@ -4534,7 +4610,7 @@ static bool test_new_game_maplist(void)
     const int nfiles = (int)(sizeof(files) / sizeof(files[0]));
     const char *dir = "tests/tmp_maplist";
     char path[MAX_PATH];
-    CreateDirectoryA(dir, NULL);
+    cs2d_platform_mkdir(dir);
     for (int i = 0; i < nfiles; i++) {
         snprintf(path, sizeof(path), "%s/%s", dir, files[i]);
         FILE *f = fopen(path, "wb");
@@ -4546,9 +4622,9 @@ static bool test_new_game_maplist(void)
 
     for (int i = 0; i < nfiles; i++) {
         snprintf(path, sizeof(path), "%s/%s", dir, files[i]);
-        DeleteFileA(path);
+        remove(path);
     }
-    RemoveDirectoryA(dir);
+    cs2d_platform_rmdir(dir);
 
     /* Groups in sys/maptypes.lst order, each sorted, unknown prefixes last under "Other Maps" (0182) */
     static const struct { const char *name; bool header; } want[] = {
@@ -5258,7 +5334,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 55;
+    int total = 56;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -5315,6 +5391,7 @@ int main(void)
     if (test_weapon_modes()) passed++;
     if (test_special_items()) passed++;
     if (test_settile()) passed++;
+    if (test_font_metrics()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

@@ -617,14 +617,12 @@ bool cs2d_client_connect(cs2d_client_t *client, const char *ip, int port)
         client->net_sock = INVALID_SOCKET;
     }
 
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
+    if (!cs2d_platform_net_init()) return false;
 
     client->net_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (client->net_sock == INVALID_SOCKET) return false;
 
-    u_long non_blocking = 1;
-    ioctlsocket(client->net_sock, FIONBIO, &non_blocking);
+    cs2d_platform_set_nonblocking(client->net_sock);
 
     memset(&client->server_addr, 0, sizeof(client->server_addr));
     client->server_addr.sin_family = AF_INET;
@@ -1379,7 +1377,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
 
     uint8_t buffer[4096];
     struct sockaddr_in from;
-    int fromlen = sizeof(from);
+    cs2d_socklen_t fromlen = sizeof(from);
 
     int recvd = recvfrom(client->net_sock, (char *)buffer, sizeof(buffer), 0,
                          (struct sockaddr *)&from, &fromlen);
@@ -2653,6 +2651,33 @@ static bool is_game_only_command(const char *cmd)
     return false;
 }
 
+/* "maps" console command: the *.map files of maps/, printed comma-separated in console-width lines */
+typedef struct {
+    cs2d_client_t *client;
+    char           line[CS2D_CONSOLE_LINE_LEN];
+    int            count;
+} console_maps_t;
+
+static void console_maps_add(const char *name, void *user)
+{
+    console_maps_t *cm = (console_maps_t *)user;
+    const char *ext = strrchr(name, '.');
+    if (!ext || _stricmp(ext, ".map") != 0) return;
+    char mname[64];
+    strncpy(mname, name, sizeof(mname) - 1);
+    mname[sizeof(mname) - 1] = '\0';
+    char *dot = strstr(mname, ".map");
+    if (dot) *dot = '\0';
+
+    if (strlen(cm->line) + strlen(mname) + 3 >= sizeof(cm->line)) {
+        cs2d_client_console_print(cm->client, 170, 170, 170, "%s", cm->line);
+        cm->line[0] = '\0';
+    }
+    if (cm->line[0] != '\0') strcat(cm->line, ", ");
+    strcat(cm->line, mname);
+    cm->count++;
+}
+
 void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
 {
     if (!client || !cmd_line) return;
@@ -2933,7 +2958,7 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
 
         char map_path[128];
         snprintf(map_path, sizeof(map_path), "maps/%s.map", mname);
-        if (GetFileAttributesA(map_path) == INVALID_FILE_ATTRIBUTES) {
+        if (!cs2d_platform_file_exists(map_path)) {
             cs2d_client_console_print(client, 255, 45, 45, "Error: Unable to load map '%s'", map_path);
             return;
         }
@@ -2944,35 +2969,14 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         if (dot) *dot = '\0';
         cs2d_client_set_scene(client, CS2D_SCENE_EDITOR);
     } else if (_stricmp(cmd, "maps") == 0 || _stricmp(cmd, "maplist") == 0) {
-        WIN32_FIND_DATAA fd;
-        HANDLE hFind = FindFirstFileA("maps\\*.map", &fd);
-        if (hFind == INVALID_HANDLE_VALUE) {
+        console_maps_t cm = { client, {0}, 0 };
+        if (cs2d_platform_list_dir("maps", console_maps_add, &cm) <= 0 || cm.count == 0) {
             cs2d_client_console_print(client, 255, 45, 45, "No maps found in maps/ directory.");
         } else {
-            char line_buf[CS2D_CONSOLE_LINE_LEN] = {0};
-            int count = 0;
-            do {
-                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-                    char mname[64];
-                    strncpy(mname, fd.cFileName, sizeof(mname) - 1);
-                    mname[sizeof(mname) - 1] = '\0';
-                    char *dot = strstr(mname, ".map");
-                    if (dot) *dot = '\0';
-
-                    if (strlen(line_buf) + strlen(mname) + 3 >= sizeof(line_buf)) {
-                        cs2d_client_console_print(client, 170, 170, 170, "%s", line_buf);
-                        line_buf[0] = '\0';
-                    }
-                    if (line_buf[0] != '\0') strcat(line_buf, ", ");
-                    strcat(line_buf, mname);
-                    count++;
-                }
-            } while (FindNextFileA(hFind, &fd));
-            FindClose(hFind);
-            if (line_buf[0] != '\0') {
-                cs2d_client_console_print(client, 170, 170, 170, "%s", line_buf);
+            if (cm.line[0] != '\0') {
+                cs2d_client_console_print(client, 170, 170, 170, "%s", cm.line);
             }
-            cs2d_client_console_print(client, 255, 220, 0, "Total maps available: %d", count);
+            cs2d_client_console_print(client, 255, 220, 0, "Total maps available: %d", cm.count);
         }
     } else if (_stricmp(cmd, "equip") == 0 || _stricmp(cmd, "give") == 0 || _stricmp(cmd, "item") == 0) {
         if (n < 2) {
@@ -3830,6 +3834,26 @@ static char *maplist_trim(char *s)
     return s;
 }
 
+/* Tgui_ml::Load: every file of maps/ whose lowercase extension is "map", except temp.map and
+ * autosave.map, stored as Lower(StripExt(name)) */
+typedef struct {
+    char (*names)[64];
+    int    count;
+} maplist_names_t;
+
+static void maplist_name_add(const char *name, void *user)
+{
+    maplist_names_t *mn = (maplist_names_t *)user;
+    if (strcmp(name, "temp.map") == 0 || strcmp(name, "autosave.map") == 0) return;
+    const char *dot = strrchr(name, '.');
+    if (!dot || _stricmp(dot + 1, "map") != 0) return;
+    size_t len = (size_t)(dot - name);
+    if (len == 0 || len >= sizeof(mn->names[0]) || mn->count >= CS2D_MAPLIST_MAX_ROWS) return;
+    for (size_t i = 0; i < len; i++) mn->names[mn->count][i] = (char)tolower((unsigned char)name[i]);
+    mn->names[mn->count][len] = '\0';
+    mn->count++;
+}
+
 int cs2d_maplist_load(cs2d_maplist_t *ml, const char *maps_dir, const char *types_path)
 {
     if (!ml) return 0;
@@ -3856,28 +3880,10 @@ int cs2d_maplist_load(cs2d_maplist_t *ml, const char *maps_dir, const char *type
         fclose(f);
     }
 
-    /* Tgui_ml::Load: every file of maps/ whose lowercase extension is "map", except temp.map and
-     * autosave.map, stored as Lower(StripExt(name)) */
     static char names[CS2D_MAPLIST_MAX_ROWS][64];
-    int nnames = 0;
-    char pattern[MAX_PATH];
-    snprintf(pattern, sizeof(pattern), "%s\\*", maps_dir ? maps_dir : "maps");
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-            if (strcmp(fd.cFileName, "temp.map") == 0 || strcmp(fd.cFileName, "autosave.map") == 0) continue;
-            const char *dot = strrchr(fd.cFileName, '.');
-            if (!dot || _stricmp(dot + 1, "map") != 0) continue;
-            size_t len = (size_t)(dot - fd.cFileName);
-            if (len == 0 || len >= sizeof(names[0]) || nnames >= CS2D_MAPLIST_MAX_ROWS) continue;
-            for (size_t i = 0; i < len; i++) names[nnames][i] = (char)tolower((unsigned char)fd.cFileName[i]);
-            names[nnames][len] = '\0';
-            nnames++;
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
-    }
+    maplist_names_t mn = { names, 0 };
+    cs2d_platform_list_dir(maps_dir ? maps_dir : "maps", maplist_name_add, &mn);
+    int nnames = mn.count;
 
     /* "All Maps" view: one group per map type in file order (a map joins the first prefix it starts with),
      * then the rest under "Other Maps" (sys/language 0182) */

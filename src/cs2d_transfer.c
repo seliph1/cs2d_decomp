@@ -1,7 +1,7 @@
 #include "cs2d_transfer.h"
 
 #include <ctype.h>
-#include <direct.h>
+#include "cs2d_platform.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -102,14 +102,12 @@ static void norm_path(const char *path, char *out, size_t out_size)
 
 static bool file_exists(const char *path)
 {
-    struct _stat st;
-    return _stat(path, &st) == 0 && (st.st_mode & _S_IFREG);
+    return cs2d_platform_file_exists(path);
 }
 
 static bool dir_exists(const char *path)
 {
-    struct _stat st;
-    return _stat(path, &st) == 0 && (st.st_mode & _S_IFDIR);
+    return cs2d_platform_dir_exists(path);
 }
 
 /* --- Path conditions --- */
@@ -430,7 +428,7 @@ static bool make_dirs(const cs2d_xfer_t *x, const char *path)
             char saved = *c;
             *c = '\0';
             if (dir[0] && !dir_exists(dir)) {
-                if (_mkdir(dir) != 0) {
+                if (!cs2d_platform_mkdir(dir)) {
                     xfer_log(x, XFER_RED, "ERROR: Failed to create directory '%s' for received files", dir);
                     return false;
                 }

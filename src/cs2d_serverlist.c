@@ -312,13 +312,11 @@ static uint16_t browser_tick(const cs2d_sv_browser_t *b)
 void cs2d_sv_browser_open(cs2d_sv_browser_t *b, uint32_t now_ms)
 {
     if (!b || b->open) return;
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;
+    if (!cs2d_platform_net_init()) return;
     b->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (b->sock == INVALID_SOCKET) return;
-    u_long non_blocking = 1;
-    ioctlsocket(b->sock, FIONBIO, &non_blocking);
-    BOOL broadcast = TRUE;
+    cs2d_platform_set_nonblocking(b->sock);
+    int broadcast = 1;
     setsockopt(b->sock, SOL_SOCKET, SO_BROADCAST, (const char *)&broadcast, sizeof(broadcast));
     b->open        = true;
     b->open_ms     = now_ms;
@@ -389,7 +387,7 @@ void cs2d_sv_browser_update(cs2d_sv_browser_t *b, int tab, uint32_t now_ms, floa
     uint8_t buf[1024];
     for (int guard = 0; guard < 256; guard++) {
         struct sockaddr_in from;
-        int from_len = sizeof(from);
+        cs2d_socklen_t from_len = sizeof(from);
         int n = recvfrom(b->sock, (char *)buf, sizeof(buf), 0, (struct sockaddr *)&from, &from_len);
         if (n <= 0) break;
         handle_datagram(b, ntohl(from.sin_addr.s_addr), ntohs(from.sin_port), buf, n, now_ms);
