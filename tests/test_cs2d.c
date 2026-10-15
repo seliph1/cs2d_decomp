@@ -6006,6 +6006,45 @@ static bool test_server_join(void)
     if (sv.round_end != 0 || sv.score_ct != 1) TEST_FAIL("round_start", "scores not updated or round_end not cleared");
     TEST_PASS("Dedicated server rounds: round_end 2 (CT win), score increment, round_start respawn");
 
+    /* Weapon selection [9] & firing [7]/[8] */
+    cs2d_sv_select_weapon(&sv, 1, 50, 0); /* select knife */
+    if (sv.players[1].weapon != 50) TEST_FAIL("select_weapon", "knife weapon id not set");
+    cs2d_sv_fire(&sv, 1, 42);
+    cs2d_sv_attack2(&sv, 1, 0);
+    TEST_PASS("Dedicated server combat relay: [9] select weapon, [7] fire, [8] attack2");
+
+    /* Damage [17], Kill [19], Buy [23] */
+    /* Add player 2 on T team */
+    sv.players[2].used = true;
+    sv.players[2].joined = true;
+    sv.players[2].team = 1; /* T */
+    sv.players[2].alive = true;
+    sv.players[2].health = 100;
+    sv.players[2].armor = 50;
+    sv.players[2].x = 500;
+    sv.players[2].y = 500;
+    sv.players[2].money = 4000;
+
+    /* Deal 40 damage from player 1 (CT) to player 2 (T) */
+    cs2d_sv_damage(&sv, 2, 1, 40, 1);
+    /* 40 dmg * 0.35 kevlar = 14 absorbed, armor drops from 50 to 36, health drops by 26 to 74 */
+    if (sv.players[2].health != 74 || sv.players[2].armor != 36) TEST_FAIL("damage", "health / armor not absorbed correctly");
+
+    /* Kill player 2 */
+    cs2d_sv_kill(&sv, 2, 1, 0, 1);
+    if (sv.players[2].alive || sv.players[2].health != 0 || sv.players[2].deaths != 1) TEST_FAIL("kill", "victim state / deaths not updated");
+    if (sv.players[1].score != 1 || sv.players[1].money != 16000) TEST_FAIL("kill", "killer score / money not updated");
+
+    /* Buy test for player 1 */
+    sv.players[1].money = 3500;
+    cs2d_sv_buy(&sv, 1, 32); /* M4A1, price = 3100 */
+    if (sv.players[1].money != 400 || sv.players[1].weapon != 32) TEST_FAIL("buy", "money deduction or weapon give failed");
+
+    /* Buy without enough money */
+    cs2d_sv_buy(&sv, 1, 35); /* AWP, price = 4750 */
+    if (sv.players[1].money != 400) TEST_FAIL("buy refusal", "money changed on failed purchase");
+    TEST_PASS("Dedicated server game logic: [17] damage calculation, [19] kill / score tracking, [23] buy / inventory");
+
     cs2d_map_free(&sv.map);
     return true;
 }

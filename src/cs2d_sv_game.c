@@ -473,3 +473,212 @@ void cs2d_sv_step_round(cs2d_server_t *sv)
     }
 }
 
+/* FUN_140158060: player selects/switches weapon -> [9, player, weapon, mode] reliable to others */
+void cs2d_sv_select_weapon(cs2d_server_t *sv, int id, int weapon, int mode)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team < 1) return;
+
+    /* Verify player owns the weapon or default melee */
+    if (!sv_has_item(pl, weapon)) {
+        int melee = (pl->team == 1) ? sv_mode(sv)->melee_t : sv_mode(sv)->melee_ct;
+        if (weapon != melee) return;
+    }
+
+    pl->weapon = weapon;
+
+    /* Broadcast [9, id, weapon, mode] reliable to every other joined player */
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (i == id) continue;
+        cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
+        if (!c || !sv->players[i].joined) continue;
+        cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+        cs2d_pkt_w_byte(p, 9);
+        cs2d_pkt_w_byte(p, (uint8_t)id);
+        cs2d_pkt_w_byte(p, (uint8_t)weapon);
+        cs2d_pkt_w_byte(p, (uint8_t)mode);
+    }
+}
+
+/* FUN_140191a70: player fires primary attack -> [7, player, seed] unreliable to others */
+void cs2d_sv_fire(cs2d_server_t *sv, int id, int seed)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team < 1) return;
+
+    /* Broadcast [7, id, seed] unreliable to other joined players */
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (i == id) continue;
+        cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
+        if (!c || !sv->players[i].joined) continue;
+        cs2d_pkt_t *p = cs2d_sv_packet(sv, c, false, false);
+        cs2d_pkt_w_byte(p, 7);
+        cs2d_pkt_w_byte(p, (uint8_t)id);
+        cs2d_pkt_w_byte(p, (uint8_t)seed);
+    }
+}
+
+/* FUN_1401fd590: player performs secondary attack -> [8, player, mode] reliable to others */
+void cs2d_sv_attack2(cs2d_server_t *sv, int id, int mode)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team < 1) return;
+
+    /* Broadcast [8, id, mode] reliable to other joined players */
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (i == id) continue;
+        cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
+        if (!c || !sv->players[i].joined) continue;
+        cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+        cs2d_pkt_w_byte(p, 8);
+        cs2d_pkt_w_byte(p, (uint8_t)id);
+        cs2d_pkt_w_byte(p, (uint8_t)mode);
+    }
+}
+
+/* FUN_1401647d0: player killed -> update scores, alive=false, broadcast reliable [19, victim, killer, assist, weapon, x, y] */
+void cs2d_sv_kill(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id, int weapon)
+{
+    if (victim_id < 1 || victim_id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *v = &sv->players[victim_id];
+    if (!v->used || !v->alive) return;
+
+    v->health = 0;
+    v->alive = false;
+    if (weapon != 0xfc) v->deaths++;
+
+    cs2d_sv_player_t *k = (killer_id >= 1 && killer_id <= CS2D_SV_MAX_PLAYERS && sv->players[killer_id].used)
+                        ? &sv->players[killer_id] : NULL;
+
+    if (k) {
+        bool enemies = (v->team == 1 && k->team >= 2) || (v->team >= 2 && k->team == 1);
+        if (enemies) {
+            k->score++;
+            k->money += 300;
+            if (k->money > 16000) k->money = 16000;
+            if (assist_id >= 1 && assist_id <= CS2D_SV_MAX_PLAYERS && sv->players[assist_id].used) {
+                sv->players[assist_id].assists++;
+            }
+        } else {
+            /* Friendly fire or suicide / world */
+            unsigned w = (unsigned)weapon - 72u;
+            if (k != v && weapon != 0xff && !(w < 16 && ((0x8033u >> w) & 1))) {
+                if (sv->set.sv_gamemode != 1) {
+                    k->score--;
+                    k->money -= 3300;
+                    if (k->money < 0) k->money = 0;
+                } else {
+                    k->score++;
+                }
+            }
+        }
+    }
+
+    uint8_t msg[9];
+    msg[0] = 19;
+    msg[1] = (uint8_t)victim_id;
+    msg[2] = (uint8_t)killer_id;
+    msg[3] = (uint8_t)assist_id;
+    msg[4] = (uint8_t)weapon;
+    uint16_t x = (uint16_t)(int)v->x;
+    uint16_t y = (uint16_t)(int)v->y;
+    msg[5] = (uint8_t)(x & 0xff);
+    msg[6] = (uint8_t)((x >> 8) & 0xff);
+    msg[7] = (uint8_t)(y & 0xff);
+    msg[8] = (uint8_t)((y >> 8) & 0xff);
+
+    sv_broadcast_joined(sv, msg, sizeof(msg));
+}
+
+/* FUN_1401658c0 / [17]: apply damage to victim and broadcast [17, victim, attacker, new_hp, new_arm] */
+void cs2d_sv_damage(cs2d_server_t *sv, int victim_id, int attacker_id, int dmg, int weapon)
+{
+    if (victim_id < 1 || victim_id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *v = &sv->players[victim_id];
+    if (!v->used || !v->alive || dmg <= 0) return;
+
+    int remaining_dmg = dmg;
+    if (v->armor > 0) {
+        /* Default kevlar absorbs ~35% of damage (armor_penetration 0.65) */
+        int absorbed = (int)((float)dmg * 0.35f);
+        if (absorbed > v->armor) absorbed = v->armor;
+        v->armor -= absorbed;
+        remaining_dmg -= absorbed;
+    }
+
+    v->health -= remaining_dmg;
+    if (v->health <= 0) {
+        v->health = 0;
+        /* Broadcast final damage state before or as part of kill */
+        uint8_t dmg_msg[5] = { 17, (uint8_t)victim_id, (uint8_t)attacker_id, (uint8_t)v->health, (uint8_t)v->armor };
+        sv_broadcast_joined(sv, dmg_msg, sizeof(dmg_msg));
+        cs2d_sv_kill(sv, victim_id, attacker_id, 0, weapon);
+        return;
+    }
+
+    uint8_t dmg_msg[5] = { 17, (uint8_t)victim_id, (uint8_t)attacker_id, (uint8_t)v->health, (uint8_t)v->armor };
+    sv_broadcast_joined(sv, dmg_msg, sizeof(dmg_msg));
+}
+
+/* FUN_1401cd710: player buy request -> validate and respond [23, id, type, money u16, 0] */
+void cs2d_sv_buy(cs2d_server_t *sv, int id, int weapon_id)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team < 1) return;
+
+    cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, id);
+
+    const cs2d_weapon_def_t *def = cs2d_weapon_get((uint8_t)weapon_id);
+    if (!def || pl->money < def->price) {
+        /* Refusal: type = 250 */
+        if (c) {
+            cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+            cs2d_pkt_w_byte(p, 23);
+            cs2d_pkt_w_byte(p, (uint8_t)id);
+            cs2d_pkt_w_byte(p, 250);
+            cs2d_pkt_w_short(p, (uint16_t)pl->money);
+            cs2d_pkt_w_byte(p, 0);
+        }
+        return;
+    }
+
+    /* Deduct price */
+    pl->money -= def->price;
+
+    /* Add item / special / armor to player */
+    if (def->slot != CS2D_SLOT_ITEM) {
+        sv_give(pl, weapon_id);
+        pl->weapon = weapon_id;
+    } else if (weapon_id == CS2D_WEP_DEFUSEKIT && pl->team == 2) {
+        pl->special |= 1;
+    } else if (weapon_id == CS2D_WEP_KEVLAR) {
+        pl->armor = 100;
+    } else if (weapon_id == CS2D_WEP_KEVLARHELM) {
+        pl->armor = 100;
+    } else if (weapon_id == CS2D_WEP_NIGHTVISION) {
+        pl->special |= 2;
+    } else if (weapon_id == CS2D_WEP_GASMASK) {
+        pl->special |= 16;
+    }
+
+    /* Send success [23, id, weapon_id, money, 0] to the buyer if connected */
+    if (c) {
+        cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+        cs2d_pkt_w_byte(p, 23);
+        cs2d_pkt_w_byte(p, (uint8_t)id);
+        cs2d_pkt_w_byte(p, (uint8_t)weapon_id);
+        cs2d_pkt_w_short(p, (uint16_t)pl->money);
+        cs2d_pkt_w_byte(p, 0);
+    }
+
+    /* If held weapon changed, broadcast [9, id, weapon, 0] to others */
+    if (def->slot != CS2D_SLOT_ITEM) {
+        cs2d_sv_select_weapon(sv, id, weapon_id, 0);
+    }
+}
+
+

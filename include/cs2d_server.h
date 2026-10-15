@@ -180,6 +180,12 @@ int  cs2d_sv_rand(int lo, int hi);                                         /* FU
 void cs2d_sv_round_end(cs2d_server_t *sv, int mode, int delay_ms);         /* FUN_14015c840 */
 void cs2d_sv_round_start(cs2d_server_t *sv, int reason);                   /* FUN_1402520b0 / FUN_140123530 */
 void cs2d_sv_step_round(cs2d_server_t *sv);                                /* check round end conditions & timer */
+void cs2d_sv_select_weapon(cs2d_server_t *sv, int id, int weapon, int mode); /* FUN_140158060: [9] */
+void cs2d_sv_fire(cs2d_server_t *sv, int id, int seed);                    /* FUN_140191a70: [7] */
+void cs2d_sv_attack2(cs2d_server_t *sv, int id, int mode);                 /* FUN_1401fd590: [8] */
+void cs2d_sv_damage(cs2d_server_t *sv, int victim_id, int attacker_id, int dmg, int weapon); /* [17] */
+void cs2d_sv_kill(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id, int weapon); /* FUN_1401647d0: [19] */
+void cs2d_sv_buy(cs2d_server_t *sv, int id, int weapon_id);                /* FUN_1401cd710: [23] */
 
 /* Console output: the dedicated prints every line with its colour prefix stripped */
 void cs2d_server_print(const char *fmt, ...);

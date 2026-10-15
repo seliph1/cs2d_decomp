@@ -929,6 +929,43 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         }
         return true;
     }
+    case 9: { /* select weapon: [9, weapon u8, mode u8] (FUN_1401c8f00) */
+        if (rd_left(r) < 2) return false;
+        int wep = rd_byte(r), mode = rd_byte(r);
+        if (pl) cs2d_sv_select_weapon(sv, c->player, wep, mode);
+        return true;
+    }
+    case 7: { /* fire: [7, seed u8] (FUN_1401c8930) */
+        if (rd_left(r) < 1) return false;
+        int seed = rd_byte(r);
+        if (pl) cs2d_sv_fire(sv, c->player, seed);
+        return true;
+    }
+    case 8: { /* attack2: [8, mode u8] (FUN_1401c8c50) */
+        if (rd_left(r) < 1) return false;
+        int mode = rd_byte(r);
+        if (pl) cs2d_sv_attack2(sv, c->player, mode);
+        return true;
+    }
+    case 17: { /* damage / hit report: [17, victim u8, dmg u8, weapon u8] (FUN_1401cc9f0) */
+        if (rd_left(r) < 3) return false;
+        int victim = rd_byte(r), dmg = rd_byte(r), weapon = rd_byte(r);
+        if (pl) cs2d_sv_damage(sv, victim, c->player, dmg, weapon);
+        return true;
+    }
+    case 19: { /* suicide / kill report: [19, weapon u8] (FUN_1401ccc90) */
+        if (rd_left(r) < 1) return false;
+        int weapon = rd_byte(r);
+        if (pl) cs2d_sv_kill(sv, c->player, c->player, 0, weapon);
+        return true;
+    }
+    case 23: { /* buy: [23, weapon_id u8, sub u8] (FUN_1401cd710) */
+        if (rd_left(r) < 2) return false;
+        int weapon_id = rd_byte(r);
+        rd_byte(r); /* sub / mode byte, usually 0 */
+        if (pl) cs2d_sv_buy(sv, c->player, weapon_id);
+        return true;
+    }
     case 32: rd_short(r); rd_short(r); return true;    /* spectator camera */
     case 67: rd_byte(r); return true;                  /* spectated player */
     default:
