@@ -10,34 +10,33 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
-## 2026-10-14 — Claude — special weapons, consumable items, item tooltips
-- Laser beam / flames / RPG backblast (`cs2d_fx_laser/flame`), launchers as projectiles without `[7]` (GL now too),
-  Portal Gun `[50]` send/receive + portal Tdo drawing; table fixes (45..49, 88, 89 = Satchel, new 64..68).
-- Consumables on pickup (`cs2d_player_consume_item`); `[33]` ammo normalized (`cs2d_weapon_item_ammo`) → no
-  "(empty)" on supply items; 64..68 now named items (plain tooltip).
-- Verified: dump/REA (knowledge/special-weapons.md), `test_special_items`, offline screenshots (laser, flame, RPG).
+## 2026-10-14 — Claude — light engine: failing test, flashlights, muzzle / explosion lights
+- `test_light_engine` failed because cbd56be replaced `maps/fun_roleplay.map`; fixtures regenerated with the emulator
+  (ours = original, 0 mismatches). `light_check.sh` needed `-Ithird_party`.
+- New: `Tp_lightpool` (`pool_get` / `pool_return`), light particles Tp 0x1f (`cs2d_light_flash`: shots, explosions,
+  flashbang), per-player flashlights (`cs2d_light_flashlight`), `[57]` send / receive, mp_flashlight (`[252,6]` h+1,
+  `[237,14]`), special byte 32, flare1 on the player.
+- Verified: emulator on scenes with a flashlight and a muzzle light (new `*_dyn_*` fixtures, tests 53/53); proxy
+  `flashlight_probe.lua` on de_dust at night: same `[57,1]` (reliable) / `[57,1,1]` and matching screenshots.
 
-## 2026-10-14 — Claude — attack2 (silencer, burst, scope, strong slash) and shotgun pellets
-- `cs2d_weapon_attack2_type/accuracy/mode`, per-item `weapon_mode[]` (replaces unused `zoom_mode`), attack2 handler +
-  `[8]` send/receive, burst queue, 5 shotgun pellets, `cs2d_fx_tracer`, `cs2d_render_scope`. Knife attack2 now sends `[8,0]`.
-- Verified: dump/REA (see knowledge/shot-effects.md), `test_weapon_modes`, offline screenshots (M3 fan, AWP zoom 2).
-- Not verified against a proxy capture of the original. Light engine test fails on HEAD too (not from this change).
+## 2026-10-14 — Claude — reload sounds
 
-## 2026-10-14 — Claude — Supply menu (Tgui_hudmen 61 / 62)
-
-- Use key on an own Supply / Super Supply opens "Supply Selection"; picking a slot sends `[26,150,slot,x,y]`.
-  `mp_supply_items` parsed from `[252,6]` / `[237,11]` (`net_supply_items`). Code: `src/cs2d_scene_game.c`.
-- Verified: layout and packet from the dump (`Tgui_hudmen::draw` case 0x3d, `FUN_14014f820`), string encoding from
-  `proxy_ba2.log`. Not yet run against the dedicated; no screenshot comparison.
-
-## 2026-10-14 — Claude — Auto switch on pickup
-
-- [25] collect: the local player now holds the collected weapon and sends [9, type, 0] when opt_auto_switch is on (FUN_14020ce60 -> FUN_1401caca0).
-- Verified: build + tests (48/49, the light-engine failure predates this). Not yet compared on a proxy capture.
-
-## 2026-10-14 — Claude — HUD: infinite rounds and mp_infammo
-- [252,6] roundtime byte now sets `cfg_roundtime`; main HUD hides the clock at mp_roundtime 100 (0x1402955b8).
-- Clock also hidden in DM / TDM / Construction (table 0x1409f77e8 = 1,0,0,0,1).
-- mp_infammo: main HUD shows clip | infinity (hud_symbols 11), weapon select "clip | INF".
-- Verified: build + tests (48/49, Light engine failure pre-existing). Not compared on screenshots yet.
-
+- `cs2d_weapon_reload` plays w_clipout, `cs2d_weapon_finish_reload` w_clipin (FUN_140214780 modes 1 / 2, positional vol 1.0).
+- Verified in the asm/dump only; build ok, tests 51/52 (light engine failure predates this).
+- Shotguns (M3 / XM1014, flag 0x1409efcf8) reload one shell per 450 ms stage (reload x 5 ms) with w_roundin; online the
+  shell comes from [16,pid,4] (fallback [16,101]); a shot interrupts; reloadani -> torso frame 3. `test_shell_reload`.
+- Left: mode 4 not proxy-captured; clip reload x 10 ms vs the original's x 5 ms stage; mod item reload sounds.
+## 2026-10-14 — Claude — every Lua image mode
+- `<tile:N>`, `<flag:cc>`, `<avatar_N>` (placeholder), `<light>` (new dynamic point lights `cs2d_light_point`),
+  follow-image recoil, mp_hudscale on HUD images (drawn first in the HUD), integer camera; modes 10..12 proven
+  never drawn (parentId never set). NPC shadow now needs mapshadows > 1.
+- Verified: `test_images_and_npcs` (path kinds), screenshots with the extended `image_probe.lua`.
+## 2026-10-14 — Claude — Lua images and NPCs (Tdo 40 / 30)
+- `[51]` 0..9, `[59]`, image `[54]` tweens, snapshot sections 7 / 8 / 10 (Trestable "?" paths), NPC `[36,7]` / `[36,9]`,
+  NPC motion / attack fx, image passes (background hook in `cs2d_render_map_floor_ex`, floor, top, overwall, HUD).
+- Fix: map cycle is snapshot section 12 (9 = custom tiles, now skipped); the proxy shows 7..13 in order.
+- Verified: `test_images_and_npcs`, proxy + screenshots with `image_probe.lua` on the offline dedicated. Light engine test still fails (pre-existing).
+## 2026-10-14 — Claude — Portals and teleporters
+- `cs2d_dynobj_place_portal` / `_portal_tile` / `_teleport` (FUN_1401fc9f0, Tpl.tilepos 0xd/0x16/0x17): offline Portal
+  Gun placement on floor tiles, portal ↔ portal and Teleporter Entrance → Exit on tile entry; portal close flash.
+- Verified: `test_dynobjs` cases (dump-derived rules); not compared with a capture. Light engine test fails before and after.

@@ -17,6 +17,7 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 | Spectate | `[67][player]` | Reliable. Followed player, 0 = free look; only sent while dead or Spectator |
 | Process | `[30][mode]` | 1 plant start, 2 plant abort, 4 defuse abort (`FUN_1401cb510`, `FUN_1401f5f60`) |
 | Spec position | `[32][x+32768 u16][y+32768 u16]` | Unreliable, once per second while dead or Spectator: the camera center |
+| Flashlight | `[57][state]` | Reliable (proxy `flashlight_probe.lua`). Bind `flashlight` (F): `FUN_140167440(id, 1 - flashlight, 1)`, sent only while alive in a team, `mp_flashlight` 1 and not a T in Zombies; the flag changes on the server's echo |
 
 ## Network: server → client (proxy, Lua)
 
@@ -25,7 +26,7 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 | 7 | `[7,pid,seed]` | Another player fired |
 | 9 | `[9,pid,type,mode]` | Weapon held (e.g. Lua `setweapon`) |
 | 15 | `[15,pid,x u16,y u16]` | setpos / teleport. The local player must apply it, or it keeps sending stale positions (rubberbanding) |
-| 16 | `[16,pid,1 / 2]` | Reload started / finished (finished = clip refilled) |
+| 16 | `[16,pid,mode]` | Reload: 1 started, 2 clip refilled, 4 one shell (M3 / XM1014), 3 / 100 aborted (FUN_140214780; mode 4 from the host branch, not captured). Client fallback `[16][101]` after ping x 1.5 ms without a 4 |
 | 17 | `[17,victim,attacker,hp,armor]` | Damage |
 | 20 | `[20,pid,team,look]` | Team and skin broadcast (`team == 0` moves player to Spectator) |
 | 21 | `[21,pid,x u16,y u16,weapon,armor,money u16,n,n×item]` | Spawn, with the whole inventory. prison_funst3r gives only the knife (50) |
@@ -44,6 +45,7 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 | 64 | `[64,t u16,ct u16]` | Team scores (`setteamscores`, REA `FUN_1402de440`) |
 | 52 | `[52,pid,type,id u16,x u16,y u16,rot u32]` | Spawn ground projectile (13 bytes, REA `0x140060ee0`) |
 | 55 | `[55,id,pid]` | Silent kill projectile (3 bytes, REA `0x1402dd7a0`) |
+| 57 | `[57,pid,state]` | Flashlight switched (3 bytes, recv `FUN_1402dda70` -> `FUN_140167440(pid, state, 0)`): sets Tpl.flashlight (+0x300), plays `sfx/player/flashlight.wav` at 0.5. Also special byte bit 32 (`setspecialbyte`) |
 | 58 | `[58,pid,type,id,x+32768 u16,y+32768 u16,flydist u16,dir u16]` | Spawn flying projectile (12 bytes, REA `0x1400a91d0`) |
 | 61 | `[61,pid,type,clip u16,reserve u16]` | Set ammo |
 | 63 | `[63,id,pid,x+32768 u16,y+32768 u16]` | Move projectile (7 bytes, REA `0x14007dce0`) |

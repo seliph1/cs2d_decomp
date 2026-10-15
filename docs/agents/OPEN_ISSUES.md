@@ -5,10 +5,10 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
-- **Special weapons / items (2026-10-14):** none checked against a proxy capture. The client `[33]` handler was not found
-  (we normalize like FUN_14011ba70). Missing: money indicator `Thud_msg.add_money` on Coins/Money/Gold, laser / flame
+- **Special weapons / items (2026-10-14):** none checked against a proxy capture. The client `[33]` handler is
+  `FUN_14011c0b0` (clip / reserve sent + 1, then FUN_14011ba70). Missing: money indicator `Thud_msg.add_money` on Coins/Money/Gold, laser / flame
   lights and TSparkle details, Tp 23 / Tp 0x1d sprites (approximated with glowdot), Satchel Charge attack / attack2
-  (FUN_1401f2670), Portal Gun teleport visuals (server moves the player), offline portal placement.
+  (FUN_1401f2670), offline teleporter / portal messages (g_lang 0xb3), mp_teleportreload offline (taken as 0), Portal Gun not verified on a capture.
 - **attack2 / shotgun (2026-10-14):** pellet spread uses rand(), not `TRandom.SeedTable` (seeded by `GenerateSeed`, not
   traced), so our pellets differ from the server's. `[8]` not checked against a proxy capture; whether attack2 repeats
   while held (we do, 500 ms) is untested on the original; the scope hint text (`DAT_140ddf19c`, lang 0x36 group) and the
@@ -70,8 +70,9 @@ the same one.
     index) and the per-entity margin decisions in `cs2d_render.c`.
 - **Audio (2026-10-14, `knowledge/sound.md`):** engine + shots, impacts, explosions, hit / die, items, Env_Sound,
   [65], thunder, flashbang, hostage, HUD slot sounds. Not compared by ear with CS2D.exe; pan law and the hit trigger
-  are estimates. Missing: footsteps (`pl_*` arrays 0x140a0d910..8e0), reload clip sounds (`w_clipout` / `w_clipin`
-  timing in 0x14021xxxx), c4 beeps / plant / defuse, grenade bounce, radio, kill-streak `sfx/fun`, menu music,
+  are estimates. Missing: footsteps (`pl_*` arrays 0x140a0d910..8e0), reload sounds by mod items (items[typ] + 0x20);
+  shell reload `[16,pid,4]` not proxy-captured, clip reload kept at reload x 10 ms vs the x 5 ms stage of
+  FUN_140214780; c4 beeps / plant / defuse, grenade bounce, radio, kill-streak `sfx/fun`, menu music,
   GUI clicks, sv_sound (`Tserversound.playServer`), Env_Sound one-shots triggered online, `volume` options slider.
 - **Shots:** offline shots have no spread, and the reach of weapons other than the knife and the AK-47
   is not measured.
@@ -188,8 +189,14 @@ the same one.
     the "X" button (`Tgui_hudmen.fbutton`) is drawn like a small button, and the center message shade bar and fade
     (1 s) are calibrated. The team menu buttons sit at window + 80 in our UI while every `Tgui_hudmen.button` call
     passes x = 16: one of the two is wrong (check on a screenshot).
-  - Not drawn: portals (22 / 23), NPCs (30), Lua images (40, `Tdo` image fields and `[252,7,7]` image data),
-    laser mine beams, Construction Site smoke particles, dynamic lights; turret tracers use a calibrated 300 px reach.
+  - Not drawn: laser mine beams, Construction Site smoke particles, dynamic lights; turret tracers use a calibrated
+    300 px reach.
+  - Lua images / NPCs (2026-10-14, KNOWLEDGE dynobj "Lua images"): not compared with a screenshot of the original.
+    Images: player avatars (no avatar download; the avatar_load placeholder always spins), physics parents
+    (`[51,8]`, no physics objects), image obstacle shadows (ObstacleShadow2 / TLightingSprite for shadow 0), 3D tiles
+    (Tile3D) and fog of war on follow images are not done; solid blend draws as alpha 1; `<tile:N>` and the flag
+    images are assumed midhandled. NPCs: no vortigaunt beam / soldier tracer (Tdo.shoot), no die sounds, rotvar decays
+    per 60 Hz frame (original per draw), zombie assumed a 32 x 32 sheet, health table 0x1409ed7f0 not read.
   - Building hit debris (`cs2d_fx_building_hit`): fragments do not
     stop at walls, the `particles` setting is fixed at 4, and the look is not compared with a screenshot yet.
   - Building hover text (KNOWLEDGE "Construction mode"): not compared with a screenshot of the original; the text
@@ -198,19 +205,23 @@ the same one.
   - Player hover text: no smoke cover check (no smoke grenades) and no `Tpl.fog` (no fog of war); the click on the
     hovered player to spectate it (`FUN_14029fc70`) is not done. `team_game()` stands for both `0x140a015d0` tests
     (buildings `== 1`, players `!= 0`): the table values are not read yet.
-  - Not handled: teleporter use
+  - Not handled: teleporter destination menu
     ("Select Teleporter Destination" 0528), Gate Field team blocking
     for movement, kill rewards and `mp_building_limit` / `mp_building_price` overrides.
   - `g_prop_class[cellprop] == 1` is approximated by our collision 0; the team-game table `0x140a015d0` is assumed
     (every mode but Deathmatch) and the respawn-mode table `0x1409f57b8` as modes 1..4.
-  - `[252,7,3]` items and `[252,7,6]` ground projectiles are read, but `[252,7,7]` images and `[252,7,8]` tweens are not.
+  - `[252,7,9]` custom tiles (Tcustomtile) are skipped; `[252,7,11]` weapon settings are not read.
 - **CTF:** take / drop / return messages and the carried flag are done; capture messages (0589 / 0590), scores (`[64]`)
   and the return money bonus are not. Dropped ground items have no random rotation (Titem.add Rnd(360)). The draw order
   of the base / carried flag over the walls is from a screenshot, not from the code.
 - **Light engine, not reconstructed** (KNOWLEDGE "Light engine"; what exists matches the original call for call):
-  - Flashlights (`TLightSource` type 1, the player's flashlight item) are never created.
-  - Light sprites of particles, muzzle flashes, explosions, `TSparkle`, projectiles and buildings (`Tdo`), the shadows of
-    buildings (`FUN_14025f0e0`) and of flying projectiles (`Tpro.draw_flying_shadow`).
+  - Done 2026-10-14: flashlights, light particles of firearm shots, explosions and flashbangs (knowledge "Light pool").
+    Still missing: the light particles of the lightning / laser (style 6) / turret / flamethrower shots and alarms,
+    `Tp.explosion`'s explosion_count cap, light sprites of particles, `TSparkle`, projectiles and buildings (`Tdo`), the
+    shadows of buildings (`FUN_14025f0e0`) and of flying projectiles (`Tpro.draw_flying_shadow`).
+  - Flashlights: `Tpl.fog` (FOW-hidden players) does not switch them off; the flare1 on the player skips the per-frame
+    mp_flashlight / Zombies check (the flag is only set when they pass); the `ChangeRotation` argument (xmm9) is
+    assumed to be Tpl.rot read at 0x14021d185; `FUN_140146fd0` (FOW) does not hide muzzle lights.
   - The player silhouette in the day shadows leaves out the carried bomb / defuse kit; `ObstacleShadow` (player parts as
     obstacles) is not filled.
   - `DrawStripesLightColor`, `render3d` (`DAT_140ddf084`), and the map editor (the original lights the editor too; ours

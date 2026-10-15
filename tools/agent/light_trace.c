@@ -6,6 +6,9 @@
  *        -l:libz.a -lm -o tools/agent/out/light_trace.exe   (tools/agent/light_check.sh does it)
  * usage: light_trace.exe <map file> <cam x> <cam y> <main|floor|color> <scene out> [light mapshadows shadows]
  *        DAYLIGHT=<angle> overrides the map's sun angle
+ *        FLASHLIGHT="<x> <y> <rot>" switches player 1's flashlight on there (cs2d_light_flashlight)
+ *        FLASH="<x> <y>" adds a muzzle light (cs2d_light_flash, yellow, radius 100, alpha 0.7; no shrink so the scene
+ *        file keeps the radius the frame was drawn with)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +44,16 @@ int main(int argc, char **argv)
     }
     cs2d_light_configure(&cfg);
     cs2d_light_load_map(&map);
+    const char *fl = getenv("FLASHLIGHT");
+    if (fl && fl[0]) {
+        float x = 0, y = 0, rot = 0;
+        if (sscanf(fl, "%f %f %f", &x, &y, &rot) == 3) cs2d_light_flashlight(1, true, x, y, rot);
+    }
+    const char *mf = getenv("FLASH");
+    if (mf && mf[0]) {
+        int x = 0, y = 0;
+        if (sscanf(mf, "%d %d", &x, &y) == 2) cs2d_light_flash(x, y, 255, 255, 35, 100.0f, 0.0f, 0.7f);
+    }
     if (strcmp(argv[4], "main") == 0) cs2d_light_set_trace(print_line, NULL);
     cs2d_light_frame(&map, cx, cy, 1.0f);
     if (strcmp(argv[4], "floor") == 0) {

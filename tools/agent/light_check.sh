@@ -9,7 +9,7 @@ export PATH=/c/msys64/mingw64/bin:$PATH
 O=tools/agent/out; mkdir -p $O
 MAP="$1"; CX="$2"; CY="$3"; shift 3
 PARTS="${*:-main floor color}"
-gcc -Iinclude tools/agent/light_trace.c $(ls src/*.c | grep -v main_client.c) -lSDL3 -lopengl32 -lgdi32 -lws2_32 \
+gcc -Iinclude -Ithird_party tools/agent/light_trace.c $(ls src/*.c | grep -v main_client.c) -lSDL3 -lopengl32 -lgdi32 -lws2_32 \
     -l:libz.a -lm -o $O/light_trace.exe 2>&1 | grep -i error
 N=$(basename "$MAP" .map); RC=0
 for P in $PARTS; do

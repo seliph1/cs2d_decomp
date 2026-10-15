@@ -48,6 +48,7 @@ Source: dump `Tgui_hudmen` (`update 0x14002eb80`, `button 0x140129620`, `fbutton
 - **Fire and reload timers** (`Tpl.firetimer` / `Tpl.reloadtimer`, `Ttimer.reset(ms)`: time = ms + `g_time_ms`):
   `Tpl.attack` (`FUN_1402164d0`, imul 0x27 at 0x140216b8f) re-arms the fire timer with firedelay x **39 ms** (AK-47 3
   -> 117 ms); the client also reads `firedelay` from `sys/weapons.cfg` into 0x1409f2600 (`FUN_140175f40`, clamped
-  2..255). Knife / Claw right click (`Tpl.attack2`, 0x1401fdde8 / 0x1401fde66) waits 1200 ms. Reload is two stages of
-  reload x 5 ms each (`FUN_140214780` states 1 -> 4 -> 2), reload x 10 ms in total.
+  2..255). Knife / Claw right click (`Tpl.attack2`, 0x1401fdde8 / 0x1401fde66) waits 1200 ms. Reload: `FUN_140214780` re-arms the
+  timer with reload x 5 ms per stage; clip weapons 1 -> 2 (ours keeps reload x 10 ms, unresolved), shell weapons
+  (flag 0x1409efcf8: M3, XM1014) 1 -> 4 per shell, see knowledge/sound.md.
 - **moneyinfo:** box (514, 30) 70 x 25, `"<money> $"` right aligned at 579, y 33, in (200).

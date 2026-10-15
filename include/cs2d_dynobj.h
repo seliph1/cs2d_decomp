@@ -73,19 +73,63 @@ typedef struct {
     int      target;     /* Turret target player ([36,id,0,target]) */
     int      countdown;  /* Turret: frames left of the shooting burst */
     int      shots;      /* Turret bursts fired since the client last read it (each fires every barrel) */
+    int      upgrade;    /* NPC Vortigaunt: ranged attack charge frames 1..89 (+0x6c), 0 idle */
+
+    /* NPC (typ 30): player holds the NPC type 1 zombie, 2 headcrab, 3 snark, 4 vortigaunt, 5 soldier */
+    float    m_x, m_y;   /* Movement target (+0x104 / +0x108, [36,id,7]); Tdo.add sets it to the spawn point */
+    float    m_rot;      /* Target angle (+0x10c) */
+
+    /* Lua image (typ 40, Tdo.iniimage 0x14022b9f0): mode 0 floor, 1 top, 2 HUD, 3 super top, 4 background,
+     * 101..132 / 133..164 / 201..232 / 233..263 follow player (mode - 100 / 132 / 200 / 232) */
+    char     path[128];  /* Long path (Trestable.longversion), with an optional "<m>" / "<a>" / "<b>" / "<n>" mask */
+    uint8_t  color[3];
+    float    alpha;
+    float    scalex, scaley;
+    int      blend;      /* 0 alpha, 1 light, 2 shade, 3 solid (imageblend) */
+    int      frame;      /* Current frame (imageframe - 1) */
+    int      frames;     /* Frame count once the image is loaded (cs2d_dynobj_set_frames), 0 unknown */
+    int      shadow;     /* +0x44 (imageparam / snapshot), 0 casts an obstacle shadow */
+    int      hit_mode;   /* Tdoc hit zone ([59]): mode 0 none, xo / yo / w / h */
+    int      hit_xo, hit_yo, hit_w, hit_h;
 } cs2d_dynobj_t;
+
+/* Ttween (Lua tween_* on images, [54] with target 200 + id and [252,7,8]) */
+#define CS2D_DYNOBJ_TWEENS 256
+typedef struct {
+    bool     used;
+    uint8_t  mode;       /* 0 move, 1 move + rotate, 2 rotate, 3 rotate constantly, 4 alpha, 5 color, 6 scale,
+                          * 7 frame, 8 frame animation */
+    uint16_t id;
+    uint32_t start_ms;
+    int      duration;
+    float    x[2], y[2], rot[2], alpha[2], sx[2], sy[2];
+    uint8_t  rgb[2][3];
+    uint8_t  frame[2];
+} cs2d_dynobj_tween_t;
+
+#define CS2D_RESTABLE_MAX 512
 
 typedef struct cs2d_dynobj_world_s {
     cs2d_dynobj_t objs[CS2D_DYNOBJ_MAX];
     cs2d_map_t   *map;
     uint32_t      version;   /* Bumped on every add / remove / type change */
     float         frame_acc; /* 60 Hz frames not yet simulated by cs2d_dynobj_update */
+    const cs2d_player_t *players; /* players[1..CS2D_MAX_PLAYERS] of the last cs2d_dynobj_update (NPC aim) */
+    cs2d_dynobj_tween_t tweens[CS2D_DYNOBJ_TWEENS];
+    /* Trestable client table ([252,7,10] resource paths): "?" + u16 index stands for paths[index] */
+    char          res[CS2D_RESTABLE_MAX][96];
+    int           res_count;
+    int           res_received;
 } cs2d_dynobj_world_t;
 
 /* Effects the client should show after a message (kill explosion, build sound) */
 typedef struct {
-    int   kind;              /* 0 none, 1 explosion (Tp.explosion r 32 on kill), 2 built (sfx/player/build.wav) */
+    int   kind;              /* 0 none, 1 explosion (Tp.explosion r 32 on kill), 2 built (sfx/player/build.wav),
+                              * 3 / 4 orange / blue portal closed (Tp 0x1d sx 0.8), 5 NPC attack (FUN_1401ed310) */
     float x, y;
+    float rot;               /* kind 5: knife slash (Tp 13) angle, slash false for none */
+    bool  slash;
+    const char *sound;       /* kind 5: sound at (x, y), NULL for none */
 } cs2d_dynobj_fx_t;
 
 const cs2d_dynobj_def_t *cs2d_dynobj_def(int typ);
@@ -143,6 +187,64 @@ void cs2d_dynobj_update(cs2d_dynobj_world_t *w, const cs2d_player_t *players, fl
  */
 int cs2d_dynobj_can_build(const cs2d_dynobj_world_t *w, const cs2d_player_t *players, int self_id,
                           int ptx, int pty, int tx, int ty, bool own_tile_ok);
+
+/*
+ * FUN_1401fc9f0 (server side): may a portal open on tile (tx, ty)? A free floor tile (not tile property 15) with no
+ * object, Tdo.checkentity / Tdo.checkareaentity(.., 1).
+ */
+bool cs2d_dynobj_portal_tile(const cs2d_dynobj_world_t *w, int tx, int ty);
+/*
+ * FUN_1401fc9f0: a Portal Gun shot at world (x, y) of player (at px, py), mode 1 orange / 2 blue. Closes the
+ * player's portal of that colour, then opens a new one (Tdo 22 / 23, rot Rand(360, 1)) on the tile when it is within
+ * 457 x 272 px of the player and cs2d_dynobj_portal_tile. Returns it or NULL.
+ */
+cs2d_dynobj_t *cs2d_dynobj_place_portal(cs2d_dynobj_world_t *w, int player, int team, int mode,
+                                        float px, float py, int x, int y, cs2d_dynobj_fx_t *fx);
+/*
+ * Tpl.tilepos (server side, cases 0xd / 0x16 / 0x17): a player of team entered tile (tx, ty). A portal leads to its
+ * owner's other portal; a charged (mode 1) Teleporter Entrance of the player's team to the owner's exit, else a
+ * random exit of its team. Returns 1 with the destination (tile centre) in dx / dy, 0 nothing, -1 entrance not
+ * charged, -2 no exit.
+ */
+int cs2d_dynobj_teleport(cs2d_dynobj_world_t *w, int tx, int ty, int team, bool team_game, float *dx, float *dy);
+
+/*
+ * Lua images [51, sub, ...] (FUN_140182240): 0 create {path str, id u16, x u16 + 32768, y u16 + 32768, mode, player},
+ * 1 color {id, r, g, b}, 2 alpha {id, a / 255}, 3 blend {id, b}, 4 scale {id, sx f32, sy f32},
+ * 5 pos {id, x + 32768, y + 32768, rot x 360 / 65536}, 6 free {id}, 7 frame {id, frame 1..}, 8 parent {id, typ,
+ * typid u16, mode}, 9 shadow {id, s}. [59, id u16, mode, xo u16, yo u16, w u16, h u16] hit zone (FUN_14017d7e0).
+ * Same contract as cs2d_dynobj_net_message.
+ */
+int cs2d_dynobj_image_message(cs2d_dynobj_world_t *w, const uint8_t *buf, int len, int pos);
+/* [252,7,7] image data (FUN_1402ce7c0 case 4) for objects of the [252,7,5] snapshot */
+bool cs2d_dynobj_read_image_snapshot(cs2d_dynobj_world_t *w, const uint8_t *buf, int len, int *pos);
+/* [252,7,10] resource paths (Trestable.receiveList; count 0 ends the table, Trestable.createClientTable) */
+bool cs2d_dynobj_read_restable(cs2d_dynobj_world_t *w, const uint8_t *buf, int len, int *pos);
+/* Trestable.longversion: "?" + u16 index (+ a 3 character mask suffix) to the full path */
+void cs2d_dynobj_longversion(const cs2d_dynobj_world_t *w, const char *in, int in_len, char *out, int max_out);
+
+/* Lua image creation (FUN_14017c310): a Tdo 40 with white colour, alpha / scale 1 (Tdo.add category 4) */
+cs2d_dynobj_t *cs2d_dynobj_add_image(cs2d_dynobj_world_t *w, int id, const char *path, float x, float y, int mode,
+                                     int player);
+
+/*
+ * Ttween.receive (0x1400b4420) from buf[*pos] = mode: {mode, target u16, body} where target - 200 is the object id.
+ * Body sizes: 0 {ms i32, x, y u16 + 32768}, 1 same, 2 {ms, rot u16}, 3 {speed f32}, 4 {ms, a}, 5 {ms, r, g, b},
+ * 6 {ms, sx f32, sy f32}, 7 / 8 {ms, frame}. Returns false when truncated.
+ */
+bool cs2d_dynobj_read_tween(cs2d_dynobj_world_t *w, const uint8_t *buf, int len, int *pos, uint32_t now_ms);
+/* Ttween.update (0x14027fc50) for objects, by time; mode 3 turns once per call of cs2d_dynobj_update frames */
+void cs2d_dynobj_update_tweens(cs2d_dynobj_world_t *w, uint32_t now_ms);
+/* Image path kinds (Tdo.iniimage 0x14022b9f0) */
+enum {
+    CS2D_IMG_NONE = 0,  /* Nothing drawn (unknown "<...>" path) */
+    CS2D_IMG_FILE,      /* file (+ sprite sheet cell_w x cell_h, Tres mask 0 / 1 / 3 / 4) */
+    CS2D_IMG_TILE,      /* <tile:N>: arg = N (clamped to the tileset by the drawer) */
+    CS2D_IMG_FLAG,      /* <flag:cc>: file = the lower case ISO code */
+    CS2D_IMG_AVATAR,    /* <avatar_N>: arg = player 1..32, else 0 */
+    CS2D_IMG_LIGHT      /* <light>: a white light source of radius 128, no image */
+};
+int cs2d_dynobj_image_kind(const char *path, char *file, int max_file, int *cell_w, int *cell_h, int *mask, int *arg);
 
 /* Collision a building puts on its tile (cs2d_update_mapdata): 1 wall, 2 obstacle, 0 none */
 uint8_t cs2d_dynobj_collision(int typ);

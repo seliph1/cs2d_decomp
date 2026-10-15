@@ -101,3 +101,51 @@ offline dedicated with `sv_gamemode 3` + `tools/agent/lua/construct_probe.lua`. 
   sets `Tdo.mode` (slots 1..6 / 1..9, owner within 60 px). `mp_supply_items` (0x140a14e28[1]) is a string, one char
   per item id: first string of `[252,6]` (proxy `08 33 3a 0b 16 20 23 50 49` = 51,58,11,22,32,35,80,73) and
   `[237,11]` ("supply items have been changed"). Offline spawn every 7 frames when < 3 items around: `FUN_14028dba0`.
+
+## Lua images (Tdo 40) and NPCs (Tdo 30)
+
+Source: dump / REA (addresses below), proxy of our client on the offline dedicated with
+`tools/agent/lua/image_probe.lua` (2026-10-14: `[51,0]`, `[51,4]`, `[54]` mode 0 / 3 and `[36,id,9]` match). Code: `src/cs2d_dynobj.c`.
+
+- **[51, sub, id u16, ...]** (client FUN_140182240, server FUN_14017c310 ...): 0 create `{path str, id, x + 32768, y + 32768,
+  mode, player}` (path first, id after it), 1 color r g b, 2 alpha u8 / 255, 3 blend (clamped 3), 4 scale f32 f32,
+  5 pos x, y (+32768), rot u16 x 360/65536, 6 free (Tdo.free(id, 40): images only), 7 frame (1-based, clamped to frames),
+  8 physics parent typ u8, typid u16, mode u8, 9 shadow u8. Sent only to `player` when mode 2 and player != 0.
+- **[59, id u16, mode, xo + 32768, yo + 32768, w u16, h u16]** hit zone (FUN_14017d7e0); mode 0 removes it.
+- **[54] / [252,7,8] Ttween.receive** (0x1400b4420): `mode, target u16` (> 200 = Tdo id + 200, else hud text), body 0 / 1
+  `{ms i32, x, y +32768}`, 2 `{ms, rot u16}`, 3 `{speed f32}` (rot += speed each update, never ends), 4 `{ms, a u8}`,
+  5 `{ms, r, g, b}`, 6 `{ms, sx f32, sy f32}`, 7 / 8 `{ms, frame}` (8: every ms, 0 loop, 1 back, 2 / 3 ping-pong, 4 random).
+  Ttween.addtween replaces a tween of the same image when the modes conflict (moves / rotations, 7 with 8).
+- **Join snapshot sections** (FUN_1402ce7c0 `switch(section - 3)`, proxy): 7 image data per object `{id, path str, r, g, b,
+  alpha f32, sx f32, sy f32, blend, frame u16, parent typ (+ typid u16, mode), shadow, hitzone flag (+ mode, xo, yo, w, h)}`,
+  8 tweens, 9 custom tiles (11 bytes each), 10 resource paths, 11 weapon settings (zlib), 12 map cycle, 13 mods.
+- **Trestable**: section 10 lists path prefixes (count 0 ends); a path `"?" + u16 (two chars, low first) + rest` is
+  `table[u16] + rest` (longversion 0x1400919c0). The index bytes can be 0: read the string raw.
+- **iniimage** (0x14022b9f0): `path<m|a|b|n>` mask suffix (Tres mode 4 / 3 / 1 / 0, default 1), `<spritesheet:path:w:h[:mask]>`
+  (frames = (H / h) * (W / w)), `<tile:N>`, `<avatar_N>`, `<flag:cc>`, `<light>` (light source r 128).
+- **Draw** (FUN_1402809b0 → FUN_14025eb80): passes by mode: background 4 / 233..263 (before the tiles), ground 0 / 101..132,
+  wall 1 / 201..232, overwall 3 / 133..164 (after Te.draw 2), HUD 2. 101+ follow player mode - 100 / 132 / 200 / 232 (alive,
+  team > 0); image x picks the rotation (<= 0 own, 1 player rot, 2+ weapon rot). player != 0 and != local → not drawn;
+  alpha <= 0.0001 skipped; culled at ceil(max(w,h) * max scale * 0.7) around the screen. Blend 0 alpha, 1 light, 2 shade,
+  3 solid. Mode 10..12 draw relative to Tdo.parent (pos = int(parent) + int(own), rot / scale from the parent), but
+  parentId is only reset (FUN_1402caa20) and never received, so the original never draws them.
+- **Draw positions** (FUN_1402809b0 assembly, xmm1 / xmm2 into FUN_14025eb80): world `x - (float)camx` (integer camera
+  0x140ddf06c / 0x140ddf068); HUD `x, y` under FUN_140291080 (the mp_hudscale transform; Tdo.draw_hud runs first in the
+  game HUD 0x1402a0000 when Tdo.hudobjects); follow `Tpl.x - camx + recoil` with recoil (`-recoil sin(rot)`,
+  `recoil cos(rot)`, ints) only when image x > 2.
+- **Special paths**: `<tile:N>` = g_tileset_frames[clamp(N, 0, tilemax)] 32 x 32; `<flag:cc>` = incbindata/flags.png (16 x 11,
+  midhandled) frame = index of cc among the 2+ character lines of flags_iso.txt (missing → 0); `<avatar_N>` = the player's
+  avatar, else incbindata/avatar_load.png (black masked) turning at ms / 5, 64 x 64; `<light>` = no image, a
+  Tp_lightpool.GetLight(x, y, 128, white, 512, 1.0) when the light engine is on.
+- **NPC**: `player` = type 1 zombie, 2 headcrab, 3 snark, 4 vortigaunt, 5 soldier (else "Invalid NPC Player Value"); Tdo.add
+  gives a 32 x 32 Tdoc at -16; the client health is 0x1409ed7f0[type]. `[36,id,7]` sets m_x, m_y, m_rot (u16 each);
+  `[36,id,2]` sets x, y and m_x, m_y. **[36,id,9, pid, kind]** = attack (FUN_1401ed310): rotvar 40 (zombie, vortigaunt melee) /
+  20 (headcrab, snark), Tp 13 slash at x, y along rot, sounds zm_attack[] / npc/headcrab_attack / snark_attack /
+  vortigaunt_attack, vortigaunt kind 1 charge (upgrade = 1, vortigaunt_charge) / kind 2 ranged (vortigaunt_ranged + beam),
+  soldier weapons/mp5 + shot; then m_rot = angle to the player.
+- **NPC motion** (FUN_140283f20 → FUN_140283120(speed, turn), per frame): turn by <= turn deg while > 3 deg off m_rot, else
+  walk speed px toward m_x / m_y while > 3 px away. speed / turn: zombie 1 / 5, headcrab 2.5 / 5, snark 6 / 4, vortigaunt
+  7 / 20, soldier 3 / 7. Draw (Tdo.draw_ground 0x1e): gfx/npc/*.bmp (magenta), zombie frame 2 of 32 x 32, scale 0.5 when
+  >= 64 px wide; rot + rotvar (rotvar -= 5 per draw) + walking wobble sin(ms / 2 + id) * 10 (zombie) / * 15 (ms * 2 for
+  headcrab and snark); idle snark sin(ms / 5 + id) * 15; shadow black at +3 with alpha shadows / 100 when
+  playershadows and mapshadows (DAT_140ddf190) > 1.

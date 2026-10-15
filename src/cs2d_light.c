@@ -80,7 +80,17 @@ typedef struct {                    /* TLightSource (scope 0x140a0a3a0) */
     int   astart, aend, in_screen, state, id, type, max_size;
     int   ent;                      /* map entity, -1 for none */
     int   rot_start, rot_end;       /* Te.ints[7] / ints[8]: angles with the rotation speed applied */
+    int   ext_key;                  /* cs2d_light_point key (Lua <light> images), 0 for a map light */
+    bool  ext_seen;                 /* Named again since cs2d_light_points_begin */
+    bool  pooled;                   /* In Tp_lightpool.pool (ReturnLight): off until GetLight takes it again */
 } light_source_t;
+
+typedef struct {                    /* Tp type 0x1f (Tp.CreateLight 0x14009ba30): a light that shrinks away */
+    int   light;                    /* Index in L.lights */
+    float fx, fy;                   /* Tp.fx radius, Tp.fy shrink per 60 Hz frame */
+} light_flash_t;
+
+#define MAX_FLASHES 256
 
 typedef struct {                    /* TLightingStripe (scope 0x140a09100) */
     float x, y, w, h;
@@ -128,6 +138,9 @@ static struct {
 
 static light_buffer_t s_buf[MAX_BUFFERS];
 static GLuint s_main_fbo, s_main_tex;
+static light_flash_t s_flash[MAX_FLASHES];
+static int s_flash_count;
+static int s_flashlight[CS2D_MAX_PLAYERS];   /* Tpl.flashlights: index in L.lights per player id - 1, -1 = none */
 
 /* ------------------------------------------------------------------------------------------------------------
  * Max2D layer: the original's draw state and calls, printed when traced, drawn with OpenGL otherwise
@@ -651,6 +664,62 @@ static void light_change_state(light_source_t *ls, int state)
         }
         ls->in_screen = 0;
     }
+}
+
+/* TLightSource.ChangeRadius (0x140004df0): at most MaxLightSize / 2 */
+static void light_change_radius(light_source_t *ls, float size)
+{
+    float half = (float)(ls->max_size / 2);
+    ls->size = size <= half ? size : half;
+}
+
+/* TLightSource.CreateLight (0x14002a310): a new light, on, appended to TLightSource.List; -1 without memory */
+static int light_create(int x, int y, float size, int r, int g, int b, int max_size, float alpha, int astart, int aend)
+{
+    light_source_t *grown = (light_source_t *)realloc(L.lights, (size_t)(L.light_count + 1) * sizeof(light_source_t));
+    if (!grown) return -1;
+    L.lights = grown;
+    light_source_t *ls = &L.lights[L.light_count];
+    memset(ls, 0, sizeof(*ls));
+    ls->astart = astart;
+    ls->aend = aend;
+    ls->r = (float)r; ls->g = (float)g; ls->b = (float)b;
+    ls->alpha = alpha;
+    ls->state = 1;
+    ls->id = ++L.light_counter;
+    ls->max_size = max_size;
+    light_change_radius(ls, size);
+    ls->pos_x = x;
+    ls->pos_y = y;
+    ls->buffer = -1;
+    ls->ent = -1;
+    return L.light_count++;
+}
+
+/* Tp_lightpool.GetLight (0x140039920): the first pooled light with MaxLightSize <= max_size, moved, resized,
+ * recolored and switched on; else CreateLight(..., 0, 359) */
+static int pool_get(float x, float y, float size, int r, int g, int b, int max_size, float alpha)
+{
+    for (int i = 0; i < L.light_count; i++) {
+        light_source_t *ls = &L.lights[i];
+        if (!ls->pooled || max_size < ls->max_size) continue;
+        ls->pooled = false;
+        ls->pos_x = (int)x;
+        ls->pos_y = (int)y;
+        light_change_radius(ls, size);
+        ls->r = (float)r; ls->g = (float)g; ls->b = (float)b;
+        ls->alpha = alpha;
+        light_change_state(ls, 1);
+        return i;
+    }
+    return light_create((int)x, (int)y, size, r, g, b, max_size, alpha, 0, 359);
+}
+
+/* Tp_lightpool.ReturnLight (0x140005f90): off, back in the pool */
+static void pool_return(int i)
+{
+    light_change_state(&L.lights[i], 0);
+    L.lights[i].pooled = true;
 }
 
 /*
@@ -2209,6 +2278,8 @@ void cs2d_light_load_map(const cs2d_map_t *map)
     s_sprite_count[0] = s_sprite_count[1] = 0;
     s_obstacle_count = 0;
     s_part_count = 0;
+    s_flash_count = 0;   /* Tp.freetype(0x1f) */
+    for (int i = 0; i < CS2D_MAX_PLAYERS; i++) s_flashlight[i] = -1;
     if (!map || !map->tiles || map->width == 0 || map->height == 0) return;
     if (L.scale_night == 0.0f) { L.scale_night = 1.0f; L.scale_lights = 1.0f; }
     load_toning();
@@ -2276,8 +2347,103 @@ void cs2d_light_load_map(const cs2d_map_t *map)
             st->state = 1;
         }
     }
+    /* FUN_1401d6790 "create flashlight pool": per player CreateLight(-1000, -1000, 162, [255, 255, 255], 325, 0.0,
+     * 0, 359) with LightType 1 (+0x6c), switched off (ChangeState 0) until Tpl.update turns it on */
+    for (int i = 0; i < CS2D_MAX_PLAYERS; i++) {
+        s_flashlight[i] = light_create(-1000, -1000, 162.0f, 255, 255, 255, 325, 0.0f, 0, 359);
+        if (s_flashlight[i] < 0) continue;
+        L.lights[s_flashlight[i]].type = 1;
+        light_change_state(&L.lights[s_flashlight[i]], 0);
+    }
     L.solid_version = map->entity_solid_version - 1;
     L.map_loaded = true;
+}
+
+/* ------------------------------------------------------------------------------------------------------------
+ * Dynamic point lights (Tp_lightpool.GetLight 0x140039920 from Tdo.iniimage "<light>")
+ * ------------------------------------------------------------------------------------------------------------ */
+void cs2d_light_points_begin(void)
+{
+    for (int i = 0; i < L.light_count; i++) L.lights[i].ext_seen = false;
+}
+
+void cs2d_light_point(int key, int x, int y, float size, int r, int g, int b, float alpha, int max_size)
+{
+    if (!L.map_loaded || key == 0) return;
+    int idx = -1;
+    for (int i = 0; i < L.light_count; i++) {
+        if (L.lights[i].ext_key == key) { idx = i; break; }
+    }
+    if (idx < 0) {
+        idx = pool_get((float)x, (float)y, size, r, g, b, max_size, alpha);
+        if (idx < 0) return;
+        L.lights[idx].ext_key = key;
+    }
+    light_source_t *ls = &L.lights[idx];
+    ls->pos_x = x;
+    ls->pos_y = y;
+    light_change_radius(ls, size);
+    ls->r = (float)r; ls->g = (float)g; ls->b = (float)b;
+    ls->alpha = alpha;
+    ls->ext_seen = true;
+}
+
+void cs2d_light_points_end(void)
+{
+    for (int i = 0; i < L.light_count; i++) {
+        light_source_t *ls = &L.lights[i];
+        if (ls->ext_key > 0 && !ls->ext_seen) {
+            ls->ext_key = 0;
+            pool_return(i); /* Tdo.free: the light goes back to Tp_lightpool */
+        }
+    }
+}
+
+void cs2d_light_flash(int x, int y, int r, int g, int b, float size, float shrink, float alpha)
+{
+    if (!L.map_loaded || L.mode == -1) return;
+    /* Tp.CreateLight: only on the map (x, y >= 1), not inside a wall (g_prop_class[cellprop] != 0); Tp.Create(0x1f)
+     * does not check, but its callers are never in a wall */
+    if (x < 1 || y < 1 || x > L.map_w * 32 || y > L.map_h * 32) return;
+    if ((x >> 5) < L.map_w && (y >> 5) < L.map_h && L.tilemode[(x >> 5) * L.map_h + (y >> 5)] == 2) return;
+    if (s_flash_count >= MAX_FLASHES) return;
+    int idx = pool_get((float)x, (float)y, size, r, g, b, 256, 1.0f);
+    if (idx < 0) return;
+    L.lights[idx].alpha = alpha;   /* Tshoot.Shoot: ChangeAlpha(0.7) right after (0x140205b85) */
+    light_flash_t *f = &s_flash[s_flash_count++];
+    f->light = idx;
+    f->fx = size;
+    f->fy = shrink;
+}
+
+/* Tp.draw case 0x1f (0x14026756a): fx -= fy * g_dt; ChangeRadius(fx) while above 16, else ReturnLight and free */
+static void flashes_update(float dt)
+{
+    int n = 0;
+    for (int i = 0; i < s_flash_count; i++) {
+        light_flash_t *f = &s_flash[i];
+        f->fx -= f->fy * dt;
+        if (16.0f < f->fx) {
+            light_change_radius(&L.lights[f->light], f->fx);
+            s_flash[n++] = *f;
+        } else {
+            pool_return(f->light);
+        }
+    }
+    s_flash_count = n;
+}
+
+void cs2d_light_flashlight(int pid, bool on, float x, float y, float rot)
+{
+    if (!L.map_loaded || pid < 1 || pid > CS2D_MAX_PLAYERS || s_flashlight[pid - 1] < 0) return;
+    light_source_t *ls = &L.lights[s_flashlight[pid - 1]];
+    if (on) {
+        /* Tpl.update 0x14021e805: ChangePosition(x + rx, y + ry), ChangeRotation((float)(int)rot) */
+        ls->pos_x = (int)x;
+        ls->pos_y = (int)y;
+        ls->rotation = (float)(int)rot;
+    }
+    if (ls->state != (on ? 1 : 0)) light_change_state(ls, on ? 1 : 0);
 }
 
 void cs2d_light_frame(const cs2d_map_t *map, int cam_x, int cam_y, float dt)
@@ -2323,6 +2489,7 @@ void cs2d_light_frame(const cs2d_map_t *map, int cam_x, int cam_y, float dt)
             ls->rotation = (float)str_int(e->str_settings[3]);
         }
     }
+    flashes_update(dt);   /* Tp.draw, also after the light buffer */
 }
 
 void cs2d_light_draw_floor(void)
@@ -2392,6 +2559,11 @@ void cs2d_light_add_obstacle(const cs2d_texture_t *tex, float hx, float hy, floa
 float cs2d_light_shadow_rotation(void)
 {
     return L.map_loaded ? L.shadow_rot : 225.0f;
+}
+
+int cs2d_light_mapshadows(void)
+{
+    return L.cfg.mapshadows;
 }
 
 bool cs2d_light_day_shadows(void)

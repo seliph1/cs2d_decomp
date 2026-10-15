@@ -7,6 +7,7 @@ Source: dump `docs/dump/cs2d/lighting/` (`TSmartLighting`, `TLightSource`, `TLig
 setup `FUN_1401d6790`, and the functions themselves run in Unicorn (`tools/agent/emu_light.py`); screenshots of the
 original on fun_roleplay by day and at night (`tools/agent/lua/light_probe.lua`, `night_probe.lua`). Code:
 `src/cs2d_light.c`, checked call for call against the original (`test_light_engine`, `tools/agent/light_check.sh`).
+Fixtures depend on the map files: `maps/fun_roleplay.map` was replaced in cbd56be, so they were regenerated (2026-10-14).
 
 - **Settings** (sys/config.cfg): `light` 0..5 (`DAT_140ddf185`; 0 = off; `SetQuality(light - 1)`: 1..3 buffers at half
   size (scale 2), 4 full, 5 full + `LIGHTFIXES`), `mapshadows` 0..4 (`DAT_140ddf190`: day shadows, floor sprites and
@@ -59,5 +60,25 @@ original on fun_roleplay by day and at night (`tools/agent/lua/light_probe.lua`,
   `cs2d_DrawTexturedPoly` emits every fan triangle twice, so the penumbra and blur textures apply squared.
 - **Trigger_Use buttons** (`Te.draw` layer 1): `incbindata/buttons.bmp` frame `ints[0] - 1` (1..10), rotated by `ints[1]`;
   above 10 frame 1 plus a pulsing glow (11 / 16 red, 12 / 17 green, 13 blue, 14 yellow, 15 white).
+- **Light pool** (`Tp_lightpool`): `GetLight(x, y, size, color, max, alpha)` (0x140039920) reuses the first pooled
+  light with `MaxLightSize <= max` (moved, resized, recolored, re-alpha'd, on), else `CreateLight(..., 0, 359)`
+  (appended to `TLightSource.List`; size capped at `MaxLightSize / 2`, also by `ChangeRadius`). `ReturnLight` = state
+  0 + back to the pool. Code: `pool_get` / `pool_return`; Lua `<light>` images use it too.
+- **Light particles** (Tp 0x1f, `cs2d_light_flash`): `Tp.CreateLight(x, y, r, g, b, size, shrink)` (0x14009ba30) needs
+  x, y >= 1 on the map and not a wall cell, raises channels < 35 to 35, `GetLight(.., 256, 1.0)`; `Tp.draw` does
+  `fx -= fy * g_dt`, `ChangeRadius(fx)` while > 16, else ReturnLight. Callers (all need particles > 3 and light on):
+  firearm shot `Tshoot.Shoot` 0x140205d9d at the muzzle + Rand(-2, 2): (255, 255, 0), 100, 25, then `ChangeAlpha(0.7)`
+  (0x140bd6cc0), not for style 4 (silencer on), only the first pellet; `Tp.explosion` (255, Rand(150, 255), 0, 180, 5)
+  while explosion_count < 11; flashbang (Tpro.draw_ground 0x34) `Tp.Create(0x1f)` (255, 255, 0 unclamped, 100, 25)
+  + CreateLight white 100 / 15. Not ported: lightning (55, 105, 255), laser / style 6 and turret (p8 92: 15, 35, 255)
+  variants, flamethrower (Tp color, 100, 5), alarms (255, 0, 0, 80, 20 in FUN_1402553d0).
+- **Flashlights** (`cs2d_light_flashlight`): map setup creates one per player, `CreateLight(-1000, -1000, 162, white,
+  325, 0.0, 0, 359)`, LightType 1 (+0x6c), off. `Tpl.update` (0x14021e805): on when alive, not fogged, flashlight 1,
+  mp_flashlight 1, not a T in Zombies; `ChangePosition(x + rx, y + ry)` (recoil kick), `ChangeRotation((int)rot)`.
+  Alpha 0, so no color pass. `Tpl.draw` adds flare1 (255, 255, 200) alpha 0.4, rotation wrot * -0.2, 9 px ahead.
+  Emulator: our buffers for a flashlight + a muzzle light match the original call for call (`*_dyn_*` fixtures).
+- **Env_Sprite strs[7] "affect lighting"** is a light sprite (added white into the light buffer), not an occluder:
+  light shadows (`CalculateShadow`) come only from wall cells (TileMapMode 2). Non-light / shade / grayscale sprites only
+  keep their area out of the *day* shadows (ObstacleShadow2).
 - **Entity count:** fun_roleplay has 9901 entities (812 light entities); our loader used to keep 2048
   (`CS2D_MAX_ENTITIES` is now 16384).

@@ -39,5 +39,11 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
   kill position, zm_die for zombies in gamemode 4 (FUN_14019a530); hit in FUN_1401ec180; item sounds in Titem.give
   0x1401feeb0 (60..62 ammo, armour kevlar, else pickup); drop at the tile centre; thunder 2D at counter 1;
   HUD slot keys in FUN_1401cc180 (select / moveselect / hudon).
+- **Reload** FUN_140214780(player, mode, local): mode 1 start → w_clipout (0x140a0d6e0), mode 2 finish → w_clipin
+  (0x140a0d6e8), mode 4 shotgun shell → w_roundin (0x140a0d6d8); all at the player, vol 1.0, flags 0; a non-null
+  items[typ] + 0x20 (mod sound) replaces them. Shell weapons: mode 1 is silent (only reload = 1 + timer); each
+  timer expiry (host) or [16,pid,4] (client) is mode 4: timer re-armed, reloadani 8, roundin, +1 shell, ends full /
+  reserve 0. reloadani (+0x330, 15 for clips) forces torso frame 3 (Tpl.getFrame). A shot clears reload
+  (Tpl.attack 0x140216690).
 - **Ours** (`src/cs2d_sound.c`): F32 stereo 44.1 kHz mixer on an SDL3 stream, 64 voices. Pan law estimated
   (`l = min(1, 1 - pan)`, `r = min(1, 1 + pan)`), BlitzMax driver not checked.

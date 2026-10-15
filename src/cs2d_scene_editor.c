@@ -627,13 +627,15 @@ static void draw_trigger_links(const cs2d_map_t *map, int x, int y, float cam_x,
         float r = pass ? 50.0f / 255.0f : 100.0f / 255.0f, g = pass ? 50.0f / 255.0f : 200.0f / 255.0f;
         float b = pass ? 150.0f / 255.0f : 1.0f;
         float a = pass ? fabsf(sinf(time * 500.0f * 0.017453292f)) * 0.5f : 0.5f;
+        /* The outer loop runs over the entities on the tile only (pass 0: sources, pass 1: targets), so a
+         * hover costs O(N) instead of scanning every (source, target) pair of the map */
         for (uint32_t i = 0; i < map->entity_count; i++) {
-            const cs2d_entity_t *s = &map->entities[i];
-            if (!s->trigger[0]) continue;
+            const cs2d_entity_t *t = &map->entities[i];
+            if (t->x != x || t->y != y || !(pass ? t->name[0] : t->trigger[0])) continue;
             for (uint32_t j = 0; j < map->entity_count; j++) {
-                const cs2d_entity_t *d = &map->entities[j];
-                const cs2d_entity_t *end = pass ? d : s;
-                if (end->x != x || end->y != y || !entity_triggers(s, d)) continue;
+                const cs2d_entity_t *s = pass ? &map->entities[j] : t;
+                const cs2d_entity_t *d = pass ? t : &map->entities[j];
+                if (!entity_triggers(s, d)) continue;
                 wide_line((float)s->x * 32.0f - cam_x + 16.0f, (float)s->y * 32.0f - cam_y + 16.0f,
                           (float)d->x * 32.0f - cam_x + 16.0f, (float)d->y * 32.0f - cam_y + 16.0f, 2, r, g, b, a);
             }

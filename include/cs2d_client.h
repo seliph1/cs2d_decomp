@@ -230,6 +230,7 @@ struct cs2d_client {
     char                net_server_name[64];
     int                 net_sv_fow;        /* sv_fow from [252,6] (enables the spectator "Fog" button) */
     int                 net_sv_gamemode;   /* sv_gamemode from [252,6]: 0 Normal, 1 Deathmatch, 2 Team DM, 3 Construction, 4 Zombies */
+    int                 net_flashlight;    /* mp_flashlight (0x140a14e10[1], [252,6] / [237,14]): 1 = players may switch theirs on */
     int                 net_hovertext;     /* mp_hovertext (0x140a14e00[1], [252,6] / [237,16]): 1|2 players, 4 hostages, 8 buildings, 16 items */
     uint8_t             net_supply_items[255]; /* mp_supply_items (0x140a14e28[1], [252,6] / [237,11]): one item id per char */
     int                 net_supply_count;
@@ -394,6 +395,10 @@ void cs2d_client_handle_mouse(cs2d_client_t *client, float mx, float my, int but
 void cs2d_client_console_print(cs2d_client_t *client, uint8_t r, uint8_t g, uint8_t b, const char *fmt, ...);
 /* Thud_msg.add_center: a message in the screen center; the same text again restarts its timer */
 void cs2d_client_center_msg(cs2d_client_t *client, uint8_t r, uint8_t g, uint8_t b, const char *text);
+/* FUN_140167440 (pid, state, send): switch player pid's flashlight to state. Only alive players in a team while
+ * mp_flashlight is 1 (not Terrorists in Zombies). With send, online, the request [57, state] goes to the server, whose
+ * [57, pid, state] then sets it; otherwise (and offline) it is set and sfx/player/flashlight.wav plays at volume 0.5 */
+void cs2d_client_flashlight(cs2d_client_t *client, int pid, int state, bool send);
 void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line);
 /* Thud_msg.add_kill (0x1401aef60): a kill message (and its console line) for [19]; killer == victim is a suicide,
  * a weapon without name "<victim> died" */

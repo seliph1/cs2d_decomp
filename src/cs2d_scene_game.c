@@ -857,6 +857,18 @@ static void shot_bullets(cs2d_client_t *client, const cs2d_player_t *pl, const c
             bool hit_wall = (hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < reach - 1.0f);
             if (i == 0 && flash) {
                 cs2d_fx_shot(&client->fx, pl->pos.x, pl->pos.y, a, muzzle, hx, hy, hit_wall, shell);
+                /* Tshoot.Shoot 0x140205d9d (first pellet, particles > 3): Tp.CreateLight at the muzzle + Rand(-2, 2),
+                 * (255, 255, 0) raised to (255, 255, 35), radius 100 shrinking 25 per frame, then ChangeAlpha(0.7)
+                 * (0x140bd6cc0). Silenced
+                 * shots (style 4, Tpl.attack with the silencer on) light nothing */
+                bool silenced = cs2d_weapon_attack2_type(pl->current_weapon) == CS2D_ATTACK2_SILENCER &&
+                                cs2d_weapon_mode(pl) != 0;
+                if (!silenced) {
+                    float r = a * 0.017453292519943295f;
+                    int ox = rand() % 5 - 2, oy = rand() % 5 - 2;
+                    cs2d_light_flash((int)((float)ox + pl->pos.x + sinf(r) * muzzle),
+                                     (int)((float)oy + pl->pos.y - cosf(r) * muzzle), 255, 255, 35, 100.0f, 25.0f, 0.7f);
+                }
             } else {
                 float r = a * 0.017453292519943295f;
                 cs2d_fx_tracer(&client->fx, pl->pos.x + sinf(r) * muzzle, pl->pos.y - cosf(r) * muzzle, a, hx, hy,
@@ -948,6 +960,11 @@ static void portal_fire(cs2d_client_t *client, cs2d_player_t *pl, int mode)
                             (uint8_t)y, (uint8_t)(y >> 8), (uint8_t)(y >> 16), (uint8_t)(y >> 24) };
         cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
     } else {
+        /* Offline the client is the server: it opens the portal itself (FUN_1401fc9f0, DAT_140ddf400 != 0) */
+        cs2d_dynobj_fx_t dfx = { 0 };
+        cs2d_dynobj_place_portal(&client->dynobj, client->local_player_id, (int)pl->team, mode, pl->pos.x, pl->pos.y,
+                                 x, y, &dfx);
+        if (dfx.kind >= 3) cs2d_fx_portal_glow(&client->fx, dfx.x, dfx.y, 0.8f, dfx.kind - 2);
         cs2d_scene_game_portal_shot(client, pl, mode);
     }
 }
@@ -1392,6 +1409,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
         for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
             cs2d_player_t *p = &client->game.players[i];
             if (!p->alive) continue;
+            p->reload_net = true;
             cs2d_player_update(p, delta_time);
             /* Tpl.proctimer: the progress bar runs locally between the server's [30] / [26] messages */
             if (p->is_planting) p->plant_progress += delta_time;
@@ -1409,7 +1427,15 @@ static void game_update(cs2d_client_t *client, float delta_time)
             uint8_t pkt[2] = { (uint8_t)CS2D_NET_PROCESS, 4 };
             cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
         }
+        /* Tpl.update 0x14021e3d0: a shell reload still waiting for [16,pid,4] after ping x 1.5 ms past its timer
+         * loads the shell itself (FUN_140214780(id, 4, 1)) and sends [16, 101] ("compensation") */
+        if (me->is_reloading && me->reload_overdue * 1000.0f > (float)me->ping * 1.5f &&
+            cs2d_weapon_reload_shell(me)) {
+            uint8_t pkt[2] = { (uint8_t)CS2D_NET_RELOAD, 101 };
+            cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+        }
     } else {
+        for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) client->game.players[i].reload_net = false;
         cs2d_game_update(&client->game, delta_time);
     }
     cs2d_hostages_update(&client->hostages, client->game.players, delta_time * 60.0f);
@@ -1547,6 +1573,21 @@ static void game_update(cs2d_client_t *client, float delta_time)
                 pl->pos.y = (float)t->int_settings[1] * CS2D_TILE_SIZE + 16.0f;
                 client->last_tile_x = t->int_settings[0];
                 client->last_tile_y = t->int_settings[1];
+            } else {
+                /* Tpl.tilepos cases 0xd / 0x16 / 0x17: portals and teleporters. mp_teleportreload is taken as 0
+                 * (default), so an entrance recharges at once (Tdo.draw_ground 0xd: timer of reload x 1000 ms) */
+                for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+                    cs2d_dynobj_t *o = &client->dynobj.objs[i];
+                    if (o->active && o->typ == CS2D_DO_TELE_ENTRANCE && o->mode == 0) o->mode = 1;
+                }
+                float dx, dy;
+                if (cs2d_dynobj_teleport(&client->dynobj, tx, ty, (int)pl->team, team_game(client), &dx, &dy) == 1) {
+                    /* FUN_14014ccc0: setpos; the destination tile does not fire again (tilepos param 0) */
+                    pl->pos.x = dx;
+                    pl->pos.y = dy;
+                    client->last_tile_x = (int)(dx / CS2D_TILE_SIZE);
+                    client->last_tile_y = (int)(dy / CS2D_TILE_SIZE);
+                }
             }
         }
     }
@@ -1635,8 +1676,14 @@ static bool team_game(const cs2d_client_t *client)
 static void update_dynobjs(cs2d_client_t *client, float delta_time)
 {
     cs2d_dynobj_update(&client->dynobj, client->game.players, delta_time * 60.0f);
+    cs2d_dynobj_update_tweens(&client->dynobj, (uint32_t)SDL_GetTicks());
     for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
         cs2d_dynobj_t *o = &client->dynobj.objs[i];
+        /* Tdo.iniimage counts a sprite sheet's frames when the image loads (imageframe / tween clamps) */
+        if (o->active && o->typ == CS2D_DO_IMAGE && o->frames == 0) {
+            o->frames = cs2d_render_image_frames(o->path);
+            if (o->frames == 0) o->frames = -1; /* Not loadable: don't retry every frame */
+        }
         if (!o->active || o->shots <= 0) continue;
         int barrels = (o->typ == CS2D_DO_TRIPLE_TURRET) ? 3 : (o->typ == CS2D_DO_DUAL_TURRET ? 2 : 1);
         float cx = o->x + 16.0f, cy = o->y + 16.0f;
@@ -2301,8 +2348,10 @@ static void render_ground_items(const cs2d_client_t *client)
         if (!it->active || it->type == 0 || it->type >= CS2D_MAX_WEAPONS) continue;
         const cs2d_texture_t *dtex = &bank->tex_weapons_d[it->type];
         if (!dtex->id) continue;
-        float dw = (dtex->width > 64) ? (float)(dtex->width / 2) : (float)dtex->width;
-        float dh = (dtex->height > 32) ? (float)(dtex->height / 2) : (float)dtex->height;
+        /* Titem.draw (0x140147b80): one uniform SetScale, 0.5 when width > 64 and height > 32 (type 59: width > 32) */
+        bool half = (it->type == 59) ? dtex->width > 32 : (dtex->width > 64 && dtex->height > 32);
+        float sc = half ? 0.5f : 1.0f;
+        float dw = (float)dtex->width * sc, dh = (float)dtex->height * sc;
         float ix = it->x - cx;
         float iy = it->y - cy;
 
@@ -2596,6 +2645,32 @@ static void render_item_hover(cs2d_client_t *client, int screen_w, int screen_h)
     }
 }
 
+/* Lua images (Tdo 40) of one pass */
+static void render_images(cs2d_client_t *client, cs2d_img_pass_t pass, int screen_w, int screen_h)
+{
+    const cs2d_map_t *map = &client->game.map;
+    cs2d_img_ctx_t ctx = {
+        .players  = client->game.players,
+        .local_id = client->local_player_id,
+        .cam_x    = client->cam_x,
+        .cam_y    = client->cam_y,
+        .screen_w = screen_w,
+        .screen_h = screen_h,
+        .tileset  = &client->tex_tileset,
+        .tile_src = map->use_64x64_tiles == 1 ? 64 : 32,
+        .tile_max = map->tile_count,
+        .hudscale = client->net_hudscale
+    };
+    cs2d_render_dynobj_images(&client->dynobj, pass, &ctx);
+}
+
+/* Tdo.draw_background: after the background colour, before the map tiles (cs2d_draw_world 0x140290310) */
+static int s_bg_screen_w, s_bg_screen_h;
+static void render_background_images(void *ctx)
+{
+    render_images((cs2d_client_t *)ctx, CS2D_IMG_PASS_BACKGROUND, s_bg_screen_w, s_bg_screen_h);
+}
+
 static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
 {
     /* Light engine (FUN_140262ed0): light buffers for this frame, at the integer camera; dt in 60 Hz frames */
@@ -2613,15 +2688,31 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     /* The player silhouettes are drawn under the bodies by cs2d_render_player, not in the day shadows */
     uint64_t freq = SDL_GetPerformanceFrequency();
     uint64_t t0 = SDL_GetPerformanceCounter();
+    cs2d_render_image_lights(&client->dynobj); /* <light> images (Tdo.iniimage) */
+    /* Tpl.update (0x14021d7e0..): each living player's flashlight follows the player, offset by the recoil kick
+     * (-recoil sin(rot), recoil cos(rot)) truncated, turned to (int)rot; off while dead or mp_flashlight != 1, and for
+     * Terrorists in Zombies */
+    for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
+        const cs2d_player_t *p = &client->game.players[i];
+        bool on = p->alive && p->health > 0 && p->flashlight && client->net_flashlight == 1 &&
+                  !(p->team == CS2D_TEAM_T && client->net_sv_gamemode == 4);
+        double pr = (double)p->angle * 0.017453292519943295;
+        int rx = (int)((double)-p->recoil * sin(pr)), ry = (int)-((double)-p->recoil * cos(pr));
+        cs2d_light_flashlight(i, on, (float)rx + p->pos.x, (float)ry + p->pos.y, p->angle);
+    }
     cs2d_light_frame(&client->game.map, (int)roundf(client->cam_x), (int)roundf(client->cam_y), light_dt);
     uint64_t t1 = SDL_GetPerformanceCounter();
 
     /* 1. Map Pass 0 & 1 (background, tileset, tile modifiers, ground entities, items, hostages) */
-    cs2d_render_map_floor(&client->game.map, &client->tex_tileset, client->cam_x, client->cam_y, screen_w, screen_h);
+    s_bg_screen_w = screen_w;
+    s_bg_screen_h = screen_h;
+    cs2d_render_map_floor_ex(&client->game.map, &client->tex_tileset, client->cam_x, client->cam_y, screen_w, screen_h,
+                             render_background_images, client);
     uint64_t t2 = SDL_GetPerformanceCounter();
     bool tg = team_game(client);
     int  me = client->local_player_id;
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_GROUND, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
+    render_images(client, CS2D_IMG_PASS_FLOOR, screen_w, screen_h);
     render_ground_items(client);
     cs2d_render_hostages(&client->hostages, client->cam_x, client->cam_y);
     cs2d_render_gen(&client->gen, CS2D_GEN_LAYER_FLOOR, client->cam_x, client->cam_y, screen_w, screen_h);
@@ -2631,6 +2722,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
 
     /* CPU shadow chunks (light 0): FUN_1401165a0 runs right after Te.draw(1), before the players */
     cs2d_render_map_shadows(&client->game.map, client->cam_x, client->cam_y);
+    cs2d_render_fx_shells(&client->fx, client->cam_x, client->cam_y); /* cases under the players */
 
     /* 2. Players (Tpl.draw: shadow, legs, torso frame, armor/helmet, held weapon, objective icon) */
     for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
@@ -2653,6 +2745,7 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     /* Wall tiles over the players (cs2d_draw_map_layer(..., 4) after Tpl.drawAll, 0x140290310) */
     cs2d_render_map_walls(&client->game.map, &client->tex_tileset, client->cam_x, client->cam_y, screen_w, screen_h);
     cs2d_render_dynobjs(&client->dynobj, CS2D_DO_LAYER_WALL, client->cam_x, client->cam_y, screen_w, screen_h, tg, me);
+    render_images(client, CS2D_IMG_PASS_TOP, screen_w, screen_h);
     /* Base and carried flags over the walls and buildings (screenshot comparison) */
     cs2d_render_map_flags(&client->game.map, client->cam_x, client->cam_y, screen_w, screen_h);
     for (int i = 1; i <= CS2D_MAX_PLAYERS; i++)
@@ -2664,6 +2757,8 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
 
     /* 3. Map Pass 2 (Overhead entities: Env_Sprite, Env_Image over players, Env_Object trees/lamps) */
     cs2d_render_map_overhead(&client->game.map, client->cam_x, client->cam_y, screen_w, screen_h);
+    /* Tdo.draw_overwall right after Te.draw pass 2 (FUN_14028f890) */
+    render_images(client, CS2D_IMG_PASS_OVERWALL, screen_w, screen_h);
 
     /* Gen_* particles: Tp lists 5, 7 and 6 follow Te.draw pass 2 (FUN_1402802xx), then the thunder flash */
     cs2d_render_gen(&client->gen, CS2D_GEN_LAYER_TOP, client->cam_x, client->cam_y, screen_w, screen_h);
@@ -2680,6 +2775,8 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     uint64_t t4 = SDL_GetPerformanceCounter();
 
     /* 4. In-Game HUD (hud_nums.bmp, hud_symbols.bmp, hud_radar_advanced.png) */
+    /* Tdo.draw_hud first in the game HUD (0x1402a0000), under the mp_hudscale transform (FUN_140291080) */
+    render_images(client, CS2D_IMG_PASS_HUD, screen_w, screen_h);
     const cs2d_player_t *local_pl = &client->game.players[client->local_player_id];
     /* FUN_140291500: the scope of a zoomed weapon, level 1 with dmg_z1 > 0 on a single or double scope, level 2
      * with dmg_z2 > 0 on a double scope */
@@ -2930,6 +3027,12 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
          * mode 4 with the action digit as text; the dedicated turns it into the Lua serveraction hook */
         if (_strnicmp(bound, "serveraction", 12) == 0 && bound[12] >= '1' && bound[12] <= '3' && !bound[13]) {
             if (client->connected && client->join_stage == 5) cs2d_client_send_chat(client, 4, bound + 12);
+            return;
+        }
+        if (_stricmp(bound, "flashlight") == 0) {
+            /* bind "F" "flashlight": FUN_140167440(local id, 1 - flashlight, 1) */
+            int me = client->local_player_id;
+            if (me >= 1 && me <= CS2D_MAX_PLAYERS) cs2d_client_flashlight(client, me, !client->game.players[me].flashlight, true);
             return;
         }
         if (cs2d_scene_game_inv_cmd(client, bound) || cs2d_scene_game_buy_cmd(client, bound)) return;

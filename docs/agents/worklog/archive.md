@@ -1,5 +1,39 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-14 — Claude — item scale, [33] ammo offset, held weapon size
+- Ground items and held weapon drawn at native size with the original uniform scale (were squashed to 32x32 / per-axis
+  halves); `[33]` clip / reserve read as u16 - 1 (FUN_14011c0b0) → no "(0)" on supply items. Source: dump.
+- light engine test (light_fun_roleplay line 458) already failed before this session.
+## 2026-10-14 — Claude — special weapons, consumable items, item tooltips
+- Laser beam / flames / RPG backblast (`cs2d_fx_laser/flame`), launchers as projectiles without `[7]` (GL now too),
+  Portal Gun `[50]` send/receive + portal Tdo drawing; table fixes (45..49, 88, 89 = Satchel, new 64..68).
+- Consumables on pickup (`cs2d_player_consume_item`); `[33]` ammo normalized (`cs2d_weapon_item_ammo`) → no
+  "(empty)" on supply items; 64..68 now named items (plain tooltip).
+- Verified: dump/REA (knowledge/special-weapons.md), `test_special_items`, offline screenshots (laser, flame, RPG).
+
+## 2026-10-14 — Claude — attack2 (silencer, burst, scope, strong slash) and shotgun pellets
+- `cs2d_weapon_attack2_type/accuracy/mode`, per-item `weapon_mode[]` (replaces unused `zoom_mode`), attack2 handler +
+  `[8]` send/receive, burst queue, 5 shotgun pellets, `cs2d_fx_tracer`, `cs2d_render_scope`. Knife attack2 now sends `[8,0]`.
+- Verified: dump/REA (see knowledge/shot-effects.md), `test_weapon_modes`, offline screenshots (M3 fan, AWP zoom 2).
+- Not verified against a proxy capture of the original. Light engine test fails on HEAD too (not from this change).
+
+## 2026-10-14 — Claude — Supply menu (Tgui_hudmen 61 / 62)
+
+- Use key on an own Supply / Super Supply opens "Supply Selection"; picking a slot sends `[26,150,slot,x,y]`.
+  `mp_supply_items` parsed from `[252,6]` / `[237,11]` (`net_supply_items`). Code: `src/cs2d_scene_game.c`.
+- Verified: layout and packet from the dump (`Tgui_hudmen::draw` case 0x3d, `FUN_14014f820`), string encoding from
+  `proxy_ba2.log`. Not yet run against the dedicated; no screenshot comparison.
+
+## 2026-10-14 — Claude — Auto switch on pickup
+
+- [25] collect: the local player now holds the collected weapon and sends [9, type, 0] when opt_auto_switch is on (FUN_14020ce60 -> FUN_1401caca0).
+- Verified: build + tests (48/49, the light-engine failure predates this). Not yet compared on a proxy capture.
+## 2026-10-14 — Claude — HUD: infinite rounds and mp_infammo
+- [252,6] roundtime byte now sets `cfg_roundtime`; main HUD hides the clock at mp_roundtime 100 (0x1402955b8).
+- Clock also hidden in DM / TDM / Construction (table 0x1409f77e8 = 1,0,0,0,1).
+- mp_infammo: main HUD shows clip | infinity (hud_symbols 11), weapon select "clip | INF".
+- Verified: build + tests (48/49, Light engine failure pre-existing). Not compared on screenshots yet.
+
 ## 2026-10-14 — Claude — Game sounds (cs2d_sound)
 
 - New `src/cs2d_sound.c`: SDL3 audio stream mixer, WAV (SDL_LoadWAV) + OGG (vendored `third_party/stb_vorbis.c`),

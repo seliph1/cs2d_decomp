@@ -1,5 +1,6 @@
 #include "cs2d_fx.h"
 #include "cs2d_sound.h"
+#include "cs2d_light.h"
 #include <math.h>
 #include <string.h>
 
@@ -118,6 +119,9 @@ void cs2d_fx_explosion(cs2d_fx_t *fx, float x, float y, float range)
     p->max_life = p->life = 0.6f;
     p->size     = range * 2.0f > 64.0f ? range * 2.0f : 64.0f;
     p->rot      = frand(fx) * 360.0f;
+    /* Tp.explosion (particles > 3, light on): Tp.CreateLight(x, y, 255, Rand(150, 255), 0 -> 35, 180, 5), an orange light
+     * of radius 180 shrinking 5 per frame. (The original skips it once explosion_count reaches 11: not tracked) */
+    cs2d_light_flash((int)x, (int)y, 255, 150 + (int)(frand(fx) * 106.0f), 35, 180.0f, 5.0f, 1.0f);
 }
 
 void cs2d_fx_breakable_break(cs2d_fx_t *fx, const cs2d_entity_t *e)
@@ -305,18 +309,23 @@ void cs2d_fx_flame(cs2d_fx_t *fx, float px, float py, float angle_deg, float dis
     }
 }
 
-void cs2d_fx_portal_flash(cs2d_fx_t *fx, float px, float py, float angle_deg, int mode)
+void cs2d_fx_portal_glow(cs2d_fx_t *fx, float x, float y, float sx, int mode)
 {
     if (!fx) return;
-    float rad = angle_deg * 0.017453292519943295f;
     cs2d_fx_particle_t *p = alloc_particle(fx);
     p->kind = CS2D_FX_SPARKLE;
-    p->x = px + sinf(rad) * 24.0f;
-    p->y = py - cosf(rad) * 24.0f;
+    p->x = x;
+    p->y = y;
     p->max_life = p->life = 0.3f;
-    p->size = 16.0f; /* flare sx 0.5 */
+    p->size = 32.0f * sx; /* flare at scale sx */
     if (mode == 2) { p->r = 50.0f / 255.0f; p->g = 100.0f / 255.0f; p->b = 1.0f; }
     else           { p->r = 200.0f / 255.0f; p->g = 100.0f / 255.0f; p->b = 0.0f; }
+}
+
+void cs2d_fx_portal_flash(cs2d_fx_t *fx, float px, float py, float angle_deg, int mode)
+{
+    float rad = angle_deg * 0.017453292519943295f;
+    cs2d_fx_portal_glow(fx, px + sinf(rad) * 24.0f, py - cosf(rad) * 24.0f, 0.5f, mode);
 }
 
 void cs2d_fx_knifeslash(cs2d_fx_t *fx, float px, float py, float angle_deg)

@@ -17,6 +17,8 @@ Source: REA/dump `Tgui_hudmen.draw` 0x14021f6d0 (menu 2 / 100), window setup 0x1
 - **`[252,6]` tail (0x1402d0560), after `b` = after the background string:** b+12 forcelight, b+13 daylight u16, b+15 recoil,
   b+16 hudscale, b+17 sv_voicechat, b+18 OS, b+19 lag compensation (DAT_140ddf140), b+20 Lua, b+21 ticks (DAT_140ddf13c),
   b+22 n, n x u16 Lua binds, i32 random seed, off-screen damage, leaderboard, physics, then "ACK". `h+4` = friendly fire; `s` = maxplayers.
+  `h` = after the two supply strings: h+0 `0x140a14e18`, h+1 **mp_flashlight** (`0x140a14e10`; `[237,14]` shows
+  "flashlights ©000255000ENABLED / ©255000000DISABLED" in the center, 255 220 0), h+2 `0x140a14e08`, h+3 mp_hovertext.
 - **Briefing:** `maps/<map>.txt` in a Tgui_tb (16,25) 568x374 + Close (16,404) 568, window "Map Briefing" (0727); no lines →
   red center "there is no briefing for this map" (0233). Server Info button with no lines: "there is no additional server information".
 - **Vote (menu 100):** two Tgui_slist (16,50) / (305,50) 279x330; titles at (16,30) "Vote to kick a Player", (305,30) "Vote a Map".
@@ -24,7 +26,7 @@ Source: REA/dump `Tgui_hudmen.draw` 0x14021f6d0 (menu 2 / 100), window setup 0x1
   sorted by "99-votes"+name. Players: team > 0, not bots. Click: "vote"/"votemap" → `[43, 1|2, value u16]` and the menu closes.
 - **`[43]` S→C:** `[43, voter, type, value u16]`; value >= 0xff9b = refusal: kick 0xfff5 (0720 disabled), 0xfff4 (0911 self, proxy-
   confirmed), 0xfffe (0722 wait 15 s); map 0xffeb (0721), 0xfffe. Valid → chat "votes to kick X" (0723) / "votes the map X" (0725).
-- **Map cycle:** `[252,7,9, n]`: n = 0xff → u16 size; n = 0 → done; else n x {u16 index, str}. The offline dedicated sent `[252,7,9,0]`.
+- **Map cycle:** `[252,7,12, n]` (was read as section 9 until 2026-10-14; 9 is custom tiles): n = 0xff → u16 size; n = 0 → done; else n x {u16 index, str} (proxy: `ff 0e 00`, then batches).
 - **Snapshot section 1:** player bytes r[23] votekick, r[24..25] votemap u16.
 - **Leaderboard `[230]` (proxy-verified on the local dedicated):** C→S `[230,0]` → S→C `[230,0, ts i32]`; C→S `[230,1, rank u16]`
   (one queued request per 7 frames, ranks visible in the list) → `[230,1, rank u16, ts i32, name (u16 len), id type u8 (0 usgn,

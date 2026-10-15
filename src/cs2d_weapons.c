@@ -1,4 +1,5 @@
 #include "cs2d_weapons.h"
+#include "cs2d_sound.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -175,6 +176,10 @@ void cs2d_weapons_init(void)
      * Per-weapon visual backward recoil kickback in pixels (0x1409eda18 in CS2D.exe,
      * initialized in init_weapons at 0x1402305db..0x1402340a9).
      */
+    /* Shell-by-shell reload flag 0x1409efcf8 (init_weapons 0x140230330): 1 only for M3 and XM1014 */
+    g_weapon_table[CS2D_WEP_M3].shell_reload     = true;
+    g_weapon_table[CS2D_WEP_XM1014].shell_reload = true;
+
     g_weapon_table[1].visual_recoil  = 2; /* USP (0x140230609) */
     g_weapon_table[2].visual_recoil  = 2; /* Glock (0x1402307f4) */
     g_weapon_table[3].visual_recoil  = 4; /* Deagle (0x1402309b8) */
@@ -374,12 +379,14 @@ int cs2d_itemtype_int(uint8_t weapon_id, const char *prop)
 bool cs2d_weapon_can_fire(const cs2d_player_t *player)
 {
     if (!player || !player->alive) return false;
-    if (player->reload_timer > 0.0f) return false;
     if (player->fire_cooldown > 0.0f) return false;
     if (player->current_weapon == CS2D_WEP_NONE) return false;
 
     const cs2d_weapon_def_t *wep = cs2d_weapon_get(player->current_weapon);
     if (!wep) return false;
+    /* A shell reload does not block the attack: Tpl.attack (FUN_1402164d0, 0x140216690) clears reload and fires
+     * while shells are loaded. A clip reload empties nothing but keeps the gun down until it ends */
+    if (player->reload_timer > 0.0f && !(wep->shell_reload && player->is_reloading)) return false;
 
     if (wep->slot == CS2D_SLOT_MELEE || player->current_weapon == CS2D_WEP_WRENCH) return true;
     if (player->current_weapon == CS2D_WEP_PORTALGUN) return true; /* No ammo: ammoin 0, ammo -1 (0x140a017b0) */
@@ -455,6 +462,10 @@ bool cs2d_weapon_fire(cs2d_player_t *player)
     if (wep->slot != CS2D_SLOT_MELEE && player->current_weapon != CS2D_WEP_WRENCH && wep->clip_size > 0) {
         player->clip_ammo[player->current_weapon]--;
     }
+    /* Tpl.attack 0x140216690: reload = 0 before the shot (interrupts a shell reload) */
+    player->is_reloading   = false;
+    player->reload_timer   = 0.0f;
+    player->reload_overdue = 0.0f;
 
     /* Visual backward recoil kickback on shot (Tpl.attack 0x1402166a7 & 0x140216a70:
      * player->recoil = (float)visual_recoil[id] + Rnd(0.0, 1.0)) */
@@ -479,10 +490,18 @@ float cs2d_weapon_shot_reach(const cs2d_weapon_def_t *wep)
     return (float)wep->range + 15.0f;
 }
 
+float cs2d_weapon_reload_stage(const cs2d_weapon_def_t *wep)
+{
+    /* FUN_140214780: reloadtimer.reset(reload x 5) ms per stage. A shell reload repeats it once per shell; a clip
+     * reload keeps reload_time (reload x 10 ms, see knowledge/buy-menu.md) */
+    if (!wep) return 0.0f;
+    return wep->shell_reload ? (float)wep->reload_ticks * 0.005f : wep->reload_time;
+}
+
 bool cs2d_weapon_reload(cs2d_player_t *player)
 {
     if (!player || !player->alive) return false;
-    if (player->reload_timer > 0.0f) return false;
+    if (player->reload_timer > 0.0f || player->is_reloading) return false;
 
     const cs2d_weapon_def_t *wep = cs2d_weapon_get(player->current_weapon);
     if (!wep || wep->slot == CS2D_SLOT_MELEE || wep->clip_size <= 0) return false;
@@ -494,8 +513,40 @@ bool cs2d_weapon_reload(cs2d_player_t *player)
         return false;
     }
 
-    player->reload_timer = wep->reload_time;
-    player->is_reloading = true;
+    player->reload_timer   = cs2d_weapon_reload_stage(wep);
+    player->reload_overdue = 0.0f;
+    player->is_reloading   = true;
+    /* FUN_140214780 mode 1, shell weapon (0x1402159c8 / 0x14021597b): only reload = 1 and the timer; no sound and
+     * no reloadani, the first shell comes when the timer runs out */
+    if (wep->shell_reload) return true;
+    /* Mode 1, clip weapon: reloadani = 15, w_clipout (global 0x140a0d6e0) at the player, vol 1.0, flags 0.
+     * A mod item with its own reload sound (items[typ] + 0x20) replaces it; not modelled */
+    player->reload_ani = 15.0f;
+    cs2d_sound_play_at("sfx/weapons/w_clipout.wav", player->pos.x, player->pos.y, 1.0f, 0);
+    return true;
+}
+
+bool cs2d_weapon_reload_shell(cs2d_player_t *player)
+{
+    if (!player || !player->is_reloading) return false;
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(player->current_weapon);
+    if (!wep || !wep->shell_reload) return false;
+
+    /* FUN_140214780 mode 4: timer re-armed, reloadani = 8, w_roundin (0x140a0d6d8) at the player, one shell from the
+     * reserve while the clip is not full; the reload ends with a full clip or an empty reserve */
+    player->reload_timer   = cs2d_weapon_reload_stage(wep);
+    player->reload_overdue = 0.0f;
+    player->reload_ani     = 8.0f;
+    cs2d_sound_play_at("sfx/weapons/w_roundin.wav", player->pos.x, player->pos.y, 1.0f, 0);
+    int16_t *clip = &player->clip_ammo[player->current_weapon], *reserve = &player->reserve_ammo[player->current_weapon];
+    if (*reserve > 0 && *clip < wep->clip_size) {
+        (*reserve)--;
+        (*clip)++;
+    }
+    if (*clip >= wep->clip_size || *reserve <= 0) {
+        player->is_reloading = false;
+        player->reload_timer = 0.0f;
+    }
     return true;
 }
 
@@ -511,8 +562,12 @@ void cs2d_weapon_finish_reload(cs2d_player_t *player)
     int available = player->reserve_ammo[player->current_weapon];
 
     int transfer = (available < needed) ? available : needed;
+    if (transfer <= 0) return;
     player->clip_ammo[player->current_weapon] += transfer;
     player->reserve_ammo[player->current_weapon] -= transfer;
+    /* FUN_140214780 mode 2 (clip reload finished): reloadani = 15, w_clipin (0x140a0d6e8) */
+    player->reload_ani = 15.0f;
+    cs2d_sound_play_at("sfx/weapons/w_clipin.wav", player->pos.x, player->pos.y, 1.0f, 0);
 }
 
 /*

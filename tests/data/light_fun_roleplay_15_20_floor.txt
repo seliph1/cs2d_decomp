@@ -457,11 +457,13 @@ rotation 180.000
 image occlusion 545.000 252.000 6
 rotation 0.000
 image occlusion 545.000 316.000 6
-transform 0.000 -1.000 1.000
-image occlusion 577.000 60.000 4
+rotation 90.000
+image occlusion 577.000 60.000 3
+transform 270.000 -1.000 -1.000
+image occlusion 577.000 92.000 7
 scale 1.000 1.000
 rotation 90.000
-image occlusion 577.000 92.000 8
+image occlusion 577.000 124.000 8
 rotation 180.000
 image occlusion 577.000 156.000 6
 rotation 0.000
@@ -471,9 +473,7 @@ image occlusion 577.000 252.000 6
 rotation 0.000
 image occlusion 577.000 316.000 6
 rotation 90.000
-image occlusion 609.000 92.000 4
-rotation 90.000
-image occlusion 609.000 124.000 6
+image occlusion 609.000 124.000 4
 rotation 180.000
 image occlusion 609.000 156.000 3
 rotation 90.000

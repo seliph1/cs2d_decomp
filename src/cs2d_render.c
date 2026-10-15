@@ -3,6 +3,7 @@
 #include "cs2d_light.h"
 #include "cs2d_tilefx.h"
 #include "cs2d_dynobj.h"
+#include "cs2d_hudtxt.h"
 #include "cs2d_weapons.h"
 #include "cs2d_map.h"
 #include "cs2d_fx.h"
@@ -1362,12 +1363,21 @@ void cs2d_gfx_bank_free_sprites(cs2d_gfx_bank_t *bank)
 
 const cs2d_texture_t *cs2d_gfx_get_sprite(cs2d_gfx_bank_t *bank, const char *rel_path, bool black_mask)
 {
+    return cs2d_gfx_get_sprite_ex(bank, rel_path, black_mask ? 3 : 1, 0, 0);
+}
+
+const cs2d_texture_t *cs2d_gfx_get_sprite_ex(cs2d_gfx_bank_t *bank, const char *rel_path, int mask_mode,
+                                             int cell_w, int cell_h)
+{
     if (!bank || !rel_path || !rel_path[0]) return NULL;
 
-    int mask_mode = black_mask ? 3 : 1;
+    /* Sprite sheets are cached apart from the plain image of the same file: "path|w|h" */
+    char key[128];
+    if (cell_w > 0 && cell_h > 0) snprintf(key, sizeof(key), "%s|%d|%d", rel_path, cell_w, cell_h);
+    else snprintf(key, sizeof(key), "%s", rel_path);
     for (int i = 0; i < bank->sprite_cache_count; i++) {
         if (bank->sprite_cache[i].mask_mode == mask_mode &&
-            _stricmp(bank->sprite_cache[i].path, rel_path) == 0) {
+            _stricmp(bank->sprite_cache[i].path, key) == 0) {
             return bank->sprite_cache[i].tex.id ? &bank->sprite_cache[i].tex : NULL;
         }
     }
@@ -1384,11 +1394,13 @@ const cs2d_texture_t *cs2d_gfx_get_sprite(cs2d_gfx_bank_t *bank, const char *rel
 
     cs2d_sprite_cache_entry_t *entry = &bank->sprite_cache[bank->sprite_cache_count++];
     memset(entry, 0, sizeof(*entry));
-    snprintf(entry->path, sizeof(entry->path), "%s", rel_path);
+    snprintf(entry->path, sizeof(entry->path), "%s", key);
     entry->mask_mode = mask_mode;
     entry->is_atlas  = false;
 
-    if (!cs2d_texture_load_ex(&entry->tex, rel_path, mask_mode)) {
+    if (cell_w > 0 && cell_h > 0) {
+        cs2d_texture_load_grid(&entry->tex, rel_path, mask_mode, cell_w, cell_h);
+    } else if (!cs2d_texture_load_ex(&entry->tex, rel_path, mask_mode)) {
         char alt[160];
         snprintf(alt, sizeof(alt), "gfx/sprites/%s", rel_path);
         cs2d_texture_load_ex(&entry->tex, alt, mask_mode);
@@ -1564,6 +1576,10 @@ int cs2d_player_get_frame(const cs2d_player_t *player, bool lefthanded)
     if (player->is_reloading || player->reload_timer > 0.0f) {
         frame = lh;
     }
+    /* Tpl.getFrame (0x140002e20): frame 3 while reloadani > 0 (15 at a clip's start / end, 8 per shell) */
+    if (player->reload_ani > 0.0f) {
+        frame = 3;
+    }
 
     /* Bomb planting animation (0x140002ee4..0x140002fc4): alternates frames 3 and 4 */
     if (w == CS2D_WEP_BOMB && player->is_planting) {
@@ -1694,6 +1710,8 @@ void cs2d_render_player(
     }
     const cs2d_texture_t *held_tex = NULL;
     float wx = sx, wy = sy;
+    /* Tpl.draw (0x1401215ee): one uniform SetScale at the image's own size, 0.5 when both sides are >= 64 */
+    float held_sc = 1.0f;
     if ((player->is_reloading || player->reload_timer > 0.0f) && bank && bank->tex_reload.id) {
         /* Reloading sprite at 13.5px in front of player (0x140122983) */
         held_tex = &bank->tex_reload;
@@ -1712,6 +1730,7 @@ void cs2d_render_player(
             }
         }
         held_tex = active_wep;
+        held_sc = (active_wep->width >= 64 && active_wep->height >= 64) ? 0.5f : 1.0f;
         wx = sx + sin_d * wep_dist;
         wy = sy - cos_d * wep_dist;
     }
@@ -1754,7 +1773,8 @@ void cs2d_render_player(
                                      1.0f, 1.0f, 1.0f, 1.0f, 0);
         }
         if (held_tex) {
-            cs2d_render_sprite(held_tex, wx + dx, wy + dy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
+            cs2d_render_sprite(held_tex, wx + dx, wy + dy, held_tex->width * held_sc, held_tex->height * held_sc, draw_ang,
+                               1.0f, 1.0f, 1.0f, 1.0f);
         }
         cs2d_gl_shadow_mark_end();
 
@@ -1787,12 +1807,13 @@ void cs2d_render_player(
 
     /* 4. Held weapon, with the silencer overlay for USP (1) and M4A1 (32) while the item's mode > 0 (0x1401217e4) */
     if (held_tex) {
-        cs2d_render_sprite(held_tex, wx, wy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
+        cs2d_render_sprite(held_tex, wx, wy, held_tex->width * held_sc, held_tex->height * held_sc, draw_ang,
+                           1.0f, 1.0f, 1.0f, 1.0f);
         if (held_tex == active_wep && bank && cs2d_weapon_mode(player) > 0) {
             if (player->current_weapon == CS2D_WEP_USP && bank->tex_silencer.id) {
-                cs2d_render_sprite(&bank->tex_silencer, wx, wy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
+                cs2d_render_sprite(&bank->tex_silencer, wx, wy, bank->tex_silencer.width * held_sc, bank->tex_silencer.height * held_sc, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
             } else if (player->current_weapon == CS2D_WEP_M4A1 && bank->tex_m4a1s.id) {
-                cs2d_render_sprite(&bank->tex_m4a1s, wx, wy, 32.0f, 32.0f, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
+                cs2d_render_sprite(&bank->tex_m4a1s, wx, wy, bank->tex_m4a1s.width * held_sc, bank->tex_m4a1s.height * held_sc, draw_ang, 1.0f, 1.0f, 1.0f, 1.0f);
             }
         }
     }
@@ -1817,6 +1838,14 @@ void cs2d_render_player(
                                      sx, sy, 32.0f, 32.0f, player->angle,
                                      1.0f, 1.0f, 1.0f, 1.0f, 0);
         }
+    }
+
+    /* 6. Flashlight on (Tpl.draw 0x140121160, after the equipment): flare1 additive in (255, 255, 200) at alpha
+     * 0.4 x the player's alpha, turned by wrot * -0.2, 9 px ahead along rot. The mp_flashlight / Zombies checks are
+     * the caller's: player->flashlight is only set when they pass (cs2d_client_flashlight) */
+    if (player->flashlight && bank && bank->tex_flare1.id) {
+        cs2d_render_sprite_frame(&bank->tex_flare1, 32, 32, 0, (float)(int)sx + sin_a * 9.0f, (float)(int)sy - cos_a * 9.0f,
+                                 32.0f, 32.0f, draw_ang * -0.2f, 1.0f, 1.0f, 200.0f / 255.0f, 0.4f, 4);
     }
 }
 
@@ -3371,10 +3400,24 @@ void cs2d_render_map_flags(const cs2d_map_t *map, float cam_x, float cam_y, int 
     }
 }
 
+/* cs2d_render_map_floor_ex: drawn between the background colour and the tiles (Tdo.draw_background) */
+static void (*s_under_tiles)(void *ctx);
+static void *s_under_tiles_ctx;
+
 void cs2d_render_map_floor(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
                            float cam_x, float cam_y, int screen_w, int screen_h)
 {
     render_map_pass01(map, tileset_tex, cam_x, cam_y, screen_w, screen_h, false);
+}
+
+void cs2d_render_map_floor_ex(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex, float cam_x, float cam_y,
+                              int screen_w, int screen_h, void (*under_tiles)(void *ctx), void *ctx)
+{
+    s_under_tiles = under_tiles;
+    s_under_tiles_ctx = ctx;
+    render_map_pass01(map, tileset_tex, cam_x, cam_y, screen_w, screen_h, false);
+    s_under_tiles = NULL;
+    s_under_tiles_ctx = NULL;
 }
 
 void cs2d_render_map_walls(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
@@ -3437,6 +3480,7 @@ static void render_map_pass01(const cs2d_map_t *map, const cs2d_texture_t *tiles
                          1.0f, true);
     }
 
+    if (s_under_tiles) s_under_tiles(s_under_tiles_ctx);
     cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
 
     /* Pass 1: base tiles and overlays; the walls wait for cs2d_render_map_walls when deferred */
@@ -3502,8 +3546,10 @@ static void render_map_pass01(const cs2d_map_t *map, const cs2d_texture_t *tiles
                 int wep_id = ent->int_settings[0];
                 if (bank && wep_id > 0 && wep_id < CS2D_MAX_WEAPONS && bank->tex_weapons_d[wep_id].id) {
                     const cs2d_texture_t *dtex = &bank->tex_weapons_d[wep_id];
-                    float dw = (dtex->width > 64) ? (float)(dtex->width / 2) : (float)dtex->width;
-                    float dh = (dtex->height > 32) ? (float)(dtex->height / 2) : (float)dtex->height;
+                    /* Titem.draw (0x140147b80): one uniform SetScale, 0.5 when width > 64 and height > 32 (type 59: width > 32) */
+                    bool half = (wep_id == 59) ? dtex->width > 32 : (dtex->width > 64 && dtex->height > 32);
+                    float sc = half ? 0.5f : 1.0f;
+                    float dw = (float)dtex->width * sc, dh = (float)dtex->height * sc;
                     if (s_shadows_enabled && s_item_shadows && s_shadow_intensity > 0) {
                         float shadow_a = (float)s_shadow_intensity * 0.01f;
                         const cs2d_texture_t *stex = bank->tex_shadow.id ? &bank->tex_shadow : &bank->tex_leaf;
@@ -4226,7 +4272,7 @@ bool cs2d_hud_progress_layout(
     if ((player->is_reloading || player->reload_timer > 0.0f) &&
         wep && wep->clip_size > 0 && wep->slot != CS2D_SLOT_MELEE) {
         title = "Reloading"; /* sys/language 0759 */
-        float total = wep->reload_time;
+        float total = cs2d_weapon_reload_stage(wep); /* per shell for M3 / XM1014: estimated, bar not traced */
         if (total > 0.0f) {
             progress = 1.0f - (player->reload_timer / total);
         } else {
@@ -4956,6 +5002,64 @@ static void dynobj_shadow(const cs2d_gfx_bank_t *bank, float cx, float cy, float
                              0.0f, 0.0f, 0.0f, a, 0);
 }
 
+/*
+ * NPC (Tdo.draw_ground case 0x1e): culled at (int)(x - camx) + 63 < 978 and (int)(y - camy) + 63 < 608. Shadow:
+ * the sprite in black at +3, +3 with alpha shadows / 100 when playershadows is on and mapshadows > 1 (DAT_140ddf190). Sprite: zombie gfx/npc/zombie.bmp frame 2 of 32 x 32 cells (the zombie player
+ * sheet), headcrab / snark / vortigaunt / soldier frame 0, scale 0.5 when 64 px or wider, else 1, at
+ * rot + rotvar; while it walks (more than 3 px from m_x / m_y) it wobbles by sin(ms / 2 + id) * 10 (zombie), else
+ * * 15 with ms * 2 (headcrab, snark) or ms / 2 (vortigaunt, soldier); an idle snark wobbles by sin(ms / 5 + id) * 15.
+ * An unknown type draws a red 16 px box with "Invalid NPC Player Value: n". The Vortigaunt's charge
+ * (FUN_140283f20) adds two green flare3 at rot -+ 45 degrees, 15 px away, additive.
+ */
+static void render_npc(const cs2d_dynobj_t *o, float cam_x, float cam_y, int ms)
+{
+    static const char *files[6] = { NULL, "gfx/npc/zombie.bmp", "gfx/npc/headcrab.bmp", "gfx/npc/snark.bmp",
+                                    "gfx/npc/vortigaunt.bmp", "gfx/npc/soldier.bmp" };
+    int sx = (int)(o->x - cam_x), sy = (int)(o->y - cam_y);
+    if ((unsigned)(sx + 63) >= 0x3d2u || (unsigned)(sy + 63) >= 0x260u) return;
+    float x = o->x - cam_x, y = o->y - cam_y;
+    int t = o->player;
+    if (t < 1 || t > 5) {
+        cs2d_render_rect(x - 8.0f, y - 8.0f, 16.0f, 16.0f, 1.0f, 0.0f, 0.0f, 1.0f, true);
+        char msg[48];
+        snprintf(msg, sizeof(msg), "Invalid NPC Player Value: %d", t);
+        cs2d_render_text(x - 7.0f, y - 7.0f, msg, 1.0f, 1.0f, 1.0f, 1.0f);
+        return;
+    }
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    const cs2d_texture_t *tex = cs2d_gfx_get_sprite_ex(bank, files[t], 2, t == 1 ? 32 : 0, t == 1 ? 32 : 0);
+    if (!tex) return;
+    int cw = t == 1 ? 32 : tex->width, ch = t == 1 ? 32 : tex->height;
+    float scale = cw < 64 ? 1.0f : 0.5f;
+    float rot = o->rot + o->rotvar;
+    bool moving = fabsf(o->m_x - o->x) > 3.0f || fabsf(o->m_y - o->y) > 3.0f;
+    double ph = 0.0, amp = 15.0;
+    if (moving) {
+        ph = (t == 2 || t == 3) ? (double)(o->id + ms * 2) : (double)(ms / 2 + o->id);
+        if (t == 1) amp = 10.0;
+        rot += (float)(sin(ph * 0.017453292519943295) * amp);
+    } else if (t == 3) {
+        rot += (float)(sin((double)(ms / 5 + o->id) * 0.017453292519943295) * 15.0);
+    }
+    int frame = t == 1 ? 2 : 0;
+    if (s_player_shadows && cs2d_light_mapshadows() > 1 && s_shadow_intensity > 0) {
+        cs2d_render_sprite_frame(tex, cw, ch, frame, x + 3.0f, y + 3.0f, cw * scale, ch * scale, rot, 0.0f, 0.0f, 0.0f,
+                                 (float)s_shadow_intensity * 0.01f, 0);
+    }
+    cs2d_render_sprite_frame(tex, cw, ch, frame, x, y, cw * scale, ch * scale, rot, 1, 1, 1, 1, 0);
+    if (t == 4 && o->upgrade > 0 && bank && bank->tex_flare3.id) {
+        int c = o->upgrade < 40 ? o->upgrade : 40;
+        float sc = (float)c * 0.025f * 0.7f;
+        for (int k = -1; k <= 1; k += 2) {
+            double a = (double)(o->rot + 45.0f * (float)k) * 0.017453292519943295;
+            const cs2d_texture_t *f3 = &bank->tex_flare3;
+            cs2d_render_sprite_frame(f3, f3->width, f3->height, 0, (float)(x + sin(a) * 15.0), (float)(y - cos(a) * 15.0),
+                                     f3->width * sc, f3->height * sc, (float)(o->upgrade * 3), 0.0f, 1.0f, 0.0f,
+                                     (float)c * 0.025f, 4);
+        }
+    }
+}
+
 void cs2d_render_dynobjs(const cs2d_dynobj_world_t *w, cs2d_dynobj_layer_t layer, float cam_x, float cam_y,
                          int screen_w, int screen_h, bool team_game, int local_id)
 {
@@ -4964,7 +5068,11 @@ void cs2d_render_dynobjs(const cs2d_dynobj_world_t *w, cs2d_dynobj_layer_t layer
     int ms = (int)GetTickCount();
     for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
         const cs2d_dynobj_t *o = &w->objs[i];
-        if (!o->active) continue;
+        if (!o->active || o->typ == CS2D_DO_IMAGE) continue;
+        if (o->typ == CS2D_DO_NPC) {
+            if (layer == CS2D_DO_LAYER_GROUND) render_npc(o, cam_x, cam_y, ms);
+            continue;
+        }
         /* Culling: (int)(x - camx) + 31 < 850 + 32, same for y (0x372 / 0x200 on the 850x480 screen) */
         int sx = (int)(o->x - cam_x), sy = (int)(o->y - cam_y);
         if ((unsigned)(sx + 31) >= (unsigned)(screen_w + 32) || (unsigned)(sy + 31) >= (unsigned)(screen_h + 32)) continue;
@@ -5071,6 +5179,186 @@ void cs2d_render_dynobjs(const cs2d_dynobj_world_t *w, cs2d_dynobj_layer_t layer
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * Lua images (Tdo 40): FUN_1402809b0 (transform) and FUN_14025eb80 (draw)
+ * --------------------------------------------------------------------------- */
+
+/* TFlag.flags_map: ISO code -> frame, the n-th line (of 2+ characters) of incbindata/flags_iso.txt */
+static int flag_frame(const char *iso)
+{
+    static char codes[256][4];
+    static int count = -1;
+    if (count < 0) {
+        count = 0;
+        FILE *f = fopen("gfx/incbindata/flags_iso.txt", "r");
+        char line[32];
+        while (f && count < 256 && fgets(line, sizeof(line), f)) {
+            size_t n = strcspn(line, "\r\n");
+            line[n] = '\0';
+            if (n > 1) snprintf(codes[count++], sizeof(codes[0]), "%.3s", line);
+        }
+        if (f) fclose(f);
+    }
+    for (int i = 0; i < count; i++) if (strcmp(codes[i], iso) == 0) return i;
+    return 0; /* Missing key: bbStringToInt("") */
+}
+
+/* The image of a Tdo 40 with its cell size and frame count */
+typedef struct {
+    const cs2d_texture_t *tex;
+    int   cw, ch, frames;
+    int   frame;      /* Forced frame (flag, tile), -1 = the object's */
+    bool  spin;       /* <avatar_N> placeholder: rot + ms / 5 */
+} image_src_t;
+
+static bool image_source(const cs2d_dynobj_t *o, const cs2d_img_ctx_t *ctx, image_src_t *src)
+{
+    char file[128];
+    int mask, arg;
+    memset(src, 0, sizeof(*src));
+    src->frame = -1;
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    switch (cs2d_dynobj_image_kind(o->path, file, sizeof(file), &src->cw, &src->ch, &mask, &arg)) {
+        case CS2D_IMG_FILE:
+            src->tex = cs2d_gfx_get_sprite_ex(bank, file, mask, src->cw, src->ch);
+            if (src->tex && src->cw <= 0) { src->cw = src->tex->width; src->ch = src->tex->height; }
+            break;
+        case CS2D_IMG_TILE: {
+            /* g_tileset_frames[clamp(N, 0, g_map_tilemax)], 32 x 32 */
+            if (!ctx || !ctx->tileset || !ctx->tileset->id) return false;
+            int n = arg > ctx->tile_max ? ctx->tile_max : arg;
+            src->tex = ctx->tileset;
+            src->cw = src->ch = ctx->tile_src > 0 ? ctx->tile_src : 32;
+            src->frame = n < 0 ? 0 : n;
+            break;
+        }
+        case CS2D_IMG_FLAG: /* incbindata/flags.png, 16 x 11 cells, midhandled */
+            src->tex = cs2d_gfx_get_sprite_ex(bank, "gfx/incbindata/flags.png", 0, 16, 11);
+            src->cw = 16;
+            src->ch = 11;
+            src->frame = flag_frame(file);
+            break;
+        case CS2D_IMG_AVATAR:
+            /* No player avatars here: the incbindata/avatar_load.png placeholder (black masked) turns at ms / 5 */
+            src->tex = cs2d_gfx_get_sprite_ex(bank, "gfx/incbindata/avatar_load.png", 1, 0, 0);
+            if (src->tex) { src->cw = src->tex->width; src->ch = src->tex->height; }
+            src->spin = true;
+            break;
+        default: /* <light> (cs2d_render_image_lights) and unknown paths draw no image */
+            return false;
+    }
+    if (!src->tex || src->cw <= 0 || src->ch <= 0) return false;
+    src->frames = (src->tex->height / src->ch) * (src->tex->width / src->cw);
+    if (src->frames < 1) src->frames = 1;
+    return true;
+}
+
+int cs2d_render_image_frames(const char *path)
+{
+    cs2d_dynobj_t o;
+    memset(&o, 0, sizeof(o));
+    snprintf(o.path, sizeof(o.path), "%s", path);
+    image_src_t src;
+    if (!image_source(&o, NULL, &src)) return 0;
+    return src.frame >= 0 ? 1 : src.frames;
+}
+
+/* Which pass draws an image mode (Tdo.draw_background / draw_ground / draw_wall / draw_overwall / draw_hud) */
+static bool image_in_pass(int mode, cs2d_img_pass_t pass)
+{
+    switch (pass) {
+        case CS2D_IMG_PASS_BACKGROUND: return mode == 4 || (mode > 232 && mode < 264);
+        case CS2D_IMG_PASS_FLOOR:      return mode == 0 || (mode > 100 && mode < 133);
+        case CS2D_IMG_PASS_TOP:        return mode == 1 || (mode > 200 && mode < 233);
+        case CS2D_IMG_PASS_OVERWALL:   return mode == 3 || (mode > 132 && mode < 165);
+        case CS2D_IMG_PASS_HUD:        return mode == 2;
+    }
+    return false;
+}
+
+void cs2d_render_dynobj_images(const cs2d_dynobj_world_t *w, cs2d_img_pass_t pass, const cs2d_img_ctx_t *ctx)
+{
+    if (!w || !ctx) return;
+    int ms = (int)GetTickCount();
+    /* The world positions subtract the integer camera (0x140ddf06c / 0x140ddf068) */
+    float camx = roundf(ctx->cam_x), camy = roundf(ctx->cam_y);
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *o = &w->objs[i];
+        if (!o->active || o->typ != CS2D_DO_IMAGE || !image_in_pass(o->mode, pass)) continue;
+        /* Only the player it belongs to sees a player image; nearly transparent images are skipped */
+        if (o->player != 0 && o->player != ctx->local_id) continue;
+        if (o->alpha <= 0.0001f) continue;
+        image_src_t src;
+        if (!image_source(o, ctx, &src)) continue;
+        float x, y, rot = o->rot, sx = o->scalex, sy = o->scaley;
+        float spin = src.spin ? (float)(ms / 5) : 0.0f;
+        if (o->mode > 100) {
+            /* Follows player mode - 100 / 132 / 200 / 232 while alive in a team. Image x picks the rotation: <= 0
+             * its own, 1 the player's angle, 2 the weapon angle, above 2 the weapon angle with the recoil offset
+             * (-recoil sin(rot), recoil cos(rot)) truncated to integers. (Tpl.fog with image y <= 0 is not done.) */
+            int base = o->mode > 232 ? 232 : o->mode > 200 ? 200 : o->mode > 132 ? 132 : 100;
+            int pid = o->mode - base;
+            if (!ctx->players || pid < 1 || pid > CS2D_MAX_PLAYERS) continue;
+            const cs2d_player_t *p = &ctx->players[pid];
+            if (!p->alive || p->team == CS2D_TEAM_SPEC || p->health <= 0) continue;
+            int rx = 0, ry = 0;
+            if (o->x > 2.0f) {
+                double pr = (double)p->angle * 0.017453292519943295;
+                rx = (int)((double)-p->recoil * sin(pr));
+                ry = (int)-((double)-p->recoil * cos(pr));
+            }
+            x = p->pos.x - camx + (float)rx;
+            y = p->pos.y - camy + (float)ry;
+            if (o->x <= 0.0f) rot = o->rot + spin;
+            else if (o->x == 1.0f) rot = p->angle + spin;
+            else rot = p->draw_angle + spin;
+        } else if (o->mode >= 10 && o->mode <= 12) {
+            continue; /* Parented images: Tdo.parent is never set from the network (FUN_1402caa20), not drawn */
+        } else if (pass == CS2D_IMG_PASS_HUD) {
+            /* FUN_140291080 sets the mp_hudscale transform before Tdo.draw_hud */
+            cs2d_hudscale_calc_t tr;
+            cs2d_hudscale_compute(ctx->hudscale, ctx->screen_w, ctx->screen_h, (int)o->x, (int)o->y, 13, &tr);
+            float zx = tr.scale_x / tr.f_scale, zy = tr.scale_y / tr.f_scale;
+            x = tr.x + (o->x - (float)(int)o->x) * zx;
+            y = tr.y + (o->y - (float)(int)o->y) * zy;
+            sx *= zx;
+            sy *= zy;
+            rot += spin;
+        } else {
+            x = o->x - camx;
+            y = o->y - camy;
+            rot += spin;
+        }
+        if (pass != CS2D_IMG_PASS_HUD) {
+            /* Culling radius ceil(max(w, h) * max(scale) * 0.7) around the 850 x 480 screen */
+            float sm = fabsf(sx) > fabsf(sy) ? fabsf(sx) : fabsf(sy);
+            float r = ceilf((float)(src.cw > src.ch ? src.cw : src.ch) * sm * 0.7f);
+            if (x < -r || y < -r || x > r + (float)ctx->screen_w || y > r + (float)ctx->screen_h) continue;
+        }
+        int frame = src.frame >= 0 ? src.frame : o->frame;
+        if (frame < 0) frame = 0;
+        if (frame >= src.frames) frame = src.frames - 1;
+        /* imageblend 0 ALPHABLEND, 1 LIGHTBLEND, 2 SHADEBLEND, 3 SOLIDBLEND (opaque, alpha ignored) */
+        int blend = o->blend == 1 ? 4 : o->blend == 2 ? 5 : 0;
+        float a = o->blend == 3 ? 1.0f : (o->alpha > 1.0f ? 1.0f : o->alpha);
+        cs2d_render_sprite_frame(src.tex, src.cw, src.ch, frame, x, y, (float)src.cw * sx, (float)src.ch * sy, rot,
+                                 (float)o->color[0] / 255.0f, (float)o->color[1] / 255.0f, (float)o->color[2] / 255.0f,
+                                 a, blend);
+    }
+}
+
+void cs2d_render_image_lights(const cs2d_dynobj_world_t *w)
+{
+    /* Tdo.iniimage "<light>": Tp_lightpool.GetLight(x, y, 128, [255, 255, 255], 512, 1.0) while the light engine runs */
+    cs2d_light_points_begin();
+    for (int i = 0; w && i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *o = &w->objs[i];
+        if (!o->active || o->typ != CS2D_DO_IMAGE || _strnicmp(o->path, "<light", 6) != 0) continue;
+        cs2d_light_point(0x10000 + o->id, (int)o->x, (int)o->y, 128.0f, 255, 255, 255, 1.0f, 512);
+    }
+    cs2d_light_points_end();
+}
+
 void cs2d_render_build_helper(int ptx, int pty, int tx, int ty, bool ok, float cam_x, float cam_y)
 {
     cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
@@ -5160,6 +5448,21 @@ void cs2d_render_gen_flash(const struct cs2d_gen_s *gen, int screen_w, int scree
     cs2d_gl_set_blend(CS2D_GL_BLEND_ALPHA);
 }
 
+void cs2d_render_fx_shells(const struct cs2d_fx_s *fx, float cam_x, float cam_y)
+{
+    /* Cases on the floor (and in flight): drawn before the players, so they stay under the bodies */
+    cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
+    if (!fx || !bank) return;
+    cam_x = roundf(cam_x);
+    cam_y = roundf(cam_y);
+    for (int i = 0; i < CS2D_FX_MAX_SHELLS; i++) {
+        const cs2d_fx_particle_t *c = &fx->shells[i];
+        if (c->kind != CS2D_FX_SHELL) continue;
+        cs2d_render_sprite_frame(&bank->tex_shells, 8, 8, c->frame, c->x - cam_x, c->y - cam_y, 8.0f, 8.0f,
+                                 c->rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
+    }
+}
+
 void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2d_texture_t *tileset_tex, float cam_x, float cam_y)
 {
     if (!fx) return;
@@ -5167,13 +5470,6 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
     cam_x = roundf(cam_x);
     cam_y = roundf(cam_y);
 
-    /* Cases on the floor (and in flight) */
-    for (int i = 0; bank && i < CS2D_FX_MAX_SHELLS; i++) {
-        const cs2d_fx_particle_t *c = &fx->shells[i];
-        if (c->kind != CS2D_FX_SHELL) continue;
-        cs2d_render_sprite_frame(&bank->tex_shells, 8, 8, c->frame, c->x - cam_x, c->y - cam_y, 8.0f, 8.0f,
-                                 c->rot, 1.0f, 1.0f, 1.0f, 1.0f, 0);
-    }
     bool has_tileset = (map && tileset_tex && tileset_tex->id != 0 && tileset_tex->width >= 32);
     int tile_src = (map && map->use_64x64_tiles == 1) ? 64 : 32;
     int cols = has_tileset ? (tileset_tex->width / tile_src) : 1;

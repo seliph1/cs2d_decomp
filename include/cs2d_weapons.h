@@ -66,6 +66,12 @@ bool cs2d_weapon_reload(cs2d_player_t *player);
 /* Complete reload action (called when reload_timer expires) */
 void cs2d_weapon_finish_reload(cs2d_player_t *player);
 
+/* Shell reload stage (FUN_140214780 mode 4): loads one shell, ends the reload when full; false if not shell reloading */
+bool cs2d_weapon_reload_shell(cs2d_player_t *player);
+
+/* Duration of one reload stage in seconds (per shell for shell_reload weapons) */
+float cs2d_weapon_reload_stage(const cs2d_weapon_def_t *wep);
+
 /* Calculate damage applied to target taking armor into account
    (reconstructed from FUN_1401658c0 in cs2d_dedicated.exe):
    - Normal Kevlar (armor <= 200): absorbs mp_kevlar (0.35f) up to current armor points;

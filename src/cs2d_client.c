@@ -337,6 +337,7 @@ bool cs2d_client_init(cs2d_client_t *client, const char *map_name)
     /* Default Server Info state (overwritten by [252, 6] and [240] when joining a server) */
     strncpy(client->net_server_name, "CS2D Server", sizeof(client->net_server_name) - 1);
     client->net_hovertext = 31; /* The dedicated's default mp_hovertext (proxy capture of [252,6]) */
+    client->net_flashlight = 1; /* mp_flashlight default (overwritten by [252,6]) */
     client->net_hudscale  = 0;  /* mp_hudscale default (0x140a14de8) */
     /* The dedicated's default mp_supply_items "51,58,11,22,32,35,80,73" (proxy capture of [252,6]) */
     static const uint8_t default_supply[] = { 51, 58, 11, 22, 32, 35, 80, 73 };
@@ -754,6 +755,23 @@ bool cs2d_parse_color_code(const char *in, uint8_t *out_r, uint8_t *out_g, uint8
     return false;
 }
 
+void cs2d_client_flashlight(cs2d_client_t *client, int pid, int state, bool send)
+{
+    if (!client || pid < 1 || pid > CS2D_MAX_PLAYERS) return;
+    cs2d_player_t *p = &client->game.players[pid];
+    if (!p->alive || p->health < 1 || p->team < 1) return;
+    if (client->net_flashlight != 1) return;
+    if (p->team == CS2D_TEAM_T && client->net_sv_gamemode == 4) return;   /* Zombies */
+    if (send && client->connected) {
+        uint8_t pkt[2] = { (uint8_t)CS2D_NET_FLASHLIGHT, (uint8_t)state };   /* Createpacket(1, 0) */
+        cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+        return;
+    }
+    if (p->flashlight == (state != 0)) return;
+    p->flashlight = state != 0;
+    cs2d_sound_play_at("sfx/player/flashlight.wav", p->pos.x, p->pos.y, 0.5f, 0);   /* 0x140a0d918 */
+}
+
 void cs2d_client_center_msg(cs2d_client_t *client, uint8_t r, uint8_t g, uint8_t b, const char *text)
 {
     if (!client || !text || text[0] == '\0') return;
@@ -1161,6 +1179,7 @@ static void join_players(cs2d_client_t *client, const uint8_t *buf, int len, int
         pl->health = r[18];
         pl->armor  = r[19];
         pl->alive  = pl->team != CS2D_TEAM_SPEC && pl->health > 0;
+        pl->flashlight = (r[20] & 32) != 0; /* Tpl.setspecialbyte (0x1401ffdc0) */
         pl->votekick = r[23];
         pl->votemap  = vote_map_slot(r[24] | (r[25] << 8));
         if (r[21] != 0) {
@@ -1511,6 +1530,8 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                                 }
                                 int h = s + 8 + buffer[s + 7];
                                 if (h < recvd) h += 1 + buffer[h];
+                                /* Then 0x140a14e18, mp_flashlight (0x140a14e10), 0x140a14e08, mp_hovertext (0x1402d0560) */
+                                if (h + 1 < recvd) client->net_flashlight = buffer[h + 1];
                                 if (h + 3 < recvd) client->net_hovertext = buffer[h + 3];
                                 if (h + 4 < recvd) client->net_ff = buffer[h + 4] != 0;
                                 /* Then a u8, the background image (str), its scroll x / y and a header i32, sv_forcelight
@@ -1613,8 +1634,39 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                                 }
                             }
                         }
+                    } else if (snap_type == 7) {
+                        /* Image data of the [252,7,5] objects (FUN_1402ce7c0 case 4 = section 7) */
+                        cs2d_dynobj_read_image_snapshot(&client->dynobj, buffer, recvd, &pos);
+                    } else if (snap_type == 8) {
+                        /* Tweens (case 5 = section 8): count, then Ttween.receive each */
+                        if (pos < recvd) {
+                            int count = buffer[pos++];
+                            for (int k = 0; k < count && pos + 3 <= recvd; k++) {
+                                uint32_t now = (uint32_t)SDL_GetTicks();
+                                bool ok;
+                                if ((buffer[pos + 1] | (buffer[pos + 2] << 8)) > 200) {
+                                    ok = cs2d_dynobj_read_tween(&client->dynobj, buffer, recvd, &pos, now);
+                                } else {
+                                    int hp = pos - 1; /* cs2d_hudtxt_on_tween starts at the opcode */
+                                    ok = cs2d_hudtxt_on_tween(&client->hudtxt, buffer, recvd, &hp, now);
+                                    pos = hp;
+                                }
+                                if (!ok) { pos = recvd; break; }
+                            }
+                        }
                     } else if (snap_type == 9) {
-                        /* Map cycle for the vote screen (FUN_1402ce7c0 case 9): n = 0xff then u16 size; n = 0 done;
+                        /* Custom tiles (case 6 = section 9): count, then {x u16, y u16, 7 bytes} (Tcustomtile.addcheck,
+                         * not reconstructed: read and skipped) */
+                        if (pos < recvd) {
+                            int count = buffer[pos++];
+                            pos += count * 11;
+                            if (pos > recvd) pos = recvd;
+                        }
+                    } else if (snap_type == 10) {
+                        /* Resource paths (case 7 = section 10): Trestable client table for the images' "?" paths */
+                        cs2d_dynobj_read_restable(&client->dynobj, buffer, recvd, &pos);
+                    } else if (snap_type == 12) {
+                        /* Map cycle for the vote screen (FUN_1402ce7c0 case 9 = section 12): n = 0xff then u16 size; n = 0 done;
                          * else n * {index u16, name (u8 len)} into 0x140a0fd98 */
                         if (pos < recvd) {
                             int n = buffer[pos++];
@@ -1820,11 +1872,12 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                             cs2d_player_give_weapon(p, r[9]);
                         }
                         /* r[11] = Tpl.setspecialbyte (0x1401ffdc0): 1 bomb (T) / defuse kit (CT), 2 night vision,
-                         * 8 flag, 16 gas mask (4 VIP and 32 flashlight not kept by this client) */
+                         * 8 flag, 16 gas mask, 32 flashlight (4 VIP not kept by this client) */
                         p->has_defuse_kit  = (r[11] & 1) && p->team == CS2D_TEAM_CT;
                         p->has_nightvision = (r[11] & 2) != 0;
                         p->has_flag        = (r[11] & 8) != 0;
                         p->has_gasmask     = (r[11] & 16) != 0;
+                        p->flashlight      = (r[11] & 32) != 0;
                         p->is_planting = p->is_defusing = false;
                     }
                 }
@@ -1998,10 +2051,11 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 }
             } else if (opcode == CS2D_NET_SPAWNITEM) {
                 /* Server -> Client: [33, type u8, item id u16, tile x u16, tile y u16, clip u16, reserve u16] (12 bytes).
-                 * A supply's item comes with -1 / -1; FUN_14011ba70 turns that into the type's defaults */
+                 * clip / reserve are sent + 1 (FUN_14011c0b0 reads ushort - 1), so 0 means -1: a supply's item, which
+                 * FUN_14011ba70 turns into the type's defaults */
                 if (pos + 12 > recvd) break;
-                int clip = (int16_t)(buffer[pos + 8] | (buffer[pos + 9] << 8));
-                int res  = (int16_t)(buffer[pos + 10] | (buffer[pos + 11] << 8));
+                int clip = (int)(buffer[pos + 8] | (buffer[pos + 9] << 8)) - 1;
+                int res  = (int)(buffer[pos + 10] | (buffer[pos + 11] << 8)) - 1;
                 cs2d_weapon_item_ammo(buffer[pos + 1], &clip, &res);
                 add_ground_item(client, (uint16_t)(buffer[pos + 2] | (buffer[pos + 3] << 8)), buffer[pos + 1],
                                 buffer[pos + 4] | (buffer[pos + 5] << 8), buffer[pos + 6] | (buffer[pos + 7] << 8),
@@ -2039,16 +2093,28 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 }
                 pos += 4;
             } else if (opcode == CS2D_NET_RELOAD) {
-                /* Server -> Client: [16, player, 1 = reload started | 2 = reload finished] (3 bytes) */
+                /* Server -> Client: [16, player, mode] (3 bytes), FUN_140214780(player, mode, 0) via recv_16 0x1402d....:
+                 * 1 = reload started, 2 = clip refilled, 4 = one shell loaded (M3 / XM1014), 3 / 100 = aborted.
+                 * The host branch broadcasts the same modes (0x1402148df); the shell mode is not proxy-captured yet */
                 if (pos + 3 > recvd) break;
-                uint8_t pid = buffer[pos + 1];
+                uint8_t pid = buffer[pos + 1], mode = buffer[pos + 2];
                 if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
                     cs2d_player_t *p = &client->game.players[pid];
-                    if (buffer[pos + 2] == 2) {
+                    bool local = (pid == client->local_player_id);
+                    if (mode == 2) {
                         p->reload_timer = 0.0f;
                         cs2d_weapon_finish_reload(p);
-                    } else if (buffer[pos + 2] == 1 && p->reload_timer <= 0.0f && pid != client->local_player_id) {
+                    } else if (mode == 1 && p->reload_timer <= 0.0f && !local) {
                         cs2d_weapon_reload(p);
+                    } else if (mode == 4) {
+                        /* Local player: only while reloading (0x140214f70 path); others hold unknown ammo */
+                        const cs2d_weapon_def_t *w = cs2d_weapon_get(p->current_weapon);
+                        if (!local && w && w->shell_reload) p->is_reloading = true;
+                        cs2d_weapon_reload_shell(p);
+                    } else if (mode == 3 || mode == 100) {
+                        /* 0x140214b83: reload = 0 */
+                        p->is_reloading = false;
+                        p->reload_timer = 0.0f;
                     }
                 }
                 pos += 3;
@@ -2182,6 +2248,11 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     memset(&client->game.players[pid], 0, sizeof(cs2d_player_t));
                 }
                 pos += 3;
+            } else if (opcode == CS2D_NET_FLASHLIGHT) {
+                /* Server -> Client: [57, player, state] (FUN_1402dda70 -> FUN_140167440(player, state, 0)) */
+                if (pos + 3 > recvd) break;
+                cs2d_client_flashlight(client, buffer[pos + 1], buffer[pos + 2], false);
+                pos += 3;
             } else if (opcode == CS2D_NET_SPRAY) {
                 /* Server -> Client: [28, player, 2, size u16, size bytes]: relay of a player's spray logo */
                 if (pos + 5 > recvd) break;
@@ -2299,6 +2370,17 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 if (n < 0) break;
                 if (dfx.kind == 1) cs2d_fx_explosion(&client->fx, dfx.x, dfx.y, 32.0f);
                 else if (dfx.kind == 2) cs2d_sound_play_at("sfx/player/build.wav", dfx.x, dfx.y, 1.0f, 0);
+                else if (dfx.kind == 3 || dfx.kind == 4) cs2d_fx_portal_glow(&client->fx, dfx.x, dfx.y, 0.8f, dfx.kind - 2);
+                else if (dfx.kind == 5) {
+                    /* NPC attack (FUN_1401ed310): Tp 13 at the NPC along its angle, and the type's sound */
+                    if (dfx.slash) cs2d_fx_knifeslash(&client->fx, dfx.x, dfx.y, dfx.rot);
+                    if (dfx.sound) cs2d_sound_play_at(dfx.sound, dfx.x, dfx.y, 1.0f, 0);
+                }
+                pos += n;
+            } else if (opcode == CS2D_NET_DYNAMICIMAGE || opcode == CS2D_NET_IMAGEHITZONE) {
+                /* Lua images: [51, sub, ...] (FUN_140182240), [59] hit zone (FUN_14017d7e0) */
+                int n = cs2d_dynobj_image_message(&client->dynobj, buffer, recvd, pos);
+                if (n < 0) break;
                 pos += n;
             } else if (opcode == CS2D_NET_BUILD) {
                 if (!net_build_result(client, buffer, recvd, pos)) break;
@@ -2393,6 +2475,12 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         client->spec.server_mode = value & 0xFF;
                         cs2d_client_console_print(client, 255, 220, 0, "spec mode changed to %d", value);
                     }
+                    if (setting == 14) {
+                        /* mp_flashlight (FUN_1401e3f10 case 0xe): Thud_msg.add_center in (255, 220, 0) */
+                        client->net_flashlight = value;
+                        cs2d_client_center_msg(client, 255, 220, 0, value == 1 ? "flashlights Â©" "000255000ENABLED"
+                                                                             : "flashlights Â©" "255000000DISABLED");
+                    }
                     if (setting == 16) client->net_hovertext = value; /* mp_hovertext (FUN_1401e3f10 case 0x10) */
                     if (setting == 19) {
                         /* sv_forcelight (case 0x13): the engine turns on and builds the map lights (FUN_1401d6790) */
@@ -2417,8 +2505,16 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 /* Server -> Client: [234] hudtxt / hudtxt2 / hudtxtclear (FUN_1400a3530) */
                 if (!cs2d_hudtxt_on_message(&client->hudtxt, buffer, recvd, &pos)) break;
             } else if (opcode == CS2D_NET_TWEEN) {
-                /* Server -> Client: [54] Ttween.receive: hudtxtmove / hudtxtalphafade / hudtxtcolorfade */
-                if (!cs2d_hudtxt_on_tween(&client->hudtxt, buffer, recvd, &pos, (uint32_t)SDL_GetTicks())) break;
+                /* Server -> Client: [54] Ttween.receive: target 1..200 hud texts (hudtxtmove / alphafade / colorfade),
+                 * above 200 the image 200 + id (tween_*) */
+                if (pos + 4 > recvd) break;
+                if ((buffer[pos + 2] | (buffer[pos + 3] << 8)) > 200) {
+                    int tp = pos + 1;
+                    if (!cs2d_dynobj_read_tween(&client->dynobj, buffer, recvd, &tp, (uint32_t)SDL_GetTicks())) break;
+                    pos = tp;
+                } else if (!cs2d_hudtxt_on_tween(&client->hudtxt, buffer, recvd, &pos, (uint32_t)SDL_GetTicks())) {
+                    break;
+                }
             } else if (opcode == CS2D_NET_VOTE) {
                 /* Server -> Client: [43, voter, type u8 (1 kick, 2 map), value u16] (FUN_1402db210 -> TVote.votekick /
                  * votemap with p3 = 0). Values >= 0xff9b are refusals: 0xfffe / 0xfff5 / 0xfff4 (lang 0720..0722, 0911) */

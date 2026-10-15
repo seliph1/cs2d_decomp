@@ -1,7 +1,10 @@
 #include "cs2d_dynobj.h"
 #include "cs2d_entities.h"
+#include "cs2d_map.h"
 #include "cs2d_network.h"
 #include <math.h>
+#include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -119,6 +122,9 @@ static void touch(cs2d_dynobj_world_t *w, const cs2d_dynobj_t *o)
 void cs2d_dynobj_init(cs2d_dynobj_world_t *w, cs2d_map_t *map)
 {
     memset(w->objs, 0, sizeof(w->objs));
+    memset(w->tweens, 0, sizeof(w->tweens));
+    w->res_count = 0;
+    w->res_received = 0;
     w->map = map;
     w->version++;
     if (!map || !map->collision) return;
@@ -152,7 +158,8 @@ cs2d_dynobj_t *cs2d_dynobj_at_tile(cs2d_dynobj_world_t *w, int tx, int ty)
 {
     for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
         cs2d_dynobj_t *o = &w->objs[i];
-        if (o->active && (int)(o->x * 0.03125f) == tx && (int)(o->y * 0.03125f) == ty) return o;
+        if (!o->active || o->typ == CS2D_DO_IMAGE) continue;
+        if ((int)(o->x * 0.03125f) == tx && (int)(o->y * 0.03125f) == ty) return o;
     }
     return NULL;
 }
@@ -229,7 +236,23 @@ cs2d_dynobj_t *cs2d_dynobj_add(cs2d_dynobj_world_t *w, int id, int typ, int x, i
     o->typ    = (uint8_t)typ;
     o->x      = (float)x;
     o->y      = (float)y;
+    o->m_x    = (float)x;
+    o->m_y    = (float)y;
     o->target = 0;
+    const cs2d_dynobj_def_t *d = cs2d_dynobj_def(typ);
+    if (d && d->category == 3) {
+        o->health = 1;  /* NPC: a 32 x 32 Tdoc at -16, -16 */
+        o->hit_mode = 1;
+        o->hit_xo = -16;
+        o->hit_yo = -16;
+        o->hit_w = 32;
+        o->hit_h = 32;
+    } else if (d && d->category == 4) {
+        o->color[0] = o->color[1] = o->color[2] = 255;
+        o->alpha  = 1.0f;
+        o->scalex = 1.0f;
+        o->scaley = 1.0f;
+    }
     touch(w, o);
     return o;
 }
@@ -279,6 +302,7 @@ cs2d_dynobj_t *cs2d_dynobj_spawn(cs2d_dynobj_world_t *w, int id, int typ, int x,
     o->player = player;
     o->health = 100;
     if (typ == CS2D_DO_LASER_MINE) laser_mine_dir(o);
+    if (typ == CS2D_DO_NPC) o->m_rot = o->rot; /* (health = 0x1409ed7f0[type] is not read: the client shows none) */
     return o;
 }
 
@@ -288,12 +312,20 @@ bool cs2d_dynobj_kill(cs2d_dynobj_world_t *w, int id, cs2d_dynobj_fx_t *fx)
     if (!o) return false;
     o->active = false;
     touch(w, o);
+    for (int i = 0; i < CS2D_DYNOBJ_TWEENS; i++) {
+        if (w->tweens[i].used && w->tweens[i].id == o->id) w->tweens[i].used = false;
+    }
     if (fx) {
         /* Tdo.kill: Tp.explosion(x + 16, y + 16, 32, 5) for these types */
         switch (o->typ) {
             case CS2D_DO_DISPENSER: case CS2D_DO_TURRET: case CS2D_DO_SUPPLY: case CS2D_DO_DUAL_TURRET:
             case CS2D_DO_TRIPLE_TURRET: case CS2D_DO_TELE_ENTRANCE: case CS2D_DO_TELE_EXIT: case CS2D_DO_SUPER_SUPPLY:
                 fx->kind = 1;
+                fx->x = o->x + 16.0f;
+                fx->y = o->y + 16.0f;
+                break;
+            case CS2D_DO_ORANGE_PORTAL: case CS2D_DO_BLUE_PORTAL: /* Tp 0x1d sx 0.8 at the centre */
+                fx->kind = (o->typ == CS2D_DO_ORANGE_PORTAL) ? 3 : 4;
                 fx->x = o->x + 16.0f;
                 fx->y = o->y + 16.0f;
                 break;
@@ -325,6 +357,47 @@ void cs2d_dynobj_spawn_map_buildings(cs2d_dynobj_world_t *w)
 static int rd16(const uint8_t *b) { return b[0] | (b[1] << 8); }
 
 /*
+ * FUN_1401ed310 (client branch): an NPC attacks player pid. The attack spins the sprite (rotvar 40 / 20, decaying 5
+ * per frame), shows a knife slash (Tp 13) at the NPC along rot and plays the type's sound; the Vortigaunt's kind 1
+ * starts the 90 frame ranged charge and kind 2 fires it. Then the NPC turns to face the player (m_rot).
+ * Sounds (loader 0x14030cc00): zm_attack[] (0x140a0d8b8), npc/headcrab_attack (d610), snark_attack (d620),
+ * vortigaunt_attack (d600), vortigaunt_charge (d5f0), vortigaunt_ranged (d5e8), weapons/mp5 (d808).
+ */
+static void npc_attack(cs2d_dynobj_world_t *w, cs2d_dynobj_t *o, int pid, int kind, cs2d_dynobj_fx_t *fx)
+{
+    static const char *zm_attack[4] = { "sfx/player/zm_attack1.wav", "sfx/player/zm_attack2.wav",
+                                        "sfx/player/zm_attack3.wav", "sfx/player/zm_attack4.wav" };
+    cs2d_dynobj_fx_t f = { 5, o->x, o->y, o->rot, false, NULL };
+    switch (o->player) {
+        case 1: o->rotvar = 40.0f; f.slash = true; f.sound = zm_attack[rand() % 4]; break;
+        case 2: o->rotvar = 20.0f; f.slash = true; f.sound = "sfx/npc/headcrab_attack.wav"; break;
+        case 3: o->rotvar = 20.0f; f.slash = true; f.sound = "sfx/npc/snark_attack.wav"; break;
+        case 4:
+            if (kind == 0) {
+                o->rotvar = 40.0f;
+                f.slash = true;
+                f.sound = "sfx/npc/vortigaunt_attack.wav";
+            } else if (kind == 1) {
+                o->upgrade = 1;
+                f.sound = "sfx/npc/vortigaunt_charge.wav";
+                o->m_x = o->x;
+                o->m_y = o->y;
+            } else if (kind == 2) {
+                o->upgrade = 0; /* Tdo.shoot (beam, weapon 0xf9) is not drawn */
+                f.sound = "sfx/npc/vortigaunt_ranged.wav";
+            }
+            break;
+        case 5: f.sound = "sfx/weapons/mp5.wav"; break; /* Tdo.shoot (weapon 0xf8) is not drawn */
+        default: break;
+    }
+    if (fx) *fx = f;
+    if (pid >= 1 && pid <= CS2D_MAX_PLAYERS && w->players) {
+        const cs2d_player_t *p = &w->players[pid];
+        o->m_rot = (float)(atan2((double)(p->pos.x - o->x), (double)(o->y - p->pos.y)) * 57.29577951308232);
+    }
+}
+
+/*
  * Tdo.getdata (0x1401edb50), client branch. Each case reads its data only when enough bytes remain,
  * so the dispatcher's position must follow the same rule.
  */
@@ -353,6 +426,8 @@ static int getdata(cs2d_dynobj_world_t *w, int id, int sub, const uint8_t *b, in
             if (avail < 4) return 0;
             o->x = (float)rd16(b);
             o->y = (float)rd16(b + 2);
+            o->m_x = o->x;
+            o->m_y = o->y;
             return 4;
         case 3:
             if (avail < 4) return 0;
@@ -378,14 +453,20 @@ static int getdata(cs2d_dynobj_world_t *w, int id, int sub, const uint8_t *b, in
             if (o->typ == CS2D_DO_TELE_ENTRANCE) o->mode = 0;     /* used: recharging */
             return 0;
         case 7: /* NPC movement target: m_x, m_y, m_rot */
-            return (avail >= 6) ? 6 : 0;
+            if (avail < 6) return 0;
+            o->m_x   = (float)rd16(b);
+            o->m_y   = (float)rd16(b + 2);
+            o->m_rot = (float)rd16(b + 4);
+            return 6;
         case 8:
             if (avail < 1) return 0;
             o->team = b[0];
             if (o->team == 0) o->player = 0;
             return 1;
-        case 9: /* Image data (FUN_1401ed310) */
-            return (avail >= 2) ? 2 : 0;
+        case 9: /* NPC attack (FUN_1401ed310): target player, attack kind */
+            if (avail < 2) return 0;
+            npc_attack(w, o, b[0], b[1], fx);
+            return 2;
         default:
             return 0;
     }
@@ -473,11 +554,66 @@ static void update_turret(cs2d_dynobj_t *o, const cs2d_player_t *players)
     if (o->rotvar > 360.0f) o->rotvar -= 360.0f;
 }
 
+/*
+ * FUN_140283120 (client): turn towards m_rot by at most turn degrees while more than 3 degrees away, else walk
+ * towards (m_x, m_y) at speed px per frame while more than 3 px away. Returns true while the NPC turns or walks.
+ * (The tile change checks on barbed wire, gate fields and mines are server side and left out.)
+ */
+static bool npc_move(cs2d_dynobj_t *o, float speed, float turn)
+{
+    if (fabsf(o->m_rot - o->rot) > 3.0f) {
+        float d = fmodf(o->m_rot - o->rot, 360.0f);
+        if (d < -180.0f) d += 360.0f;
+        if (d > 180.0f) d -= 360.0f;
+        if (fabsf(d) <= turn) o->rot = o->m_rot;
+        else o->rot += (d > turn) ? turn : (d < -turn ? -turn : d);
+        return true;
+    }
+    if (fabsf(o->m_x - o->x) <= 3.0f && fabsf(o->m_y - o->y) <= 3.0f) return false;
+    double a = atan2((double)(o->m_x - o->x), (double)(o->y - o->m_y));
+    o->x = (float)((double)o->x + sin(a) * (double)speed);
+    o->y = (float)((double)o->y - cos(a) * (double)speed);
+    if (fabsf(o->x - o->m_x) < speed && fabsf(o->y - o->m_y) < speed) {
+        o->x = o->m_x;
+        o->y = o->m_y;
+    }
+    return true;
+}
+
+/*
+ * FUN_140283f20 (client branch), once per frame: speed / turn per type from the call sites (0x140bd7150 ...):
+ * zombie 1 / 5, headcrab 2.5 / 5, snark 6 / 4, vortigaunt 7 / 20, soldier 3 / 7. The Vortigaunt's ranged charge
+ * counts to 90 frames. Tdo.draw_ground: the attack spin (rotvar) decays 5 per frame.
+ */
+static void update_npc(cs2d_dynobj_t *o)
+{
+    static const float speed[6] = { 0.0f, 1.0f, 2.5f, 6.0f, 7.0f, 3.0f };
+    static const float turn[6]  = { 0.0f, 5.0f, 5.0f, 4.0f, 20.0f, 7.0f };
+    if (o->rotvar > 0.0f) o->rotvar -= 5.0f;
+    if (o->player < 1 || o->player > 5) return;
+    if (npc_move(o, speed[o->player], turn[o->player])) {
+        o->countdown = (o->player == 5) ? 0 : 10;
+        return;
+    }
+    if (o->player == 4 && o->upgrade > 0) {
+        o->countdown = 0;
+        if (++o->upgrade == 90) o->upgrade = 0;
+    }
+}
+
 void cs2d_dynobj_update(cs2d_dynobj_world_t *w, const cs2d_player_t *players, float frames)
 {
+    w->players = players;
     w->frame_acc += frames;
     while (w->frame_acc >= 1.0f) {
         w->frame_acc -= 1.0f;
+        /* Ttween mode 3 (rotate constantly): rot += speed on every update */
+        for (int i = 0; i < CS2D_DYNOBJ_TWEENS; i++) {
+            const cs2d_dynobj_tween_t *t = &w->tweens[i];
+            if (!t->used || t->mode != 3) continue;
+            cs2d_dynobj_t *o = cs2d_dynobj_get(w, t->id);
+            if (o) o->rot += t->rot[1];
+        }
         for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
             cs2d_dynobj_t *o = &w->objs[i];
             if (!o->active) continue;
@@ -485,6 +621,8 @@ void cs2d_dynobj_update(cs2d_dynobj_world_t *w, const cs2d_player_t *players, fl
                 update_turret(o, players);
             } else if (o->typ == CS2D_DO_BARBED_WIRE && o->mode > 0) {
                 o->mode--; /* Tdo.draw_ground: the wobble decays one step per frame */
+            } else if (o->typ == CS2D_DO_NPC) {
+                update_npc(o);
             }
         }
     }
@@ -547,4 +685,460 @@ int cs2d_dynobj_can_build(const cs2d_dynobj_world_t *w, const cs2d_player_t *pla
         }
     }
     return 1;
+}
+
+bool cs2d_dynobj_portal_tile(const cs2d_dynobj_world_t *w, int tx, int ty)
+{
+    const cs2d_map_t *map = w->map;
+    if (!map || !map->collision) return false;
+    if (tx < 0 || ty < 0 || (uint32_t)tx >= map->width || (uint32_t)ty >= map->height) return false;
+    /* g_prop_class[cellprop] == 1 (floor, our collision 0) and cellprop != 15 */
+    if (map->collision[(size_t)ty * map->width + (size_t)tx] != 0) return false;
+    if (cs2d_map_get_tile_mode(map, (uint32_t)tx, (uint32_t)ty) == 15) return false;
+    if (cs2d_dynobj_at_tile((cs2d_dynobj_world_t *)w, tx, ty)) return false;
+    return !entity_blocks(map, tx, ty) && !area_blocks(map, tx, ty, true);
+}
+
+cs2d_dynobj_t *cs2d_dynobj_place_portal(cs2d_dynobj_world_t *w, int player, int team, int mode,
+                                        float px, float py, int x, int y, cs2d_dynobj_fx_t *fx)
+{
+    int typ = (mode == 1) ? CS2D_DO_ORANGE_PORTAL : CS2D_DO_BLUE_PORTAL;
+    /* The player's previous portal of this colour closes first, even when the new one can't be placed */
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        cs2d_dynobj_t *o = &w->objs[i];
+        if (o->active && o->player == player && o->typ == typ) cs2d_dynobj_kill(w, o->id, fx);
+    }
+    if (fabsf(px - (float)x) > 457.0f || fabsf(py - (float)y) > 272.0f || x <= -32 || y <= -32) return NULL;
+    int tx = (x < 0 ? x + 31 : x) >> 5, ty = (y < 0 ? y + 31 : y) >> 5;
+    if (!cs2d_dynobj_portal_tile(w, tx, ty)) return NULL;
+    return cs2d_dynobj_spawn(w, -1, typ, tx << 5, ty << 5, (float)(1 + rand() % 360), 0, team, player);
+}
+
+int cs2d_dynobj_teleport(cs2d_dynobj_world_t *w, int tx, int ty, int team, bool team_game, float *dx, float *dy)
+{
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *o = &w->objs[i];
+        if (!o->active || (int)(o->x * 0.03125f) != tx || (int)(o->y * 0.03125f) != ty) continue;
+        const cs2d_dynobj_t *dest = NULL;
+        if (o->typ == CS2D_DO_ORANGE_PORTAL || o->typ == CS2D_DO_BLUE_PORTAL) {
+            /* Case 0x16 / 0x17: the other colour of the same owner */
+            int other = (o->typ == CS2D_DO_ORANGE_PORTAL) ? CS2D_DO_BLUE_PORTAL : CS2D_DO_ORANGE_PORTAL;
+            for (int j = 0; j < CS2D_DYNOBJ_MAX && !dest; j++) {
+                const cs2d_dynobj_t *p = &w->objs[j];
+                if (p->active && p->typ == other && p->player == o->player) dest = p;
+            }
+            if (!dest) continue;
+        } else if (o->typ == CS2D_DO_TELE_ENTRANCE) {
+            /* Case 0xd: own team's entrance (any team when not a team game, or for team 0) */
+            bool usable = (team == 1 && o->team == 1) || (team > 1 && o->team > 1) || team == 0 || !team_game;
+            if (!usable) continue;
+            if (o->mode != 1) return -1;
+            /* The owner's own exit if there is one, else a random exit of the entrance's team */
+            const cs2d_dynobj_t *exits[CS2D_DYNOBJ_MAX];
+            int n = 0;
+            for (int j = 0; j < CS2D_DYNOBJ_MAX; j++) {
+                const cs2d_dynobj_t *p = &w->objs[j];
+                if (!p->active || p->typ != CS2D_DO_TELE_EXIT) continue;
+                if (o->team > 0 && p->team == o->team && p->player == o->player) { exits[0] = p; n = 1; break; }
+                if (p->team == o->team) exits[n++] = p;
+            }
+            if (n == 0) return -2;
+            dest = exits[rand() % n];
+        } else {
+            continue;
+        }
+        /* FUN_14014ccc0 (setpos): the tile centre of the destination */
+        *dx = dest->x + 16.0f;
+        *dy = dest->y + 16.0f;
+        return 1;
+    }
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Lua images (Tdo 40) and tweens
+ * --------------------------------------------------------------------------- */
+
+static float rdf32(const uint8_t *b)
+{
+    float f;
+    memcpy(&f, b, 4);
+    return f;
+}
+
+void cs2d_dynobj_longversion(const cs2d_dynobj_world_t *w, const char *in, int in_len, char *out, int max_out)
+{
+    /* "?" then the u16 index as two characters (idConversionBank, low byte first), then the rest of the path.
+     * The index bytes may be 0, so the length comes with the string. */
+    if (in_len > 2 && in[0] == '?') {
+        int idx = (uint8_t)in[1] | ((uint8_t)in[2] << 8);
+        if (idx < w->res_count && w->res[idx][0]) {
+            snprintf(out, (size_t)max_out, "%s%.*s", w->res[idx], in_len - 3, in + 3);
+            return;
+        }
+    }
+    snprintf(out, (size_t)max_out, "%.*s", in_len, in);
+}
+
+/* Tudp_p string (u8 length + bytes) read raw into a resolved path; false when truncated */
+static bool read_path(const cs2d_dynobj_world_t *w, const uint8_t *buf, int len, int *p, char *out, int max_out)
+{
+    if (*p >= len) return false;
+    int n = buf[(*p)++];
+    if (len - *p < n) return false;
+    cs2d_dynobj_longversion(w, (const char *)buf + *p, n, out, max_out);
+    *p += n;
+    return true;
+}
+
+bool cs2d_dynobj_read_restable(cs2d_dynobj_world_t *w, const uint8_t *buf, int len, int *pos)
+{
+    int p = *pos;
+    if (p >= len) return false;
+    int count = buf[p++];
+    if (count == 0) {
+        w->res_count = w->res_received < CS2D_RESTABLE_MAX ? w->res_received : CS2D_RESTABLE_MAX; /* createClientTable */
+        *pos = p;
+        return true;
+    }
+    for (int k = 0; k < count; k++) {
+        if (p >= len) { *pos = len; return false; } /* "failed to load resource path data" */
+        char path[96];
+        cs2d_pkt_r_str(buf, len, &p, path, sizeof(path));
+        if (w->res_received < CS2D_RESTABLE_MAX) {
+            snprintf(w->res[w->res_received], sizeof(w->res[0]), "%s", path);
+        }
+        w->res_received++;
+    }
+    *pos = p;
+    return true;
+}
+
+cs2d_dynobj_t *cs2d_dynobj_add_image(cs2d_dynobj_world_t *w, int id, const char *path, float x, float y, int mode,
+                                     int player)
+{
+    cs2d_dynobj_t *o = cs2d_dynobj_add(w, id, CS2D_DO_IMAGE, (int)x, (int)y);
+    if (!o) return NULL;
+    o->mode   = mode;
+    o->player = player;
+    snprintf(o->path, sizeof(o->path), "%s", path);
+    return o;
+}
+
+static cs2d_dynobj_t *get_image(cs2d_dynobj_world_t *w, int id)
+{
+    cs2d_dynobj_t *o = cs2d_dynobj_get(w, id);
+    return (o && o->typ == CS2D_DO_IMAGE) ? o : NULL;
+}
+
+int cs2d_dynobj_image_message(cs2d_dynobj_world_t *w, const uint8_t *buf, int len, int pos)
+{
+    const uint8_t *b = &buf[pos];
+    int avail = len - pos - 1;
+    if (buf[pos] == CS2D_NET_IMAGEHITZONE) {
+        /* FUN_14017d7e0 client side: mode 0 removes the zone; the server sends the offsets + 32768 */
+        if (avail < 11) return -1;
+        cs2d_dynobj_t *o = cs2d_dynobj_get(w, rd16(b + 1));
+        if (o) {
+            o->hit_mode = b[3];
+            if (o->hit_mode) {
+                o->hit_xo = rd16(b + 4) - 0x8000;
+                o->hit_yo = rd16(b + 6) - 0x8000;
+                o->hit_w  = rd16(b + 8);
+                o->hit_h  = rd16(b + 10);
+            }
+        }
+        return 12;
+    }
+    if (buf[pos] != CS2D_NET_DYNAMICIMAGE || avail < 1) return -1;
+    int sub = b[1];
+    const uint8_t *d = b + 2;
+    avail--;
+    cs2d_dynobj_t *o;
+    switch (sub) {
+        case 0: { /* FUN_14017c310 with the server's id */
+            if (avail < 1) return -1;
+            int p = pos + 2;
+            char path[128];
+            if (!read_path(w, buf, len, &p, path, sizeof(path)) || len - p < 8) return -1;
+            const uint8_t *r = &buf[p];
+            cs2d_dynobj_add_image(w, rd16(r), path, (float)(rd16(r + 2) - 0x8000), (float)(rd16(r + 4) - 0x8000),
+                                  r[6], r[7]);
+            return p + 8 - pos;
+        }
+        case 1: /* imagecolor */
+            if (avail < 5) return -1;
+            if ((o = get_image(w, rd16(d))) != NULL) { o->color[0] = d[2]; o->color[1] = d[3]; o->color[2] = d[4]; }
+            return 7;
+        case 2: /* imagealpha */
+            if (avail < 3) return -1;
+            if ((o = get_image(w, rd16(d))) != NULL) o->alpha = (float)d[2] * 0.003921569f;
+            return 5;
+        case 3: /* imageblend, clamped to 3 */
+            if (avail < 3) return -1;
+            if ((o = get_image(w, rd16(d))) != NULL) o->blend = d[2] > 3 ? 3 : d[2];
+            return 5;
+        case 4: /* imagescale */
+            if (avail < 10) return -1;
+            if ((o = get_image(w, rd16(d))) != NULL) { o->scalex = rdf32(d + 2); o->scaley = rdf32(d + 6); }
+            return 12;
+        case 5: /* imagepos */
+            if (avail < 8) return -1;
+            if ((o = get_image(w, rd16(d))) != NULL) {
+                o->x   = (float)(rd16(d + 2) - 0x8000);
+                o->y   = (float)(rd16(d + 4) - 0x8000);
+                o->rot = (float)rd16(d + 6) * 0.005493164f;
+            }
+            return 10;
+        case 6: /* freeimage: Tdo.free(id, 40) only removes images */
+            if (avail < 2) return -1;
+            if (get_image(w, rd16(d))) cs2d_dynobj_kill(w, rd16(d), NULL);
+            return 4;
+        case 7: /* imageframe: 1-based, clamped to the frames of the loaded image */
+            if (avail < 3) return -1;
+            if ((o = get_image(w, rd16(d))) != NULL) {
+                int f = d[2] - 1;
+                if (o->frames > 0 && f > o->frames - 1) f = o->frames - 1;
+                o->frame = f < 0 ? 0 : f;
+            }
+            return 5;
+        case 8: /* Physics parent (typ 4 platform / 6 object): no physics objects on our side */
+            if (avail < 6) return -1;
+            return 8;
+        case 9: /* imageparam shadow */
+            if (avail < 3) return -1;
+            if ((o = get_image(w, rd16(d))) != NULL) o->shadow = d[2];
+            return 5;
+        default: /* FUN_140182240 reads nothing more */
+            return 2;
+    }
+}
+
+bool cs2d_dynobj_read_image_snapshot(cs2d_dynobj_world_t *w, const uint8_t *buf, int len, int *pos)
+{
+    int p = *pos;
+    if (p >= len) return false;
+    int count = buf[p++];
+    for (int k = 0; k < count; k++) {
+        if (len - p < 19) { *pos = len; return false; } /* "failed to load dynamic object image data" */
+        int id = rd16(buf + p);
+        p += 2;
+        char path[128];
+        if (!read_path(w, buf, len, &p, path, sizeof(path))) { *pos = len; return false; }
+        if (len - p < 16) { *pos = len; return false; }
+        const uint8_t *r = &buf[p];
+        /* r, g, b, alpha f32, scalex f32, scaley f32, blend, frame u16, parent typ (+ typid u16, mode), shadow */
+        int q = 19;
+        if (len - p < q) { *pos = len; return false; }
+        if (r[18] != 0) q += 3;
+        if (len - p < q + 1) { *pos = len; return false; }
+        cs2d_dynobj_t *o = get_image(w, id);
+        if (o) {
+            snprintf(o->path, sizeof(o->path), "%s", path);
+            o->color[0] = r[0];
+            o->color[1] = r[1];
+            o->color[2] = r[2];
+            o->alpha  = rdf32(r + 3);
+            o->scalex = rdf32(r + 7);
+            o->scaley = rdf32(r + 11);
+            o->blend  = r[15];
+            o->frame  = rd16(r + 16);
+            o->frames = 0;
+            o->shadow = r[q];
+        }
+        p += q + 1;
+        /* Hit zone flag, then {mode, xo u16 + 32768, yo u16 + 32768, w u16, h u16} */
+        if (p >= len) { *pos = len; return false; }
+        if (buf[p++] == 1) {
+            if (len - p < 9) { *pos = len; return false; }
+            if (o) {
+                o->hit_mode = buf[p];
+                o->hit_xo = rd16(buf + p + 1) - 0x8000;
+                o->hit_yo = rd16(buf + p + 3) - 0x8000;
+                o->hit_w  = rd16(buf + p + 5);
+                o->hit_h  = rd16(buf + p + 7);
+            }
+            p += 9;
+        }
+    }
+    *pos = p;
+    return true;
+}
+
+/* Ttween.addtween for an image: replaces a tween of the same kind (moves / rotations / frame modes conflict) */
+static bool tween_conflict(int a, int b)
+{
+    if (a == b || (a | b) < 2) return true;
+    if (a != 0 && a < 4 && (unsigned)(b - 1) < 3) return true;
+    return (a == 7 && b == 8) || (a == 8 && b == 7);
+}
+
+bool cs2d_dynobj_read_tween(cs2d_dynobj_world_t *w, const uint8_t *buf, int len, int *pos, uint32_t now_ms)
+{
+    static const int body[9] = { 8, 8, 6, 4, 5, 7, 12, 5, 5 };
+    int p = *pos;
+    if (len - p < 3) return false;
+    int mode = buf[p];
+    int id = rd16(buf + p + 1) - 200;
+    int n = mode < 9 ? body[mode] : 0;
+    if (len - p - 3 < n) return false;
+    const uint8_t *d = buf + p + 3;
+    *pos = p + 3 + n;
+    cs2d_dynobj_t *o = get_image(w, id);
+    if (!o || mode > 8) return true;
+    cs2d_dynobj_tween_t *t = NULL;
+    for (int i = 0; i < CS2D_DYNOBJ_TWEENS; i++) {
+        cs2d_dynobj_tween_t *e = &w->tweens[i];
+        if (e->used && e->id == id && tween_conflict(e->mode, mode)) e->used = false;
+        if (!e->used && !t) t = e;
+    }
+    if (!t) return true;
+    memset(t, 0, sizeof(*t));
+    t->used = true;
+    t->mode = (uint8_t)mode;
+    t->id = (uint16_t)id;
+    t->start_ms = now_ms;
+    if (mode != 3) memcpy(&t->duration, d, 4);
+    switch (mode) {
+        case 0: case 1:
+            t->x[0] = o->x;
+            t->y[0] = o->y;
+            t->rot[0] = o->rot;
+            t->x[1] = (float)(rd16(d + 4) - 0x8000);
+            t->y[1] = (float)(rd16(d + 6) - 0x8000);
+            break;
+        case 2:
+            t->rot[0] = o->rot;
+            t->rot[1] = (float)rd16(d + 4) * 0.005493164f;
+            break;
+        case 3:
+            t->rot[1] = rdf32(d);
+            break;
+        case 4:
+            t->alpha[0] = o->alpha;
+            t->alpha[1] = (float)d[4] * 0.003921569f;
+            break;
+        case 5:
+            memcpy(t->rgb[0], o->color, 3);
+            memcpy(t->rgb[1], d + 4, 3);
+            break;
+        case 6:
+            t->sx[0] = o->scalex;
+            t->sy[0] = o->scaley;
+            t->sx[1] = rdf32(d + 4);
+            t->sy[1] = rdf32(d + 8);
+            break;
+        default: /* 7 / 8 */
+            t->frame[0] = (uint8_t)o->frame;
+            t->frame[1] = d[4];
+            break;
+    }
+    return true;
+}
+
+static float lerp_angle(float a, float b, float k)
+{
+    float d = fmodf(b - a, 360.0f);
+    if (d < -180.0f) d += 360.0f;
+    if (d > 180.0f) d -= 360.0f;
+    return d * k + a;
+}
+
+void cs2d_dynobj_update_tweens(cs2d_dynobj_world_t *w, uint32_t now_ms)
+{
+    for (int i = 0; i < CS2D_DYNOBJ_TWEENS; i++) {
+        cs2d_dynobj_tween_t *t = &w->tweens[i];
+        if (!t->used) continue;
+        cs2d_dynobj_t *o = get_image(w, t->id);
+        if (!o) { t->used = false; continue; }
+        int el = (int)(now_ms - t->start_ms);
+        float k = t->duration > 0 ? (float)el / (float)t->duration : 1.0f;
+        if (k >= 1.0f) k = 1.0f;
+        int frames = o->frames > 0 ? o->frames : 1;
+        switch (t->mode) {
+            case 0: case 1:
+                o->x = (t->x[1] - t->x[0]) * k + t->x[0];
+                o->y = (t->y[1] - t->y[0]) * k + t->y[0];
+                if (t->mode == 1) o->rot = lerp_angle(t->rot[0], t->rot[1], k);
+                break;
+            case 2: o->rot = lerp_angle(t->rot[0], t->rot[1], k); break;
+            case 4: o->alpha = (1.0f - k) * t->alpha[0] + k * t->alpha[1]; break;
+            case 5:
+                for (int c = 0; c < 3; c++) {
+                    o->color[c] = (uint8_t)((float)t->rgb[0][c] * (1.0f - k) + (float)t->rgb[1][c] * k);
+                }
+                break;
+            case 6:
+                o->scalex = t->sx[0] * (1.0f - k) + t->sx[1] * k;
+                o->scaley = t->sy[0] * (1.0f - k) + t->sy[1] * k;
+                break;
+            case 7: {
+                int f = (int)((float)t->frame[0] * (1.0f - k) + (float)t->frame[1] * k);
+                if (f >= 0 && f < frames) o->frame = f;
+                break;
+            }
+            case 8: /* Every duration ms: 0 forward loop, 1 backward loop, 2 / 3 ping-pong, 4 random */
+                if (el > t->duration) {
+                    t->start_ms = now_ms;
+                    if (t->frame[1] == 0) { if (++o->frame >= frames) o->frame = 0; }
+                    else if (t->frame[1] == 1) { if (--o->frame < 0) o->frame = frames - 1; }
+                    else if (t->frame[1] == 2) { if (++o->frame >= frames) { o->frame = frames - 1; t->frame[1] = 3; } }
+                    else if (t->frame[1] == 3) { if (--o->frame < 1) { o->frame = 0; t->frame[1] = 2; } }
+                    else if (t->frame[1] == 4) o->frame = rand() % frames;
+                }
+                break;
+            default: break;
+        }
+        /* Rotate constantly (3) and frame animations (8) never end */
+        if (el > t->duration && t->mode != 3 && t->mode != 8) t->used = false;
+    }
+}
+
+int cs2d_dynobj_image_kind(const char *path, char *file, int max_file, int *cell_w, int *cell_h, int *mask, int *arg)
+{
+    *cell_w = *cell_h = 0;
+    *mask = 1;
+    *arg = 0;
+    file[0] = '\0';
+    if (path[0] == '<') {
+        /* Tdo.iniimage special paths (lower case compares) */
+        if (_strnicmp(path, "<light", 6) == 0) return CS2D_IMG_LIGHT;
+        if (_strnicmp(path, "<avatar_", 8) == 0) {
+            int n = atoi(path + 8); /* bbStringToInt of the rest: "3>" -> 3 */
+            *arg = (n >= 1 && n <= 32) ? n : 0;
+            return CS2D_IMG_AVATAR;
+        }
+        if (strlen(path) > 7 && _strnicmp(path, "<flag:", 6) == 0) {
+            /* Characters 6 and 7, lower case, looked up in TFlag.flags_map */
+            snprintf(file, (size_t)max_file, "%c%c", tolower((unsigned char)path[6]), tolower((unsigned char)path[7]));
+            return CS2D_IMG_FLAG;
+        }
+        if (_strnicmp(path, "<tile:", 6) == 0) { *arg = atoi(path + 6); return CS2D_IMG_TILE; }
+        if (_strnicmp(path, "<spritesheet:", 13) != 0) return CS2D_IMG_NONE;
+        /* <spritesheet:path:w:h[:m|a|b|n]>: "<" and ">" removed, split at ":" */
+        char tmp[256], *part[6] = { 0 };
+        int n = 0;
+        for (const char *c = path; *c && n < (int)sizeof(tmp) - 1; c++) if (*c != '<' && *c != '>') tmp[n++] = *c;
+        tmp[n] = '\0';
+        n = 0;
+        for (char *tok = strtok(tmp, ":"); tok && n < 6; tok = strtok(NULL, ":")) part[n++] = tok;
+        if (n < 4) return CS2D_IMG_NONE; /* "ERROR: Spritesheet frame dimensions not set" */
+        snprintf(file, (size_t)max_file, "%s", part[1]);
+        *cell_w = atoi(part[2]);
+        *cell_h = atoi(part[3]);
+        if (n >= 5) {
+            char m = (char)tolower((unsigned char)part[4][0]);
+            *mask = m == 'm' ? 4 : m == 'a' ? 3 : m == 'n' ? 0 : 1;
+        }
+        return (*cell_w > 0 && *cell_h > 0) ? CS2D_IMG_FILE : CS2D_IMG_NONE;
+    }
+    /* "path<m>": the suffix picks the Tres mask (m 4 magenta, a 3 alpha, b 1 black, n 0 none), default 1 */
+    snprintf(file, (size_t)max_file, "%s", path);
+    size_t n = strlen(file);
+    if (n > 3 && file[n - 3] == '<' && file[n - 1] == '>') {
+        char m = (char)tolower((unsigned char)file[n - 2]);
+        *mask = m == 'm' ? 4 : m == 'a' ? 3 : m == 'n' ? 0 : 1;
+        file[n - 3] = '\0';
+    }
+    return file[0] ? CS2D_IMG_FILE : CS2D_IMG_NONE;
 }

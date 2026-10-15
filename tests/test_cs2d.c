@@ -1251,6 +1251,60 @@ static bool test_entities_prison(void)
 }
 
 /* =========================================================================
+ * Shell-by-shell reload (FUN_140214780 modes 1 / 4, flag 0x1409efcf8 = M3, XM1014)
+ * ========================================================================= */
+static bool test_shell_reload(void)
+{
+    printf("\n=== Testing shell-by-shell reload (M3 / XM1014) ===\n");
+    const cs2d_weapon_def_t *m3 = cs2d_weapon_get(CS2D_WEP_M3);
+    if (!m3 || !m3->shell_reload || !cs2d_weapon_get(CS2D_WEP_XM1014)->shell_reload ||
+        cs2d_weapon_get(CS2D_WEP_AK47)->shell_reload) {
+        TEST_FAIL("Shell reload flag", "only M3 and XM1014 reload by shells (init_weapons 0x140230330)");
+    }
+    /* reload 90 x 5 ms = 0.45 s per shell */
+    if (fabsf(cs2d_weapon_reload_stage(m3) - 0.45f) > 1e-4f) TEST_FAIL("Shell reload stage", "M3 stage != 450 ms");
+
+    cs2d_player_t pl;
+    cs2d_player_init(&pl, 1, "T");
+    cs2d_vec2_t sp = { 100.0f, 100.0f };
+    cs2d_player_spawn(&pl, CS2D_TEAM_T, sp);
+    cs2d_player_give_weapon(&pl, CS2D_WEP_M3);
+    pl.current_weapon = CS2D_WEP_M3;
+    pl.clip_ammo[CS2D_WEP_M3] = 5;
+    pl.reserve_ammo[CS2D_WEP_M3] = 2;
+
+    if (!cs2d_weapon_reload(&pl) || pl.clip_ammo[CS2D_WEP_M3] != 5 || pl.reload_ani != 0.0f) {
+        TEST_FAIL("Shell reload start", "mode 1 must only arm the timer (no shell, no reloadani)");
+    }
+    for (int i = 0; i < 30; i++) cs2d_player_update(&pl, 1.0f / 60.0f); /* 0.5 s: first shell */
+    if (pl.clip_ammo[CS2D_WEP_M3] != 6 || pl.reserve_ammo[CS2D_WEP_M3] != 1 || !pl.is_reloading || pl.reload_ani <= 0.0f) {
+        TEST_FAIL("Shell reload stage 1", "one shell per stage, reloadani = 8");
+    }
+    /* Firing interrupts it (Tpl.attack 0x140216690) */
+    if (!cs2d_weapon_fire(&pl) || pl.is_reloading || pl.clip_ammo[CS2D_WEP_M3] != 5) {
+        TEST_FAIL("Shell reload interrupt", "a shot must cancel the shell reload");
+    }
+    pl.fire_cooldown = 0.0f;
+    cs2d_weapon_reload(&pl);
+    for (int i = 0; i < 120; i++) cs2d_player_update(&pl, 1.0f / 60.0f);
+    if (pl.clip_ammo[CS2D_WEP_M3] != 6 || pl.reserve_ammo[CS2D_WEP_M3] != 0 || pl.is_reloading) {
+        TEST_FAIL("Shell reload end", "the reload ends when the reserve is empty");
+    }
+    /* Online: the timer waits for the server's [16,pid,4] */
+    pl.reserve_ammo[CS2D_WEP_M3] = 3;
+    pl.reload_net = true;
+    cs2d_weapon_reload(&pl);
+    for (int i = 0; i < 60; i++) cs2d_player_update(&pl, 1.0f / 60.0f);
+    if (pl.clip_ammo[CS2D_WEP_M3] != 6 || pl.reload_overdue <= 0.0f) {
+        TEST_FAIL("Shell reload online", "no local shell without [16,pid,4]");
+    }
+    cs2d_weapon_reload_shell(&pl);
+    if (pl.clip_ammo[CS2D_WEP_M3] != 7 || pl.reload_overdue != 0.0f) TEST_FAIL("Shell reload online", "[16,pid,4]");
+    TEST_PASS("Shell reload: 450 ms per M3 shell, no start sound, shot interrupts, online waits for [16,pid,4]");
+    return true;
+}
+
+/* =========================================================================
  * Test 13: Player Movement Collision vs. the Original Client (prison_funst3r)
  * Reference trajectory recorded from CS2D.exe through a UDP proxy (opcode 10 positions):
  * from (1328,781) holding W it stops at y = 748; then W+D slides east along that wall at
@@ -2379,13 +2433,157 @@ static bool test_construction(void)
     players[2].pos.x = 27 * 32 + 16 + 20; players[2].pos.y = 33 * 32 + 16;
     if (cs2d_dynobj_can_build(&w, players, 1, 26, 33, 27, 33, false) != -1) TEST_FAIL("Build rules", "player within 32 px");
 
+    /* Portal Gun (FUN_1401fc9f0): floor tile at the cursor, within 457 x 272 px; a new shot closes the old portal */
+    float ppx = 26 * 32 + 16, ppy = 33 * 32 + 16, dx, dy;
+    cs2d_dynobj_fx_t pfx = { 0 };
+    if (cs2d_dynobj_place_portal(&w, 1, 1, 1, ppx, ppy, 19 * 32 + 5, 15 * 32 + 5, &pfx)) TEST_FAIL("Portal", "on a wall");
+    if (cs2d_dynobj_place_portal(&w, 1, 1, 1, ppx, ppy, 27 * 32 + 470, 33 * 32, &pfx)) TEST_FAIL("Portal", "out of range");
+    cs2d_dynobj_t *po = cs2d_dynobj_place_portal(&w, 1, 1, 1, ppx, ppy, 27 * 32 + 5, 33 * 32 + 5, &pfx);
+    if (!po || po->typ != CS2D_DO_ORANGE_PORTAL || po->x != 27 * 32 || po->y != 33 * 32) TEST_FAIL("Portal", "orange");
+    if (cs2d_dynobj_teleport(&w, 27, 33, 1, true, &dx, &dy) != 0) TEST_FAIL("Portal", "no blue portal yet");
+    cs2d_dynobj_t *pb = cs2d_dynobj_place_portal(&w, 1, 1, 2, ppx, ppy, 28 * 32, 33 * 32, &pfx);
+    if (!pb || pb->typ != CS2D_DO_BLUE_PORTAL) TEST_FAIL("Portal", "blue");
+    if (cs2d_dynobj_teleport(&w, 27, 33, 2, true, &dx, &dy) != 1 || dx != 28 * 32 + 16 || dy != ppy) TEST_FAIL("Portal", "orange -> blue");
+    pfx.kind = 0;
+    if (cs2d_dynobj_place_portal(&w, 1, 1, 1, ppx, ppy, 19 * 32, 15 * 32, &pfx) || po->active || pfx.kind != 3)
+        TEST_FAIL("Portal", "a failed shot still closes the old one");
+    if (cs2d_dynobj_teleport(&w, 28, 33, 1, true, &dx, &dy) != 0) TEST_FAIL("Portal", "blue alone");
+    cs2d_dynobj_kill(&w, pb->id, NULL);
+
+    /* Teleporters (Tpl.tilepos 0xd): charged entrance of the player's team -> the owner's exit */
+    cs2d_dynobj_t *te = cs2d_dynobj_spawn(&w, -1, CS2D_DO_TELE_ENTRANCE, 27 * 32, 33 * 32, 0, 0, 1, 1);
+    if (cs2d_dynobj_teleport(&w, 27, 33, 1, true, &dx, &dy) != -1) TEST_FAIL("Teleporter", "not charged");
+    te->mode = 1;
+    if (cs2d_dynobj_teleport(&w, 27, 33, 1, true, &dx, &dy) != -2) TEST_FAIL("Teleporter", "no exit");
+    cs2d_dynobj_spawn(&w, -1, CS2D_DO_TELE_EXIT, 26 * 32, 34 * 32, 0, 0, 2, 2);  /* other team */
+    cs2d_dynobj_spawn(&w, -1, CS2D_DO_TELE_EXIT, 25 * 32, 34 * 32, 0, 0, 1, 1);
+    if (cs2d_dynobj_teleport(&w, 27, 33, 1, true, &dx, &dy) != 1 || dx != 25 * 32 + 16 || dy != 34 * 32 + 16)
+        TEST_FAIL("Teleporter", "own exit");
+    if (cs2d_dynobj_teleport(&w, 27, 33, 2, true, &dx, &dy) != 0) TEST_FAIL("Teleporter", "enemy entrance");
+    if (cs2d_dynobj_teleport(&w, 27, 33, 2, false, &dx, &dy) != 1) TEST_FAIL("Teleporter", "any team outside team games");
+
     cs2d_dynobj_clear(&w);
     if (cs2d_dynobj_count(&w) != 0 || map.collision[17 * map.width + 19] != 0) TEST_FAIL("Clear", "Tdo.freeall");
     cs2d_map_free(&map);
 
-    TEST_PASS("Construction: snapshot (56 Wall III), [49] [36] [37] [35], site -> building, turret aim, build rules");
+    TEST_PASS("Construction: snapshot (56 Wall III), [49] [36] [37] [35], site -> building, turret aim, build rules, portals, teleporters");
     return true;
 }
+
+/* =========================================================================
+ * Lua images and NPCs (Tdo 40 / 30): [51] [59] [54] [36,7] [36,9], [252,7,7/8/10], NPC movement
+ * Layouts from FUN_140182240, FUN_14017d7e0, Ttween.receive 0x1400b4420, FUN_1402ce7c0, FUN_140283120
+ * ========================================================================= */
+static bool test_images_and_npcs(void)
+{
+    printf("\n=== Testing Lua images and NPCs (Tdo 40 / 30) ===\n");
+
+    static cs2d_dynobj_world_t w;
+    static cs2d_player_t players[CS2D_MAX_PLAYERS + 1];
+    memset(players, 0, sizeof(players));
+    cs2d_dynobj_init(&w, NULL);
+
+    /* [252,7,10]: resource table "gfx/sprites/" at index 0, then count 0 builds it */
+    const uint8_t res[] = { 1, 12, 'g', 'f', 'x', '/', 's', 'p', 'r', 'i', 't', 'e', 's', '/', 0 };
+    int pos = 0;
+    if (!cs2d_dynobj_read_restable(&w, res, sizeof(res) - 1, &pos) || pos != 14) TEST_FAIL("[252,7,10]", "list");
+    pos = 14;
+    if (!cs2d_dynobj_read_restable(&w, res, sizeof(res), &pos) || w.res_count != 1) TEST_FAIL("[252,7,10]", "count 0");
+
+    /* [51,0]: "?" + index 0 + "flare2.bmp<a>", id 7, x 100, y 200 (+32768), mode 1, player 0 */
+    uint8_t create[64];
+    int n = 0;
+    create[n++] = 51; create[n++] = 0;
+    const char *sh = "?\x00\x00" "flare2.bmp<a>";
+    int shl = 16;
+    create[n++] = (uint8_t)shl;
+    memcpy(create + n, sh, (size_t)shl); n += shl;
+    create[n++] = 7; create[n++] = 0;
+    create[n++] = 100; create[n++] = 0x80;
+    create[n++] = 200; create[n++] = 0x80;
+    create[n++] = 1; create[n++] = 0;
+    if (cs2d_dynobj_image_message(&w, create, n, 0) != n) TEST_FAIL("[51,0]", "length");
+    if (cs2d_dynobj_image_message(&w, create, n - 1, 0) != -1) TEST_FAIL("[51,0]", "truncated accepted");
+    cs2d_dynobj_t *o = cs2d_dynobj_get(&w, 7);
+    if (!o || o->typ != CS2D_DO_IMAGE || o->x != 100.0f || o->y != 200.0f || o->mode != 1) TEST_FAIL("[51,0]", "object");
+    if (strcmp(o->path, "gfx/sprites/flare2.bmp<a>") != 0) TEST_FAIL("[51,0]", "Trestable.longversion");
+    if (o->alpha != 1.0f || o->scalex != 1.0f || o->color[1] != 255) TEST_FAIL("[51,0]", "Tdo.add category 4 defaults");
+    char file[128];
+    int cw, ch, mask, tile;
+    if (cs2d_dynobj_image_kind(o->path, file, sizeof(file), &cw, &ch, &mask, &tile) != CS2D_IMG_FILE || mask != 3 ||
+        strcmp(file, "gfx/sprites/flare2.bmp") != 0) TEST_FAIL("iniimage", "<a> mask suffix");
+    if (cs2d_dynobj_image_kind("<spritesheet:gfx/a.png:32:16:m>", file, sizeof(file), &cw, &ch, &mask, &tile) != CS2D_IMG_FILE ||
+        cw != 32 || ch != 16 || mask != 4 || strcmp(file, "gfx/a.png") != 0) TEST_FAIL("iniimage", "spritesheet");
+    if (cs2d_dynobj_image_kind("<tile:12>", file, sizeof(file), &cw, &ch, &mask, &tile) != CS2D_IMG_TILE || tile != 12)
+        TEST_FAIL("iniimage", "<tile:N>");
+    if (cs2d_dynobj_image_kind("<flag:BR>", file, sizeof(file), &cw, &ch, &mask, &tile) != CS2D_IMG_FLAG ||
+        strcmp(file, "br") != 0) TEST_FAIL("iniimage", "<flag:cc>");
+    if (cs2d_dynobj_image_kind("<avatar_3>", file, sizeof(file), &cw, &ch, &mask, &tile) != CS2D_IMG_AVATAR || tile != 3 ||
+        cs2d_dynobj_image_kind("<light>", file, sizeof(file), &cw, &ch, &mask, &tile) != CS2D_IMG_LIGHT ||
+        cs2d_dynobj_image_kind("<other>", file, sizeof(file), &cw, &ch, &mask, &tile) != CS2D_IMG_NONE)
+        TEST_FAIL("iniimage", "<avatar_N> / <light> / unknown");
+
+    /* Sub-messages: color, alpha, blend (clamped), scale, pos, frame, shadow */
+    const uint8_t color[] = { 51, 1, 7, 0, 10, 20, 30 };
+    const uint8_t alpha[] = { 51, 2, 7, 0, 51 };
+    const uint8_t blend[] = { 51, 3, 7, 0, 9 };
+    uint8_t scale[] = { 51, 4, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    float f2 = 2.0f, fh = 0.5f;
+    memcpy(scale + 4, &f2, 4); memcpy(scale + 8, &fh, 4);
+    const uint8_t mv[] = { 51, 5, 7, 0, 0x2c, 0x81, 0x90, 0x81, 0x00, 0x40 };
+    if (cs2d_dynobj_image_message(&w, color, 7, 0) != 7 || o->color[2] != 30) TEST_FAIL("[51,1]", "color");
+    if (cs2d_dynobj_image_message(&w, alpha, 5, 0) != 5 || fabsf(o->alpha - 0.2f) > 0.001f) TEST_FAIL("[51,2]", "alpha / 255");
+    if (cs2d_dynobj_image_message(&w, blend, 5, 0) != 5 || o->blend != 3) TEST_FAIL("[51,3]", "blend clamp");
+    if (cs2d_dynobj_image_message(&w, scale, 12, 0) != 12 || o->scalex != 2.0f || o->scaley != 0.5f) TEST_FAIL("[51,4]", "scale");
+    if (cs2d_dynobj_image_message(&w, mv, 10, 0) != 10 || o->x != 300.0f || o->y != 400.0f || fabsf(o->rot - 90.0f) > 0.01f)
+        TEST_FAIL("[51,5]", "pos / rot");
+
+    /* [59]: hit zone mode 1, xo -16, yo -8, 32 x 16 */
+    const uint8_t hz[] = { 59, 7, 0, 1, 0xf0, 0x7f, 0xf8, 0x7f, 32, 0, 16, 0 };
+    if (cs2d_dynobj_image_message(&w, hz, 12, 0) != 12 || o->hit_xo != -16 || o->hit_yo != -8 || o->hit_h != 16)
+        TEST_FAIL("[59]", "hit zone");
+
+    /* [54] tween target 207: move to (0, 0) in 1000 ms; halfway at 500 ms */
+    const uint8_t tw[] = { 0, 207, 0, 0xe8, 0x03, 0, 0, 0x00, 0x80, 0x00, 0x80 };
+    pos = 0;
+    if (!cs2d_dynobj_read_tween(&w, tw, sizeof(tw), &pos, 1000) || pos != 11) TEST_FAIL("[54]", "move length");
+    cs2d_dynobj_update_tweens(&w, 1500);
+    if (fabsf(o->x - 150.0f) > 0.01f || fabsf(o->y - 200.0f) > 0.01f) TEST_FAIL("Ttween.update", "move halfway");
+    cs2d_dynobj_update_tweens(&w, 2100);
+    if (o->x != 0.0f || w.tweens[0].used) TEST_FAIL("Ttween.update", "move end");
+
+    /* [51,6] frees only images */
+    const uint8_t fr[] = { 51, 6, 7, 0 };
+    if (cs2d_dynobj_image_message(&w, fr, 4, 0) != 4 || cs2d_dynobj_get(&w, 7)) TEST_FAIL("[51,6]", "freeimage");
+
+    /* NPC: [49] spawn a headcrab (typ 30, player = NPC type 2) at (100, 100) rot 0, then [36,id,7] target (200, 100) */
+    const uint8_t sp[] = { 49, 3, 0, 30, 100, 0, 100, 0, 0, 0, 0, 0, 2 };
+    if (cs2d_dynobj_net_message(&w, sp, 13, 0, NULL) != 13) TEST_FAIL("NPC", "[49]");
+    cs2d_dynobj_t *npc = cs2d_dynobj_get(&w, 3);
+    if (!npc || npc->m_x != 100.0f || npc->hit_w != 32) TEST_FAIL("NPC", "Tdo.add category 3");
+    const uint8_t mt[] = { 36, 3, 0, 7, 200, 0, 100, 0, 90, 0 };
+    if (cs2d_dynobj_net_message(&w, mt, 10, 0, NULL) != 10 || npc->m_x != 200.0f || npc->m_rot != 90.0f)
+        TEST_FAIL("NPC", "[36,7] target");
+    /* Turns 5 degrees per frame first (headcrab 2.5 / 5), then walks 2.5 px per frame */
+    cs2d_dynobj_update(&w, players, 1.0f);
+    if (npc->rot != 5.0f || npc->x != 100.0f) TEST_FAIL("NPC", "turn 5 per frame");
+    cs2d_dynobj_update(&w, players, 17.0f);
+    if (npc->rot != 90.0f) TEST_FAIL("NPC", "turn snaps within 5 degrees");
+    cs2d_dynobj_update(&w, players, 2.0f);
+    if (fabsf(npc->x - 105.0f) > 0.01f || fabsf(npc->y - 100.0f) > 0.01f) TEST_FAIL("NPC", "walk 2.5 px per frame");
+    /* [36,id,9] attack player 1 standing above: spin 20, slash + headcrab sound, face the player */
+    players[1].pos.x = 105.0f;
+    players[1].pos.y = 0.0f;
+    const uint8_t at[] = { 36, 3, 0, 9, 1, 0 };
+    cs2d_dynobj_fx_t fx = { 0 };
+    if (cs2d_dynobj_net_message(&w, at, 6, 0, &fx) != 6 || fx.kind != 5 || !fx.slash || npc->rotvar != 20.0f ||
+        !fx.sound || strcmp(fx.sound, "sfx/npc/headcrab_attack.wav") != 0) TEST_FAIL("NPC", "[36,9] attack");
+    if (fabsf(npc->m_rot) > 0.01f) TEST_FAIL("NPC", "m_rot towards the attacked player");
+
+    TEST_PASS("Lua images ([51] 0..9, [59], [54], Trestable paths, masks) and NPC spawn / move / turn / attack");
+    return true;
+}
+
 
 /* =========================================================================
  * Weapon selection HUD: invnext / invprev (FUN_140166fb0), slotN (FUN_1401cc180), attack confirms (FUN_140219820),
@@ -3952,18 +4150,23 @@ static bool light_line_same(const char *a, const char *b)
     return ta == NULL && tb == NULL;
 }
 
-static bool light_case(const char *map_name, int cx, int cy, const char *part)
+/* dyn: player 1's flashlight on at (330, 200) rot 90 and a muzzle light at (500, 150), the "_dyn_" fixtures */
+static bool light_case_ex(const char *map_name, int cx, int cy, const char *part, bool dyn)
 {
     static cs2d_map_t map;
     char path[128], fixture[160], msg[512];
     snprintf(path, sizeof(path), "maps/%s.map", map_name);
-    snprintf(fixture, sizeof(fixture), "tests/data/light_%s_%d_%d_%s.txt", map_name, cx, cy, part);
+    snprintf(fixture, sizeof(fixture), "tests/data/light_%s_%d_%d_%s%s.txt", map_name, cx, cy, dyn ? "dyn_" : "", part);
     memset(&map, 0, sizeof(map));
     if (!cs2d_map_load_file(&map, path)) TEST_FAIL("Light engine", path);
     cs2d_light_config_t cfg = {5, 4, 50, true};
     cs2d_light_configure(&cfg);
     cs2d_light_set_daylight(-1);
     cs2d_light_load_map(&map);
+    if (dyn) {
+        cs2d_light_flashlight(1, true, 330.0f, 200.0f, 90.0f);
+        cs2d_light_flash(500, 150, 255, 255, 35, 100.0f, 0.0f, 0.7f);   /* Tshoot.Shoot's muzzle light */
+    }
     light_lines_t ours = {0};
     if (strcmp(part, "main") == 0) cs2d_light_set_trace(light_collect, &ours);
     cs2d_light_frame(&map, cx, cy, 1.0f);
@@ -3997,6 +4200,11 @@ static bool light_case(const char *map_name, int cx, int cy, const char *part)
     return true;
 }
 
+static bool light_case(const char *map_name, int cx, int cy, const char *part)
+{
+    return light_case_ex(map_name, cx, cy, part, false);
+}
+
 static bool test_light_engine(void)
 {
     printf("\n=== Testing the light engine against the original (TSmartLighting) ===\n");
@@ -4004,7 +4212,10 @@ static bool test_light_engine(void)
     if (!light_case("fun_roleplay", 999, 0, "main")) return false;
     if (!light_case("fun_roleplay", 15, 20, "floor")) return false;
     if (!light_case("fun_roleplay", 15, 20, "color")) return false;
-    TEST_PASS("Light buffer, floor occlusion and light color = the original's draw calls (4 scenes)");
+    /* Flashlight (LightType 1, FUN_1401d6790 pool) and a muzzle light (Tp.CreateLight from Tshoot.Shoot) */
+    if (!light_case_ex("fun_roleplay", 15, 20, "main", true)) return false;
+    if (!light_case_ex("fun_roleplay", 15, 20, "color", true)) return false;
+    TEST_PASS("Light buffer, floor occlusion and light color = the original's draw calls (6 scenes, flashlight and muzzle light)");
     return true;
 }
 /*
@@ -4889,7 +5100,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 51;
+    int total = 53;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -4906,6 +5117,7 @@ int main(void)
     if (test_entities_prison()) passed++;
     if (test_env_decal()) passed++;
     if (test_player_physics()) passed++;
+    if (test_shell_reload()) passed++;
     if (test_breakables()) passed++;
     if (test_server_info_and_team_menu()) passed++;
     if (test_kill_messages()) passed++;
@@ -4916,6 +5128,7 @@ int main(void)
     if (test_editor_entity_props()) passed++;
     if (test_spectator()) passed++;
     if (test_construction()) passed++;
+    if (test_images_and_npcs()) passed++;
     if (test_weapon_select()) passed++;
     if (test_buy_menu()) passed++;
     if (test_lua_menu()) passed++;

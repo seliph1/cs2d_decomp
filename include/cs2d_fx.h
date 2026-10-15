@@ -100,6 +100,8 @@ void cs2d_fx_flame(cs2d_fx_t *fx, float px, float py, float angle_deg, float dis
 /* Portal Gun shot (FUN_1401fc9f0, Tp 0x1d sx 0.5): a flash 24 px ahead, orange (200, 100, 0) for mode 1, blue
  * (50, 100, 255) for mode 2 */
 void cs2d_fx_portal_flash(cs2d_fx_t *fx, float px, float py, float angle_deg, int mode);
+/* Tp 0x1d at (x, y), scale sx, portal colour of mode (1 orange, 2 blue): a portal closing (Tdo.kill, sx 0.8) */
+void cs2d_fx_portal_glow(cs2d_fx_t *fx, float x, float y, float sx, int mode);
 
 /*
  * Melee weapon slash arc (CS2D.exe Tpl.slash 0x14018cf63 -> Tp.create type 13 at 0x14004b4e0,

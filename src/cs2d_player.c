@@ -48,6 +48,8 @@ void cs2d_player_spawn(cs2d_player_t *player, cs2d_team_t team, cs2d_vec2_t spaw
     player->slash_timer = 0.0f;
     player->fire_cooldown = 0.0f;
     player->reload_timer = 0.0f;
+    player->is_reloading = false;
+    player->reload_ani   = 0.0f;
 
     /* Clear inventory */
     memset(player->inventory, 0, sizeof(player->inventory));
@@ -77,7 +79,17 @@ void cs2d_player_update(cs2d_player_t *player, float delta_time)
         if (player->fire_cooldown < 0.0f) player->fire_cooldown = 0.0f;
     }
 
-    if (player->reload_timer > 0.0f) {
+    const cs2d_weapon_def_t *rwep = cs2d_weapon_get(player->current_weapon);
+    if (player->is_reloading && rwep && rwep->shell_reload) {
+        /* Tpl.update (0x14021e35a): when the timer runs out the host loads a shell (mode 4); an online client waits
+         * for the server's [16,pid,4] (0x14021e3d0) and counts the delay in reload_overdue */
+        if (player->reload_timer > 0.0f) player->reload_timer -= delta_time;
+        if (player->reload_timer <= 0.0f) {
+            player->reload_timer = 0.0f;
+            if (player->reload_net) player->reload_overdue += delta_time;
+            else cs2d_weapon_reload_shell(player);
+        }
+    } else if (player->reload_timer > 0.0f) {
         player->reload_timer -= delta_time;
         if (player->reload_timer <= 0.0f) {
             player->reload_timer = 0.0f;
@@ -86,6 +98,11 @@ void cs2d_player_update(cs2d_player_t *player, float delta_time)
         }
     } else {
         player->is_reloading = false;
+    }
+    /* Tpl.update (0x14021d9f8..): reloadani -= g_dt, 1 per 60 Hz frame */
+    if (player->reload_ani > 0.0f) {
+        player->reload_ani -= delta_time * 60.0f;
+        if (player->reload_ani < 0.0f) player->reload_ani = 0.0f;
     }
 
     /* Visual recoil decay: 0.5 px per 60 Hz frame = 30.0 px/s (Tpl.updateAll 0x14021d1b1, 0x140bd69e8 = 0.5f) */
@@ -305,6 +322,7 @@ void cs2d_player_clear_inventory(cs2d_player_t *player)
     memset(player->reserve_ammo, 0, sizeof(player->reserve_ammo));
     player->current_weapon = CS2D_WEP_NONE;
     player->reload_timer   = 0.0f;
+    player->is_reloading   = false;
 }
 
 bool cs2d_player_remove_item(cs2d_player_t *player, uint8_t weapon_id)
@@ -352,6 +370,8 @@ bool cs2d_player_strip_weapon(cs2d_player_t *player, uint8_t weapon_id)
     player->reserve_ammo[weapon_id] = 0;
     if (player->current_weapon == weapon_id) {
         player->reload_timer = 0.0f;
+        player->is_reloading = false;
+        player->reload_ani   = 0.0f;
         select_fallback_weapon(player);
     }
     return true;
@@ -368,6 +388,8 @@ bool cs2d_player_select_weapon(cs2d_player_t *player, uint8_t weapon_id)
     if (player->current_weapon != weapon_id) {
         player->fire_cooldown = 0.0f;
         player->reload_timer = 0.0f;
+        player->is_reloading = false;
+        player->reload_ani   = 0.0f;
         player->slash_timer = 0.0f;
         player->draw_angle = player->angle;
     }

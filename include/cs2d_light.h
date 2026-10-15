@@ -35,6 +35,18 @@ void cs2d_light_set_daylight(int angle);
 bool cs2d_light_active(void);
 /* TSmartLighting.InitMap + the entity lights of FUN_1401d6790 (Env_Room, Env_Light, Env_LightStripe) */
 void cs2d_light_load_map(const cs2d_map_t *map);
+/* Dynamic point lights (Tp_lightpool.GetLight): name every wanted light by a non-zero key between begin and end
+ * each frame; lights not named again are switched off and pooled */
+void cs2d_light_points_begin(void);
+void cs2d_light_point(int key, int x, int y, float size, int r, int g, int b, float alpha, int max_size);
+void cs2d_light_points_end(void);
+/* Tp.CreateLight (0x14009ba30): a light particle (Tp 0x1f) of radius size at world (x, y) that shrinks by shrink per
+ * 60 Hz frame and goes back to the pool at 16 (muzzle flashes, explosions). Tp.CreateLight raises every channel
+ * below 35 to 35 first; Tp.Create(0x1f) does not: the caller passes the final color */
+void cs2d_light_flash(int x, int y, int r, int g, int b, float size, float shrink, float alpha);
+/* Tpl.update (0x14021d080): the flashlight of player pid (LightType 1, radius 162, gfx_flashlight.png): on at world
+ * (x, y) turned to rot (0 = north), or off */
+void cs2d_light_flashlight(int pid, bool on, float x, float y, float rot);
 /* Light state for this frame: tile changes (SetTile from cs2d_update_mapdata), entity states and Env_Light rotation
  * (Te.update), sun angle (FUN_140262ed0), then TSmartLighting.Update (light buffers). cam = integer camera. */
 void cs2d_light_frame(const cs2d_map_t *map, int cam_x, int cam_y, float dt);
@@ -62,6 +74,8 @@ void cs2d_light_add_player_part(const cs2d_texture_t *tex, int cell_w, int cell_
 float cs2d_light_shadow_rotation(void);
 /* mapshadows > 1: day shadows, floor sprites and occlusion are on */
 bool cs2d_light_day_shadows(void);
+/* The "mapshadows" setting (DAT_140ddf190) */
+int  cs2d_light_mapshadows(void);
 
 /* Prints every Max2D call (and skips OpenGL) while set; NULL restores drawing */
 void cs2d_light_set_trace(void (*fn)(const char *line, void *ud), void *ud);

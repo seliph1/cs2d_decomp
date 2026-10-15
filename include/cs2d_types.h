@@ -238,6 +238,7 @@ typedef struct {
     int                visual_recoil;     /* 0x1409eda18 in CS2D.exe: visual backward kickback px on shot */
     int                range;             /* PTR_DAT_14059d458 (range, default 300) */
     bool               is_automatic;
+    bool               shell_reload;      /* 0x1409efcf8 in CS2D.exe: reloads one shell per stage (M3, XM1014) */
 } cs2d_weapon_def_t;
 
 /* Player State (reconstructed from Tpl in CS2D.exe / cs2d_dedicated.exe) */
@@ -260,7 +261,8 @@ typedef struct {
     bool        has_defuse_kit;
     bool        has_nightvision;
     bool        has_gasmask;
-    bool        has_flag;            /* Tpl.flag: carries the enemy CTF flag (Titem.give 70 / 71, not an inventory item) */
+    bool        flashlight;          /* Tpl.flashlight (+0x300): switched on ([57], special byte 32) */
+    bool        has_flag;           /* Tpl.flag: carries the enemy CTF flag (Titem.give 70 / 71, not an inventory item) */
     bool        is_vip;
     bool        is_planting;
     bool        is_defusing;
@@ -284,6 +286,10 @@ typedef struct {
                                                  * burst on, zoom level 1..2, laser colour 0..3) */
     float       fire_cooldown;
     float       reload_timer;
+    float       reload_ani;          /* Tpl.reloadani (+0x330): 15 at a clip reload's start / end, 8 per shell; torso
+                                      * frame 3 while > 0 (Tpl.getFrame), decays 1 per 60 Hz frame */
+    bool        reload_net;          /* Online: shells come from the server's [16,pid,4], not from the local timer */
+    float       reload_overdue;      /* Online shell reload: seconds since the shell timer ran out with no [16,pid,4] */
 
     /* Stats */
     int         kills;

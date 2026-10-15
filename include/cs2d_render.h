@@ -169,6 +169,32 @@ struct cs2d_dynobj_world_s;
 /* team_game: the game mode colors buildings by team (0x140a015d0[sv_gamemode]); local_id for own buildings */
 void cs2d_render_dynobjs(const struct cs2d_dynobj_world_s *w, cs2d_dynobj_layer_t layer, float cam_x, float cam_y,
                          int screen_w, int screen_h, bool team_game, int local_id);
+/* Lua image passes (FUN_1402809b0 callers), by Tdo.mode */
+typedef enum {
+    CS2D_IMG_PASS_BACKGROUND = 0, /* Tdo.draw_background: 4, 233..263, before the map tiles */
+    CS2D_IMG_PASS_FLOOR      = 1, /* Tdo.draw_ground: 0, 101..132 */
+    CS2D_IMG_PASS_TOP        = 2, /* Tdo.draw_wall: 1, 201..232 */
+    CS2D_IMG_PASS_OVERWALL   = 3, /* Tdo.draw_overwall: 3, 133..164, after Te.draw pass 2 */
+    CS2D_IMG_PASS_HUD        = 4  /* Tdo.draw_hud: 2, screen coordinates */
+} cs2d_img_pass_t;
+/* What the Lua image passes need from the game */
+typedef struct {
+    const cs2d_player_t  *players;   /* players[1..32], for the images that follow a player */
+    int                   local_id;
+    float                 cam_x, cam_y;
+    int                   screen_w, screen_h;
+    const cs2d_texture_t *tileset;   /* <tile:N> */
+    int                   tile_src;  /* Tileset cell size (32, or 64 for 64 px tiles) */
+    int                   tile_max;  /* g_map_tilemax */
+    int                   hudscale;  /* mp_hudscale for the HUD images (FUN_140291080) */
+} cs2d_img_ctx_t;
+/* Draws the Lua images (Tdo 40) of one pass */
+void cs2d_render_dynobj_images(const struct cs2d_dynobj_world_s *w, cs2d_img_pass_t pass, const cs2d_img_ctx_t *ctx);
+/* <light> images as dynamic light sources (once per frame, before cs2d_light_frame) */
+void cs2d_render_image_lights(const struct cs2d_dynobj_world_s *w);
+/* Frame count of an image path once loaded (1 for a plain image, cells for a sprite sheet, 0 when it can't load) */
+int cs2d_render_image_frames(const char *path);
+
 /* FUN_14014f1f0: build helper on the player's tile (yellow) and on the target tile (green ok / red refused) */
 void cs2d_render_build_helper(int ptx, int pty, int tx, int ty, bool ok, float cam_x, float cam_y);
 
@@ -178,6 +204,9 @@ void cs2d_gfx_bank_free(cs2d_gfx_bank_t *bank);
 void cs2d_gfx_bank_free_sprites(cs2d_gfx_bank_t *bank);
 cs2d_gfx_bank_t *cs2d_render_get_gfx_bank(void);
 const cs2d_texture_t *cs2d_gfx_get_sprite(cs2d_gfx_bank_t *bank, const char *rel_path, bool black_mask);
+/* Same cache with a Tres mask mode (0 none, 1 black, 3 luminance alpha, 4 magenta) and an optional sprite sheet cell */
+const cs2d_texture_t *cs2d_gfx_get_sprite_ex(cs2d_gfx_bank_t *bank, const char *rel_path, int mask_mode,
+                                             int cell_w, int cell_h);
 const cs2d_texture_t *cs2d_render_get_projectile_texture(uint8_t type);
 
 /* Image processing & atlas page upload helpers */
@@ -261,6 +290,9 @@ void cs2d_render_map_ex(
  * (cs2d_draw_map_layer(..., 4) follows Tpl.drawAll in cs2d_draw_world 0x140290310) */
 void cs2d_render_map_floor(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
                            float cam_x, float cam_y, int screen_w, int screen_h);
+/* Same, calling under_tiles(ctx) after the background colour and before the tiles (Lua background images) */
+void cs2d_render_map_floor_ex(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex, float cam_x, float cam_y,
+                              int screen_w, int screen_h, void (*under_tiles)(void *ctx), void *ctx);
 void cs2d_render_map_walls(const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
                            float cam_x, float cam_y, int screen_w, int screen_h);
 /* Waving Info_CTF_Flag flags at home, over the wall tiles */
@@ -292,6 +324,7 @@ struct cs2d_gen_s;
 void cs2d_render_gen(const struct cs2d_gen_s *gen, int layer, float cam_x, float cam_y, int screen_w, int screen_h);
 void cs2d_render_gen_flash(const struct cs2d_gen_s *gen, int screen_w, int screen_h);
 
+void cs2d_render_fx_shells(const struct cs2d_fx_s *fx, float cam_x, float cam_y);
 void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
                     float cam_x, float cam_y);
 
