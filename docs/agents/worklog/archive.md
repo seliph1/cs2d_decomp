@@ -1,5 +1,39 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-15 — Cline — OPEN_ISSUES curation: removed the entries that were already done
+- Re-read the whole list against the modules each bullet names and deleted the elements that were 100% resolved,
+  keeping every still-open item: the "Join messages (fixed 2026-10-15)" bullet (the handshake lives in KNOWLEDGE
+  "Network: join" and in WORKLOG), the Phase 1 image-decoding bullet, the Phase 2 "original plan", and the
+  phase-3 / pixel-comparison completion narration. The section is now "GL 1.x / GDI+ removal (done ...)" plus its
+  open decisions.
+- Trimmed the resolved clauses that sat inside still-open bullets (dated "done"/"fixed"/"now" sentences):
+  hostages-bomb "done: use ray ...", the Gen_* light sprites, the weapon-select grenade counts, the env-object
+  `test_file_transfer` note, dynobj team-menu x / turret tracer / NPC beams / debris-in-wall / hostage hover /
+  `g_prop_class`, the light-engine "Done 2026-10-15:" list, and the settile cut `[252,7,9]` abort (only its
+  remaining socket difference stays listed).
+- Docs only, no behaviour change: no build/test run needed. Verified the file reads top to bottom and every
+  remaining bullet names an open gap; also fixed two stale notes (`favorites.lst` writer exists via the menu
+  Favorite row, and the Node suite count).
+- Left (OPEN_ISSUES): the rest of the list is genuinely open - network/special weapons vs a proxy capture, the
+  audio gaps, the radars/scoreboard/buy-menu details, the map editor, the dynamic objects and the verification
+  debt (daylight pixel diff, `light`/`mapshadows` sweep, the `!mouse` UI click, the two-client session).
+
+## 2026-10-15 — Cline — muzzle offsets + the weapon-select ammo line
+- `cs2d_weapon_def_t.muzzle` (`cs2d_types.h`) is filled in `cs2d_weapons_init` (`cs2d_weapons.c`) from the per-weapon
+  table `0x1409f5d20` of `init_weapons` (FUN_140230330): 38 weapons, e.g. AK-47 26, AWP 33, pistols 19, M3 / XM1014
+  28, melee 25, M134 32, FN F2000 23 (items, grenades and the Tactical Shield stay 0). The shot in
+  `cs2d_scene_game.c` now starts the tracer, muzzle flash and its light at `pos + muzzle * (sin, -cos)` instead of
+  the calibrated 30 / 22 px per slot.
+- New `cs2d_render_weapon_select_ammo` (`cs2d_render.c/.h`): the weapon-select row's second line, now including the
+  original's slot-6 fallback `"0 x - Remote"` (literal "0 x - " + sys/language 0763) when the item has no count;
+  `"clip | reserve"` / `"clip | INF"` (0762, mp_infammo) and `"n x"` were already drawn.
+- Verified: `test_weapon_select` asserts 13 muzzle values and the seven ammo-line cases (including the empty melee /
+  shield rows), suite **60/60**; an offline capture firing the AK (`map prison_funst3r`, `equip 30`, `!mouse` down/up)
+  exits 0; `build.bat` clean; the doc values match `knowledge/shot-effects.md`.
+- Left (OPEN_ISSUES): the "Muzzle offsets" and weapon-HUD-string items are gone; the rest of the weapon selection HUD
+  (grenade counts vs a screenshot, the Medikit clip 5, the HUD sound, `lastinv`, the gamepad path and the bindings)
+  stays open.
+
 ## 2026-10-15 — Cline — settile: a cut `[252,7,9]` now aborts the join (OPEN_ISSUES item 1)
 - New `cs2d_customtile_read_snapshot` (`cs2d_customtile.c/.h`) owns join section `[252,7,9]` (FUN_1402ce7c0 case 6):
   Tcustomtile.list clear, count u8, count x 11 bytes through addcheck, one endbatch; it reports an entry cut short

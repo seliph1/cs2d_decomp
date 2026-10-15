@@ -38,6 +38,7 @@
 #include "cs2d_hudtxt.h"
 #include "cs2d_hostage.h"
 #include "cs2d_hudmen.h"
+#include "cs2d_server.h"
 #include "cs2d_sound.h"
 #include "cs2d_customtile.h"
 #include "cs2d_font.h"
@@ -5900,6 +5901,107 @@ static bool test_screenshot_paths(void)
     return true;
 }
 
+/* =========================================================================
+ * Dedicated server: the join messages of FUN_1401dc530 against the original's bytes
+ * (proxy_ph1.log, CS2D.exe joining cs2d_dedicated.exe -offline on de_dust2, shipped sys/server.cfg)
+ * ========================================================================= */
+static int hex_bytes(const char *hex, uint8_t *out, int max)
+{
+    int n = 0;
+    while (*hex && n < max) {
+        while (*hex == ' ') hex++;
+        if (!hex[0] || !hex[1]) break;
+        unsigned v;
+        sscanf(hex, "%2x", &v);
+        out[n++] = (uint8_t)v;
+        hex += 2;
+    }
+    return n;
+}
+
+static bool test_server_join(void)
+{
+    printf("\n=== Testing Dedicated Server Join Messages (FUN_1401dc530) ===\n");
+
+    /* [252,6]: round time 0x2884 ms and seed 0x00010272 are the capture's values */
+    static const char *want6 =
+        "fc 06 00 08 64 65 5f 64 75 73 74 32 0b 43 53 32 44 20 53 65 72 76 65 72 00 00 00 00 05 00 23 84 28 00 00 "
+        "01 00 0c 00 01 00 00 00 01 08 33 3a 0b 16 20 23 50 49 00 7f 01 01 1f 00 08 64 75 73 74 2e 70 6e 67 00 00 "
+        "00 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 01 02 00 10 00 72 02 01 00 01 01 00 00 00 00 03 41 43 4b";
+    uint8_t want[256];
+    int wn = hex_bytes(want6, want, sizeof(want));
+    static cs2d_map_t map;
+    if (!cs2d_map_load_file(&map, "maps/de_dust2.map")) TEST_FAIL("Server join", "de_dust2 missing");
+    cs2d_sv_settings_t set;
+    cs2d_sv_settings_default(&set);
+    cs2d_pkt_t p = { .pos = 0 };
+    cs2d_sv_build_join_settings(&p, &set, &map, 0, 0, 0x2884, 0x00010272);
+    cs2d_map_free(&map);
+    if (p.pos != wn || memcmp(p.buf, want, (size_t)wn) != 0) {
+        for (int i = 0; i < p.pos && i < wn; i++) {
+            if (p.buf[i] != want[i]) { printf("  first difference at byte %d: %02x != %02x\n", i, p.buf[i], want[i]); break; }
+        }
+        printf("  length %d (want %d)\n", p.pos, wn);
+        TEST_FAIL("[252,6] settings", "differs from the original");
+    }
+    TEST_PASS("[252,6] settings: 105 bytes equal to the original's");
+
+    /* [252,7,1]: the joining player "real" (fresh, spectator) */
+    static const char *want71 =
+        "01 04 e0 c6 ce da 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 e8 03 00 00 00 00 00 00 "
+        "00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff";
+    wn = hex_bytes(want71, want, sizeof(want));
+    cs2d_sv_player_t pl;
+    memset(&pl, 0, sizeof(pl));
+    snprintf(pl.name, sizeof(pl.name), "real");
+    pl.os = 1;
+    p.pos = 0;
+    cs2d_sv_write_player_record(&p, 1, &pl);
+    if (p.pos != wn || memcmp(p.buf, want, (size_t)wn) != 0) {
+        printf("  length %d (want %d)\n", p.pos, wn);
+        TEST_FAIL("[252,7,1] player record", "differs from the original");
+    }
+    TEST_PASS("[252,7,1] player record equal to the original's");
+
+    /* FUN_14010d970: filtered characters, the default name and the " 2" suffix */
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    char out[64];
+    cs2d_sv_sanitize_name(&sv, "  a,b;c*DEAD*  ", out, sizeof(out));
+    if (strcmp(out, "abc") != 0) TEST_FAIL("Name filter", out);
+    cs2d_sv_sanitize_name(&sv, "1234", out, sizeof(out));
+    if (strcmp(out, "Player") != 0) TEST_FAIL("Numeric name", out);
+    sv.players[1].used = true;
+    snprintf(sv.players[1].name, sizeof(sv.players[1].name), "Player");
+    cs2d_sv_sanitize_name(&sv, "PIayer", out, sizeof(out));
+    if (strcmp(out, "Player 2") != 0) TEST_FAIL("Unique name", out);
+    TEST_PASS("Name sanitizer (FUN_14010d970)");
+
+    /* Spawn (FUN_140160740): a CT in mode 0 gets "1" (USP) + the knife, holds the USP; [21] equals the
+     * capture "15 01 d0 03 50 05 01 00 80 3e 02 01 32" (x 976, y 1360, $16000) */
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.set.mp_startmoney = 16000;
+    if (!cs2d_map_load_file(&sv.map, "maps/de_dust2.map")) TEST_FAIL("Spawn", "de_dust2 missing");
+    sv.players[1].used = true;
+    sv.players[1].conn = -1;
+    sv.players[1].team = 2;
+    cs2d_sv_spawn(&sv, 1);
+    cs2d_sv_player_t *sp = &sv.players[1];
+    bool spawn_ok = sp->alive && sp->item_count == 2 && sp->items[0] == 1 && sp->items[1] == 50 &&
+                    sp->weapon == 1 && sp->money == 16000 && sp->health == 100 &&
+                    ((int)sp->x - 16) % 32 == 0 && ((int)sp->y - 16) % 32 == 0;
+    cs2d_map_free(&sv.map);
+    if (!spawn_ok) TEST_FAIL("Spawn", "items / weapon / money / tile centre");
+    sp->x = 976; sp->y = 1360;
+    p.pos = 0;
+    cs2d_sv_write_spawn(&p, 1, sp);
+    wn = hex_bytes("15 01 d0 03 50 05 01 00 80 3e 02 01 32", want, sizeof(want));
+    if (p.pos != wn || memcmp(p.buf, want, (size_t)wn) != 0) TEST_FAIL("[21] spawn", "differs from the original");
+    TEST_PASS("Spawn: CT items 1 + 50, holds the USP, [21] equal to the original's");
+    return true;
+}
+
 
 int main(void)
 {
@@ -5908,7 +6010,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 61;
+    int total = 62;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -5971,6 +6073,7 @@ int main(void)
     if (test_font_metrics()) passed++;
     if (test_screenshot_paths()) passed++;
     if (test_random_and_dropwep()) passed++;
+    if (test_server_join()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

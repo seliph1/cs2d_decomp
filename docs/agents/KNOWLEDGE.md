@@ -51,4 +51,5 @@ When you confirm or refute something, update the topic file (or add one and list
 | [web-port.md](knowledge/web-port.md) | Web/Wasm portability (Emscripten), platform layer, text engine (GDI+ vs stb_truetype metrics) | 13 KB |
 | [special-weapons.md](knowledge/special-weapons.md) | Laser, flamethrower, launchers, Portal Gun; consumable items, spawned item ammo | 3 KB |
 | [sound.md](knowledge/sound.md) | Sound effects: play formulas, sound globals → files, triggers | 3 KB |
+| [dedicated-server.md](knowledge/dedicated-server.md) | Dedicated server port: Tudp server side, recv 252 join checks / status codes, [252,6] fields, snapshot builders, ping block, Lua 5.1.4 static | 5 KB |
 | [performance.md](knowledge/performance.md) | Performance (measured 2026-10-12, desktop, 850x480) | 11 KB |

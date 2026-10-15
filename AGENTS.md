@@ -44,7 +44,7 @@ Our client must be able to play on the original dedicated server without the ser
 5. **Restore what the original binaries rewrite.** `cs2d_dedicated.exe` rewrites `sys/server.cfg`
    (`sv_map`), and `CS2D.exe` rewrites `sys/recentlyjoined.lst`. The `tools/agent/*.sh` scripts back
    these files up and restore them. After manual runs, check `git status sys/`.
-6. **Kill stale processes** (`cs2d_dedicated.exe`, `CS2D.exe`, `cs2d_client.exe`) before a run.
+6. **Kill stale processes** (`cs2d_dedicated.exe`, `CS2D.exe`, `cs2d_client.exe`, `cs2d_server.exe`) before a run.
    A process left running holds the UDP port, and a running `cs2d_client.exe` makes the build fail to link.
 7. **Commits are made by the user** unless they ask you to commit. Do not commit generated binaries.
 8. **Write code that reads like the surrounding code.** Match its comment density, its naming
@@ -79,6 +79,8 @@ Our client must be able to play on the original dedicated server without the ser
 | `src/cs2d_image.c` | Portable asset decoding (BMP / PNG / ICO) on the vendored `stb_image`; replaced the GDI+ image path |
 | `src/cs2d_hudmen.c` | Hud menus (`Tgui_hudmen`): window, `button` / `fbutton` / `box`, and the Buy menu (pages, weapon info, previews) |
 | `src/cs2d_ui.c` | Immediate-mode UI library (textbox, dropdown, numberbox, shared scrolling `cs2d_ui_scroll_*` / `cs2d_ui_scrollbar`) |
+| `src/cs2d_server.c`, `src/main_dedicated.c` | Dedicated server port (`cs2d_server.exe`, of `cs2d_dedicated.exe`): Tudp server side, join `FUN_1401dc530`, ping block |
+| `src/cs2d_sv_game.c`, `src/cs2d_sv_stubs.c` | Dedicated server game logic (team `FUN_1401624c0`, spawn `FUN_140160740`, movement relay `FUN_1401a68e0`); no-op sound stubs for the server link |
 | `tests/test_cs2d.c` | Regression suite (`test_cs2d.exe`) |
 | `tools/agent/` | Capture and reverse-engineering scripts (see `docs/agents/TOOLS.md`) |
 | `tools/entity_truth/` | Generator of the entity fixture from the dedicated's Lua |
@@ -93,7 +95,7 @@ Our client must be able to play on the original dedicated server without the ser
 ## Build and test
 
 ```bat
-build.bat            :: builds test_cs2d.exe and cs2d_client.exe (MinGW gcc, C:\msys64\mingw64\bin)
+build.bat            :: builds test_cs2d.exe, cs2d_client.exe and cs2d_server.exe (MinGW gcc, C:\msys64\mingw64\bin)
 test_cs2d.exe        :: must print "Tests Passed: N / N"
 ```
 
@@ -112,8 +114,9 @@ test_cs2d.exe        :: must print "Tests Passed: N / N"
    lead, not evidence of numbers. With REA, search the strings first (BlitzMax strings are objects with
    UTF-16 text at +0x10, and the string object starts 0x10 bytes before what `search_strings` returns).
    Then get the xrefs and decompile.
-   - Functions too large to decompile, such as the 138 KB dispatcher `FUN_14009bb30` in the dedicated,
-     need `objdump -d -M intel --start-address=… --stop-address=…`.
+   - Functions too large to decompile (REA "Response buffer size exceeded", e.g. `FUN_1401ca500` in the
+     dedicated) need `objdump -d -M intel --start-address=… --stop-address=…`. The dedicated's receive
+     dispatch is the jump table of `FUN_1401e3cf0` (handler list: `knowledge/dedicated-server.md`).
 3. **Record the original's behaviour:**
    - `tools/agent/capture_original.sh` records the original client with a Lua probe on the dedicated;
    - `tools/agent/dumpops.py` decodes the capture.

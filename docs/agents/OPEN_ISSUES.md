@@ -224,6 +224,32 @@ the same one.
   - The sprite / obstacle queues (Env_Sprite, palm / tree leaves, alarms) are not covered by the emulator test (the scene
     file does not carry them); they were checked on screenshots only.
 
+## Dedicated server (cs2d_server.exe) — started 2026-10-15
+Goal (user): 1:1 port of `cs2d_dedicated.exe`, tested with the original CS2D.exe; every hook, console command,
+Lua function and script must work; final test = the server scripts in `C:\C4`. Done in phases over several
+sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT may become a build option later); **bots: only present, no AI** (user, 2026-10-15). Knowledge:
+`knowledge/dedicated-server.md`; test: `tools/agent/capture_server.sh`.
+- **Phase 1 (done 2026-10-15):** transport, connections, join, snapshot, server info, ping block. Gaps inside it:
+  `[252,10]` spray data is dropped (no `[28]` relay, Tpl `+0x3c8`), `[252,50]` map transfer (status 13), the Lua
+  `connect_attempt` hook, ban list, flood guard `FUN_1400d4c90`, secret generator, player id allocation order
+  (`FUN_140098050`), resend interval / timeout (estimated 500 ms / 30 s), section 11 raw table is a capture
+  literal (build it from the weapon tables), sections 2..9 always empty, `FUN_1401dba60` (3 zero bytes), `[247]`
+  counters are ours (fps / bytes), `[253]` leave text, U.S.G.N. / serverlist (we never register: always offline).
+- **Phase 2 (in progress, 2026-10-15):** done: team choice (look 5 / auto team / random skin / balance refusal
+  10-11), the `mp_postspawn` first spawn, spawn (`[21]` byte-equal), `[10]/[11]/[70]` input and the per-frame
+  relay `FUN_1401a68e0`, `[248]` join notice. Next, in order: "game commencing" + round end / round start
+  (`FUN_14015c080`, `[22]`, `[226]`), `[253]` leave text and item drop, shooting `[7]`/`[8]` (FUN_1401c8930) and
+  damage / kill `[17]`/`[19]`, buy `[23]` (FUN_1401cd710), drop / collect, reload `[16]`, select `[9]`, chat
+  `[240]`, spectate `[67]`/`[32]`, death and respawn timers per mode. Gaps inside what is done: position
+  validation `FUN_1401c99a0` + anti-speeder `FUN_1401ca500`, killing a living player who changes team
+  (`FUN_1401647d0`), the Lua `spawn` / `team` hooks, spectator aim relay `[70]-[72]`, mp_startmoney default
+  (800 is not verified), team code 12 and the per-team `+0x2a0` limits.
+- **Phase 3:** console commands (`cs2d_netcode_codes.txt`, server.cfg cvars, rcon `[236]/[241]/[242]`).
+- **Phase 4:** Lua (lua_* API, `addhook` / every hook in the original order and return semantics, timers,
+  `parse`, `player()`, `image()`, hudtxt, menus...). Compare with Lua probes on both servers.
+- **Phase 5:** construction, hostages, bomb, entities / triggers, items, projectiles, bots (present only).
+- **Phase 6:** `C:\C4` scripts end to end (with `-offline`).
+
 ## GL 1.x / GDI+ removal (done 2026-10-12..2026-10-15, independent of the Wasm port)
 Goal: drop the two Windows-only backends the renderer still depends on. The UDP network layer is explicitly out
 of scope, and this is *not* the Wasm port — the phases just happen to be the same work the port needs.

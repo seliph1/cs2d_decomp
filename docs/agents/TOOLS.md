@@ -78,6 +78,8 @@ Limitations:
 
 ## Ghidra dump of CS2D.exe (`docs/dump/`)
 
+`docs/dump/dedicated/` holds single functions of `cs2d_dedicated.exe` saved from REA (`FUN_1401dc530_join.c`, the recv 252 handler).
+
 A full Ghidra decompilation of the **client** `CS2D.exe` (830 `.c` files, ~34k functions, 59 MB), shared by
 a friend of the user. It is git-ignored: never commit it. There is no dump of `cs2d_dedicated.exe`.
 
@@ -113,6 +115,7 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 | `capture_original.sh <lua> <tag> "<steps>" [map] [secs]` | Dedicated (offline, optional Lua probe) + UDP proxy + **original** `CS2D.exe`, driven by `drive_orig.ps1` |
 | `capture_ours.sh <lua> <tag> "<capture steps>" [map] [secs]` | Same, but **our** `cs2d_client.exe --capture:…` with `CS2D_NET_LOG=1` |
 | `capture_transfer.sh <ded dir> <tag> "<steps>" [map] [secs] [password]` | A dedicated in **another folder** (e.g. the modded server in `C:\C4`) + proxy + our client run from a fresh copy of the game data in `out/game_<tag>/`, so downloads never land in the repo. Lists the new files. `CLIENT=orig` runs the original `CS2D.exe` there (steps are `drive_orig.ps1` steps); `KEEP=1` reuses the copy (second join). Restores the dedicated's `sys/server.cfg` |
+| `capture_server.sh <tag> "<steps>" [map] [secs]` | **Our** `cs2d_server.exe` (-offline, port 36970) + proxy + the **original** `CS2D.exe` (same driver steps as `capture_original.sh`): `srv_<tag>.log`, `proxy_srv_<tag>.log`. Diff the `S>C` lines of `dumpops.py` against a `capture_original.sh` run |
 | `udp_proxy.py <listen> <server> <log> <secs>` | Logs every datagram as `t C>S/S>C len hex`. `<server>` is a local port or `host:port` (for a remote server, run the client from a copy such as `out/game_remote_orig/` so downloads stay out of the repo) |
 | `browser_proxy.py <log> <secs> [server port]` | Server browser: listens on 127.0.0.1:36980 (put it in a test `sys/core/svl.cache`) and 0.0.0.0:36963 (LAN broadcast), forwards to the dedicated. Back up and restore `svl.cache` |
 | `dumpops.py <proxy log> [skip ops csv]` | Strips the Tudp header and ACK triples, then prints one payload per line (e.g. skip pings `229,247,249,1`) |
@@ -123,6 +126,8 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 | `initarrays.py <objdump listing> <start> <end> <global…>` | Recovers arrays the init code fills with straight-line stores (`mov [base+off], imm` or a `lea` constant): prints `global +offset value`. Used for the editor's entity tables (`knowledge/map-editor.md`) |
 | `bbscope.py <exe> <Class>` | Prints a BlitzMax class's fields (name, type tag, offset), globals and methods from its debug scope (e.g. `Tdo`, `Tpl`, `Te`) |
 | `weapontables.py <objdump listing> <exe> <global…>` | Recovers the per-weapon tables of `init_weapons` (`0x140230000..0x140236000`), which `initarrays.py` cannot follow because each store is indexed by the current id `DAT_140ddf57c`: prints `global id:value …`. Used for the Buy menu stats and the muzzle offsets (`knowledge/buy-menu.md`) |
+| `bbfind.py <exe> <text…>` | The inverse of `bbstr.py`: the object address of every BlitzMax string whose whole text equals `<text>`; then `grep "# 0x<addr>"` in an objdump listing to find the code using it (short strings REA `search_strings` misses, e.g. `ACK`) |
+| `reasave.py <REA result json> <out.c> [exe]` | Saves a `procedure_pseudo_code` result (the JSON file REA writes when the output is too long) as C in `docs/dump/dedicated/`, with `/*"text"*/` after every string object reference and the Tudp calls shortened to `W[conn].byte(…)`, `CREATEPACKET[conn](…)`, `R.short()` |
 | `bbstr.py <exe> <hexaddr…>` | Prints the BlitzMax string objects at those addresses: decodes the `bbs__` literals of the dump. Feed it the `lea` targets of a range: `objdump -d -M intel --start-address=… --stop-address=… CS2D.exe \| grep -o "# 0x140a[0-9a-f]*"`. `--array <pointer global> <i or $> <n>` reads a static BBArray (arrays filled at runtime point to `bbEmptyArray`: use `initarrays.py`) |
 | `map_grid.c` | Prints the collision or mode grid around a tile |
 | `pixel_diff.py <ref> <ours> [--window-shot] [--crop x,y,w,h] [--mask x,y,w,h]… [--tol n] [--diff out.png]` | Pixel comparison of two screenshots (Pillow): differing pixels (%), mean/max channel delta, PSNR, a per-band breakdown and the worst 32x32 cells; `--window-shot` crops a `drive_orig.ps1 shot:` to the client area (3 px border, 26 px title), `--mask` leaves the HUD out of the statistics. Recipe and measured numbers: `knowledge/rendering-notes.md` "Pixel comparison" |

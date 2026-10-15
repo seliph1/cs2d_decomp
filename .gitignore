@@ -2,6 +2,7 @@
 # Compilados e Artefatos de Build (C / MinGW / MSVC)
 # =============================================================================
 cs2d_client.exe
+cs2d_server.exe
 test_cs2d.exe
 *.o
 *.obj
