@@ -21,6 +21,15 @@ uint8_t cs2d_map_get_tile_mode(const cs2d_map_t *map, uint32_t tx, uint32_t ty);
 /* Collision value of a tile mode: 0 floor, 1 wall, 2 obstacle, 3 deadly (the map loader's mapping) */
 uint8_t cs2d_map_mode_collision(uint8_t mode);
 
+/*
+ * g_prop_class[cellprop] of a tile mode: 0 wall, 1 floor, 2 obstacle, -1 deadly (REA; the classes the
+ * map editor / TmapPreview colours by, see KNOWLEDGE entities.md). This is not the collision value:
+ * a deadly tile is walkable (collision 3) but is not a floor, so it takes no building and no portal.
+ * In the original the index is g_map_cellprop, the tile mode overridden by Env_Breakable / Func_DynWall;
+ * callers here use the raw mode and let the entity checks (Tdo.checkentity) cover those tiles.
+ */
+int cs2d_map_prop_class(uint8_t mode);
+
 /* Check if pixel position (px, py) is solid (wall or obstacle) */
 bool cs2d_map_is_solid(const cs2d_map_t *map, float px, float py);
 

@@ -125,11 +125,12 @@ typedef struct cs2d_dynobj_world_s {
 /* Effects the client should show after a message (kill explosion, build sound) */
 typedef struct {
     int   kind;              /* 0 none, 1 explosion (Tp.explosion r 32 on kill), 2 built (sfx/player/build.wav),
-                              * 3 / 4 orange / blue portal closed (Tp 0x1d sx 0.8), 5 NPC attack (FUN_1401ed310) */
+                              * 3 / 4 orange / blue portal closed (Tp 0x1d sx 0.8), 5 NPC attack (FUN_1401ed310),
+                              * 6 NPC died (Tdo.kill case 0x1e: the die sound of the NPC type) */
     float x, y;
     float rot;               /* kind 5: knife slash (Tp 13) angle, slash false for none */
     bool  slash;
-    const char *sound;       /* kind 5: sound at (x, y), NULL for none */
+    const char *sound;       /* kind 5 / 6: sound at (x, y), NULL for none */
     int   shot;              /* kind 5: Tdo.shoot along rot (c_offset 15, c_dist 400): 0 none, 1 style 0 bullet
                               * (soldier, weapon 0xf8), 2 style 2 beam (Vortigaunt ranged, weapon 0xf9) */
 } cs2d_dynobj_fx_t;

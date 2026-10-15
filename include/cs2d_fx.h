@@ -146,6 +146,18 @@ void cs2d_fx_muzzle_light(cs2d_fx_t *fx, float mx, float my, float angle_deg, bo
  */
 void cs2d_fx_laser_light(cs2d_fx_t *fx, float mx, float my, int mode);
 
-void cs2d_fx_update(cs2d_fx_t *fx, float dt);
+/*
+ * Advances every effect by dt seconds. map (may be NULL) is the loaded map: a Tp 12 fragment (Tshoot debris)
+ * stops when it enters a wall tile and halves its alpha on a deadly one (Tp.draw 0x140263cc0 case 0xc).
+ */
+void cs2d_fx_update(cs2d_fx_t *fx, float dt, const cs2d_map_t *map);
+
+/*
+ * Tdo.shoot (0x140209b50): the angle handed to Tshoot.Shoot is the object's rot + Rnd(-3, 3) (the two double
+ * constants at 0x140bd6c18 / 0x140bd6bb8, read from CS2D.exe). Every Tdo shot uses it - the turret barrels, the
+ * NPC soldier (weapon 0xf8) and the Vortigaunt ranged (0xf9); the same function also sets c_dist 400 and
+ * c_offset 15 (0x140ddea0c / 0x140ddea08) before the call.
+ */
+float cs2d_fx_tdo_shot_angle(float rot);
 
 #endif /* CS2D_FX_H */

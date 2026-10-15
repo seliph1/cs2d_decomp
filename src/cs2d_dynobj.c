@@ -307,6 +307,30 @@ cs2d_dynobj_t *cs2d_dynobj_spawn(cs2d_dynobj_world_t *w, int id, int typ, int x,
     return o;
 }
 
+/*
+ * Tdo.kill case 0x1e: the die sound of an NPC, by its `player` type (REA). 1 zombie 0x140a0d8d8, 2 headcrab
+ * 0x140a0d608, 3 snark 0x140a0d618, 4 vortigaunt 0x140a0d5f8, 5 soldier = one element of the array 0x140a0d958
+ * chosen with Rand(0, length - 1); any other value plays nothing. The globals were resolved to files from the
+ * loader 0x14030cc00 (in each block the `lea` of the name belongs to the sound stored in the *next* global):
+ * d8d8 = "sfx/player/zm_die.wav", d608 = "sfx/npc/headcrab_die.wav", d618 = "sfx/npc/snark_die.wav",
+ * d5f8 = "sfx/npc/vortigaunt_die.wav", d958 = the array of "sfx/player/die[1..3].wav".
+ * (The ground blood and the snark's particle fountain behind DAT_140ddf192, config "gore", are not drawn yet.)
+ */
+static const char *npc_die_sound(int type)
+{
+    switch (type) {
+        case 1: return "sfx/player/zm_die.wav";
+        case 2: return "sfx/npc/headcrab_die.wav";
+        case 3: return "sfx/npc/snark_die.wav";
+        case 4: return "sfx/npc/vortigaunt_die.wav";
+        case 5: {
+            static const char *const die[3] = { "sfx/player/die1.wav", "sfx/player/die2.wav", "sfx/player/die3.wav" };
+            return die[rand() % 3];
+        }
+        default: return NULL;
+    }
+}
+
 bool cs2d_dynobj_kill(cs2d_dynobj_world_t *w, int id, cs2d_dynobj_fx_t *fx)
 {
     cs2d_dynobj_t *o = cs2d_dynobj_get(w, id);
@@ -329,6 +353,12 @@ bool cs2d_dynobj_kill(cs2d_dynobj_world_t *w, int id, cs2d_dynobj_fx_t *fx)
                 fx->kind = (o->typ == CS2D_DO_ORANGE_PORTAL) ? 3 : 4;
                 fx->x = o->x + 16.0f;
                 fx->y = o->y + 16.0f;
+                break;
+            case CS2D_DO_NPC: /* the die sound at the NPC (Tdo.kill case 0x1e), no explosion */
+                fx->kind = 6;
+                fx->x = o->x;
+                fx->y = o->y;
+                fx->sound = npc_die_sound(o->player);
                 break;
             default:
                 break;
@@ -585,13 +615,13 @@ static bool npc_move(cs2d_dynobj_t *o, float speed, float turn)
 /*
  * FUN_140283f20 (client branch), once per frame: speed / turn per type from the call sites (0x140bd7150 ...):
  * zombie 1 / 5, headcrab 2.5 / 5, snark 6 / 4, vortigaunt 7 / 20, soldier 3 / 7. The Vortigaunt's ranged charge
- * counts to 90 frames. Tdo.draw_ground: the attack spin (rotvar) decays 5 per frame.
+ * counts to 90 frames. The attack spin (rotvar) is not touched here: Tdo.draw_ground case 0x1e decays it 5 per
+ * *draw* (render_npc, so a culled NPC keeps its spin).
  */
 static void update_npc(cs2d_dynobj_t *o)
 {
     static const float speed[6] = { 0.0f, 1.0f, 2.5f, 6.0f, 7.0f, 3.0f };
     static const float turn[6]  = { 0.0f, 5.0f, 5.0f, 4.0f, 20.0f, 7.0f };
-    if (o->rotvar > 0.0f) o->rotvar -= 5.0f;
     if (o->player < 1 || o->player > 5) return;
     if (npc_move(o, speed[o->player], turn[o->player])) {
         o->countdown = (o->player == 5) ? 0 : 10;
@@ -674,8 +704,9 @@ int cs2d_dynobj_can_build(const cs2d_dynobj_world_t *w, const cs2d_player_t *pla
     if (abs(tx - ptx) >= 2 || abs(ty - pty) >= 2) return 0;
     if (tx == ptx && ty == pty && !own_tile_ok) return 0;
     if (tx < 0 || ty < 0 || (uint32_t)tx >= map->width || (uint32_t)ty >= map->height) return 0;
-    /* g_prop_class[cellprop] == 1: a free floor tile (calibrated: our collision 0 stands for the floor class) */
-    if (map->collision[(size_t)ty * map->width + (size_t)tx] != 0) return 0;
+    /* g_prop_class[cellprop] == 1: a free floor tile (FUN_14014ef60). Not "our collision == 0": a deadly
+     * tile is walkable (collision 3) and an entity may have raised the collision of a floor tile. */
+    if (cs2d_map_prop_class(cs2d_map_get_tile_mode(map, (uint32_t)tx, (uint32_t)ty)) != 1) return 0;
     if (entity_blocks(map, tx, ty) || area_blocks(map, tx, ty, own_tile_ok)) return 0;
     if (cs2d_dynobj_at_tile((cs2d_dynobj_world_t *)w, tx, ty)) return 0;
     if (players) {
@@ -694,9 +725,10 @@ bool cs2d_dynobj_portal_tile(const cs2d_dynobj_world_t *w, int tx, int ty)
     const cs2d_map_t *map = w->map;
     if (!map || !map->collision) return false;
     if (tx < 0 || ty < 0 || (uint32_t)tx >= map->width || (uint32_t)ty >= map->height) return false;
-    /* g_prop_class[cellprop] == 1 (floor, our collision 0) and cellprop != 15 */
-    if (map->collision[(size_t)ty * map->width + (size_t)tx] != 0) return false;
-    if (cs2d_map_get_tile_mode(map, (uint32_t)tx, (uint32_t)ty) == 15) return false;
+    /* g_prop_class[cellprop] == 1 (a floor) and cellprop != 15 (Metal: portals need a normal floor) */
+    uint8_t m = cs2d_map_get_tile_mode(map, (uint32_t)tx, (uint32_t)ty);
+    if (cs2d_map_prop_class(m) != 1) return false;
+    if (m == CS2D_TILE_FLOOR_METAL) return false;
     if (cs2d_dynobj_at_tile((cs2d_dynobj_world_t *)w, tx, ty)) return false;
     return !entity_blocks(map, tx, ty) && !area_blocks(map, tx, ty, true);
 }

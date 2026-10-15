@@ -167,7 +167,9 @@ typedef enum {
 
 struct cs2d_dynobj_world_s;
 /* team_game: the game mode colors buildings by team (0x140a015d0[sv_gamemode]); local_id for own buildings */
-void cs2d_render_dynobjs(const struct cs2d_dynobj_world_s *w, cs2d_dynobj_layer_t layer, float cam_x, float cam_y,
+/* Draw the given layer of the world's dynamic objects. w is not const: Tdo.draw_ground decays an NPC's attack
+ * spin (rotvar) by 5 per drawn frame, like the original does inside the draw. */
+void cs2d_render_dynobjs(struct cs2d_dynobj_world_s *w, cs2d_dynobj_layer_t layer, float cam_x, float cam_y,
                          int screen_w, int screen_h, bool team_game, int local_id);
 /* Lua image passes (FUN_1402809b0 callers), by Tdo.mode */
 typedef enum {

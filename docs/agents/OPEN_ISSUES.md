@@ -95,7 +95,7 @@ the same one.
   - The 3D mode (`Tile3D`).
   - The setting `DAT_140ddf17f` that turns tile blending off is not read; we always blend. In the editor, painting does
     not re-run `updatetile` (we compute the neighbour every frame, so a cleared 0x40 flag never stays cleared).
-  - `test_file_transfer` "Transfer list" fails while `maps/fun_roleplay.map` / `gfx/c4/` exist locally.
+    (`test_file_transfer` "Transfer list", once the only failing case here, passes again as of 2026-10-15: 56/56.)
 - **Radar (2026-10-14, `cs2d_radar.c`):** icon queue ported from FUN_140291bd0; minimap texture now uploaded once per
   map. Missing: hostages (no client hostage objects), death icons (`DeathIcon`, frame 4), beeps (`Thud_radar_blink`),
   `Tpl.radarblink` red pulse, `Mode 2` pulsing bomb / rescue / escape tiles, and the full map (`TSmartMinimap`).
@@ -187,29 +187,39 @@ the same one.
 - **Construction / dynamic objects, not reconstructed or not measured** (KNOWLEDGE "Construction mode"):
   - No screenshot of the original's buildings / "Construct" menu yet: the menu window colors reuse our Tgui window,
     the "X" button (`Tgui_hudmen.fbutton`) is drawn like a small button, and the center message shade bar and fade
-    (1 s) are calibrated. The team menu buttons sit at window + 80 in our UI while every `Tgui_hudmen.button` call
-    passes x = 16: one of the two is wrong (check on a screenshot).
-  - Not drawn: laser mine beams, Construction Site smoke particles, dynamic lights; turret tracers use a calibrated
-    300 px reach.
+    (1 s) are calibrated. The team menu button x is resolved (2026-10-15): the reference screenshots put the
+    "Select Team" buttons at (205, 120) with the window at (125, 20) -> window + (80, 100), while the "Construct"
+    buttons are at window + (16, y) (KNOWLEDGE dynobj) - the two menus simply differ, our + 80 for the team menu is
+    the screenshot's value.
+  - Not drawn: laser mine beams, Construction Site smoke particles, dynamic lights; the turret tracer reach is the
+    `Tdo.shoot` `c_dist` 400 now (2026-10-15, was a calibrated 300).
   - Lua images / NPCs (2026-10-14, KNOWLEDGE dynobj "Lua images"): not compared with a screenshot of the original.
     Images: player avatars (no avatar download; the avatar_load placeholder always spins), physics parents
     (`[51,8]`, no physics objects), image obstacle shadows (ObstacleShadow2 / TLightingSprite for shadow 0), 3D tiles
     (Tile3D) and fog of war on follow images are not done; solid blend draws as alpha 1; `<tile:N>` and the flag
-    images are assumed midhandled. NPCs: no vortigaunt beam / soldier tracer (Tdo.shoot), no die sounds, rotvar decays
-    per 60 Hz frame (original per draw), zombie assumed a 32 x 32 sheet, health table 0x1409ed7f0 not read.
-  - Building hit debris (`cs2d_fx_building_hit`): fragments do not
-    stop at walls, the `particles` setting is fixed at 4, and the look is not compared with a screenshot yet.
+    images are assumed midhandled. The vortigaunt beam and the soldier tracer are drawn (`Tdo.shoot` 0x140209b50,
+    2026-10-15: `rot + Rnd(-3, 3)` with c_dist 400 / c_offset 15 - only the beam's colour mode 0 is still assumed),
+    the die sounds are done (`Tdo.kill` case 0x1e, all 5 types resolved from the sound loader) and the zombie sheet
+    is 64 x 96 (2 x 3 cells of 32 x 32, BMP header). The attack spin now decays per drawn frame (2026-10-15:
+    `render_npc`, not `update_npc`). Missing: the gore-gated ground blood decals and the snark's 9-particle
+    fountain, and the health table 0x1409ed7f0 (a runtime array).
+  - Building hit debris (`cs2d_fx_building_hit`): the fragments stop in a wall tile now (2026-10-15, Tp.draw case
+    0xc via `cs2d_fx_update`); the look is still not compared with a screenshot. `particles` (`DAT_140ddf182`) is read
+    from sys/config.cfg instead of the fixed 4; the `3 < particles` gates of the water splash / flashbang /
+    explosion lights still assume the shipped value.
   - Building hover text (KNOWLEDGE "Construction mode"): not compared with a screenshot of the original; the text
-    height uses our 15 px line height for Max2D `TextHeight`. Hostage (bit 4) hover text and the ground item hover
-    (`FUN_14029ffb0`, `THudItemHover`) are not done.
+    height uses our 15 px line height for Max2D `TextHeight`. The hostage (bit 4) hover text is done (2026-10-15,
+    `cs2d_hostages_hovered` + `render_hostage_hover`) and so is the ground item hover (`FUN_14029ffb0`, `THudItemHover`).
   - Player hover text: no smoke cover check (no smoke grenades) and no `Tpl.fog` (no fog of war); the click on the
     hovered player to spectate it (`FUN_14029fc70`) is not done. `team_game()` stands for both `0x140a015d0` tests
     (buildings `== 1`, players `!= 0`): the table values are not read yet.
   - Not handled: teleporter destination menu
     ("Select Teleporter Destination" 0528), Gate Field team blocking
     for movement, kill rewards and `mp_building_limit` / `mp_building_price` overrides.
-  - `g_prop_class[cellprop] == 1` is approximated by our collision 0; the team-game table `0x140a015d0` is assumed
-    (every mode but Deathmatch) and the respawn-mode table `0x1409f57b8` as modes 1..4.
+  - The respawn-mode table `0x1409f57b8` is assumed as modes 1..4; like `0x140a015d0` it is a BlitzMax array filled
+    at runtime (`PTR_bbEmptyArray_...`), so it was not read. `g_prop_class` is no longer approximated by our collision:
+    `cs2d_map_prop_class` (`cs2d_map.c`) is the single helper (2026-10-15, `test_prop_class`); its global
+    (`0x140a0fd90`) is a runtime array too, so the values come from the mode names and the call sites, not a byte dump.
   - `[252,7,11]` weapon settings are not read.
 - **CTF:** take / drop / return messages and the carried flag are done; capture messages (0589 / 0590), scores (`[64]`)
   and the return money bonus are not. Dropped ground items have no random rotation (Titem.add Rnd(360)). The draw order
@@ -296,6 +306,9 @@ of scope, and this is *not* the Wasm port — the phases just happen to be the s
 - **Fonts:** CJK / Thai text has no fallback face in either backend (unchanged).
 
 ## Verification debt
+- **`--screenshot` harness (2026-10-15):** `src/main_client.c` writes its frames to a hardcoded absolute path inside
+  another agent's scratch directory (`C:/Users/Gabriel/.gemini/antigravity/brain/<uuid>/scratch/`); make it take an
+  output path like `--capture` (which uses `out/capture.bmp`).
 - **Original + our client, one session:** not re-run after the latest join/leave fix (the session ended
   in a BSOD). Run `twoplayer_probe.lua` with the original firing next to our client and check the remote
   shot effects on screen.

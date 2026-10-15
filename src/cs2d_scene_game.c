@@ -633,12 +633,6 @@ static bool game_load_map(cs2d_client_t *client, const char *map_name)
     client->walk_active = false;
     client->last_tile_x = client->last_tile_y = -1;
 
-    /* On de_dust2, place the local player at the exact CT spawn tile (31, 44.5) */
-    if (_stricmp(map_name, "de_dust2") == 0) {
-        cs2d_player_t *pl = &client->game.players[client->local_player_id];
-        pl->pos.x = 31.0f * CS2D_TILE_SIZE;
-        pl->pos.y = 44.5f * CS2D_TILE_SIZE;
-    }
     center_camera_on_local_player(client);
     cs2d_render_loadscreen("Loading Entities", 1.0f);
 
@@ -816,7 +810,8 @@ static void impact_sound(float hx, float hy, bool hit_wall, int material)
 {
     static const char *const mat[5] = { "sfx/materials/wood", "sfx/materials/stone", "sfx/materials/metal",
                                         "sfx/materials/flesh", "sfx/materials/glass" };
-    if (hit_wall && rand() % 3 == 0) cs2d_sound_play_rand_at("sfx/weapons/ric", 5, ".ogg", hx, hy);
+    if (hit_wall && cs2d_config_particles() > 3 && rand() % 3 == 0)
+        cs2d_sound_play_rand_at("sfx/weapons/ric", 5, ".ogg", hx, hy);
     if (material >= 0 && material < 5) cs2d_sound_play_rand_at(mat[material], 3, ".wav", hx, hy);
 }
 
@@ -1612,7 +1607,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
     drain_entity_events(client);
     update_dynobjs(client, delta_time);
     update_bursts(client, delta_time);
-    cs2d_fx_update(&client->fx, delta_time);
+    cs2d_fx_update(&client->fx, delta_time, &client->game.map);
     env_sounds_update(client);
     cs2d_hudtxt_update(&client->hudtxt, (uint32_t)SDL_GetTicks()); /* Ttween.update */
     cs2d_gen_update(&client->gen, &client->game.map, client->cam_x, client->cam_y,
@@ -1711,14 +1706,15 @@ static void update_dynobjs(cs2d_client_t *client, float delta_time)
                 float side = (barrels == 2) ? (b ? -6.0f : 6.0f) : (barrels == 3 ? (b == 0 ? 0.0f : (b == 1 ? 8.0f : -8.0f)) : 0.0f);
                 double a = (double)(o->rot + 90.0f) * 0.017453292519943295;
                 float bx = cx + (float)sin(a) * side, by = cy - (float)cos(a) * side;
-                /* Reach of the turret weapon (0xfd) not recovered: 300 px (calibrated like the rifles) */
-                float hx, hy;
-                int hit = cs2d_ents_trace_shot(&client->ents, bx, by, o->rot, 300.0f, &hx, &hy);
+                /* Tdo.shoot sets c_dist 400 (0x140ddea0c = 0x190) and c_offset 15 (0x140ddea08 = 0xf) for every
+                 * caller, and FUN_14028c630 passes no distance: one +0x120 call per barrel with weapon 0xfd */
+                float rot = cs2d_fx_tdo_shot_angle(o->rot), hx, hy;
+                int hit = cs2d_ents_trace_shot(&client->ents, bx, by, rot, 400.0f, &hx, &hy);
                 float ddx = hx - bx, ddy = hy - by;
-                cs2d_fx_shot(&client->fx, bx, by, o->rot, 16.0f, hx, hy, hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < 299.0f, 1);
-                /* Tdo.shoot: Tshoot.c_offset 15 px ahead (the rotation's Rnd(-3, 3) is left out) */
-                double ra = (double)o->rot * 0.017453292519943295;
-                cs2d_fx_muzzle_light(&client->fx, bx + (float)sin(ra) * 15.0f, by - (float)cos(ra) * 15.0f, o->rot, false);
+                cs2d_fx_shot(&client->fx, bx, by, rot, 15.0f, hx, hy, hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < 399.0f, 1);
+                /* Tdo.shoot: Tshoot.c_offset 15 px ahead of the barrel, along the spread shot angle */
+                double ra = (double)rot * 0.017453292519943295;
+                cs2d_fx_muzzle_light(&client->fx, bx + (float)sin(ra) * 15.0f, by - (float)cos(ra) * 15.0f, rot, false);
             }
         }
     }
@@ -2523,6 +2519,26 @@ static void render_building_hover(cs2d_client_t *client, int screen_w, int scree
 }
 
 /*
+ * Hostage hover text (FUN_1402a12d0, mp_hovertext bit 4; checked after the players and before the buildings,
+ * and a hovered hostage suppresses the building text): "Hostage" (language 0776, the g_lang[0xac] group that
+ * holds 0776..0778) in yellow at the cursor - 25, then the health "n%" at + 25 in ((100 - hp) * 5.1, hp * 5.1, 0).
+ */
+static bool render_hostage_hover(cs2d_client_t *client, int screen_w, int screen_h)
+{
+    float mx = client->mouse_screen_x, my = client->mouse_screen_y;
+    if (!(client->net_hovertext & 4) || mx < 0 || my < 0 || mx > screen_w || my > screen_h) return false;
+    const cs2d_hostage_t *h = cs2d_hostages_hovered(&client->hostages, client->cam_x + mx, client->cam_y + my);
+    if (!h) return false;
+    int x = (int)mx;
+    hover_text("Hostage", x, (int)(my - 25.0f), 255, 255, 0);
+    char line[32];
+    snprintf(line, sizeof(line), "%d%%", h->health);
+    float r = (100 - h->health) * 5.1f, g = h->health * 5.1f;
+    hover_text(line, x, (int)(my + 25.0f), r < 0 ? 0 : (r > 255 ? 255 : (int)r), g < 0 ? 0 : (g > 255 ? 255 : (int)g), 0);
+    return true;
+}
+
+/*
  * Player hover text (FUN_1402a12d0, mp_hovertext bits 1 | 2, checked before hostages and buildings): the first other
  * living player in a team within 20 px of the cursor (Tpl.fog must be 0: no fog of war yet). Bit 1 draws the title
  * at the cursor - 25 (cs2d_player_hover_kind), bit 2 "health%" at + 25 in ((100 - hp) * 5.1, hp * 5.1, 0).
@@ -2836,7 +2852,10 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
         bool ok = cs2d_dynobj_can_build(&client->dynobj, client->game.players, me, ptx, pty, tx, ty, false) == 1;
         cs2d_render_build_helper(ptx, pty, tx, ty, ok, client->cam_x, client->cam_y);
     }
-    if (!render_player_hover(client, screen_w, screen_h)) render_building_hover(client, screen_w, screen_h);
+    if (!render_player_hover(client, screen_w, screen_h) &&
+        !render_hostage_hover(client, screen_w, screen_h)) {
+        render_building_hover(client, screen_w, screen_h);
+    }
     render_item_hover(client, screen_w, screen_h);
     if (local_pl->alive) {
         /* FUN_140291bd0 fills the radar icon queue, cs2d_draw_line_3 draws it */

@@ -1,7 +1,10 @@
 #include "cs2d_fx.h"
 #include "cs2d_sound.h"
 #include "cs2d_light.h"
+#include "cs2d_config.h"
+#include "cs2d_map.h"
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Fragment frames (first of 4 variants) and tint per Env_Breakable material */
@@ -39,6 +42,16 @@ void cs2d_fx_clear(cs2d_fx_t *fx)
     uint32_t seed = fx->seed ? fx->seed : 0x2d2d2d2du;
     memset(fx, 0, sizeof(*fx));
     fx->seed = seed;
+}
+
+/*
+ * Tdo.shoot (0x140209b50) adds Rnd(-3, 3) to the Tdo's rot before it calls Tshoot.Shoot. That Rnd is the
+ * game's global RNG, which in our code is rand() (the effects keep their own per-fx frand), so this is the
+ * game RNG like the other gameplay randomness in cs2d_client.c / cs2d_scene_game.c.
+ */
+float cs2d_fx_tdo_shot_angle(float rot)
+{
+    return rot + ((float)rand() / (float)RAND_MAX * 6.0f - 3.0f);
 }
 
 static void spawn_fragments(cs2d_fx_t *fx, float x, float y, int material, int count,
@@ -79,16 +92,17 @@ void cs2d_fx_breakable_hit(cs2d_fx_t *fx, float x, float y, int material, float 
  *   frame Rand(4, 7), gray Rand(50, 150), rotation Rand(1, 360), scale Rnd(0.4, 0.7), alpha blend;
  *   speed Rnd(0.2, 3) px per frame exactly along the direction, minus speed / 15 per frame;
  *   alpha Rnd(0.7, 1.2) minus 0.01 per frame.
- * Not reproduced: a fragment stops when it enters a wall, and a stopped one (layer 5) moves to another Tp list.
+ * A fragment that enters a wall tile (g_prop_class 0) has its speed zeroed - it stops where it is - and one in a
+ * deadly tile (class -1) halves its alpha (Tp.draw 0x140263cc0 case 0xc; `cs2d_fx_update`). Not reproduced: a
+ * stopped fragment on layer 5 moving to another Tp list.
  */
-#define BUILDING_HIT_PARTICLES 4
-
 void cs2d_fx_building_hit(cs2d_fx_t *fx, float x, float y, float angle_deg)
 {
     if (!fx) return;
+    int particles = cs2d_config_particles();
     for (int burst = 0; burst < 2; burst++) {
         float a = (angle_deg + (burst == 0 ? 180.0f : 0.0f)) * 0.017453292519943295f;
-        for (int i = 0; i < 2 * BUILDING_HIT_PARTICLES; i++) {
+        for (int i = 0; i < 2 * particles; i++) {
             cs2d_fx_particle_t *p = alloc_particle(fx);
             float v = (0.2f + frand(fx) * 2.8f) * 60.0f;
             float gray = (float)(50 + (int)(frand(fx) * 101.0f)) / 255.0f;
@@ -502,7 +516,7 @@ void cs2d_fx_laser_light(cs2d_fx_t *fx, float mx, float my, int mode)
                      100.0f, 5.0f, 1.0f);
 }
 
-void cs2d_fx_update(cs2d_fx_t *fx, float dt)
+void cs2d_fx_update(cs2d_fx_t *fx, float dt, const cs2d_map_t *map)
 {
     if (!fx) return;
     for (int i = 0; i < CS2D_FX_MAX_SHELLS; i++) {
@@ -524,6 +538,21 @@ void cs2d_fx_update(cs2d_fx_t *fx, float dt)
         p->x   += p->vx * dt;
         p->y   += p->vy * dt;
         p->rot += p->vrot * dt;
+        /* Tp.draw 0x140263cc0 case 0xc (Tp 12 = fragments.bmp, so our CS2D_FX_FRAGMENT): after moving, the tile
+         * the fragment is in is looked up in g_prop_class[g_map_cellprop] - a wall (class 0) zeroes its speed
+         * (the fragment stops where it is) and a deadly tile (class -1) halves its alpha (a = a * 0.5). */
+        if (map && p->kind == CS2D_FX_FRAGMENT && p->x >= 0.0f && p->y >= 0.0f) {
+            int tx = (int)(p->x * 0.03125f), ty = (int)(p->y * 0.03125f);
+            if (tx < (int)map->width && ty < (int)map->height) {
+                int cls = cs2d_map_prop_class(cs2d_map_get_tile_mode(map, (uint32_t)tx, (uint32_t)ty));
+                if (cls == 0) {
+                    p->vx = 0.0f;
+                    p->vy = 0.0f;
+                } else if (cls == -1) {
+                    p->life *= 0.5f;
+                }
+            }
+        }
         float drag = p->drag < 0.0f ? 1.0f : 1.0f - (p->drag > 0.0f ? p->drag : 2.5f) * dt; /* Debris slows down */
         if (drag < 0.0f) drag = 0.0f;
         p->vx *= drag;

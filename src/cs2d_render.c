@@ -4815,8 +4815,10 @@ static void dynobj_shadow(const cs2d_gfx_bank_t *bank, float cx, float cy, float
  * * 15 with ms * 2 (headcrab, snark) or ms / 2 (vortigaunt, soldier); an idle snark wobbles by sin(ms / 5 + id) * 15.
  * An unknown type draws a red 16 px box with "Invalid NPC Player Value: n". The Vortigaunt's charge
  * (FUN_140283f20) adds two green flare3 at rot -+ 45 degrees, 15 px away, additive.
+ * After the draw the attack spin decays: rotvar -= 5 per *drawn* frame (Tdo.draw_ground case 0x1e), so a culled
+ * NPC keeps it - this is why it is not in the 60 Hz update.
  */
-static void render_npc(const cs2d_dynobj_t *o, float cam_x, float cam_y, int ms)
+static void render_npc(cs2d_dynobj_t *o, float cam_x, float cam_y, int ms)
 {
     static const char *files[6] = { NULL, "gfx/npc/zombie.bmp", "gfx/npc/headcrab.bmp", "gfx/npc/snark.bmp",
                                     "gfx/npc/vortigaunt.bmp", "gfx/npc/soldier.bmp" };
@@ -4863,16 +4865,18 @@ static void render_npc(const cs2d_dynobj_t *o, float cam_x, float cam_y, int ms)
                                      (float)c * 0.025f, 4);
         }
     }
+    /* Tdo.draw_ground case 0x1e: the attack spin (set to 40 / 20 by [36,id,9]) decays 5 per draw */
+    if (o->rotvar > 0.0f) o->rotvar -= 5.0f;
 }
 
-void cs2d_render_dynobjs(const cs2d_dynobj_world_t *w, cs2d_dynobj_layer_t layer, float cam_x, float cam_y,
+void cs2d_render_dynobjs(cs2d_dynobj_world_t *w, cs2d_dynobj_layer_t layer, float cam_x, float cam_y,
                          int screen_w, int screen_h, bool team_game, int local_id)
 {
     cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
     if (!w || !bank || !bank->tex_buildings.id) return;
     int ms = (int)GetTickCount();
     for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
-        const cs2d_dynobj_t *o = &w->objs[i];
+        cs2d_dynobj_t *o = &w->objs[i];
         if (!o->active || o->typ == CS2D_DO_IMAGE) continue;
         if (o->typ == CS2D_DO_NPC) {
             if (layer == CS2D_DO_LAYER_GROUND) render_npc(o, cam_x, cam_y, ms);

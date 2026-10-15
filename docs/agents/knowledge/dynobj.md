@@ -50,6 +50,12 @@ offline dedicated with `sv_gamemode 3` + `tools/agent/lua/construct_probe.lua`. 
   (alpha 0.4), label at +20, right text at w - 5 (alpha 0.4).
 - **Collision** (`cs2d_update_mapdata` 0x1401413b0, written after tiles and entities): Barricade cell 6 (obstacle),
   Construction Site 5, walls / Dispenser / turrets / supplies 1; Barbed Wire, Gate Field and teleporters stay walkable.
+- **g_prop_class** (`CS2D.exe` 0x140a0fd90, a BlitzMax array indexed by the tile mode / `g_map_cellprop`, also
+  read as `g_prop_class[g_tile_prop[map_id]]` for the per-frame mode): 0 wall, 1 floor, 2 obstacle, -1 deadly. It is
+  the class, not the collision value: a deadly tile is walkable (collision 3) but is not a floor. Read by the build
+  rules (`Tdo.checkareaentity` 0x140170000, `FUN_14014ef60` can-build), the Portal Gun / teleporters (0x140180000),
+  pathfinding (0x1402b/0x1402c0000 `while (class == 1)`), the light engine (0x140260000, 0x140090000) and the wall
+  tile height (0x1402829ed `class == 0`). Code: `cs2d_map_prop_class` in `cs2d_map.c` (one helper for all callers).
 - **Drawing order** (`FUN_14028f890`): floor, `Tdo.draw_ground` (Barbed Wire rot + 90, Gate Field frame 5 additive team
   color |sin * 0.7| + 0.3 over a 2x shadow, Site frame 7, Teleporters 8 / 9 over a 2.3x shadow, mines), items,
   `Tdo.draw_obstacle` (Barricade frame 0), players, `Tdo.draw_wall` (walls frames 2..4; Dispenser / turrets / supplies on
@@ -60,12 +66,19 @@ offline dedicated with `sv_gamemode 3` + `tools/agent/lua/construct_probe.lua`. 
 - **Shadows (our choice, not from REA):** solid buildings except the Construction Site cast a 32 px wall shadow
   (`map->object_shadow`); the build helper alpha is floored at 0.35; explosions draw additive.
 - **Turret** (`FUN_14028c630`): idle `rot = rrot + 60 sin(rotvar)`, rotvar += 1 per frame; while `countdown` runs it aims
-  at the target (`atan2(tx - 16 - x, y + 16 - ty)`, within 445 x 260 px) and fires while countdown > 10.
+  at the target (`atan2(tx - 16 - x, y + 16 - ty)`, within 445 x 260 px) and fires while countdown > 10, calling the
+  method at +0x120 (`Tdo.shoot`) once per barrel: type 8 one shot at the centre, 11 two at +-6 px, 12 three at 0 and
+  +-8 px, every one with weapon 0xfd and **no distance argument** (the distance is the 400 that `Tdo.shoot` sets).
 - **Respawn modes** (DM, TDM, Construction, Zombies): joining a team leaves the player dead; a left click between the HUD
   bands sends `[39]` unless a living player is within 20 px of the cursor; the server answers `[21]`. While
   `mp_respawndelay` (`[252,6]` byte after sv_gamemode) runs the HUD shows 0767 in (200, 0, 0).
 - **Kill:** `[19, victim, killer, assist, weapon, x u16, y u16]` (9 bytes; REA `FUN_1401eaf60` reads the 3rd byte as a
   player id and compares the 4th with 0xfa / 0xfc).
+- **`particles`** (`DAT_140ddf182`, sys/config.cfg `particles` 4): `Tp.breakable` material 1 bursts 2 x `particles`
+  `Tp.matp` fragments, and the gates `3 < particles` enable the wall ricochet (`Tshoot.WallImpactFx` 0x14011aeb0),
+  the water splash, the flashbang Tp and the explosion lights. Now read through `cs2d_config_particles()`
+  (2026-10-15, used by `cs2d_fx_building_hit` and the ricochet); the `> 3` gates in `cs2d_projectile.c` / `cs2d_gen.c`
+  still assume the shipped 4. `gore` (`DAT_140ddf192`, shipped 2) gates the blood decals (see "NPC death").
 - **Hover text** (`FUN_1402a12d0`, called only with the cursor on the 850x480 screen): `mp_hovertext` (`0x140a14e00[1]`)
   is a bit mask, 1 | 2 players, 4 hostages, 8 buildings. It comes in `[252,6]` at maxplayers + 12 + both string
   lengths (31 with the dedicated's default config, proxy) and in `[237,16,i32]`. Bit 8: the first category 1 object
@@ -84,6 +97,12 @@ offline dedicated with `sv_gamemode 3` + `tools/agent/lua/construct_probe.lua`. 
   smoke (`Tpro.smokegren_cover`) gets nothing, and its health only shows under sv_specmode 1 while the flag 0x140a1afd8
   is 0 (the local player is not alive in a team; `FUN_1402559c0` sets it). Then `FUN_14029fc70`: a left click on the
   hovered player while that flag is 0 follows it as a spectator (specmode 1, or 2 for a team mate) and sends `[67]`.
+- **Hostage hover text** (same function, bit 4, tried after the players and before the buildings; a hovered hostage
+  suppresses the building text): the first `Thostage.list` hostage with health >= 1, `fog` (+0x5c) 0 and
+  |cursor - hostage| < 20 px on both axes. "Hostage" (language 0776, the g_lang[0xac] group 0776..0778) is at
+  cursor y - 25 in (255,255,0), the health "n%" at y + 25 in ((100 - hp) * 5.1, hp * 5.1, 0). Thostage fields:
+  id +0x8, health +0xc, follow +0x10, used +0x14, look +0x18, x +0x1c, y +0x20, fog +0x5c. Code:
+  `cs2d_hostages_hovered` + `render_hostage_hover` (scene_game).
 - **Shot debris** (`Tshoot.Shoot` 0x1402073ed, client side for every shot): each tile the bullet enters is checked with
   `Tdo.getatpos`; an object of category 1 or 2 within 457 x 272 px of the shooter, of type 1, 3..5 or below 16 in the
   mask 0x9b80 (7, 8, 9, 11, 12, 15), hit with damage > 0, calls `Tp.breakable(x, y, 1, angle + 180)` and
@@ -93,7 +112,9 @@ offline dedicated with `sv_gamemode 3` + `tools/agent/lua/construct_probe.lua`. 
   material 1: another Rnd(-5, 5), frame Rand(4, 7), gray Rand(50, 150), speed Rnd(0.2, 3) px per frame along the
   direction (constants 0x140bd6b30 / p5 = 3). Tp type 12 (`Tp.Create` 0x14004ac20, `Tp.draw` 0x140263cc0): rotation
   Rand(1, 360), alpha Rnd(0.7, 1.2) - 0.01 per frame, scale Rnd(0.4, 0.7), alpha blend, speed - speed / 15 per
-  frame, stops inside a wall tile; on layer 5 a fragment slower than 0.3 moves to another Tp list.
+  frame; **inside a wall tile (g_prop_class 0) the speed is zeroed, so the fragment stops where it is, and inside a
+  deadly tile (class -1) the alpha halves** (2026-10-15: `cs2d_fx_update` takes the map and does this check);
+  on layer 5 a fragment slower than 0.3 moves to another Tp list.
 - **Supply menu** (`Tgui_hudmen` menu 61 Supply / 62 Super Supply, title 0373 "Supply Selection"): the use key
   (`FUN_14014f820`, tiles 0/16/32 px along the aim) on an own Tdo 9 / 15 opens it and sends nothing. Buttons x 16
   from y 30 every 30 px (+20 gap after the 6th) for each non-empty `mp_supply_items` slot with a name, slots 7..10
@@ -142,7 +163,25 @@ Source: dump / REA (addresses below), proxy of our client on the offline dedicat
   `[36,id,2]` sets x, y and m_x, m_y. **[36,id,9, pid, kind]** = attack (FUN_1401ed310): rotvar 40 (zombie, vortigaunt melee) /
   20 (headcrab, snark), Tp 13 slash at x, y along rot, sounds zm_attack[] / npc/headcrab_attack / snark_attack /
   vortigaunt_attack, vortigaunt kind 1 charge (upgrade = 1, vortigaunt_charge) / kind 2 ranged (vortigaunt_ranged + beam),
-  soldier weapons/mp5 + shot; then m_rot = angle to the player.
+  soldier weapons/mp5 + shot; then m_rot = angle to the player. The attack spin is purely visual: `rot + rotvar` is
+  drawn and **the draw** (`Tdo.draw_ground` case 0x1e) does `rotvar -= 5` afterwards, so an NPC that is culled
+  (off screen) keeps its spin; our update does not touch it (`update_npc`), `render_npc` decays it.
+- **`Tdo.shoot`** (0x140209b50, the method at vtable +0x120 used by NPCs and turrets): it sets `c_dist` 400
+  (0x140ddea0c = 0x190), `c_offset` 15 (0x140ddea08 = 0xf), then calls `Tshoot.Shoot` with the angle
+  **`rot + Rnd(-3, 3)`** (the double constants 0x140bd6c18 = -3 and 0x140bd6bb8 = 3) and the weapon 0xf8 (soldier,
+  style 0 bullet) or 0xf9 (Vortigaunt ranged, style 2 beam). Our code: `cs2d_fx_tdo_shot_angle` (cs2d_fx.c) in the
+  NPC path (cs2d_client.c kind 5) and in the turret burst (cs2d_scene_game.c).
+- **NPC death** (`Tdo.kill` case 0x1e; `cs2d_dynobj_kill` kind 6): the die sound by the NPC type - 1 zombie
+  0x140a0d8d8 = `sfx/player/zm_die.wav`, 2 headcrab 0x140a0d608 = `headcrab_die`, 3 snark 0x140a0d618 = `snark_die`,
+  4 vortigaunt 0x140a0d5f8 = `vortigaunt_die`, 5 soldier = a random element of the array 0x140a0d958
+  (`sfx/player/die[1..3]`, `Rand(0, length - 1)`); any other value is silent (the file names come from the sound
+  loader, see KNOWLEDGE sound.md "How to resolve a global to a file"). With `gore` (`DAT_140ddf192`, config `gore`)
+  the zombie / soldier get `Tp::groundblood(x, y, -1, -1, -1)`, the headcrab and vortigaunt `Rand(140, 200)` size in
+  colour 230, and the snark `Rand(120, 180)` in colour 255 plus 9 Tp 3 particles 45 deg apart (a = Rnd(0.4, 0.9),
+  sx = Rnd(0.3, 0.8), speed 0.3, rots = Rnd(-0.5, 0.5)). **Our ground decals and the snark fountain are not drawn.**
+- **NPC sprites:** `gfx/npc/zombie.bmp` is 64 x 96 = 2 x 3 cells of 32 x 32 (BMP header, 2026-10-15), so the zombie
+  uses a 2 column grid and frame 2 (row 1, col 0); headcrab / snark / vortigaunt are 32 x 32 and the soldier 40 x 40
+  as a single cell (scale 0.5 only when the cell is >= 64 px wide).
 - **NPC motion** (FUN_140283f20 → FUN_140283120(speed, turn), per frame): turn by <= turn deg while > 3 deg off m_rot, else
   walk speed px toward m_x / m_y while > 3 px away. speed / turn: zombie 1 / 5, headcrab 2.5 / 5, snark 6 / 4, vortigaunt
   7 / 20, soldier 3 / 7. Draw (Tdo.draw_ground 0x1e): gfx/npc/*.bmp (magenta), zombie frame 2 of 32 x 32, scale 0.5 when

@@ -2403,25 +2403,30 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 if (n < 0) break;
                 if (dfx.kind == 1) cs2d_fx_explosion(&client->fx, dfx.x, dfx.y, 32.0f);
                 else if (dfx.kind == 2) cs2d_sound_play_at("sfx/player/build.wav", dfx.x, dfx.y, 1.0f, 0);
-                else if (dfx.kind == 3 || dfx.kind == 4) cs2d_fx_portal_glow(&client->fx, dfx.x, dfx.y, 0.8f, dfx.kind - 2);
+                else if (dfx.kind == 6) {
+                    /* NPC died (Tdo.kill case 0x1e): the type's die sound at the NPC. The ground blood and the
+                     * snark's particle fountain behind DAT_140ddf192 (config "gore") are not drawn yet. */
+                    if (dfx.sound) cs2d_sound_play_at(dfx.sound, dfx.x, dfx.y, 1.0f, 0);
+                }
                 else if (dfx.kind == 5) {
                     /* NPC attack (FUN_1401ed310): Tp 13 at the NPC along its angle, and the type's sound */
                     if (dfx.slash) cs2d_fx_knifeslash(&client->fx, dfx.x, dfx.y, dfx.rot);
                     if (dfx.sound) cs2d_sound_play_at(dfx.sound, dfx.x, dfx.y, 1.0f, 0);
                     if (dfx.shot) {
-                        /* Tdo.shoot (0x140209b50): Tshoot.Shoot with c_dist 400 and c_offset 15 at the NPC's angle (its
-                         * Rnd(-3, 3) spread is left out). The beam's color is mode 0 (no shooting player: assumed) */
-                        float hx, hy, r = dfx.rot * 0.017453292519943295f;
+                        /* Tdo.shoot (0x140209b50): Tshoot.Shoot with c_dist 400 and c_offset 15 at the NPC's angle
+                         * + Rnd(-3, 3). The beam's color is mode 0 (no shooting player: assumed) */
+                        float rot = cs2d_fx_tdo_shot_angle(dfx.rot), hx, hy;
+                        float r = rot * 0.017453292519943295f;
                         float mx = dfx.x + sinf(r) * 15.0f, my = dfx.y - cosf(r) * 15.0f;
-                        int hit = cs2d_ents_trace_shot(&client->ents, dfx.x, dfx.y, dfx.rot, 400.0f, &hx, &hy);
+                        int hit = cs2d_ents_trace_shot(&client->ents, dfx.x, dfx.y, rot, 400.0f, &hx, &hy);
                         float ddx = hx - dfx.x, ddy = hy - dfx.y;
                         if (dfx.shot == 2) {
                             cs2d_fx_laser(&client->fx, mx, my, hx, hy, 0);
                             cs2d_fx_laser_light(&client->fx, mx, my, 0);
                         } else {
-                            cs2d_fx_shot(&client->fx, dfx.x, dfx.y, dfx.rot, 15.0f, hx, hy,
+                            cs2d_fx_shot(&client->fx, dfx.x, dfx.y, rot, 15.0f, hx, hy,
                                          hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < 399.0f, 1);
-                            cs2d_fx_muzzle_light(&client->fx, mx, my, dfx.rot, false);
+                            cs2d_fx_muzzle_light(&client->fx, mx, my, rot, false);
                         }
                     }
                 }

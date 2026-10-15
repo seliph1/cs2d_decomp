@@ -84,6 +84,16 @@ uint8_t cs2d_map_mode_collision(uint8_t mode)
     return 0;     /* Walkable floor */
 }
 
+/* g_prop_class (REA): the class of a tile mode, 0 wall, 1 floor, 2 obstacle, -1 deadly. Everything the
+ * wall / obstacle / deadly lists do not name is a floor, including the unknown modes. */
+int cs2d_map_prop_class(uint8_t mode)
+{
+    if (mode == CS2D_TILE_WALL || mode == CS2D_TILE_WALL_NOSHADOW || mode == CS2D_TILE_WALL_FLOORLEVEL) return 0;
+    if (mode == CS2D_TILE_OBSTACLE || mode == CS2D_TILE_OBSTACLE_NOSHADOW) return 2;
+    if (mode >= CS2D_TILE_DEADLY_NORMAL && mode <= CS2D_TILE_DEADLY_ABYSS) return -1;
+    return 1;
+}
+
 /* Reconstructed directly from FUN_1400493d0 & FUN_140113d50 in cs2d_dedicated.exe */
 bool cs2d_map_load_file(cs2d_map_t *map, const char *filepath)
 {

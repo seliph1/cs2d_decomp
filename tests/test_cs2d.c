@@ -279,6 +279,31 @@ static bool test_game_loop(void)
     }
     TEST_PASS("Round Start (Freezetime)");
 
+    /* A player has to stand on a spawn tile of their own team: cs2d_game_start_round is the only thing that
+     * places players, so nothing (e.g. a hardcoded de_dust2 position) may move them afterwards. A leftover
+     * override used to drag the local player from the T spawn to the CT side, which read as a teleport when
+     * the player was a Terrorist holding the C4. */
+    {
+        static const cs2d_team_t k_team[2] = { CS2D_TEAM_T, CS2D_TEAM_CT };
+        for (int ti = 0; ti < 2; ti++) {
+            size_t n = cs2d_map_count_spawns(&game.map, k_team[ti]);
+            if (n == 0) { TEST_FAIL("Spawn", "the map has no spawn of a team"); return false; }
+            for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
+                const cs2d_player_t *p = &game.players[i];
+                if (p->team != k_team[ti] || !p->alive) continue;
+                bool on_spawn = false;
+                for (size_t k = 0; k < n && !on_spawn; k++) {
+                    cs2d_vec2_t sp;
+                    if (!cs2d_map_get_spawn(&game.map, k_team[ti], k, &sp)) break;
+                    if ((int)(p->pos.x / CS2D_TILE_SIZE) == (int)(sp.x / CS2D_TILE_SIZE) &&
+                        (int)(p->pos.y / CS2D_TILE_SIZE) == (int)(sp.y / CS2D_TILE_SIZE)) on_spawn = true;
+                }
+                if (!on_spawn) { TEST_FAIL("Spawn", "a player is not on a spawn tile of their own team"); return false; }
+            }
+        }
+    }
+    TEST_PASS("Spawn: every player stands on an Info_T / Info_CT of their own team, and nothing moves them");
+
     /* Pass Freeze time */
     cs2d_game_update(&game, 3.5f);
     if (game.round_state != CS2D_ROUND_PLAYING) {
@@ -1686,7 +1711,7 @@ static bool test_recoil_and_swing(void)
         fabsf(fx.p[0].max_life - (1.0f / (0.07f * 60.0f))) > 0.001f) {
         TEST_FAIL("Knife slash FX (0x14004b4e0)", "Expected CS2D_FX_KNIFESLASH with 0.07/frame fade rate");
     }
-    cs2d_fx_update(&fx, 0.30f);
+    cs2d_fx_update(&fx, 0.30f, NULL);
     if (fx.count != 0) {
         TEST_FAIL("Knife slash FX expiry", "Expected knifeslash particle to expire after ~0.24s");
     }
@@ -2578,6 +2603,49 @@ static bool test_images_and_npcs(void)
     if (cs2d_dynobj_net_message(&w, at, 6, 0, &fx) != 6 || fx.kind != 5 || !fx.slash || npc->rotvar != 20.0f ||
         !fx.sound || strcmp(fx.sound, "sfx/npc/headcrab_attack.wav") != 0) TEST_FAIL("NPC", "[36,9] attack");
     if (fabsf(npc->m_rot) > 0.01f) TEST_FAIL("NPC", "m_rot towards the attacked player");
+
+    /* The attack spin (rotvar) decays 5 per *drawn* frame (Tdo.draw_ground case 0x1e, render_npc), never in the
+     * 60 Hz update: a culled NPC keeps its spin until it is drawn again */
+    float spin = npc->rotvar;
+    cs2d_dynobj_update(&w, players, 30.0f);
+    if (spin != 20.0f || npc->rotvar != spin)
+        TEST_FAIL("NPC", "rotvar must decay per draw, not in update_npc");
+
+    /* Death (Tdo.kill case 0x1e): this NPC is a headcrab (type 2), its die sound is the one of 0x140a0d608 */
+    const uint8_t npc_rm[] = { 35, 3, 0 };
+    memset(&fx, 0, sizeof(fx));
+    if (cs2d_dynobj_net_message(&w, npc_rm, 3, 0, &fx) != 3 || fx.kind != 6 || !fx.sound || fx.x != npc->x ||
+        strcmp(fx.sound, "sfx/npc/headcrab_die.wav") != 0) TEST_FAIL("NPC", "die sound of type 2");
+    /* The other types: 1 zombie zm_die, 3 snark, 4 vortigaunt, 5 soldier = a random sfx/player/die[1..3],
+     * any other value stays silent. [49] spawn is 13 bytes: opcode, id u16, typ, x u16, y u16, rot u16, mode,
+     * team, player (= the NPC type). */
+    {
+        static const struct { uint8_t type; const char *die; } k_die[] = {
+            { 1, "sfx/player/zm_die.wav" }, { 3, "sfx/npc/snark_die.wav" },
+            { 4, "sfx/npc/vortigaunt_die.wav" }, { 6, NULL },
+        };
+        for (int i = 0; i < 4; i++) {
+            uint8_t spawn[] = { 49, 200, 0, 30, 0x40, 0x01, 0x40, 0x01, 0, 0, 0, 0, k_die[i].type };
+            uint8_t rm[] = { 35, 200, 0 };
+            if (cs2d_dynobj_net_message(&w, spawn, (int)sizeof(spawn), 0, NULL) != 13 ||
+                cs2d_dynobj_net_message(&w, rm, 3, 0, NULL) != 3) TEST_FAIL("NPC", "spawn / remove an NPC");
+            memset(&fx, 0, sizeof(fx));
+            if (cs2d_dynobj_net_message(&w, spawn, (int)sizeof(spawn), 0, NULL) != 13) TEST_FAIL("NPC", "spawn again");
+            if (cs2d_dynobj_net_message(&w, rm, 3, 0, &fx) != 3 || fx.kind != 6) TEST_FAIL("NPC", "die fx");
+            if (k_die[i].die) {
+                if (!fx.sound || strcmp(fx.sound, k_die[i].die) != 0) TEST_FAIL("NPC", "die sound of the type");
+            } else if (fx.sound) {
+                TEST_FAIL("NPC", "an invalid NPC type plays no die sound");
+            }
+        }
+        uint8_t soldier[] = { 49, 200, 0, 30, 0x40, 0x01, 0x40, 0x01, 0, 0, 0, 0, 5 };
+        uint8_t rm[] = { 35, 200, 0 };
+        cs2d_dynobj_net_message(&w, soldier, (int)sizeof(soldier), 0, NULL);
+        memset(&fx, 0, sizeof(fx));
+        if (cs2d_dynobj_net_message(&w, rm, 3, 0, &fx) != 3 || fx.kind != 6 || !fx.sound ||
+            strncmp(fx.sound, "sfx/player/die", 14) != 0 || fx.sound[14] < '1' || fx.sound[14] > '3')
+            TEST_FAIL("NPC", "the soldier plays one of sfx/player/die[1..3]");
+    }
 
     TEST_PASS("Lua images ([51] 0..9, [59], [54], Trestable paths, masks) and NPC spawn / move / turn / attack");
     return true;
@@ -3742,6 +3810,13 @@ static bool test_item_and_player_shadows(void)
         TEST_FAIL("Shadow Config", "Expected shadows=50, playershadows=1, itemshadows=1");
         return false;
     }
+    /* "particles" (DAT_140ddf182) is the fragment count of a building hit and the "> 3" effect gates; the
+     * module accessor is what cs2d_fx / the HUD read without a cs2d_config_t */
+    if (cfg.particles != 4 || cs2d_config_particles() != 4) {
+        TEST_FAIL("Particles Config", "Expected particles=4 in sys/config.cfg and in the module accessor");
+        return false;
+    }
+    if (cfg.gore != 2) TEST_FAIL("Gore Config", "Expected gore=2 in sys/config.cfg");
     TEST_PASS("sys/config.cfg shadow parameters (shadows 50, playershadows 1, itemshadows 1) parsed");
 
     /* 2. Render getters & setters */
@@ -4211,9 +4286,9 @@ static bool test_fx_light_particles(void)
         fabsf(fx.p[0].max_life - 10.0f / 60.0f) > 1e-4f || fx.p[0].size != 0.4f) {
         TEST_FAIL("Tp 2 flare", "red beep flare: 10 frames at sx 0.4, drawn in the world while the engine is off");
     }
-    cs2d_fx_update(&fx, 9.5f / 60.0f);
+    cs2d_fx_update(&fx, 9.5f / 60.0f, NULL);
     if (fx.count != 1) TEST_FAIL("Tp 2 flare", "gone before a / fade frames");
-    cs2d_fx_update(&fx, 1.0f / 60.0f);
+    cs2d_fx_update(&fx, 1.0f / 60.0f, NULL);
     if (fx.count != 0) TEST_FAIL("Tp 2 flare", "still there after a / fade frames");
     /* explosion_count: + 5 per explosion (the light only while < 11), and the flare does not move */
     cs2d_fx_clear(&fx);
@@ -5048,6 +5123,18 @@ static bool test_hostages(void)
         return false;
     }
 
+    /* Hover text target (FUN_1402a12d0 mp_hovertext bit 4): alive, not fog-hidden, < 20 px on both axes */
+    if (cs2d_hostages_hovered(&w, 304.0f, 80.0f) != h3 || cs2d_hostages_hovered(&w, 323.9f, 80.0f) != h3 ||
+        cs2d_hostages_hovered(&w, 324.0f, 80.0f) || cs2d_hostages_hovered(&w, 304.0f, 60.0f) ||
+        cs2d_hostages_hovered(&w, 16.0f, 16.0f) /* id 7 has health 0 */ ||
+        cs2d_hostages_hovered(NULL, 304.0f, 80.0f)) {
+        TEST_FAIL("Hostages", "mp_hovertext bit 4 target");
+        return false;
+    }
+    h3->fog = true;
+    if (cs2d_hostages_hovered(&w, 304.0f, 80.0f)) { TEST_FAIL("Hostages", "a fog-hidden hostage has no hover text"); return false; }
+    h3->fog = false;
+
     /* Thostage.use: CT only, $150 on the first use, capped at 16000; release clears follow */
     static cs2d_player_t pl[CS2D_MAX_PLAYERS + 1];
     memset(pl, 0, sizeof(pl));
@@ -5080,6 +5167,160 @@ static bool test_hostages(void)
         return false;
     }
     TEST_PASS("Hostages: map spawn, snapshot, use, [29], client movement");
+    return true;
+}
+
+/*
+ * g_prop_class (REA): the class of a tile mode, 0 wall, 1 floor, 2 obstacle, -1 deadly. Tdo.checkareaentity /
+ * Tdo.add (can build, FUN_14014ef60) and the Portal Gun ask for the class, not for the collision value: a
+ * deadly tile is walkable (collision 3) and so is water, but only a floor takes a building or a portal.
+ */
+static bool test_prop_class(void)
+{
+    printf("\n--- Testing g_prop_class (tile class of a mode) ---\n");
+    if (cs2d_map_prop_class(CS2D_TILE_WALL) != 0 || cs2d_map_prop_class(CS2D_TILE_WALL_NOSHADOW) != 0 ||
+        cs2d_map_prop_class(CS2D_TILE_WALL_FLOORLEVEL) != 0)
+        TEST_FAIL("g_prop_class", "walls (1, 3, 5) are class 0");
+    if (cs2d_map_prop_class(CS2D_TILE_OBSTACLE) != 2 || cs2d_map_prop_class(CS2D_TILE_OBSTACLE_NOSHADOW) != 2)
+        TEST_FAIL("g_prop_class", "obstacles (2, 4) are class 2");
+    if (cs2d_map_prop_class(CS2D_TILE_FLOOR_NOSOUND) != 1 || cs2d_map_prop_class(CS2D_TILE_FLOOR_WADE) != 1 ||
+        cs2d_map_prop_class(CS2D_TILE_FLOOR_METAL) != 1 || cs2d_map_prop_class(17) != 1 ||
+        cs2d_map_prop_class(255) != 1)
+        TEST_FAIL("g_prop_class", "floors and unknown modes are class 1");
+    if (cs2d_map_prop_class(CS2D_TILE_DEADLY_NORMAL) != -1 || cs2d_map_prop_class(CS2D_TILE_DEADLY_ABYSS) != -1)
+        TEST_FAIL("g_prop_class", "deadly tiles (50..53) are class -1");
+    if (cs2d_map_mode_collision(CS2D_TILE_DEADLY_TOXIC) != 3)
+        TEST_FAIL("g_prop_class", "a deadly tile stays walkable (collision 3)");
+
+    /* The class decides on a tile that is walkable: no building and no portal on a deadly one */
+    const int W = 16, px = 4 * W + 5;
+    static cs2d_map_t map;
+    static cs2d_dynobj_world_t w;
+    static uint8_t tiles[16 * 16], collision[16 * 16];
+    memset(&map, 0, sizeof(map));
+    memset(&w, 0, sizeof(w));
+    memset(tiles, 0, sizeof(tiles));
+    memset(collision, 0, sizeof(collision));
+    map.width = (uint32_t)W;
+    map.height = (uint32_t)W;
+    map.tiles = tiles;
+    map.collision = collision;
+    map.tile_modes[0] = CS2D_TILE_FLOOR_DIRT;
+    map.tile_modes[1] = CS2D_TILE_DEADLY_ABYSS;
+    map.tile_modes[2] = CS2D_TILE_FLOOR_WADE;   /* 14 water */
+    map.tile_modes[3] = CS2D_TILE_FLOOR_METAL;  /* 15 metal */
+    w.map = &map;
+
+    if (cs2d_dynobj_can_build(&w, NULL, 1, 4, 4, 5, 4, false) != 1)
+        TEST_FAIL("g_prop_class", "a free floor tile takes a building");
+    tiles[px] = 1;
+    collision[px] = cs2d_map_mode_collision(CS2D_TILE_DEADLY_ABYSS);
+    if (cs2d_dynobj_can_build(&w, NULL, 1, 4, 4, 5, 4, false) != 0)
+        TEST_FAIL("g_prop_class", "a walkable deadly tile takes no building");
+    if (cs2d_dynobj_portal_tile(&w, 5, 4))
+        TEST_FAIL("g_prop_class", "a walkable deadly tile takes no portal");
+    tiles[px] = 2;
+    collision[px] = 0;
+    if (!cs2d_dynobj_portal_tile(&w, 5, 4))
+        TEST_FAIL("g_prop_class", "water (14) is a floor: a portal is allowed");
+    tiles[px] = 3;
+    if (cs2d_dynobj_portal_tile(&w, 5, 4))
+        TEST_FAIL("g_prop_class", "metal (15) is a floor but takes no portal");
+
+    TEST_PASS("g_prop_class: wall / floor / obstacle / deadly, build and portal tile rules");
+    return true;
+}
+
+/*
+ * Tp.draw 0x140263cc0 case 0xc (Tp 12 = fragments.bmp, the Tshoot / building debris): after moving, the tile the
+ * fragment is in is looked up in g_prop_class[g_map_cellprop]. A wall (class 0) zeroes its speed - it stops where
+ * it is - and a deadly tile (class -1) halves its alpha. The tile mode decides, so a walkable deadly tile does
+ * not stop the fragment. Without a map nothing is checked.
+ */
+static bool test_fragment_walls(void)
+{
+    printf("\n--- Testing Tp 12 debris stopping at walls ---\n");
+    static cs2d_map_t map;
+    static uint8_t tiles[16 * 16], collision[16 * 16];
+    memset(&map, 0, sizeof(map));
+    memset(tiles, 0, sizeof(tiles));
+    memset(collision, 0, sizeof(collision));
+    map.width = 16;
+    map.height = 16;
+    map.tiles = tiles;
+    map.collision = collision;
+    map.tile_modes[0] = CS2D_TILE_FLOOR_DIRT;   /* class 1 */
+    map.tile_modes[1] = CS2D_TILE_WALL;         /* class 0 */
+    map.tile_modes[2] = CS2D_TILE_DEADLY_ABYSS; /* class -1 */
+    for (int ty = 0; ty < 16; ty++) {           /* column 2 is a wall, column 3 deadly, the rest floor */
+        tiles[ty * 16 + 2] = 1;
+        tiles[ty * 16 + 3] = 2;
+    }
+
+    /* A fragment 1 px before the wall column moving right at 120 px/s: dt 1/60 moves it 2 px, into the wall */
+    static cs2d_fx_t fx;
+    cs2d_fx_clear(&fx);
+    fx.p[0].kind = CS2D_FX_FRAGMENT;
+    fx.p[0].x = 2 * 32 - 1.0f;
+    fx.p[0].y = 2 * 32 + 16.0f;
+    fx.p[0].vx = 120.0f;
+    fx.p[0].life = fx.p[0].max_life = 1.0f;
+    fx.p[0].drag = -1.0f;                       /* no slowdown, so a speed change is the wall's doing */
+    fx.count = 1;
+    cs2d_fx_update(&fx, 1.0f / 60.0f, &map);
+    if (fx.p[0].vx != 0.0f || fx.p[0].vy != 0.0f || fabsf(fx.p[0].x - 65.0f) > 0.01f)
+        TEST_FAIL("Fragment walls", "a wall tile zeroes the speed and the fragment stays where it is");
+
+    /* The same fragment in the deadly column keeps moving and loses half of its alpha */
+    cs2d_fx_clear(&fx);
+    fx.p[0].kind = CS2D_FX_FRAGMENT;
+    fx.p[0].x = 3 * 32 - 1.0f;
+    fx.p[0].y = 2 * 32 + 16.0f;
+    fx.p[0].vx = 120.0f;
+    fx.p[0].life = fx.p[0].max_life = 1.0f;
+    fx.p[0].drag = -1.0f;
+    fx.count = 1;
+    cs2d_fx_update(&fx, 1.0f / 60.0f, &map);
+    if (fx.p[0].vx != 120.0f || fabsf(fx.p[0].life - (1.0f - 1.0f / 60.0f) * 0.5f) > 1e-4f)
+        TEST_FAIL("Fragment walls", "a deadly tile halves the alpha (a = a * 0.5) and does not stop it");
+
+    /* No map (or another kind, e.g. a shell): the fragment keeps its speed through the wall */
+    cs2d_fx_clear(&fx);
+    fx.p[0].kind = CS2D_FX_FRAGMENT;
+    fx.p[0].x = 2 * 32 - 1.0f;
+    fx.p[0].y = 2 * 32 + 16.0f;
+    fx.p[0].vx = 120.0f;
+    fx.p[0].life = fx.p[0].max_life = 1.0f;
+    fx.p[0].drag = -1.0f;
+    fx.count = 1;
+    cs2d_fx_update(&fx, 1.0f / 60.0f, NULL);
+    if (fx.p[0].vx != 120.0f) TEST_FAIL("Fragment walls", "without a map nothing is checked");
+
+    TEST_PASS("Tp 12 debris: a wall tile stops a fragment, a deadly one halves its alpha");
+    return true;
+}
+
+/*
+ * Tdo.shoot (0x140209b50): the angle handed to Tshoot.Shoot is the object's rot + Rnd(-3, 3) - the two double
+ * constants at 0x140bd6c18 (-3) and 0x140bd6bb8 (3) read from CS2D.exe. Every Tdo shot gets it: the turret
+ * barrels, the NPC soldier (weapon 0xf8, style 0) and the Vortigaunt ranged (0xf9, style 2 beam).
+ */
+static bool test_tdo_shot_spread(void)
+{
+    printf("\n--- Testing Tdo.shoot rotation spread ---\n");
+    bool varied = false;
+    float first = cs2d_fx_tdo_shot_angle(100.0f);
+    for (int i = 0; i < 200; i++) {
+        float a = cs2d_fx_tdo_shot_angle(100.0f);
+        if (a < 97.0f || a > 103.0f) TEST_FAIL("Tdo spread", "Rnd(-3, 3) left the range around the rot");
+        if (a != first) varied = true;
+    }
+    if (!varied) TEST_FAIL("Tdo spread", "the shot angle never varies");
+    for (int i = 0; i < 20; i++) {
+        float a = cs2d_fx_tdo_shot_angle(0.0f);
+        if (a < -3.0f || a > 3.0f) TEST_FAIL("Tdo spread", "Rnd(-3, 3) around 0");
+    }
+    TEST_PASS("Tdo.shoot: the shot angle is rot + Rnd(-3, 3) (turret, NPC soldier and Vortigaunt)");
     return true;
 }
 
@@ -5334,7 +5575,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 56;
+    int total = 59;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -5387,6 +5628,9 @@ int main(void)
     if (test_hudscale()) passed++;
     if (test_game_menu()) passed++;
     if (test_hostages()) passed++;
+    if (test_prop_class()) passed++;
+    if (test_fragment_walls()) passed++;
+    if (test_tdo_shot_spread()) passed++;
     if (test_sound()) passed++;
     if (test_weapon_modes()) passed++;
     if (test_special_items()) passed++;

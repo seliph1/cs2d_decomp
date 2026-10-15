@@ -3,6 +3,14 @@
 #include <string.h>
 #include <stdlib.h>
 
+/* DAT_140ddf182 ("particles"): read by cs2d_fx and the HUD code without a cs2d_config_t */
+static int s_particles = 4;
+
+int cs2d_config_particles(void)
+{
+    return s_particles;
+}
+
 bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
 {
     if (!cfg) return false;
@@ -32,6 +40,9 @@ bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
     cfg->itemshadows = true;
     cfg->mapshadows = 4;
     cfg->light = 5;
+    cfg->particles = 4;  /* shipped sys/config.cfg "particles 4" */
+    s_particles = cfg->particles;
+    cfg->gore = 2;       /* shipped sys/config.cfg "gore 2" */
     cfg->vsync = true;   /* VSync is enabled by default (Changelog 1.0.1.0) */
 
     FILE *f = fopen(filepath, "r");
@@ -92,6 +103,12 @@ bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath)
                 cfg->mapshadows = atoi(val);
             } else if (strcmp(key, "light") == 0) {
                 cfg->light = atoi(val);
+            } else if (strcmp(key, "particles") == 0) {
+                cfg->particles = atoi(val);
+                if (cfg->particles < 0) cfg->particles = 0;
+                s_particles = cfg->particles;
+            } else if (strcmp(key, "gore") == 0) {
+                cfg->gore = atoi(val);
             } else if (strcmp(key, "vsync") == 0) {
                 cfg->vsync = (atoi(val) != 0);
             }

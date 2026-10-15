@@ -101,16 +101,13 @@ static cs2d_gen_particle_t *create(cs2d_gen_t *g, int typ, float x, float y)
     return p;
 }
 
-/* g_prop_class of a tile mode (classes as TmapPreview draws them): 0 wall, 1 floor, 2 obstacle, -1 deadly */
+/* g_prop_class of the tile under a world position (0 wall, 1 floor, 2 obstacle, -1 deadly); outside the map
+ * a particle keeps going (class 1) */
 static int prop_class(const cs2d_map_t *map, float x, float y)
 {
     int tx = (int)(x * 0.03125f), ty = (int)(y * 0.03125f);
     if (!map || x < 0.0f || y < 0.0f || tx >= (int)map->width || ty >= (int)map->height) return 1;
-    uint8_t m = cs2d_map_get_tile_mode(map, (uint32_t)tx, (uint32_t)ty);
-    if (m == CS2D_TILE_WALL || m == CS2D_TILE_WALL_NOSHADOW || m == CS2D_TILE_WALL_FLOORLEVEL) return 0;
-    if (m == CS2D_TILE_OBSTACLE || m == CS2D_TILE_OBSTACLE_NOSHADOW) return 2;
-    if (m >= CS2D_TILE_DEADLY_NORMAL && m <= CS2D_TILE_DEADLY_ABYSS) return -1;
-    return 1;
+    return cs2d_map_prop_class(cs2d_map_get_tile_mode(map, (uint32_t)tx, (uint32_t)ty));
 }
 
 void cs2d_gen_init(cs2d_gen_t *g, const cs2d_map_t *map)

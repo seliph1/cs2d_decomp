@@ -23,6 +23,10 @@ Probes: `tools/agent/lua/hostage_probe.lua` (cs_office), `bomb_probe.lua` (de_du
   Info_Hostage in entity order, ids 1.., tile centre, rot = ints[0], look = min(ints[1], 7). Hostages only exist after a
   round start (`sv_restartround` in probes).
 - **Join snapshot section 2:** `[252,7,2,n] + n×{id,health,look,follow,x u16,y u16}`; target = current tile, rot Rand(1,360).
+- **Hover text** (FUN_1402a12d0, `mp_hovertext` bit 4, `cs2d_hostages_hovered`): tried after the players and before the
+  buildings, and a hovered hostage suppresses the building text (bit 8). The first hostage with health > 0, `fog`
+  (+0x5c) 0 and |world cursor - (x, y)| < 20 px on both axes: "Hostage" (language 0776) in (255,255,0) at cursor y - 25
+  and the health "n%" at y + 25 in ((100 - hp) * 5.1, hp * 5.1, 0). No per-player FOW here yet, so `fog` stays 0.
 - **`[22]` record byte 11 = `Tpl.setspecialbyte` (0x1401ffdc0):** 1 bomb (T: Titem.give 55, not in the inventory trailer) /
   defuse kit (CT), 2 night vision, 4 VIP (team 3, armor 200), 8 flag, 16 gas mask, 32 flashlight.
 - **Plant (FUN_1401cb510):** attack with item 55 inside an Info_BombSpot zone, proc 0 → proc 1, `[30,1]`; attack released →

@@ -26,6 +26,9 @@ typedef struct {
     bool itemshadows;    /* "itemshadows" 0|1 draw ground item shadows (DAT_140ddf183) */
     int  mapshadows;     /* "mapshadows" 0..4 (DAT_140ddf190) */
     int  light;          /* "light" 0..5 light engine quality, 0 = off (DAT_140ddf185) */
+    int  particles;      /* "particles" 0..10: the fragment count of a building hit (2 x per burst) and the
+                          * "> 3" gates of the ricochet, splash and flash effects (DAT_140ddf182, shipped 4) */
+    int  gore;           /* "gore" 0..2 blood / ground decal level (DAT_140ddf192, shipped 2) */
     bool deathnoticeimg;       /* "deathnoticeimg" 0|1 kill messages with weapon images (DAT_140ddf191) */
     int  hud_deathnotice_time; /* "hud_deathnotice_time" s a kill message stays, default 8 in .data (DAT_140a14c80) */
     bool vsync;          /* "vsync" 0|1 OpenGL swap interval, default 1 (DAT_140a12960) */
@@ -33,6 +36,10 @@ typedef struct {
 
 /* Load config from sys/config.cfg */
 bool cs2d_config_load(cs2d_config_t *cfg, const char *filepath);
+
+/* The "particles" value cs2d_config_load last read (DAT_140ddf182, 4 by default): cs2d_fx and the HUD use it
+ * without a cs2d_config_t at hand, the way cs2d_sound / cs2d_render keep their own settings. */
+int cs2d_config_particles(void);
 
 #endif /* CS2D_CONFIG_H */
 

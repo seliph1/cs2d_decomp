@@ -23,6 +23,8 @@ typedef struct {
     int   look;        /* Frame of gfx/player/hostages.bmp (0..7) */
     float x, y, rot;
     int   tx, ty;      /* Target tile from [29, id, 0, tx, ty]; -1 = none */
+    bool  fog;         /* Thostage.fog (+0x5c): hidden by the fog of war. No per-player FOW yet, so always 0;
+                        * it suppresses the mp_hovertext bit 4 hover text (FUN_1402a12d0). */
 } cs2d_hostage_t;
 
 typedef struct {
@@ -43,6 +45,10 @@ cs2d_hostage_t *cs2d_hostages_get(cs2d_hostage_world_t *w, int id);
 
 /* Living hostage whose tile ((int)x >> 5, (int)y >> 5) is (tx, ty), or NULL (FUN_14014f820 use ray) */
 cs2d_hostage_t *cs2d_hostages_at_tile(cs2d_hostage_world_t *w, int tx, int ty);
+
+/* Hover text target (FUN_1402a12d0 mp_hovertext bit 4): the first alive, not fog-hidden hostage within
+ * 20 px of the world cursor (wx, wy), or NULL */
+cs2d_hostage_t *cs2d_hostages_hovered(cs2d_hostage_world_t *w, float wx, float wy);
 
 /* Thostage.use (0x1401193f0): CT player `pid` starts (release = false) or stops being followed.
  * Returns true when this was the first use of the hostage (the user gets $150, capped at 16000). */

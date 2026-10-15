@@ -13,7 +13,16 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
   [65] (`"sfx/" + path`, split at `|`, FUN_1401e3890). Env_Sound (Te.update case 0x17, `mapsounds` `DAT_140ddf17b`):
   `Tres.add(strs[0], 2)`, vol = strs[1], ints[2] = 1 → 2D; loop (ints[1] = 0) plays while state == ints[0], restarted
   when it ends.
-- **Loader 0x14030cc00** (one global per file; arrays allocated by 0x1408daba0 and stored before the next scalar):
+- **Loader 0x14030cc00** (one global per file; arrays allocated by 0x1408daba0 and stored before the next scalar).
+  **How to resolve a global to a file (verified 2026-10-15):** each sound block ends with
+  `lea reg,[rip+..] # <literal>` + `mov [rax+0x8],reg` (the name of the sound it just created) and the next block
+  starts with `mov [rip+..],rax # <global>` (that same object). So **the `lea` belongs to the global of the *next*
+  block**, not of its own. The literals are static BBString objects in `.data` with UTF-16 text at +0x10, so they
+  can be read straight from the file (VA - section start + section file offset). Resolved this way:
+  `d8d8` = `sfx/player/zm_die.wav`, `d608` = `sfx/npc/headcrab_die.wav`, `d618` = `sfx/npc/snark_die.wav`,
+  `d5f8` = `sfx/npc/vortigaunt_die.wav`, `d5f0` = `vortigaunt_charge`, `d5e8` = `vortigaunt_ranged`,
+  `d600` = `vortigaunt_attack`, `d610` = `headcrab_attack`, `d620` = `snark_attack`, `d968` = `die_abyss.ogg`,
+  `d960` = `die_toxic.ogg`, `d958` = the `sfx/player/die[1..3]` array, `d930` = `dominate`, `d938` = `build`.
 
   | Global | File |
   |---|---|

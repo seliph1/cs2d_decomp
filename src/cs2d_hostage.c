@@ -87,6 +87,22 @@ cs2d_hostage_t *cs2d_hostages_at_tile(cs2d_hostage_world_t *w, int tx, int ty)
     return NULL;
 }
 
+/*
+ * Hover text target (FUN_1402a12d0, mp_hovertext bit 4): the first hostage in list order that is alive and
+ * not fog-hidden within 20 px of the cursor on both axes (Thostage x +0x1c, y +0x20, health +0xc, fog +0x5c).
+ * wx / wy are the cursor in world pixels (cam + mouse).
+ */
+cs2d_hostage_t *cs2d_hostages_hovered(cs2d_hostage_world_t *w, float wx, float wy)
+{
+    if (!w) return NULL;
+    for (int i = 0; i < CS2D_MAX_HOSTAGES; i++) {
+        cs2d_hostage_t *h = &w->h[i];
+        if (!h->active || h->health < 1 || h->fog) continue;
+        if (fabsf(wx - h->x) < 20.0f && fabsf(wy - h->y) < 20.0f) return h;
+    }
+    return NULL;
+}
+
 bool cs2d_hostages_use(cs2d_hostage_world_t *w, int id, cs2d_player_t *user, int pid, bool release)
 {
     cs2d_hostage_t *h = cs2d_hostages_get(w, id);
