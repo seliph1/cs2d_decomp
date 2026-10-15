@@ -1,5 +1,26 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-15 — Claude — pixel diff: our core-profile frame vs the original's (GL 3.3 phase gate)
+- New `tools/agent/pixel_diff.py` (Pillow): differing pixels (%), mean/max channel delta, PSNR, per-band
+  breakdown and the worst 32x32 cells, with `--window-shot` (crops a `drive_orig.ps1 shot:` to the client
+  area: 3 px border, 26 px title), `--crop`, `--mask` and `--diff <heat map>`.
+- New `tools/agent/lua/pixdiff_probe.lua`: player 1 on tile (44,25) of `prison_funst3r` (pixel 1424,816),
+  armed on the `join` *and* `team` hooks. Two traps found on the way: the *original* only spawns after it
+  picks a team (`drive_orig.ps1 tap:2/tap:1`), our client only via its `team ct` console command (its
+  Select Team window could not be driven with `!mouse`, OPEN_ISSUES "Verification debt"), and
+  `drive_orig.ps1` splits steps on `:` so its `shot:` path must be absolute.
+- Measured (same scene, same camera, light engine on, 850x480): whole frame **18.52 %** of pixels differ,
+  mean |delta| 4.93, PSNR 23.30 dB; **playfield only** (HUD + radar masked) **14.13 % / 2.32 / 28.19 dB**;
+  our own run-to-run noise floor 3.9-4.7 % / 0.35-0.83 (the varying band is the player sprite, y 180..240).
+  The scene needs >= 260 frames after the team selection to settle. Residual: the HUD strips and a region
+  where ours is darker - screen x 240..300, y 190..300 = tiles (38..41, 23..28), cell mean 32 (original) vs
+  20 (ours). Numbers, recipe and the earlier `--screenshot`/tour notes: `knowledge/rendering-notes.md`
+  "Pixel comparison".
+- Verified: the tool on identical images (0.00 %) and on two different ones (per-band + worst cells);
+  `git status sys/` clean, `server.cfg` / `recentlyjoined.lst` restored after every run.
+- Left (OPEN_ISSUES): the diff on a daylight map (de_dust2) and a `light 0..5` / `mapshadows 0..4` sweep;
+  the darker tile region; the `!mouse` click question.
+
 ## 2026-10-15 — Claude — join handshake: `[252,0]` / `[252,1]` now match the original byte for byte
 - `[252,0]` (cs2d_network.c) was 3 payload bytes: opcode, sub-opcode and an empty string nobody reads.
   The original sends **2** (`fc 00`) and lets the server append the secret in its reply - proxy

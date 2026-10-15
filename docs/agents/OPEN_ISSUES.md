@@ -9,10 +9,19 @@ the same one.
   `FUN_14011c0b0` (clip / reserve sent + 1, then FUN_14011ba70). Missing: money indicator `Thud_msg.add_money` on Coins/Money/Gold, laser / flame
   lights and TSparkle details, Tp 23 / Tp 0x1d sprites (approximated with glowdot), Satchel Charge attack / attack2
   (FUN_1401f2670), offline teleporter / portal messages (g_lang 0xb3), mp_teleportreload offline (taken as 0), Portal Gun not verified on a capture.
-- **attack2 / shotgun (2026-10-14):** pellet spread uses rand(), not `TRandom.SeedTable` (seeded by `GenerateSeed`, not
-  traced), so our pellets differ from the server's. `[8]` not checked against a proxy capture; whether attack2 repeats
-  while held (we do, 500 ms) is untested on the original; the scope hint text (`DAT_140ddf19c`, lang 0x36 group) and the
-  Portal Gun (88/89) attack2 are missing; offline knife attack2 hurts breakables with dmg, not dmg_z1.
+- **attack2 / shotgun (2026-10-14):** the spread now uses `TRandom.SeedTable`, seeded from the settings `[252,6]`
+  (`knowledge/random.md`). The accuracy table `0x1409f5d18` is fully extracted (27 ids) and locked by
+  `test_weapon_modes`; only `Tpl.shoot` reads it and `Tpl.attack` calls that for the M3 / XM1014 alone, so the
+  other weapons correctly fire without spread - nothing left here. `[8]` not checked against a proxy capture;
+  whether attack2 repeats while held (we do, 500 ms) is untested on the original; the scope hint text
+  (`DAT_140ddf19c`, lang 0x36 group) and the Portal Gun (88/89) attack2 are missing; offline knife attack2 hurts
+  breakables with dmg, not dmg_z1.
+- **Muzzle table 0x1409f5d20, candidates (2026-10-15):** re-extracting it with `tools/agent/weapontables.py`
+  (after teaching the tool the `lea reg,[base+id*4]` form) reproduces all 39 ids `s_muzzle` already has, plus
+  ids we leave 0 and cannot confirm yet: 41 Tactical Shield 22, 55 Bomb 1, 56 Defuse Kit 2, 57 Kevlar 3,
+  58 Kevlar+Helmet 3, 72 Gas 16, 73 Molotov 16, 75 Snowball 16, 76 Airstrike 16, 77 Mine 16, 86 Gut Bomb 14 and
+  an id 92 (muzzle 27, accuracy 2) we do not model. Two entries of that run are clearly mis-paired
+  (14:3000 and 85:60 against our verified Chainsaw 30), so the extras need a second look before they go in.
 - **Hostages / bomb (2026-10-14, `knowledge/hostages-bomb.md`):** missing: c4 plant / defuse
   sounds, own Dispenser / Teleporter menu on E (Tdo 9 / 15), the green "following me" marker
   (Tp 100 at the hostage, mp_hovertext-like), [29] kind 4 blood (Tp 0x18) and the bomb blast particles (FUN_1401f1130,
@@ -89,7 +98,10 @@ the same one.
   (DAT_140a14f88), the mp_hud kill flag (0x40), Lua `customkill` images (`[226]`-style case 4 in FUN_1401de400, wpnimg
   -1) and offline kills (our offline damage has no killer). Specials 0xfd / 0xfe / 0xff assume 0x1409f79f8 is indexed
   by building type (Turret / Gate Field / Barbed Wire).
-- **Opcode 40:** "kill dropped weapon"; its format is unknown.
+- **Opcode 40 (kill dropped weapon):** solved - `[40, id u16]`, reliable, sent by `Titem.fadeout` (0x14004cd20) when
+  a *dropped* item's timer (0x140a14d94 = 15 frames, per drawn frame) runs out; `knowledge/net-messages.md`. Left to
+  verify on a capture: the 15-frame threshold and the original's gates (`DAT_140ddf540`, `0x140a14e48[1] & 0xfb`), and
+  whether the fade also happens for the client when the server did not ask for it.
 - **Round start and ground items:** whether dropped weapons are removed at round start is unknown.
 - **Spray:** our client sends a blank spray logo.
 - **Dedicated broadcast quirk:** after some round restarts the dedicated stops broadcasting entity

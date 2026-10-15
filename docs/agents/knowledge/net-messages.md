@@ -10,6 +10,7 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 | Select weapon | `[9][type][0]` | |
 | Reload | `[16][1]` | |
 | Drop | `[24][type][clip u16][reserve u16][0]` | |
+| Kill dropped weapon | `[40][id u16]` | Reliable (`Tudp_con.Createpacket(1,0)`). `Titem.fadeout` (0x14004cd20) removes the item locally and sends `wbyte(0x28) + wshort(id)` (0x14004cec2) for every connected player; the client uses it when a *dropped* item's timer runs out |
 | Buy | `[23][type][0]` | |
 | Use | `[26][mode u8][target i32][x u16][y u16]` | Always sent on E (FUN_14014f820). Mode 100 = Trigger_Use with its tile; 1/2 = hostage use/release (target = hostage id), 3 = defuse (target = defuse kit); nothing found = mode 0 with zeros, still reported to the Lua `use` hook (verified, `use_probe.lua`). Target ray at 0, 16 and 32 px along the aim |
 | Team | `[20][team][look]` | `team`: 0 Spectator (`look = 5`), 1 T, 2 CT; `look`: `0..3` class skin or `4` Auto-Select skin |

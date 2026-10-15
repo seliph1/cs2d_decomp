@@ -6,6 +6,7 @@
 #include "cs2d_scoreboard.h"
 #include "cs2d_editor.h"
 #include "cs2d_hudmen.h"
+#include "cs2d_random.h"
 #include "cs2d_sound.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -818,16 +819,21 @@ static void impact_sound(float hx, float hy, bool hit_wall, int material)
 /*
  * The bullets of one shot fired at angle: tracer, impact sounds and debris, and offline the damage to the
  * breakable hit. The M3 and XM1014 fire five pellets (Tpl.attack 0x14021a6xx: Tpl.shoot with angle offsets
- * 0, -5, +5, -9, +9), each turned again by the weapon accuracy (Tpl.shoot 0x140209810:
- * seed % (2 * accuracy) - accuracy; the original draws seed from TRandom.SeedTable, we use rand()).
+ * 0, -5, +5, -9, +9), each turned again by the weapon accuracy (Tpl.shoot 0x140209810: seed % (2 * accuracy)
+ * - accuracy, seed from TRandom.SeedTable). Every other weapon fires through Tpl.shoot_recoil (0x140209a90),
+ * which shoots straight at the given angle: Tpl.attack only calls Tpl.shoot for the shotgun, so the other
+ * weapons' accuracy values (0x1409f5d18) are never applied to a player shot.
  * flash adds the muzzle flash and the case once.
  */
-static void shot_bullets(cs2d_client_t *client, const cs2d_player_t *pl, const cs2d_weapon_def_t *wep, float angle,
+static void shot_bullets(cs2d_client_t *client, cs2d_player_t *pl, const cs2d_weapon_def_t *wep, float angle,
                          bool flash)
 {
     static const float pellets[5] = { 0.0f, -5.0f, 5.0f, -9.0f, 9.0f };
     bool melee = (wep->slot == CS2D_SLOT_MELEE || pl->current_weapon == CS2D_WEP_WRENCH);
     bool shotgun = (pl->current_weapon == CS2D_WEP_M3 || pl->current_weapon == CS2D_WEP_XM1014);
+    /* Only the shotgun gets the accuracy spread: Tpl.attack calls Tpl.shoot for typ 10 / 11 alone (the other
+     * weapons go through Tpl.shoot_recoil, which has no spread), and Tpl.shoot is the only consumer of the
+     * accuracy table (cs2d_weapon_accuracy, 0x1409f5d18). */
     int acc = shotgun ? cs2d_weapon_accuracy(pl->current_weapon) : 0;
     float reach = cs2d_weapon_shot_reach(wep);
     float muzzle = (float)wep->muzzle;   /* 0x1409f5d20: per-weapon offset along the aim (cs2d_weapons_init) */
@@ -835,7 +841,15 @@ static void shot_bullets(cs2d_client_t *client, const cs2d_player_t *pl, const c
 
     for (int i = 0; i < (shotgun ? 5 : 1); i++) {
         float a = angle + pellets[i];
-        if (acc > 0) a += (float)(rand() % (2 * acc) - acc);
+        if (acc > 0) {
+            /* Tpl.shoot (0x140209810): every pellet takes seed % (2 * accuracy) - accuracy, with the seed
+             * TRandom.SeedTable[Tpl.random]. Tpl.random is clamped to >= 1 and advances (random + 1) % 200 at
+             * the end of every Tpl.shoot call, so each pellet of this shot uses the next table entry. */
+            if (pl->shot_random < 1) pl->shot_random = 1;
+            int seed = cs2d_random_table(pl->shot_random);
+            if (seed >= 0) a += (float)(seed % (2 * acc) - acc);
+            pl->shot_random = (pl->shot_random + 1) % 200;
+        }
         float hx, hy;
         int hit = cs2d_ents_trace_shot(&client->ents, pl->pos.x, pl->pos.y, a, reach, &hx, &hy);
         float ddx = hx - pl->pos.x, ddy = hy - pl->pos.y;
@@ -964,7 +978,7 @@ static void portal_fire(cs2d_client_t *client, cs2d_player_t *pl, int mode)
  * reading 0 as 1, before running the shot) and the server reports what broke; the impact debris
  * is drawn locally either way. Offline the shot damages the breakable it hits with the weapon damage.
  */
-static void fire_shot(cs2d_client_t *client, const cs2d_player_t *pl)
+static void fire_shot(cs2d_client_t *client, cs2d_player_t *pl)
 {
     const cs2d_weapon_def_t *wep = cs2d_weapon_get(pl->current_weapon);
     if (!wep) return;

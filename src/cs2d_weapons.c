@@ -455,10 +455,20 @@ uint8_t cs2d_weapon_mode(const cs2d_player_t *player)
 
 int cs2d_weapon_accuracy(uint8_t weapon_id)
 {
-    /* 0x1409f5d18 (tools/agent/weapontables.py); unlisted ids are 0 */
+    /*
+     * 0x1409f5d18, extracted with `tools/agent/weapontables.py` (init_weapons FUN_140230330 fills
+     * `[base + id*4]`). The table has 27 ids; the ones that stay 0 (pistols 1..6, SG552 / AUG 31 / 33,
+     * Scout / AWP 34 / 35) are written as 0 by init_weapons. The id 92 (2) is an item we do not model.
+     *
+     * Only `Tpl.shoot` (0x140209810) consumes it, and `Tpl.attack` (0x14021a6xx) calls `Tpl.shoot` for
+     * *nothing but the shotgun* (typ 10 / 11: five pellets at +0/-5/+5/-9/+9 gr). Every other weapon fires
+     * through `Tpl.shoot_recoil` (0x140209a90) = `Tshoot.Shoot` at the angle it was given, i.e. with no
+     * accuracy spread, and the knife / claw strong slash calls `Tpl.shoot` with p6 = p7 = 0 (its accuracy is
+     * 0 too). The non-zero values below are therefore only reachable through `Tpl.shoot`.
+     */
     static const struct { uint8_t id, acc; } t[] = {
         {10, 10}, {11, 13}, {20, 2}, {21, 4}, {22, 3}, {23, 4}, {24, 3}, {30, 3}, {32, 2}, {36, 1}, {37, 1},
-        {38, 1}, {39, 1}, {40, 8}, {90, 5}, {91, 2}, {92, 2}
+        {38, 1}, {39, 1}, {40, 8}, {90, 5}, {91, 2}
     };
     for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
         if (t[i].id == weapon_id) return t[i].acc;

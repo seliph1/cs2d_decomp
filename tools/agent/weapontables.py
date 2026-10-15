@@ -2,6 +2,11 @@
 DAT_140ddf57c (set before each weapon). Prints `global id:value ...` (floats decoded from movss constants;
 a float stored with an integer `mov` prints as its bit pattern, e.g. 1036831949 = 0.1f).
 
+The element address can be built either as `add reg,[base+id*4]` or as `lea reg,[base+id*4]` - both are
+recognised (the 1.0.1.8 build uses the lea form for the accuracy table 0x1409f5d18). If a run contains
+values that contradict a table already verified by hand (e.g. a muzzle of 3000), the base register was
+reused for another table: treat those entries as unverified.
+
 usage: objdump -d -M intel --start-address=0x140230000 --stop-address=0x140236000 CS2D.exe > initw.txt
        python -I tools/agent/weapontables.py initw.txt CS2D.exe <global hex>...
 """
@@ -54,7 +59,7 @@ for line in open(listing):
             elif m2 := re.match(r"\[(\w+)\+(\w+)\*4(?:\+0x0)?\]", s):
                 b = regs.get(R.get(m2.group(1)))
                 regs[dr] = ("E", b[1]) if b and b[0] == "G" else None
-            elif op == "lea" and (m2 := re.match(r"\[(\w+)\+(\w+)\*1(?:\+0x0)?\]$", s)):
+            elif op == "lea" and (m2 := re.match(r"\[(\w+)\+(\w+)\*(?:1|4)(?:\+0x0)?\]$", s)):
                 x, y = regs.get(R.get(m2.group(1))), regs.get(R.get(m2.group(2)))
                 if x == ("ID4",) and y and y[0] == "G": regs[dr] = ("E", y[1])
                 elif y == ("ID4",) and x and x[0] == "G": regs[dr] = ("E", x[1])

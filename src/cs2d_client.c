@@ -7,6 +7,7 @@
 #include "cs2d_network.h"
 #include "cs2d_light.h"
 #include "cs2d_customtile.h"
+#include "cs2d_random.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -567,6 +568,16 @@ static void net_log_datagram(const char *dir, const uint8_t *data, int len)
     fflush(stdout);
 }
 
+/* Note in the same trace (CS2D_NET_LOG only): the parsed join settings that are not a datagram */
+static void net_log_note(const char *tag, int value)
+{
+    static int enabled = -1;
+    if (enabled < 0) enabled = (getenv("CS2D_NET_LOG") != NULL);
+    if (!enabled) return;
+    printf("[net %s %d]\n", tag, value);
+    fflush(stdout);
+}
+
 void cs2d_client_send_udp(cs2d_client_t *client, const uint8_t *payload, size_t len, bool reliable)
 {
     if (!client || client->net_sock == INVALID_SOCKET || !payload || len == 0 || len > 2046) return;
@@ -658,7 +669,7 @@ static void client_settile(cs2d_client_t *client, const cs2d_settile_t *tiles, i
     if (cs2d_customtile_end(map, &batch, b)) cs2d_render_tiles_changed(map, b[0], b[1], b[2], b[3]);
 }
 
-static void add_ground_item(cs2d_client_t *client, uint16_t id, uint8_t type, int tx, int ty, int16_t clip, int16_t reserve)
+static cs2d_ground_item_t *add_ground_item(cs2d_client_t *client, uint16_t id, uint8_t type, int tx, int ty, int16_t clip, int16_t reserve)
 {
     cs2d_ground_item_t *slot = NULL;
     for (int i = 0; i < CS2D_MAX_GROUND_ITEMS && !slot; i++) {
@@ -667,7 +678,7 @@ static void add_ground_item(cs2d_client_t *client, uint16_t id, uint8_t type, in
     for (int i = 0; i < CS2D_MAX_GROUND_ITEMS && !slot; i++) {
         if (!client->ground_items[i].active) slot = &client->ground_items[i];
     }
-    if (!slot) return;
+    if (!slot) return NULL;
     slot->active  = true;
     slot->id      = id;
     slot->type    = type;
@@ -675,6 +686,30 @@ static void add_ground_item(cs2d_client_t *client, uint16_t id, uint8_t type, in
     slot->y       = (float)ty * CS2D_TILE_SIZE + 16.0f;
     slot->clip    = clip;
     slot->reserve = reserve;
+    /* Titem.add (1401f0000.c:998): the drop flag is set by the caller (Titem.dropped, offset +0x34) */
+    slot->dropped = false;
+    slot->droptimer = 0;
+    return slot;
+}
+
+/* Opcode 40 ("kill dropped weapon"): Titem.fadeout (0x14004cd20) removes the item and, for every connected
+ * player, sends wbyte(0x28) + wshort(id) (0x14004cec2). Only the local player has a connection on a client,
+ * so this is the client telling the server the dropped item is gone. The original builds it with
+ * Tudp_con.Createpacket(1, 0) and p1 == 1 takes a reliable id (out_id += 2, 0x1403c8370), so it is reliable. */
+void cs2d_client_send_kill_dropped_weapon(cs2d_client_t *client, uint16_t item_id)
+{
+    if (!client || !client->connected || client->join_stage != 5) return;
+    uint8_t pkt[3];
+    size_t n = cs2d_net_build_kill_dropped_weapon(item_id, pkt, sizeof(pkt));
+    if (n) cs2d_client_send_udp(client, pkt, n, true);
+}
+
+/* Titem.fadeout (0x14004cd20): drop the item and tell the server (the Lua fadeout hook and the Tp 0x1c fade
+ * particle are not reproduced) */
+static void fade_ground_item(cs2d_client_t *client, cs2d_ground_item_t *it)
+{
+    cs2d_client_send_kill_dropped_weapon(client, it->id);
+    it->active = false;
 }
 
 /*
@@ -1612,6 +1647,20 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                                     if (b + 17 <= recvd) {
                                         client->net_hudscale = buffer[b + 16];
                                     }
+                                    /* The spread seed: i32 right after the Lua bind list (0x1402d0560 reads it with
+                                     * Tudp_p.rint and calls TRandom.GenerateSeed). Tpl.shoot then spreads every shot
+                                     * by SeedTable[Tpl.random], so client and server agree on the pellets. */
+                                    int seed_off = b + 23 + 2 * buffer[b + 22];
+                                    if (seed_off + 4 <= recvd) {
+                                        int32_t seed = (int32_t)((uint32_t)buffer[seed_off] |
+                                                                 ((uint32_t)buffer[seed_off + 1] << 8) |
+                                                                 ((uint32_t)buffer[seed_off + 2] << 16) |
+                                                                 ((uint32_t)buffer[seed_off + 3] << 24));
+                                        client->net_seed = seed;
+                                        cs2d_random_seed(seed);
+                                        net_log_note("seed", seed);
+                                        net_log_note("seed_table_1", cs2d_random_table(1));
+                                    }
                                     /* Shown by the ingame menu (Tgui_hudmen.draw menu 2): b + 15 recoil (0x140a14df0),
                                      * b + 17 sv_voicechat (0x140a14ed8), b + 18 OS, b + 19 lag compensation, b + 20 Lua,
                                      * b + 21 ticks (DAT_140ddf13c), then n u16 Lua binds, seed i32, off-screen damage
@@ -2153,9 +2202,12 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 /* FUN_1401f8350 (drop): sfx/items/drop.wav at the tile centre */
                 cs2d_sound_play_at("sfx/items/drop.wav", (float)((buffer[pos + 10] | (buffer[pos + 11] << 8)) * 32 + 16),
                                    (float)((buffer[pos + 12] | (buffer[pos + 13] << 8)) * 32 + 16), 1.0f, 0);
-                add_ground_item(client, (uint16_t)(buffer[pos + 8] | (buffer[pos + 9] << 8)), type,
+                cs2d_ground_item_t *drop = add_ground_item(client, (uint16_t)(buffer[pos + 8] | (buffer[pos + 9] << 8)), type,
                                 buffer[pos + 10] | (buffer[pos + 11] << 8), buffer[pos + 12] | (buffer[pos + 13] << 8),
                                 clip, res);
+                /* Titem.dropped = 1 for a dropped item; the flags and the bomb keep it 0 (1401f0000.c:1004-1009) */
+                if (drop && type != CS2D_WEP_REDFLAG && type != CS2D_WEP_BLUEFLAG && type != CS2D_WEP_BOMB)
+                    drop->dropped = true;
                 pos += 15;
             } else if (opcode == CS2D_NET_SELECT_WEAPON) {
                 /* Server -> Client: [9, player, type, mode] (4 bytes): weapon held (e.g. Lua setweapon) */
@@ -3717,6 +3769,15 @@ void cs2d_client_update(cs2d_client_t *client, float delta_time)
         client->fps_timer            = 0.0f;
         client->net_bytes_up_accum   = 0;
         client->net_bytes_down_accum = 0;
+    }
+
+    /* Titem.update (0x140147dc0): a dropped item ages one step per drawn frame and fades at the threshold
+     * 0x140a14d94 (15); the fade tells the server with [40] (Titem.fadeout 0x14004cd20). A Lua fadeout hook
+     * that returns 1 pins droptimer at 10000 instead. Map and server spawned items never age. */
+    for (int i = 0; i < CS2D_MAX_GROUND_ITEMS; i++) {
+        cs2d_ground_item_t *it = &client->ground_items[i];
+        if (!it->active || !it->dropped || it->droptimer == CS2D_GROUND_ITEM_VETO) continue;
+        if (++it->droptimer >= CS2D_GROUND_ITEM_FADE) fade_ground_item(client, it);
     }
 
     cs2d_scene_get(client->scene)->update(client, delta_time);

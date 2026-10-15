@@ -46,6 +46,7 @@ When you confirm or refute something, update the topic file (or add one and list
 | [rendering-notes.md](knowledge/rendering-notes.md) | Rendering notes | 3 KB |
 | [light-engine.md](knowledge/light-engine.md) | Light engine (TSmartLighting) | 5 KB |
 | [projectiles.md](knowledge/projectiles.md) | Projectiles and Persistent Fields (Tpro, Tfield) | 2 KB |
+| [random.md](knowledge/random.md) | TRandom (BlitzMax PRNG): the shot spread seed from [252,6] | 2 KB |
 | [radar.md](knowledge/radar.md) | Advanced radar / minimap (TSmartRadar / TSmartMinimap) | 2 KB |
 | [web-port.md](knowledge/web-port.md) | Web/Wasm portability (Emscripten), platform layer, text engine (GDI+ vs stb_truetype metrics) | 13 KB |
 | [special-weapons.md](knowledge/special-weapons.md) | Laser, flamethrower, launchers, Portal Gun; consumable items, spawned item ammo | 3 KB |

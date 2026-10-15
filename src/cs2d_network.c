@@ -359,6 +359,23 @@ size_t cs2d_net_build_kill_packet(
     return 9;
 }
 
+/* Opcode 40 (kill dropped weapon): [40, id u16] - Titem.fadeout (0x14004cd20) sends wbyte(0x28) + wshort(id)
+ * for every connected player (0x14004cec2: movzx edx,WORD PTR [rdx+8] / call [rax+0xa8]) */
+size_t cs2d_net_build_kill_dropped_weapon(
+    uint16_t item_id,
+    uint8_t *out_buf,
+    size_t   max_len
+)
+{
+    if (!out_buf || max_len < 3) return 0;
+
+    out_buf[0] = (uint8_t)CS2D_NET_KILL_DROPPED_WEP;
+    out_buf[1] = (uint8_t)(item_id & 0xFF);
+    out_buf[2] = (uint8_t)((item_id >> 8) & 0xFF);
+
+    return 3;
+}
+
 bool cs2d_net_parse_kill_packet(
     const uint8_t *packet,
     size_t         len,

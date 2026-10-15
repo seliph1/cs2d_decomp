@@ -28,6 +28,7 @@
 #include "cs2d_radar.h"
 #include "cs2d_dynobj.h"
 #include "cs2d_bind.h"
+#include "cs2d_random.h"
 #include "cs2d_scoreboard.h"
 #include "cs2d_light.h"
 #include "cs2d_image.h"
@@ -3208,9 +3209,9 @@ static bool test_radar_icons(void)
 
     static cs2d_ground_item_t items[4];
     memset(items, 0, sizeof(items));
-    items[0] = (cs2d_ground_item_t){ true, 1, CS2D_WEP_BOMB,     48.0f, 80.0f, 0, 0 };
-    items[1] = (cs2d_ground_item_t){ true, 2, CS2D_WEP_BOMB,     16.0f, 16.0f, 0, 0 }; /* only the first bomb */
-    items[2] = (cs2d_ground_item_t){ true, 3, CS2D_WEP_BLUEFLAG, 112.0f, 16.0f, 0, 0 };
+    items[0] = (cs2d_ground_item_t){ true, 1, CS2D_WEP_BOMB,     48.0f, 80.0f, 0, 0, false, 0 };
+    items[1] = (cs2d_ground_item_t){ true, 2, CS2D_WEP_BOMB,     16.0f, 16.0f, 0, 0, false, 0 }; /* only the first bomb */
+    items[2] = (cs2d_ground_item_t){ true, 3, CS2D_WEP_BLUEFLAG, 112.0f, 16.0f, 0, 0, false, 0 };
 
     /* ms = 270: |sin(90 deg)| * 205 + 50 = 255 for the local player's alpha */
     cs2d_radar_env_t env = { items, 4, true, 270 };
@@ -5403,6 +5404,50 @@ static bool test_tdo_shot_spread(void)
 }
 
 /*
+ * TRandom.GenerateSeed (CS2D.exe 0x14000fe90) and opcode 40 "kill dropped weapon" (Titem.fadeout 0x14004cd20).
+ * The table values below are the disassembled algorithm (B = abs(seed); SeedTable[0] = (B + 1) % 123;
+ * aX = SeedTable[0] + 1; SeedTable[i] = (B + aX) % 123, aX += that) applied to each seed.
+ */
+static bool test_random_and_dropwep(void)
+{
+    printf("\n--- Testing TRandom.SeedTable and [40] kill dropped weapon ---\n");
+
+    static const int seed12345[10] = { 46, 92, 61, 122, 121, 119, 115, 107, 91, 59 };
+    cs2d_random_seed(12345);
+    for (int i = 0; i < 10; i++) {
+        if (cs2d_random_table(i) != seed12345[i]) TEST_FAIL("SeedTable", "seed 12345 entry wrong");
+    }
+    if (cs2d_random_get(1, 20) != 12 || cs2d_random_get(1, 26) != 14 ||
+        cs2d_random_get(5, 20) != 19 || cs2d_random_get(199, 20) != 3) {
+        TEST_FAIL("SeedTable", "seed 12345 modulo wrong");
+    }
+    cs2d_random_seed(1);
+    if (cs2d_random_table(0) != 2 || cs2d_random_table(9) != 40 || cs2d_random_table(999) != 1) {
+        TEST_FAIL("SeedTable", "seed 1 entry wrong");
+    }
+    cs2d_random_seed(-7);   /* B is abs(seed) */
+    if (cs2d_random_table(0) != 8 || cs2d_random_table(1) != 16) TEST_FAIL("SeedTable", "negative seed");
+    cs2d_random_seed(987654321);
+    if (cs2d_random_table(0) != 115 || cs2d_random_table(9) != 86) TEST_FAIL("SeedTable", "big seed");
+    if (cs2d_random_table(1000) != -1 || cs2d_random_get(1000, 20) != -1 || cs2d_random_get(-1, 20) != -1) {
+        TEST_FAIL("SeedTable", "index >= 1000 must be -1 (TRandom.GetNumber)");
+    }
+    TEST_PASS("TRandom.SeedTable: 1000 entries, Range 123, four seeds reproduce the original table");
+
+    uint8_t pkt[8] = { 0 };
+    size_t n = cs2d_net_build_kill_dropped_weapon(0x1234, pkt, sizeof(pkt));
+    if (n != 3 || pkt[0] != 40 || pkt[1] != 0x34 || pkt[2] != 0x12) TEST_FAIL("[40]", "byte layout wrong");
+    n = cs2d_net_build_kill_dropped_weapon(CS2D_WEP_PLANTEDBOMB, pkt, sizeof(pkt));
+    if (n != 3 || pkt[0] != CS2D_NET_KILL_DROPPED_WEP || pkt[1] != 63 || pkt[2] != 0) TEST_FAIL("[40]", "small id");
+    if (cs2d_net_build_kill_dropped_weapon(1, NULL, 8) != 0 ||
+        cs2d_net_build_kill_dropped_weapon(1, pkt, 2) != 0) {
+        TEST_FAIL("[40]", "a missing / short buffer must be refused");
+    }
+    TEST_PASS("[40] kill dropped weapon is [40, id u16] (3 bytes, wbyte 0x28 + wshort id)");
+    return true;
+}
+
+/*
  * Sound attenuation of cs2d_sound_play_at (0x1401191c0): listener at camera + (425, 240),
  * gain = vol - (|dx| + |dy| + flags) * 0.001, dropped below 0.0001, pan = dx * 0.002;
  * fire sounds from the weapon array 0x1409f4a20 (FUN_14018c6b0)
@@ -5420,9 +5465,25 @@ static bool test_weapon_modes(void)
         cs2d_weapon_attack2_type(CS2D_WEP_G3SG1) != 2 || cs2d_weapon_attack2_type(CS2D_WEP_SG550) != 2 ||
         cs2d_weapon_attack2_type(CS2D_WEP_AK47) != 0 || cs2d_weapon_attack2_type(CS2D_WEP_M3) != 0)
         TEST_FAIL("Weapon modes", "attack2 kinds of 0x1409f79f0");
-    if (cs2d_weapon_accuracy(CS2D_WEP_M3) != 10 || cs2d_weapon_accuracy(CS2D_WEP_XM1014) != 13 ||
-        cs2d_weapon_accuracy(CS2D_WEP_AWP) != 0)
-        TEST_FAIL("Weapon modes", "shotgun spread of 0x1409f5d18 (M3 10, XM1014 13)");
+    /* The whole accuracy table 0x1409f5d18, extracted with tools/agent/weapontables.py (init_weapons fills
+     * `[base + id*4]`): 27 ids, the ones init_weapons writes as 0 included. Only Tpl.shoot (shotgun pellets)
+     * consumes it, so a player shot of any other weapon must stay unscattered. */
+    static const struct { uint8_t id, acc; } acctab[] = {
+        { CS2D_WEP_USP,       0 }, { CS2D_WEP_GLOCK,    0 }, { CS2D_WEP_DEAGLE,   0 }, { CS2D_WEP_P228,     0 },
+        { CS2D_WEP_ELITE,     0 }, { CS2D_WEP_FIVESEVEN, 0 }, { CS2D_WEP_M3,      10 }, { CS2D_WEP_XM1014,  13 },
+        { CS2D_WEP_MP5,       2 }, { CS2D_WEP_TMP,      4 }, { CS2D_WEP_P90,      3 }, { CS2D_WEP_MAC10,    4 },
+        { CS2D_WEP_UMP45,     3 }, { CS2D_WEP_AK47,     3 }, { CS2D_WEP_SG552,    0 }, { CS2D_WEP_M4A1,     2 },
+        { CS2D_WEP_AUG,       0 }, { CS2D_WEP_SCOUT,    0 }, { CS2D_WEP_AWP,      0 }, { CS2D_WEP_G3SG1,    1 },
+        { CS2D_WEP_SG550,     1 }, { CS2D_WEP_GALIL,    1 }, { CS2D_WEP_FAMAS,    1 }, { CS2D_WEP_M249,     8 },
+        { CS2D_WEP_M134,      5 }, { CS2D_WEP_FNF2000,  2 }
+    };
+    for (size_t i = 0; i < sizeof(acctab) / sizeof(acctab[0]); i++) {
+        if (cs2d_weapon_accuracy(acctab[i].id) != acctab[i].acc)
+            TEST_FAIL("Weapon modes", "0x1409f5d18 accuracy mismatch (see the table in cs2d_weapon_accuracy)");
+    }
+    if (cs2d_weapon_accuracy(CS2D_WEP_KNIFE) != 0 || cs2d_weapon_accuracy(CS2D_WEP_SHIELD) != 0 ||
+        cs2d_weapon_accuracy(CS2D_WEP_M249 + 100) != 0)
+        TEST_FAIL("Weapon modes", "ids outside 0x1409f5d18 must be 0");
 
     cs2d_player_t pl;
     cs2d_player_init(&pl, 1, "p");
@@ -5739,7 +5800,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 60;
+    int total = 61;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -5801,6 +5862,7 @@ int main(void)
     if (test_settile()) passed++;
     if (test_font_metrics()) passed++;
     if (test_screenshot_paths()) passed++;
+    if (test_random_and_dropwep()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

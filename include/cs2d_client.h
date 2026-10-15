@@ -248,6 +248,7 @@ struct cs2d_client {
     int                 net_lagcomp;       /* DAT_140ddf140 */
     bool                net_leaderboard;   /* Leaderboard available (0x140a14dd8) */
     int                 net_ticks;         /* Server ticks from [247] (DAT_140ddf3e0), -1 until received */
+    int                 net_seed;          /* Spread seed from [252,6] (TRandom.GenerateSeed, 0x1402d0560) */
     char                net_password[64];  /* Server password sent in [252,1] (connect <ip> <port> [password]) */
     uint8_t             net_seen_seq[8192]; /* Reliable sequence numbers already handled (1 bit each) */
     cs2d_xfer_t         xfer;               /* Join-time file transfer [252,50] */
@@ -433,6 +434,8 @@ void cs2d_client_render(cs2d_client_t *client, int screen_w, int screen_h);
 /* Network functions */
 bool cs2d_client_connect(cs2d_client_t *client, const char *ip, int port);
 void cs2d_client_send_udp(cs2d_client_t *client, const uint8_t *payload, size_t len, bool reliable);
+/* Opcode 40: tell the server a dropped item is gone (Titem.fadeout 0x14004cd20) - [40, id u16] */
+void cs2d_client_send_kill_dropped_weapon(cs2d_client_t *client, uint16_t item_id);
 void cs2d_client_poll_network(cs2d_client_t *client);
 
 /*

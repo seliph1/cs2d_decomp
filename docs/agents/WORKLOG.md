@@ -78,27 +78,32 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
   milestone tracker (Phases 1 and 3 DONE, Phase 2 DONE off Windows) that keeps only its open decisions - the
   desktop stb switch, the legacy-context fallback, and the owed daylight / `light 0..5` / `mapshadows` pixel sweep.
 
-## 2026-10-15 — Claude — pixel diff: our core-profile frame vs the original's (GL 3.3 phase gate)
-- New `tools/agent/pixel_diff.py` (Pillow): differing pixels (%), mean/max channel delta, PSNR, per-band
-  breakdown and the worst 32x32 cells, with `--window-shot` (crops a `drive_orig.ps1 shot:` to the client
-  area: 3 px border, 26 px title), `--crop`, `--mask` and `--diff <heat map>`.
-- New `tools/agent/lua/pixdiff_probe.lua`: player 1 on tile (44,25) of `prison_funst3r` (pixel 1424,816),
-  armed on the `join` *and* `team` hooks. Two traps found on the way: the *original* only spawns after it
-  picks a team (`drive_orig.ps1 tap:2/tap:1`), our client only via its `team ct` console command (its
-  Select Team window could not be driven with `!mouse`, OPEN_ISSUES "Verification debt"), and
-  `drive_orig.ps1` splits steps on `:` so its `shot:` path must be absolute.
-- Measured (same scene, same camera, light engine on, 850x480): whole frame **18.52 %** of pixels differ,
-  mean |delta| 4.93, PSNR 23.30 dB; **playfield only** (HUD + radar masked) **14.13 % / 2.32 / 28.19 dB**;
-  our own run-to-run noise floor 3.9-4.7 % / 0.35-0.83 (the varying band is the player sprite, y 180..240).
-  The scene needs >= 260 frames after the team selection to settle. Residual: the HUD strips and a region
-  where ours is darker - screen x 240..300, y 190..300 = tiles (38..41, 23..28), cell mean 32 (original) vs
-  20 (ours). Numbers, recipe and the earlier `--screenshot`/tour notes: `knowledge/rendering-notes.md`
-  "Pixel comparison".
-- Verified: the tool on identical images (0.00 %) and on two different ones (per-band + worst cells);
-  `git status sys/` clean, `server.cfg` / `recentlyjoined.lst` restored after every run.
-- Left (OPEN_ISSUES): the diff on a daylight map (de_dust2) and a `light 0..5` / `mapshadows 0..4` sweep;
-  the darker tile region; the `!mouse` click question.
-
+## 2026-10-15 — Cline — the [252,6] spread seed (TRandom.SeedTable) + opcode 40
+- New `src/cs2d_random.c` + `include/cs2d_random.h` reproduce BlitzMax `TRandom`: `GenerateSeed` (0x14000fe90) fills a
+  **1000-entry** table (`SeedTable`; the loop ends at `data + 0xfa0`) with values < **Range = 123**
+  (`mov dword [0x140dde720],0x7b` at 0x14030720e; `B`/`aX` at 0x140dde728 / 0x140dde724, pointer 0x140dde730). The
+  seed is the i32 in the join settings `[252,6]` (0x1402d0560: `Tudp_p.rint` + `GenerateSeed`), now read into
+  `client->net_seed`; `Tpl.shoot` spreads with `SeedTable[Tpl.random] % (2*acc) - acc` per pellet, so the shotgun
+  spreads like the server instead of `rand()` (`pl->shot_random` mirrors `Tpl.random`, `(random+1)%200` per pellet).
+  Details: `knowledge/random.md`.
+- Opcode 40 "kill dropped weapon" decoded: `[40, id u16]`, **reliable** (`Tudp_con.Createpacket(1,0)`; p1 == 1 takes
+  the reliable id) from `Titem.fadeout` (0x14004cd20: `wbyte(0x28)` at 0x14004cec2 + `wshort(id)`). Its trigger is
+  `Titem.update` (0x140147dc0): a *dropped* item (`Titem.dropped`, +0x34) ages +1 per drawn frame and fades at
+  `0x140a14d94` (= 15). New `cs2d_client_send_kill_dropped_weapon` + a per-frame timer in `cs2d_client_update`; the
+  `[24]` handler marks the item `dropped` (flags and the bomb stay 0, 1401f0000.c:1004).
+- Verified: `test_random_and_dropwep` locks four seeds' tables (`cs2d_random_table` / `cs2d_random_get`) and the three
+  packet bytes, suite **61/61**; `build.bat` warning-free; a live offline join (`-offline`, de_dust2, `CS2D_NET_LOG=1`)
+  logs `[net seed 33081]` and `[net seed_table_1 113]`, which the algorithm reproduces; `git status sys/` clean.
+- Left (OPEN_ISSUES): the 15-frame fade threshold and the original's gates need a capture (the accuracy question
+  is answered by the follow-up below).
+- Follow-up (same session): extracted the **whole** accuracy table 0x1409f5d18 with `tools/agent/weapontables.py`
+  after teaching it the `lea reg,[base+id*4]` form this build uses (init_weapons writes `[base + id*4]`): the 17
+  values in `cs2d_weapon_accuracy` were already right, the 1..6 / 31 / 33 / 34 / 35 zeros are what init_weapons
+  writes, and the id 92 (2) is an item we do not model. `Tpl.attack` (0x14021a6xx) calls `Tpl.shoot` - the only
+  consumer - for typ 10 / 11 alone and sends every other weapon through `Tpl.shoot_recoil` (0x140209a90), so a
+  player shot of any other weapon has no accuracy spread: our shotgun-only gate is the faithful behaviour, now
+  stated in the comments and locked by the full table in `test_weapon_modes` (suite **61/61**). Also noted the
+  muzzle candidates the re-extraction produced (shield 22, bomb 1, items 16, an id 92) as unverified.
 
 
 

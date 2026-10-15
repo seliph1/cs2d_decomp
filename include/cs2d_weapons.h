@@ -31,7 +31,8 @@ int cs2d_weapon_attack2_type(uint8_t weapon_id);
 uint8_t cs2d_weapon_mode(const cs2d_player_t *player);
 
 /* Client shot spread in degrees (init_weapons table 0x1409f5d18, Tpl.shoot 0x140209810): the shot turns by
- * (seed % (2 * accuracy)) - accuracy */
+ * (seed % (2 * accuracy)) - accuracy, seed = TRandom.SeedTable[Tpl.random]. Only Tpl.shoot reads this table and
+ * only the shotgun pellets go through it (see cs2d_weapon_accuracy), so the other weapons never spread. */
 int cs2d_weapon_accuracy(uint8_t weapon_id);
 
 /* Tpl.setweapon (0x1400a9430): taking a different item in hand puts a scope (SG552, Aug, Scout, AWP, G3SG1,

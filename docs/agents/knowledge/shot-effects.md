@@ -55,7 +55,8 @@ Source: REA/dump `FUN_1401fd590` (attack2), `FUN_140219e40` (Tpl.attack shot dis
 - Messages lang 0696..0699 (silencer/burst ON/OFF, base colour 255,220,0), laser 0700..0703 in green / (255,50,0) /
   yellow / (0,150,255). Sounds: silencer_on/off, zoom (kinds 1/2), click (burst, laser).
 - Shotgun (M3, XM1014): 5 × Tpl.shoot at offsets 0, −5, +5, −9, +9°, each + `seed % (2·acc) − acc`, accuracy table
-  `0x1409f5d18` (M3 10, XM1014 13). seed = `TRandom.SeedTable[Tpl.random]` (not reproduced, we use rand()).
+  `0x1409f5d18` (M3 10, XM1014 13). seed = `TRandom.SeedTable[Tpl.random]`, the table the server seeds through
+  `[252,6]` (`knowledge/random.md`); Tpl.random advances once per pellet.
 - Burst: fire timer ×3.3; two burstFire shots at +100/+200 ms (id < 10) or +75/+150 ms, angle aim+10±Rand(-5,5)
   then −10+Rand(-5,5) at fire time; dropped if the weapon changed; client-side only (no packet).
 - Silenced sound/overlay when kind 20 and mode != 0.

@@ -285,6 +285,9 @@ typedef struct {
     int16_t     reserve_ammo[CS2D_MAX_WEAPONS];
     uint8_t     weapon_mode[CS2D_MAX_WEAPONS];  /* Titem.mode (+0x1c) of each held item: attack2 state (silencer /
                                                  * burst on, zoom level 1..2, laser colour 0..3) */
+    /* Tpl.random: the index Tpl.shoot reads TRandom.SeedTable with; starts at 0, is clamped to 1 and advances
+     * (random + 1) % 200 per Tpl.shoot call (0x140209810, i.e. once per pellet) */
+    int         shot_random;
     float       fire_cooldown;
     float       reload_timer;
     float       reload_ani;          /* Tpl.reloadani (+0x330): 15 at a clip reload's start / end, 8 per shell; torso
@@ -391,12 +394,19 @@ typedef struct {
 
 /* Weapon / item lying on the ground (server: spawnitem 33, drop 24, collect 25) */
 #define CS2D_MAX_GROUND_ITEMS 256
+/* Titem: a *dropped* item (Titem.dropped, +0x34) ages one step per drawn frame in Titem.update (0x140147dc0)
+ * and fades at the threshold 0x140a14d94 (= 15, .data); a Lua fadeout hook returning 1 sets droptimer to
+ * 10000 instead, which stops the timer (Titem.fadeout 0x14004cd20). */
+#define CS2D_GROUND_ITEM_FADE 15
+#define CS2D_GROUND_ITEM_VETO 10000
 typedef struct {
     bool     active;
     uint16_t id;        /* Server item id */
     uint8_t  type;      /* Weapon / item type */
     float    x, y;      /* Tile center in px */
     int16_t  clip, reserve;
+    bool     dropped;   /* Titem.dropped: created by a drop ([24]), not a map / server spawn */
+    int      droptimer; /* Titem.droptimer: frames since the drop, or CS2D_GROUND_ITEM_VETO */
 } cs2d_ground_item_t;
 
 /* Game Simulation State */

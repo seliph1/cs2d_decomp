@@ -262,6 +262,15 @@ bool cs2d_net_parse_spawn_packet(
     size_t        *out_bytes_read
 );
 
+/* Opcode 40 (kill dropped weapon) - Client -> Server, Titem.fadeout (0x14004cd20):
+   [40, id u16] (3 bytes, reliable: Tudp_con.Createpacket(1, 0)). The id is written with Tudp_p.wshort
+   (0x14004cec2: movzx edx,WORD PTR [rdx+8] then call [rax+0xa8]) after the opcode byte (wbyte 0x28). */
+size_t cs2d_net_build_kill_dropped_weapon(
+    uint16_t item_id,
+    uint8_t *out_buf,
+    size_t   max_len
+);
+
 /* --- Authentic CS2D Tudp Stream & Crypto/Handshake Helpers --- */
 typedef struct {
     uint8_t buf[2048];
