@@ -435,4 +435,11 @@ bool cs2d_client_connect(cs2d_client_t *client, const char *ip, int port);
 void cs2d_client_send_udp(cs2d_client_t *client, const uint8_t *payload, size_t len, bool reliable);
 void cs2d_client_poll_network(cs2d_client_t *client);
 
+/*
+ * Field 13 of the [252,1] join request: "\xfa" + "0" + the 32-character install id of
+ * sys/core/core.edc (+0x523) + the size of the client binary (CS2D.exe of this install, 14789120
+ * bytes = what the original sent in the 2026-10-11 proxy capture). Reads the files on disk.
+ */
+void cs2d_client_join_core_id(char *out, size_t out_size);
+
 #endif /* CS2D_CLIENT_H */

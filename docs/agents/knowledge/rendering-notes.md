@@ -45,3 +45,37 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
   step text 0xbc centered at bar_center-42; bar frame 204x14 0x40, 202x12 black, fill 200*p x10 0x3c, edges 0x60/0x20.
   Ours: `cs2d_render_loadscreen` (no menu background / corner images yet).
 - Draw order (cs2d_draw_world 0x140290310): floor, map layer 3 (prop layer 2 = obstacles), Tp 3, Tpl.drawAll, Tpro.draw_flying, Tp 4, map layer 4 (prop layer 3 = walls, tile height 32), Tdo walls, Te pass 2, overwall, Tp 5/7/6. Walls cover the players. Tp 0x1b (smoke cloud) is created in list 7 (Tp.Create), i.e. after the walls; screenshots of CS2D.exe confirm the smoke is over the walls.
+
+## Pixel comparison: our core-profile renderer against the original (measured 2026-10-15)
+
+The GL 3.3 core rewrite (cs2d_gl.c batcher + shaders) is compared *in pixels* with CS2D.exe on the same
+scene. Recipe (`tools/agent/`):
+
+1. `pixdiff_probe.lua` puts player 1 on tile (44,25) of `prison_funst3r` (pixel 1424,816) - the same spot
+   our `--screenshot` tour shows. It arms on the `join` **and** `team` hooks, because the dedicated only
+   spawns a player who has picked a team, and only the original taps its CT/class keys by itself.
+2. Original: dedicated `-offline -map prison_funst3r -port 36970 -lua ../../tools/agent/lua/pixdiff_probe.lua`,
+   `CS2D.exe -join 127.0.0.1:36970 -nointro -offline`, then
+   `drive_orig.ps1 -Steps "focus;wait:500;tap:2;wait:800;tap:1;wait:3000;focus;wait:4000;shot:<abs path>.png"`
+   (**absolute** path: the driver splits the step on `:`, so `C:/...` is what it can save).
+3. Ours: same dedicated, then
+   `cs2d_client.exe --capture:"connect 127.0.0.1 36970;!wait 400;team ct;!wait 300;!shot <path>.bmp"`.
+   `team ct` is required: our client stays a spectator otherwise (the dedicated answers
+   `ERROR: spawnplayer - player #1 is a spectator!`), and its Select Team window could not be driven with
+   `!mouse` clicks (OPEN_ISSUES). Wait for the scene to settle (>= 260 frames) - the frame still changes
+   before that.
+4. Compare: `tools/agent/pixel_diff.py tools/agent/out/pix_orig.png out/pix_ours.bmp --window-shot`.
+
+Measured (850x480, prison_funst3r, light engine on, MSAA 4x, 2026-10-15):
+
+| Comparison | Differing pixels | mean abs delta | PSNR |
+|---|---|---|---|
+| original vs ours, whole frame | 18.52 % | 4.93 / 255 (1.9 %) | 23.30 dB |
+| original vs ours, HUD + radar masked | 14.13 % | 2.32 / 255 (0.9 %) | 28.19 dB |
+| ours vs ours (two runs, same recipe) = noise floor | 3.9 - 4.7 % | 0.35 - 0.83 | 32-36 dB |
+
+Where the residual sits: the bottom HUD strip (y 400..480, mean 9.58), the top strip (y 0..120, 6.60), a
+localized region where **ours is darker** (screen x 240..300, y 190..300 = world x 1240..1300, y 770..880
+= tiles (38..41, 23..28); original cell mean 32 vs ours 20) and the player-sprite band (y 180..240), which
+is also what makes two of *our* runs differ. The playfield error of ~1 % is the number the GL 3.3 core
+rewrite has to stay inside.

@@ -40,6 +40,7 @@
 #include "cs2d_sound.h"
 #include "cs2d_customtile.h"
 #include "cs2d_font.h"
+#include "cs2d_platform.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -461,11 +462,57 @@ static bool test_network_protocol(void)
     }
     cs2d_pkt_t p0, p1, p2, p3;
     cs2d_net_build_join_stage0(&p0);
-    cs2d_net_build_join_stage1(&p1, "CS2D_Decomp", "", "135421593", 850, 480, 0);
     cs2d_net_build_join_stage2(&p2, map_sha256, "135421593", 1);
     cs2d_net_build_join_stage3(&p3, "de_dust2", map_sha256);
-    if (p0.pos != 3 || p1.pos == 0 || p2.pos == 0 || p3.pos == 0) {
-        TEST_FAIL("Join Packet Builders (Opcode 252)", "Failed to build Join Stage 0..3 packets");
+
+    /* The join request is the opcode alone: the original writes it as 2 bytes and the secret comes
+     * back in the server's [252,0] reply (proxy 2026-10-11: "C>S 7 02 00 03 32 00 fc 00") */
+    if (p0.pos != 2 || p0.buf[0] != 252 || p0.buf[1] != 0 || p2.pos == 0 || p3.pos == 0) {
+        TEST_FAIL("Join Packet Builders (Opcode 252)", "Failed to build Join Stage 0/2/3 packets");
+    }
+
+    /* 5.7 [252,1] byte for byte against the same proxy capture of the original (player "real", no
+     * password, secret "6X4XGs3PRs", 850x480, spray "unrealsoftware.bmp", language "EN-English" and
+     * the install id FUN_140060a10 reads from sys/core/core.edc). Every field sits where
+     * FUN_1402ce7c0 writes it: name, encrypted password and version, u16 1018, usgn id/name, os id,
+     * steam name/id, spray file, transformed secret, nickname scramble, client id, map mode, screen
+     * size, language name/code and the 4:3 / voice / DAT_140ddf6a8 bytes. */
+    cs2d_net_build_join_stage1(&p1, "real", "", "6X4XGs3PRs", "unrealsoftware.bmp", "EN-English",
+                               "\xFA" "0" "28cefe3ac30ab30ab5268978955263db" "14789120", 850, 480, 0);
+    static const uint8_t join1_want[] = {
+        0xfc, 0x01, 0x04, 0x72, 0x65, 0x61, 0x6c, 0x00, 0x07, 0x97, 0xa3, 0x9e, /*   0 */
+        0x99, 0xaa, 0x9b, 0xa7, 0xfa, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /*  12 */
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, /*  24 */
+        0x75, 0x6e, 0x72, 0x65, 0x61, 0x6c, 0x73, 0x6f, 0x66, 0x74, 0x77, 0x61, /*  36 */
+        0x72, 0x65, 0x2e, 0x62, 0x6d, 0x70, 0x0e, 0x78, 0x21, 0x4f, 0x62, 0x34, /*  48 */
+        0x34, 0x38, 0x62, 0x62, 0x31, 0x35, 0x52, 0x35, 0x36, 0x00, 0x2a, 0xfa, /*  60 */
+        0x30, 0x32, 0x38, 0x63, 0x65, 0x66, 0x65, 0x33, 0x61, 0x63, 0x33, 0x30, /*  72 */
+        0x61, 0x62, 0x33, 0x30, 0x61, 0x62, 0x35, 0x32, 0x36, 0x38, 0x39, 0x37, /*  84 */
+        0x38, 0x39, 0x35, 0x35, 0x32, 0x36, 0x33, 0x64, 0x62, 0x31, 0x34, 0x37, /*  96 */
+        0x38, 0x39, 0x31, 0x32, 0x30, 0x00, 0x52, 0x03, 0x00, 0x00, 0xe0, 0x01, /* 108 */
+        0x00, 0x00, 0x07, 0x00, 0x45, 0x6e, 0x67, 0x6c, 0x69, 0x73, 0x68, 0x02, /* 120 */
+        0x00, 0x45, 0x4e, 0x00, 0x01, 0x01                                  /* 132 */
+    };
+    if (p1.pos != (int)sizeof(join1_want) || memcmp(p1.buf, join1_want, sizeof(join1_want)) != 0) {
+        TEST_FAIL("Join Stage 1", "the [252,1] layout differs from the proxy capture");
+    }
+
+    /* Field 13 is read off the disk, so it is asserted here as a whole: the 32-character install id
+     * of sys/core/core.edc (+0x523, FUN_140060a10) and the size of the client binary
+     * (FUN_1404b7860(AppArgs[0]); CS2D.exe of this install = 14789120, exactly what the capture
+     * sent). Without the original next to us we fall back to the size stored in core.edc (+0x543),
+     * so the tail is only pinned when that file is there. */
+    char core_id[64];
+    cs2d_client_join_core_id(core_id, sizeof(core_id));
+    if (strncmp(core_id, "\xFA" "0" "28cefe3ac30ab30ab5268978955263db", 34) != 0) {
+        TEST_FAIL("Join core id", "expected \\xfa + 0 + the core.edc install id");
+    }
+    if (cs2d_platform_file_exists("CS2D.exe")) {
+        if (strlen(core_id) != 42 || strcmp(core_id + 34, "14789120") != 0) {
+            TEST_FAIL("Join core id", "expected the client size 14789120 at the end");
+        }
+    } else if (strlen(core_id) < 35) {
+        TEST_FAIL("Join core id", "neither CS2D.exe nor a size in core.edc");
     }
     TEST_PASS("Join Handshake Crypto & Opcode 252 Stage 0..3 Builders (FUN_1401be680 & FUN_1401e22d5)");
 
@@ -1084,8 +1131,11 @@ static bool test_console(void)
     if (strcmp(cs2d_client_console_line(&s_con, CS2D_CONSOLE_MAX_LINES - 1)->text, expect) != 0) {
         TEST_FAIL("Ring buffer", "Newest line must be last");
     }
+    /* Throughput is logged, not asserted: `cs2d_client_console_print` is an O(1) ring append, but the
+       wall clock for this same loop swings from ~7 ms to ~900 ms on one machine (OS scheduling, CPU
+       state, other processes), so a fixed budget flakes instead of catching a regression. The ring-buffer
+       checks above are the real guard; a throughput guard belongs in a benchmark, not in this suite. */
     printf("  [INFO] %d prints: %.2f ms (%.3f us/line)\n", N, print_ms, print_ms * 1000.0 / N);
-    if (print_ms > 500.0) TEST_FAIL("Print throughput", "100k console prints took longer than 500ms");
     TEST_PASS("Ring buffer keeps the newest 1024 of 100k lines in order");
 
     /* Regression: scrolling up must never empty the log box (lines used to vanish from the bottom) */
@@ -2670,6 +2720,34 @@ static bool test_weapon_select(void)
         cs2d_weapon_hud_ammo(CS2D_WEP_PORTALGUN) || !cs2d_weapon_hud_ammo(CS2D_WEP_AK47)) {
         TEST_FAIL("HUD tables", "slot / order / ammo differ from init_weapons");
     }
+
+    /* Per-weapon muzzle offset (0x1409f5d20 in init_weapons): the tracer / flash / light start offset */
+    if (cs2d_weapon_get(CS2D_WEP_AK47)->muzzle != 26 || cs2d_weapon_get(CS2D_WEP_AWP)->muzzle != 33 ||
+        cs2d_weapon_get(CS2D_WEP_USP)->muzzle != 19 || cs2d_weapon_get(CS2D_WEP_M3)->muzzle != 28 ||
+        cs2d_weapon_get(CS2D_WEP_MP5)->muzzle != 22 || cs2d_weapon_get(CS2D_WEP_FAMAS)->muzzle != 24 ||
+        cs2d_weapon_get(CS2D_WEP_KNIFE)->muzzle != 25 || cs2d_weapon_get(CS2D_WEP_CHAINSAW)->muzzle != 30 ||
+        cs2d_weapon_get(CS2D_WEP_PORTALGUN)->muzzle != 30 || cs2d_weapon_get(CS2D_WEP_M134)->muzzle != 32 ||
+        cs2d_weapon_get(CS2D_WEP_FNF2000)->muzzle != 23 || cs2d_weapon_get(CS2D_WEP_HE)->muzzle != 0 ||
+        cs2d_weapon_get(CS2D_WEP_SHIELD)->muzzle != 0) {
+        TEST_FAIL("muzzle offset", "0x1409f5d20 per weapon differs from init_weapons");
+    }
+
+    /* The weapon-select ammo line (end of FUN_140295190) */
+    char ammo[32];
+    cs2d_render_weapon_select_ammo(ammo, sizeof(ammo), 1, CS2D_WEP_AK47, 30, 90, false);
+    if (strcmp(ammo, "30 | 90") != 0) TEST_FAIL("select ammo", "slot 1 must be \"clip | reserve\"");
+    cs2d_render_weapon_select_ammo(ammo, sizeof(ammo), 2, CS2D_WEP_USP, 12, 0, true);
+    if (strcmp(ammo, "12 | INF") != 0) TEST_FAIL("select ammo", "mp_infammo slot 2 must be \"clip | INF\" (0762)");
+    cs2d_render_weapon_select_ammo(ammo, sizeof(ammo), 4, CS2D_WEP_HE, 2, 0, false);
+    if (strcmp(ammo, "2 x") != 0) TEST_FAIL("select ammo", "slot 4 must be \"n x\"");
+    cs2d_render_weapon_select_ammo(ammo, sizeof(ammo), 6, CS2D_WEP_SATCHEL, 3, 0, false);
+    if (strcmp(ammo, "3 x") != 0) TEST_FAIL("select ammo", "slot 6 with a count must be \"n x\"");
+    cs2d_render_weapon_select_ammo(ammo, sizeof(ammo), 6, CS2D_WEP_SATCHEL, 0, 0, false);
+    if (strcmp(ammo, "0 x - Remote") != 0) TEST_FAIL("select ammo", "slot 6 without a count must be \"0 x - Remote\" (0763)");
+    cs2d_render_weapon_select_ammo(ammo, sizeof(ammo), 3, CS2D_WEP_KNIFE, 0, 0, false);
+    if (ammo[0] != '\0') TEST_FAIL("select ammo", "a melee row has no ammo line");
+    cs2d_render_weapon_select_ammo(ammo, sizeof(ammo), 1, CS2D_WEP_SHIELD, 0, 0, false);
+    if (ammo[0] != '\0') TEST_FAIL("select ammo", "the Tactical Shield has no ammo line");
 
     cs2d_player_t pl;
     cs2d_player_init(&pl, 1, "P");
@@ -5500,18 +5578,13 @@ static bool test_settile(void)
     m.tile_modes[6] = CS2D_TILE_OBSTACLE;
     cs2d_customtile_batch_t b;
     int bounds[4];
-    cs2d_customtile_begin(&b);
-    for (int k = 0; k < snap[0]; k++) {
-        const uint8_t *r = &snap[1 + k * 11];
-        cs2d_settile_t t;
-        cs2d_settile_defaults(&t, r[0] | (r[1] << 8), r[2] | (r[3] << 8), r[4]);
-        t.rot = r[5]; t.r = r[6]; t.g = r[7]; t.b = r[8]; t.overlay = r[9]; t.blend = r[10];
-        cs2d_customtile_addcheck(&m, &b, &t);
-    }
     uint32_t solid = m.entity_solid_version;
-    if (!cs2d_customtile_end(&m, &b, bounds) || bounds[0] != 9 || bounds[1] != 9 || bounds[2] != 15 ||
+    int spos = 0;
+    bool cut = true;
+    if (!cs2d_customtile_read_snapshot(&m, snap, (int)sizeof(snap), &spos, bounds, &cut) || cut ||
+        spos != (int)sizeof(snap) || bounds[0] != 9 || bounds[1] != 9 || bounds[2] != 15 ||
         bounds[3] != 11 || m.entity_solid_version == solid) {
-        TEST_FAIL("settile batch", "update bounds (changed tiles plus one) or light version");
+        TEST_FAIL("settile batch", "section [252,7,9]: bounds (changed tiles plus one) or light version");
     }
     size_t i10 = 10 * 20 + 10, i11 = i10 + 1, i12 = i10 + 2, i13 = i10 + 3, i14 = i10 + 4;
     if (m.tiles[i10] != 5 || m.collision[i10] != 1 || m.tiles[i11] != 6 || m.collision[i11] != 2 ||
@@ -5562,11 +5635,102 @@ static bool test_settile(void)
     }
     cs2d_customtile_clear(&m);
     if (m.custom_tile_count != 0 || m.tiles[i11] != 6) TEST_FAIL("settile clear", "list.Clear touched the tiles");
+
+    /* A cut entry (fewer than 11 bytes left, FUN_1402ce7c0 case 6): *cut is set, the entries read so far stay
+     * applied and the caller prints "ERROR: failed to load custom tile data" and aborts the join */
+    static const uint8_t snap_cut[] = {
+        0x03,
+        0x10, 0x00, 0x05, 0x00, 0x02, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00,   /* complete */
+        0x11, 0x00, 0x05, 0x00, 0x03                                          /* 2nd entry cut at 5 of 11 bytes */
+    };
+    int cpos = 0;
+    bool ccut = false;
+    (void)cs2d_customtile_read_snapshot(&m, snap_cut, (int)sizeof(snap_cut), &cpos, bounds, &ccut);
+    if (!ccut || m.custom_tile_count != 1 || m.tiles[5 * 20 + 16] != 2) {
+        TEST_FAIL("settile cut", "a cut entry must set *cut and keep the complete entries applied");
+    }
     cs2d_map_free(&m);
 
-    TEST_PASS("settile: [62] / [252,7,9] layouts, blend byte, addcheck entries, collision update");
+    TEST_PASS("settile: [62] / [252,7,9] layouts, blend byte, addcheck entries, collision update, cut abort");
     return true;
 }
+
+/*
+ * Output paths of the --screenshot tour and the file helpers behind it. The tour used to write to a
+ * hardcoded absolute path into one machine's scratch directory; it now takes its prefix from the command
+ * line ("--screenshot[:<prefix>]") through cs2d_platform_screenshot_path, which is why every step of the
+ * tour has to resolve to a predictable <prefix><suffix>.bmp next to the --capture harness's frames.
+ */
+static bool test_screenshot_paths(void)
+{
+    printf("\n--- Testing screenshot output paths (--screenshot prefix) ---\n");
+    char path[MAX_PATH];
+
+    /* The default prefix, one call per step of the tour (suffixes match src/main_client.c) */
+    if (strcmp(cs2d_platform_screenshot_path(path, sizeof(path), "screens/client_screenshot", ""),
+               "screens/client_screenshot.bmp") != 0 ||
+        strcmp(path, "screens/client_screenshot.bmp") != 0) {
+        TEST_FAIL("screenshot path", "expected screens/client_screenshot.bmp for an empty suffix");
+    }
+    if (strcmp(cs2d_platform_screenshot_path(path, sizeof(path), "screens/client_screenshot", "_console"),
+               "screens/client_screenshot_console.bmp") != 0 ||
+        strcmp(cs2d_platform_screenshot_path(path, sizeof(path), "screens/client_screenshot", "_prison"),
+               "screens/client_screenshot_prison.bmp") != 0) {
+        TEST_FAIL("screenshot path", "a step suffix must land next to the first frame");
+    }
+
+    /* A prefix that already looks like a BMP keeps its extension; the case of it does not matter */
+    if (strcmp(cs2d_platform_screenshot_path(path, sizeof(path), "screens/dust2.bmp", "_console"),
+               "screens/dust2_console.bmp") != 0 ||
+        strcmp(cs2d_platform_screenshot_path(path, sizeof(path), "screens/dust2.BMP", "_console"),
+               "screens/dust2_console.bmp") != 0) {
+        TEST_FAIL("screenshot path", "a .bmp prefix grew a second extension");
+    }
+    /* ".bmp" alone is a prefix like any other (never stripped to nothing) */
+    if (strcmp(cs2d_platform_screenshot_path(path, sizeof(path), ".bmp", "x"), ".bmpx.bmp") != 0) {
+        TEST_FAIL("screenshot path", "\".bmp\" as the whole prefix was stripped");
+    }
+
+    /* A prefix without a directory stays in the working directory (nothing is invented) */
+    if (strcmp(cs2d_platform_screenshot_path(path, sizeof(path), "client_screenshot", ""),
+               "client_screenshot.bmp") != 0) {
+        TEST_FAIL("screenshot path", "a bare prefix must not gain a directory");
+    }
+    /* A prefix longer than the buffer is truncated, never overflowed */
+    char small[20];
+    cs2d_platform_screenshot_path(small, sizeof(small), "screens/a_very_long_prefix", "_x");
+    if (strlen(small) != sizeof(small) - 1 || small[sizeof(small) - 1] != '\0') {
+        TEST_FAIL("screenshot path", "a long prefix did not stop at the buffer");
+    }
+
+    /* mkdir_parent: every level of the directory part, and nothing when there is none */
+    cs2d_platform_rmdir("out/test_screenshot_paths/inner"); /* leftovers of an interrupted run */
+    cs2d_platform_rmdir("out/test_screenshot_paths");
+    if (!cs2d_platform_mkdir_parent("out/test_screenshot_paths/inner/shot.bmp") ||
+        !cs2d_platform_dir_exists("out/test_screenshot_paths") ||
+        !cs2d_platform_dir_exists("out/test_screenshot_paths/inner")) {
+        TEST_FAIL("mkdir parent", "a nested directory was not created");
+    }
+    if (!cs2d_platform_mkdir_parent("shot.bmp") || !cs2d_platform_mkdir_parent("/shot.bmp")) {
+        TEST_FAIL("mkdir parent", "a path without a directory part must succeed");
+    }
+    if (cs2d_platform_mkdir_parent("")) {
+        TEST_FAIL("mkdir parent", "an empty path must be refused");
+    }
+    /* A path that cannot fit is refused instead of being clipped into another directory */
+    char too_long[MAX_PATH + 8];
+    memset(too_long, 'd', sizeof(too_long) - 1);
+    too_long[sizeof(too_long) - 1] = '\0';
+    if (cs2d_platform_mkdir_parent(too_long)) {
+        TEST_FAIL("mkdir parent", "an over-long path was accepted");
+    }
+    cs2d_platform_rmdir("out/test_screenshot_paths/inner");
+    cs2d_platform_rmdir("out/test_screenshot_paths");
+
+    TEST_PASS("screenshot paths: <prefix><suffix>.bmp, .bmp prefix kept, mkdir_parent levels");
+    return true;
+}
+
 
 int main(void)
 {
@@ -5575,7 +5739,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 59;
+    int total = 60;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -5636,6 +5800,7 @@ int main(void)
     if (test_special_items()) passed++;
     if (test_settile()) passed++;
     if (test_font_metrics()) passed++;
+    if (test_screenshot_paths()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

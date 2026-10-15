@@ -4387,6 +4387,29 @@ static void weapon_select_text(float x, float y, const char *text, float scale_x
 }
 
 /*
+ * The second line of a weapon-select row (end of FUN_140295190): "clip | reserve" (slots 1, 2; "clip | INF"
+ * under mp_infammo 0x140a14e38[1], sys/language 0762), "n x" (slot 4; slot 6 with a count) or the literal
+ * "0 x - Remote" (slot 6 with nothing left: "0 x - " + sys/language 0763). Empty when the row has no line
+ * (slot 3, slot 5, or a shield / ammo-less weapon in slots 1-2).
+ */
+void cs2d_render_weapon_select_ammo(char *buf, size_t bufsize, int slot, uint8_t weapon, int clip, int reserve,
+                                    bool infammo)
+{
+    if (!buf || bufsize == 0) return;
+    buf[0] = '\0';
+    if (slot == 1 || slot == 2) {
+        if (weapon == CS2D_WEP_SHIELD || !cs2d_weapon_hud_ammo(weapon)) return;
+        if (infammo) snprintf(buf, bufsize, "%d | INF", clip);
+        else snprintf(buf, bufsize, "%d | %d", clip, reserve);
+    } else if (slot == 4) {
+        snprintf(buf, bufsize, "%d x", clip);
+    } else if (slot == 6) {
+        if (clip > 0) snprintf(buf, bufsize, "%d x", clip);
+        else snprintf(buf, bufsize, "0 x - Remote");
+    }
+}
+
+/*
  * Reconstructed from the end of FUN_140295190 (the HUD), drawn while DAT_140ddf338 (slot) > 0. s is the HUD font
  * height / 13 (DAT_140a1ccc8 * 0.07692308): 13 px at 850x480, so 1. Slots 1..9 go left to right from x0 at y 3 s:
  *  - open slot: its number (gfx/hud_slotheads.bmp frame slot - 1) additive (200,200,0), then one gfx/hud_slot.bmp
@@ -4396,8 +4419,8 @@ static void weapon_select_text(float x, float y, const char *text, float scale_x
  *    The melee icon turns the other way around a 5 s circle. Slots 7..9 rows have no content. The column is 155 s.
  *  - other slots: a 10 s square per owned item every 12 s under the number, additive (100,50,0); the number turns
  *    (100,0,0) when the slot is empty. The column is 15 s.
- * Under mp_infammo (0x140a14e38[1], 0x1402a00xx) the slot 1 / 2 line is "clip | INF" (sys/language 0762).
- * Not done: "0 x - Remote" (0763, slot 6).
+ * Under mp_infammo (0x140a14e38[1]) the slot 1 / 2 line is "clip | INF" (sys/language 0762); slot 6 without a
+ * count shows "0 x - Remote" (0763). Both are built by cs2d_render_weapon_select_ammo.
  */
 void cs2d_render_weapon_select(const cs2d_player_t *player, const struct cs2d_invsel_s *sel, float x0, bool infammo)
 {
@@ -4437,12 +4460,8 @@ void cs2d_render_weapon_select(const cs2d_player_t *player, const struct cs2d_in
                 weapon_select_text(tx, y + head_y, name, sx, hl);
 
                 char line[32] = "";
-                if ((slot == 1 || slot == 2) && w != CS2D_WEP_SHIELD && cs2d_weapon_hud_ammo(w)) {
-                    if (infammo) snprintf(line, sizeof(line), "%d | INF", player->clip_ammo[w]);
-                    else snprintf(line, sizeof(line), "%d | %d", player->clip_ammo[w], player->reserve_ammo[w]);
-                } else if (slot == 4 || (slot == 6 && player->clip_ammo[w] > 0)) {
-                    snprintf(line, sizeof(line), "%d x", player->clip_ammo[w]);
-                }
+                cs2d_render_weapon_select_ammo(line, sizeof(line), slot, w, player->clip_ammo[w],
+                                               player->reserve_ammo[w], infammo);
                 if (line[0]) weapon_select_text(tx, y + (float)(int)(s * 18.0f), line, 1.0f, hl);
             }
             x += (float)(int)(s * 155.0f);

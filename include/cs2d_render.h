@@ -380,6 +380,11 @@ void cs2d_render_hud_progress_bar(
 struct cs2d_invsel_s;
 void cs2d_render_weapon_select(const cs2d_player_t *player, const struct cs2d_invsel_s *sel, float x0, bool infammo);
 
+/* The ammo line of one weapon-select row into buf (empty when the row has none): "clip | reserve" / "clip | INF"
+ * (slots 1, 2), "n x" (slot 4, slot 6 with a count) or "0 x - Remote" (slot 6 without one). FUN_140295190 */
+void cs2d_render_weapon_select_ammo(char *buf, size_t bufsize, int slot, uint8_t weapon, int clip, int reserve,
+                                    bool infammo);
+
 /* Crosshair at mouse pointer (gfx/pointer.bmp cell 0) */
 void cs2d_render_crosshair(float mx, float my);
 

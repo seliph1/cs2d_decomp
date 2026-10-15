@@ -26,7 +26,8 @@ Source: REA / dump (`FUN_140166fb0` invnext / invprev, `FUN_1401cc180` slotN, `F
   (melee: the other way, on a 5 px circle); name at +45 (+43 for slots 4, 6), y + 3, squeezed to 95 px; y + 18
   "clip | reserve" (slots 1, 2) or "n x" (4, 6). Text (255,255,0) highlighted / (220,180,0), shadow black 0.8 at +1.
   Column 155 wide. Closed slots: a 10x10 additive (100,50,0) square per item every 12 px under the number, the number
-  in (100,0,0) when empty; column 15 wide. Infinite ammo shows "clip | INF" (0762).
+  in (100,0,0) when empty; column 15 wide. Infinite ammo shows "clip | INF" (0762); slot 6 without a count shows
+  "0 x - Remote" (0763).
 - **Bindings** (`sys/controls.cfg`, `bind "<key>" "<command>"`): `mwheelup` invprev, `mwheeldown` invnext, `0`..`9`
   slot10 / slot1..slot9.
 - **Our model** (2026-10-14): `cs2d_player_t.owned[id]` is the item list (`Titem.list`); `inventory[slot]` is only the

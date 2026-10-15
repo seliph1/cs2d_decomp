@@ -10,7 +10,10 @@ Code: `src/cs2d_customtile.c`. Test: `test_settile`. Probe: `tools/agent/lua/set
 - **[252,7,9]** (FUN_1402ce7c0 case 6): Tcustomtile.list and .batch cleared, `count u8`, then count x 11 bytes
   `{x u16, y u16, tile, rot, r, g, b, overlay, blend}` through addcheck, one endbatch. Entries come newest first.
   The dedicated sends a **second `[252,7,9]` with count 0**, so the client's list is empty after the join (tiles keep
-  their change). A cut entry prints `ERROR: failed to load custom tile data` and aborts the join.
+  their change). A **cut** entry (fewer than 11 bytes left) prints `ERROR: failed to load custom tile data` (red), keeps
+  the entries read so far (its endbatch runs first) and takes the shared join abort `LAB_1402cf3ee`: joinstep 0, world
+  teardown `FUN_1401d0160` + `Tgui_win::closeall`, then `Tgui_joinmen.errorprompt(0xc9)`. `0xc9` = **201**, "Connection
+  problems! Failed to receive all server data." (lang 0396). No `[253]` then (the error window's Okay/Cancel sends `[253,9]`).
 - Command (FUN_140195d00): `settile x y tile [rot] [r] [g] [b] [overlay] [blenddir] [blendtype]`, defaults 0 / 255 /
   255 / 255 / 0. blend = dir + (type - 1) * 8 with dir top 0, topright 1, right 2, bottomright 3, bottom 4,
   bottomleft 5, left 6, topleft 7 (case-sensitive, unknown = 0); 0 when either is empty or type < 1.

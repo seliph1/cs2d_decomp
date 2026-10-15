@@ -202,3 +202,33 @@ bool cs2d_customtile_end(cs2d_map_t *map, cs2d_customtile_batch_t *b, int bounds
     bounds[3] = y1;
     return true;
 }
+
+bool cs2d_customtile_read_snapshot(cs2d_map_t *map, const uint8_t *buf, int len, int *pos, int bounds[4], bool *cut)
+{
+    if (cut) *cut = false;
+    cs2d_customtile_clear(map);
+    cs2d_customtile_batch_t b;
+    cs2d_customtile_begin(&b);
+
+    int p = (pos && *pos > 0) ? *pos : 0;
+    int count = (p < len) ? buf[p++] : 0;   /* the byte reader of the original gives 0 on an empty stream */
+    for (int n = 0; n < count; n++) {
+        if (p + 11 > len) {
+            if (cut) *cut = true;
+            break;
+        }
+        const uint8_t *r = &buf[p];
+        cs2d_settile_t t;
+        cs2d_settile_defaults(&t, r[0] | (r[1] << 8), r[2] | (r[3] << 8), r[4]);
+        t.rot     = r[5];
+        t.r       = r[6];
+        t.g       = r[7];
+        t.b       = r[8];
+        t.overlay = r[9];
+        t.blend   = r[10];
+        cs2d_customtile_addcheck(map, &b, &t);
+        p += 11;
+    }
+    if (pos) *pos = p;
+    return cs2d_customtile_end(map, &b, bounds);
+}

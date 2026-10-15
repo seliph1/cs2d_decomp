@@ -213,6 +213,32 @@ void cs2d_weapons_init(void)
     g_weapon_table[90].visual_recoil = 1; /* M134 (0x1402340a2) */
     g_weapon_table[91].visual_recoil = 1; /* FN F2000 (0x1402330dc) */
 
+    /*
+     * Per-weapon muzzle offset in pixels (0x1409f5d20 in CS2D.exe, filled by the same init_weapons pass as
+     * visual_recoil, FUN_140230330). The tracer, the muzzle flash and its light start at
+     * pos + offset * (sin(angle), -cos(angle)) (shot draw at 0x1402f0000), not at the player centre.
+     * Only weapons that fire have a value: items, grenades, the Tactical Shield and the armours stay 0.
+     */
+    static const struct { uint8_t id; uint8_t px; } s_muzzle[] = {
+        { CS2D_WEP_USP,             19 }, { CS2D_WEP_GLOCK,           19 }, { CS2D_WEP_DEAGLE,          19 },
+        { CS2D_WEP_P228,            19 }, { CS2D_WEP_ELITE,           19 }, { CS2D_WEP_FIVESEVEN,       19 },
+        { CS2D_WEP_M3,              28 }, { CS2D_WEP_XM1014,          28 },
+        { CS2D_WEP_MP5,             22 }, { CS2D_WEP_TMP,             20 }, { CS2D_WEP_P90,             22 },
+        { CS2D_WEP_MAC10,           20 }, { CS2D_WEP_UMP45,           22 },
+        { CS2D_WEP_AK47,            26 }, { CS2D_WEP_SG552,           30 }, { CS2D_WEP_M4A1,            26 },
+        { CS2D_WEP_AUG,             30 }, { CS2D_WEP_SCOUT,           30 }, { CS2D_WEP_AWP,             33 },
+        { CS2D_WEP_G3SG1,           30 }, { CS2D_WEP_SG550,           30 }, { CS2D_WEP_GALIL,           24 },
+        { CS2D_WEP_FAMAS,           24 }, { CS2D_WEP_M249,            28 },
+        { CS2D_WEP_LASER,           30 }, { CS2D_WEP_FLAMETHROWER,    25 }, { CS2D_WEP_RPG7,            30 },
+        { CS2D_WEP_ROCKETLAUNCHER,  30 }, { CS2D_WEP_GRENADELAUNCHER, 30 }, { CS2D_WEP_PORTALGUN,      30 },
+        { CS2D_WEP_M134,            32 }, { CS2D_WEP_FNF2000,         23 },
+        { CS2D_WEP_KNIFE,           25 }, { CS2D_WEP_MACHETE,         25 }, { CS2D_WEP_WRENCH,          25 },
+        { CS2D_WEP_CLAW,            25 }, { CS2D_WEP_CHAINSAW,        30 },
+    };
+    for (size_t i = 0; i < sizeof(s_muzzle) / sizeof(s_muzzle[0]); i++) {
+        g_weapon_table[s_muzzle[i].id].muzzle = s_muzzle[i].px;
+    }
+
     g_weapons_initialized = true;
 
     /* Load sys/weapons_recoil.cfg or sys/weapons.cfg if present (FUN_140112bc0) */

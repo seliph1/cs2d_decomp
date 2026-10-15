@@ -780,20 +780,66 @@ void cs2d_net_secret(const char *raw_secret, char *out)
 }
 
 /* --- Opcode 252 (CS2D_NET_JOIN) 4-Stage Handshake Builders --- */
+
+/* u8 of DAT_140ddf5d8 (Tgui_hudmen draws "Windows" / "MacOS" / "Linux" from it, 0x140a1cd88) */
+static int join_os_id(void)
+{
+#if defined(_WIN32)
+    return 1;
+#elif defined(__APPLE__)
+    return 2;
+#else
+    return 3; /* Linux, and the browser (the web port has no OS of its own) */
+#endif
+}
+
+/*
+ * [252,0]: the join request opening the handshake. Exactly two bytes - the original writes only
+ * the opcode and the sub-opcode here (proxy 2026-10-11, tools/agent/out/proxy_orig1.log:
+ * "C>S 7 02 00 03 32 00 fc 00"); the secret comes back in the server's [252,0] reply.
+ */
 void cs2d_net_build_join_stage0(cs2d_pkt_t *p)
 {
     if (!p) return;
     p->pos = 0;
     cs2d_pkt_w_byte(p, 252);
     cs2d_pkt_w_byte(p, 0);
-    cs2d_pkt_w_str(p, "");
 }
 
+/*
+ * [252,1]: the join request, in the order FUN_1402ce7c0 (CS2D.exe) writes it:
+ *   1  name, sliced to 25 characters (bbs_EMPTY_140a14f98)
+ *   2  password, encrypted with key "j01nk3y" (0x140a3bf20)
+ *   3  version "1.0.1.8", encrypted with key "funkymonky" (0x140a420d0)
+ *   4  u16 1018 = version_short (0x3fa)
+ *   5  i32 usgn id (DAT_140ddf1f0: the logged-in U.S.G.N. account, 0 when none)
+ *   6  u16 str usgn name (0x140a15000)
+ *   7  u8 os id (1 Windows, 2 MacOS, 3 Linux / DAT_140ddf5d8)
+ *   8  u16 str steam name (0x140a1b2e8)
+ *   9  i64 steam id
+ *   10 u8 str spray logo file name (0x140a14f90, "unrealsoftware.bmp" - the file name written in
+ *      sys/config.cfg, not the menu label)
+ *   11 u8 str transformed secret (cs2d_net_secret of the [252,0] reply)
+ *   12 u8 str nickname scramble (FUN_1402c97f0; empty in the proxy capture)
+ *   13 u8 str client id ("\xfa" + "0" + g_core_edc_id + a number, see join_core_id)
+ *   14 u8 map transfer mode (DAT_140ddf3dc: 0 normal, 1 temp.map, 2 overwrite)
+ *   15 i32 screen_w
+ *   16 i32 screen_h
+ *   17 u16 str language name (0x140a1cd88, "English")
+ *   18 u16 str language code (0x140a1cd80, "EN")
+ *   19 u8 4:3 (DAT_140ddf1c8 = Application::setting_4by3)
+ *   20 u8 voice chat available (TVoiceRecorder.Error == 0)
+ *   21 u8 DAT_140ddf6a8 (1 in FUN_1400ed390, the shipped default)
+ * Locked byte for byte by test_network_protocol against that capture.
+ */
 void cs2d_net_build_join_stage1(
     cs2d_pkt_t *p,
     const char *player_name,
     const char *password,
     const char *raw_secret,
+    const char *spray_logo,     /* sys/config.cfg "spraylogo", e.g. "unrealsoftware.bmp" */
+    const char *language,       /* sys/config.cfg "language": the file base name, "EN-English" */
+    const char *client_id,      /* "\xfa" + "0" + g_core_edc_id + number (join_core_id) */
     int         screen_w,
     int         screen_h,
     int         map_mode
@@ -816,29 +862,49 @@ void cs2d_net_build_join_stage1(
         cs2d_net_encrypt(password, "j01nk3y", enc_pass, &enc_pass_len);
     }
 
+    char name[32];
+    snprintf(name, sizeof(name), "%.25s", (player_name && player_name[0]) ? player_name : "CS2D_Decomp");
+
+    /* The language name and code are the two halves of the language file base name ("EN-English" ->
+     * "EN" and "English"), split at the first '-' by the loader at 0x1400ef8da. Without a '-' the
+     * original falls back to a 2-character literal (bbs___) that was not recovered: we send "??". */
+    char lang_code[16], lang_name[48];
+    const char *lang = (language && language[0]) ? language : "EN-English";
+    const char *dash = strchr(lang, '-');
+    if (dash) {
+        size_t n = (size_t)(dash - lang);
+        if (n >= sizeof(lang_code)) n = sizeof(lang_code) - 1;
+        memcpy(lang_code, lang, n);
+        lang_code[n] = '\0';
+        snprintf(lang_name, sizeof(lang_name), "%.*s", (int)strcspn(dash + 1, "-"), dash + 1);
+    } else {
+        snprintf(lang_code, sizeof(lang_code), "??");
+        snprintf(lang_name, sizeof(lang_name), "%s", lang);
+    }
+
     cs2d_pkt_w_byte(p, 252);
     cs2d_pkt_w_byte(p, 1);
-    cs2d_pkt_w_str(p, (player_name && player_name[0]) ? player_name : "CS2D_Decomp"); /* 1. name */
-    cs2d_pkt_w_raw_str(p, enc_pass, enc_pass_len);                                    /* 2. enc_password */
-    cs2d_pkt_w_raw_str(p, enc_ver, enc_ver_len);                                      /* 3. enc_version_str */
-    cs2d_pkt_w_short(p, 1018);                                                        /* 4. version_short (0x03fa) */
-    cs2d_pkt_w_int(p, 0);                                                             /* 5. usgn_id */
-    cs2d_pkt_w_lstr(p, "");                                                           /* 6. usgn_name */
-    cs2d_pkt_w_byte(p, 0);                                                            /* 7. auth_type */
-    cs2d_pkt_w_lstr(p, "");                                                           /* 8. auth_token */
-    cs2d_pkt_w_long(p, 0ULL);                                                         /* 9. steam_id */
-    cs2d_pkt_w_str(p, "");                                                            /* 10. steam_name */
-    cs2d_pkt_w_str(p, t_secret);                                                      /* 11. transformed_secret */
-    cs2d_pkt_w_str(p, "");                                                            /* 12. security_hash */
-    cs2d_pkt_w_str(p, "\xFA" "0opengl");                                              /* 13. os_info */
-    cs2d_pkt_w_byte(p, (uint8_t)map_mode);                                            /* 14. maptransfer_mode */
-    cs2d_pkt_w_int(p, screen_w > 0 ? screen_w : 850);                                 /* 15. screen_w */
-    cs2d_pkt_w_int(p, screen_h > 0 ? screen_h : 480);                                 /* 16. screen_h */
-    cs2d_pkt_w_lstr(p, "");                                                           /* 17. spraylogo */
-    cs2d_pkt_w_lstr(p, "en");                                                         /* 18. language */
-    cs2d_pkt_w_byte(p, 0);                                                            /* 19. flag1 */
-    cs2d_pkt_w_byte(p, 1);                                                            /* 20. flag2 */
-    cs2d_pkt_w_byte(p, 0);                                                            /* 21. flag3 */
+    cs2d_pkt_w_str(p, name);                                                             /* 1 name */
+    cs2d_pkt_w_raw_str(p, enc_pass, enc_pass_len);                                       /* 2 password */
+    cs2d_pkt_w_raw_str(p, enc_ver, enc_ver_len);                                         /* 3 version */
+    cs2d_pkt_w_short(p, 1018);                                                           /* 4 version_short */
+    cs2d_pkt_w_int(p, 0);                                                                /* 5 usgn id */
+    cs2d_pkt_w_lstr(p, "");                                                              /* 6 usgn name */
+    cs2d_pkt_w_byte(p, (uint8_t)join_os_id());                                           /* 7 os */
+    cs2d_pkt_w_lstr(p, "");                                                              /* 8 steam name */
+    cs2d_pkt_w_long(p, 0ULL);                                                            /* 9 steam id */
+    cs2d_pkt_w_str(p, (spray_logo && spray_logo[0]) ? spray_logo : "unrealsoftware.bmp");/* 10 spray */
+    cs2d_pkt_w_str(p, t_secret);                                                         /* 11 secret */
+    cs2d_pkt_w_str(p, "");                                                               /* 12 scramble */
+    cs2d_pkt_w_str(p, client_id ? client_id : "");                                       /* 13 client id */
+    cs2d_pkt_w_byte(p, (uint8_t)map_mode);                                               /* 14 map mode */
+    cs2d_pkt_w_int(p, screen_w > 0 ? screen_w : 850);                                    /* 15 screen_w */
+    cs2d_pkt_w_int(p, screen_h > 0 ? screen_h : 480);                                    /* 16 screen_h */
+    cs2d_pkt_w_lstr(p, lang_name);                                                       /* 17 language */
+    cs2d_pkt_w_lstr(p, lang_code);                                                       /* 18 language code */
+    cs2d_pkt_w_byte(p, 0);                                                               /* 19 4:3 off */
+    cs2d_pkt_w_byte(p, 1);                                                               /* 20 voice */
+    cs2d_pkt_w_byte(p, 1);                                                               /* 21 DAT_140ddf6a8 */
 }
 
 void cs2d_net_build_join_stage2(

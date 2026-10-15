@@ -13,8 +13,9 @@ Source: REA `FUN_140148f40`, plus frame captures.
 - **Tracer:** a thin yellow line from the muzzle to the impact that leaves `glowdot` sparks along the path.
   Sparks also appear at wall hits.
 - **Shells** (`gfx/shells.bmp`, 4 frames of 8×8): ejected to the right of the aim; they stay on the floor.
-- **Muzzle offset table** `0x1409f5d20` (`init_weapons`, read with `tools/agent/weapontables.py`; not used yet, we
-  still draw at 30 px for primary weapons and 22 px for pistols): pistols 1..6 19; M3 / XM1014 28; MP5 22, TMP 20, P90 22,
+- **Muzzle offset table** `0x1409f5d20` (`init_weapons`, read with `tools/agent/weapontables.py`; in the code since
+  2026-10-15 as `cs2d_weapon_def_t.muzzle`, `cs2d_weapons.c`, used by the shot at `cs2d_scene_game.c`):
+  pistols 1..6 19; M3 / XM1014 28; MP5 22, TMP 20, P90 22,
   Mac 10 20, UMP45 22; AK-47 26, SG552 30, M4A1 26, Aug 30, Scout 30, AWP 33, G3SG1 / SG550 30, Galil / Famas 24;
   M249 28; Laser 30, Flamethrower 25, RPG / Rocket / Grenade Launcher 30; Knife, Machete, Wrench, Claw 25; Chainsaw 30;
   Portal Gun 30; M134 32, FN F2000 23, 92 27.

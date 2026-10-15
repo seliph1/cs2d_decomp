@@ -66,4 +66,12 @@ void cs2d_customtile_begin(cs2d_customtile_batch_t *b);
 void cs2d_customtile_addcheck(cs2d_map_t *map, cs2d_customtile_batch_t *b, const cs2d_settile_t *t);
 bool cs2d_customtile_end(cs2d_map_t *map, cs2d_customtile_batch_t *b, int bounds[4]);
 
+/* Join snapshot section [252,7,9] (FUN_1402ce7c0 case 6): Tcustomtile.list cleared, count u8, then count x
+ * 11 bytes {x u16, y u16, tile, rot, r, g, b, overlay, blend} through addcheck, one endbatch. Reads from and
+ * advances *pos. Returns the endbatch result (bounds = the changed region for cs2d_render_tiles_changed).
+ * *cut is set when an entry had fewer than 11 bytes left: the original then prints
+ * "ERROR: failed to load custom tile data" and aborts the join - the entries read before the cut are still
+ * applied, because its endbatch runs first. */
+bool cs2d_customtile_read_snapshot(cs2d_map_t *map, const uint8_t *buf, int len, int *pos, int bounds[4], bool *cut);
+
 #endif /* CS2D_CUSTOMTILE_H */

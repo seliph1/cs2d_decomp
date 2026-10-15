@@ -36,21 +36,9 @@ the same one.
   original. smokepuff masks (mode 3) are our choice. Spawns follow 60 Hz, the original spawns per rendered frame.
 - **Loading screen (2026-10-13):** `cs2d_render_loadscreen` lacks the menu background and DrawWindow corner
   images/spinner; progress uses our 6 steps, not the original `PROCESS_MAPS`. Not compared to a screenshot yet.
-- **First-frame freeze when a map is set up (RESOLVED 2026-10-13):** resolved by preloading
-  and packing map entity sprites into atlas pages at map load (`game_load_map`, `cs2d_gfx_atlas_load_map`).
-  The 1447 ms freeze on `fun_roleplay` was transferred to load time (172.35 ms in `game_load_map` to load,
-  decode, dilate and pack 156 sprites into 2 atlas pages of 2048x2048), reducing the first drawn frame
-  time from 1447 ms to **7.7 ms** (187x improvement).
-- **Cache ceiling (RESOLVED 2026-10-13):** the fixed 64-entry array `CS2D_MAX_SPRITE_CACHE` was replaced
-  with a dynamically resized sprite cache (`sprite_cache`) backed by map texture atlas pages. Maps with
-  >64 distinct entity sprites (`fun_roleplay` has 157 distinct sprite/mask pairs) keep every sprite without
-  silently dropping any. Verified by regression test `test_sprite_atlas_packer`.
 - **Info_TileFX (2026-10-14, `cs2d_tilefx.c`):** not screenshot-compared with CS2D.exe. Not applied to tile frames
   drawn outside the map pass (Env_Breakable / Func_DynWall, tile blending sources); the frame clock is the global
   tick instead of a per-effect timer; built on the first draw, not at map load; ignores DAT_140ddf17f (as tile blending).
-- **Entity culling (RESOLVED 2026-10-14):** `Env_Image` and `Env_Object` now start unculled and learn their
-  drawn size (`cs2d_render_entity_learn_size`, `env_object_learn`), like `Env_Sprite`. `fun_roleplay` at (0,0):
-  78 entities considered per frame once learned (test_entity_culling). Not re-profiled on GPU.
 - **No frame cap with VSync off (measured 2026-10-13):** the original locks its frame at ~65 FPS
   (`15.384615 ms`, `docs/dump/cs2d/_global/1402f0000.c:2284`) whether VSync is on or off; our loop only
   does `SDL_Delay(1)` (~1.5 ms), so it runs at 167 FPS and pegs a CPU core. Measured on `fun_roleplay`:
@@ -76,8 +64,6 @@ the same one.
   GUI clicks, sv_sound (`Tserversound.playServer`), Env_Sound one-shots triggered online, `volume` options slider.
 - **Shots:** offline shots have no spread, and the reach of weapons other than the knife and the AK-47
   is not measured.
-- **Muzzle offsets:** the per-weapon muzzle offset table (`0x1409f5d20` in `CS2D.exe`) is now recovered
-  (KNOWLEDGE "Buy menu") but not used yet; `cs2d_fx` still uses the calibrated 30 / 22 px.
 - **Fire rate, not measured:** the 39 ms firedelay tick comes from REA only; compare the `[7]` interval of the
   original on a proxy capture. Unknown whether semi-automatic weapons need a new click (we fire while held), and the
   global timer 0x140a1b008 that knife right click also sets to 1200 ms is not reconstructed.
@@ -115,7 +101,6 @@ the same one.
     in our table although 0x140a017a8 gives 5 (using it would then consume a count: not verified). Partial pickup
     (2026-10-14) follows FUN_14020ce60 but was not reproduced against the dedicated (does it send [25] for a stack
     that only partly fits?).
-  - "clip | INF" under infinite ammo (`0x140a14e38[1]`, language 0762) and "0 x - Remote" (0763, slot 6).
   - The HUD sound on closing / confirming (`wpn_hudoff` d638), `lastinv`, and the gamepad path (`FUN_140239bd0`).
   - Bindings: only the weapon selection commands go through `sys/controls.cfg`; movement, reload, use, buy, drop and
     the spectator keys are still hardcoded in `game_handle_key`. `cs2d_bind_key_name` knows only digits, letters,
@@ -150,9 +135,11 @@ the same one.
   - The spinner icon (`gfx/gui_load.bmp`) next to the "Downloading" title.
   - Our Tudp has no retransmission of our own reliable packets; the request burst (26 messages) only works because
     nothing is lost on a LAN.
-- **Join messages that differ from the original (proxy, not fixed):** the original sends `[252,0]` (2 bytes, ours
-  adds an empty string), and in `[252,1]` it sends `01` after the U.S.G.N. fields and the spray file name
-  (`unrealsoftware.bmp`) where ours sends empty strings. The dedicated accepts both.
+- **Join messages (fixed 2026-10-15):** `[252,0]` is 2 bytes like the original and `[252,1]` matches its
+  138-byte payload field for field (`knowledge/net-join.md`; the literal fixture is `join1_want` in
+  `test_network_protocol`, and a live join was diffed against the capture with 0 differing fields). Left:
+  the "nickname scramble" slot (`FUN_1402c97f0`) is empty in the capture although the dump computes a
+  mangled name there - we follow the capture.
 - **Spectator, not reconstructed** (KNOWLEDGE "Spectator" has what is done):
   - The Menu / Fog buttons open nothing (game menu, fog toggle). Map toggles the minimap; its hostage / flag / bomb /
     Dom_Point dots, the per-player fog test under sv_specmode 2 and the `TSmartMinimap` variant are missing.
@@ -268,26 +255,20 @@ of scope, and this is *not* the Wasm port — the phases just happen to be the s
   does `texture * vertex colour` with an alpha-test `discard` (replacing `glAlphaFunc`), and one streaming
   VAO/VBO is fed by a batcher. `cs2d_render.c` and `cs2d_light.c` no longer contain a single fixed-function
   call; the FBO loader kept only the core names. The entry-point inventory is in KNOWLEDGE "Renderer".
-  - **Owed — pixel comparison:** the new core output has not yet been diffed against the *original* client
-    on the same scene (or against the old fixed-function build). Screenshots so far are only checked to be
-    non-black and plausibly coloured (`--capture`, 850x480). This is the verification portão of the phase.
+  - **Pixel comparison: DONE (2026-10-15).** `tools/agent/pixel_diff.py` + `pixdiff_probe.lua` compare our
+    frame with the original's on the same scene (prison_funst3r, tile 44,25, 850x480): whole frame
+    **18.52 %** of pixels differ, mean |delta| 4.93, PSNR 23.30 dB; playfield only (HUD + radar masked)
+    **14.13 % / 2.32 / 28.19 dB**, against a run-to-run noise floor of 3.9-4.7 % / 0.35-0.83. The residual
+    is the HUD strips plus a region where ours is darker (tiles (38..41, 23..28) of that map). Recipe and
+    numbers: `knowledge/rendering-notes.md` "Pixel comparison". Still owed: the same diff on a daylight map
+    (de_dust2) and with `light 0..5` / `mapshadows 0..4` swept.
   - **Light engine on core:** `glBlendFuncSeparate` + render-to-texture are core in 3.3 and the `emu_light.py`
-    trace test still passes, but the on-screen light compositing (`m2d_draw_buffer`, `cs2d_gl_bind_target`)
-    was only eyeballed via a `fun_roleplay` capture — a `light 0..5` / `mapshadows 0..4` screenshot diff is owed.
+    trace test still passes; the on-screen compositing (`m2d_draw_buffer`, `cs2d_gl_bind_target`) is now
+    covered *with the light engine on* by the pixel comparison above, but not by a `light 0..5` /
+    `mapshadows 0..4` sweep.
   - **Fallback removed:** the compatibility context is gone; a machine without a 3.3 core context fails to
     start (clear stderr message). Decide later whether to keep a legacy path.
   - `include/cs2d_render.h` includes `cs2d_platform.h` instead of `<windows.h>` (2026-10-15).
-- **Practical note — the `libwinpthread-1.dll` trap (fixed 2026-10-12):** the first build of phase 1 died on
-  launch with *"libwinpthread-1.dll não foi encontrado"* (`0xC0000135`). The vendored `stb_image.h` declares
-  some of its settings as `__thread` (`STBI_THREAD_LOCAL`: `stbi__g_failure_reason`,
-  `stbi__vertically_flip_on_load_local`, `stbi__unpremultiply_on_load_local`, `stbi__de_iphone_flag_local`),
-  and GCC implements `__thread` on MinGW through **emutls**, whose runtime is built on the winpthreads API.
-  `objdump -p` showed the exe importing `pthread_once` / `pthread_mutex_{init,lock,unlock}` /
-  `pthread_key_create` / `pthread_getspecific` / `pthread_setspecific` from `libwinpthread-1.dll`, which is
-  not shipped next to the executables. Fix: `#define STBI_NO_THREAD_LOCALS` before the `stb_image.h` include
-  (single-threaded client, never calls `stbi_set_*_thread`). Both exes now import only KERNEL32 / msvcrt /
-  OPENGL32 / SDL3 / WS2_32 — no extra DLL has to be shipped, and this is where alternative decoders
-  (SDL_image, FreeType, a future JPEG decoder) have to be checked too.
 
 ## Web port (Emscripten) — started 2026-10-15
 - **Done:** phase 0 (the suite under Node: `tools/web/build_tests.sh`, 56/56) and an offline client in WebGL2
@@ -306,14 +287,21 @@ of scope, and this is *not* the Wasm port — the phases just happen to be the s
 - **Fonts:** CJK / Thai text has no fallback face in either backend (unchanged).
 
 ## Verification debt
-- **`--screenshot` harness (2026-10-15):** `src/main_client.c` writes its frames to a hardcoded absolute path inside
-  another agent's scratch directory (`C:/Users/Gabriel/.gemini/antigravity/brain/<uuid>/scratch/`); make it take an
-  output path like `--capture` (which uses `out/capture.bmp`).
+- **Harness `!mouse` clicks do not reach UI windows (2026-10-15):** with the Select Team window open
+  (`team_menu_open`, set on the join ACK) six `!mouse <x> <y> down/up` steps on the documented button
+  rectangles (`knowledge/team-menu.md`: 240x25 at (205, 120) with 5 px gaps) changed nothing - the
+  dedicated never ran its `team` hook and kept answering `spawnplayer - player #1 is a spectator!`.
+  The same client joins a team instantly with the console command `team ct` (or `team t|auto|spec`), so
+  the *client* path is fine. Not investigated: whether the UI needs a mouse *motion* event before the
+  press (`!mouse` only calls `cs2d_client_handle_mouse`, while the UI reads `client->mouse_fire` and
+  `mouse_screen_x/y`, which the SDL motion path can overwrite), and whether a real mouse click on our
+  window does pick a team - a human has to verify that. Use `team <side>` in `--capture` steps meanwhile.
 - **Original + our client, one session:** not re-run after the latest join/leave fix (the session ended
   in a BSOD). Run `twoplayer_probe.lua` with the original firing next to our client and check the remote
   shot effects on screen.
 - **settile (2026-10-15, `cs2d_customtile.c`):** bytes and Lua results verified on the dedicated; the look of changed
   tiles is not screenshot-compared with CS2D.exe. `Ttileblend.updatetile` clearing the 0x40 flag next to a same tile is
   still not stored (we test it at draw time), so addcheck's "already like this" test can differ for such tiles. The
-  advanced radar image (`s_minimap_full`) keeps the map's tiles. A cut `[252,7,9]` prints the error but does not abort
-  the join (the original disconnects).
+  advanced radar image (`s_minimap_full`) keeps the map's tiles. A cut `[252,7,9]` now shows error 201 and returns to the
+  menu (2026-10-15); the original keeps the join socket open until Okay/Cancel sends `[253,9]` - we close it with the
+  game scene and send no `[253]` at all (no `[253]` is sent at abort time in either case).

@@ -140,3 +140,39 @@ int cs2d_platform_list_dir(const char *dir, cs2d_platform_dir_fn fn, void *user)
     return n;
 }
 #endif
+
+/* --- file system helpers shared by both platforms (no Win32 / POSIX specific call) --- */
+
+bool cs2d_platform_mkdir_parent(const char *path)
+{
+    char dir[MAX_PATH];
+    size_t len = strlen(path);
+    if (len == 0 || len >= sizeof(dir)) return false;
+    memcpy(dir, path, len + 1);
+
+    char *sep = strrchr(dir, '/');
+    char *backslash = strrchr(dir, '\\');
+    if (backslash && (!sep || backslash > sep)) sep = backslash;
+    if (!sep) return true;           /* a bare name: the working directory already exists */
+    *sep = '\0';
+    if (dir[0] == '\0') return true; /* "/name": the root already exists */
+
+    /* One level at a time ("a", then "a/b", ...); a level that is already there fails and is ignored */
+    for (char *p = dir + 1; *p; p++) {
+        if (*p != '/' && *p != '\\') continue;
+        char c = *p;
+        *p = '\0';
+        cs2d_platform_mkdir(dir);
+        *p = c;
+    }
+    cs2d_platform_mkdir(dir);
+    return cs2d_platform_dir_exists(dir);
+}
+
+const char *cs2d_platform_screenshot_path(char *out, size_t out_size, const char *prefix, const char *suffix)
+{
+    size_t len = strlen(prefix);
+    if (len > 4 && _stricmp(prefix + len - 4, ".bmp") == 0) len -= 4; /* a file-name prefix keeps its extension */
+    snprintf(out, out_size, "%.*s%s.bmp", (int)len, prefix, suffix);
+    return out;
+}

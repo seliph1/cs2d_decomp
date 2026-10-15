@@ -1028,6 +1028,52 @@ static void remove_ground_item(cs2d_client_t *client, uint16_t id)
     }
 }
 
+/* Size of a file in bytes, -1 when it cannot be read (the value the join id needs is a byte count) */
+static long file_size_bytes(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    long n = (fseek(f, 0, SEEK_END) == 0) ? ftell(f) : -1;
+    fclose(f);
+    return n;
+}
+
+/*
+ * Field 13 of [252,1]: the client install id, "\xfa" + "0" + g_core_edc_id + <number>.
+ *   - the id: FUN_140060a10 reads sys/core/core.edc, skips 0x523 bytes and takes the next 32
+ *     ("\xfa" is written as a character by FUN_1402ce7c0, the "0" is its own literal).
+ *   - the number: `bbStringFromLong(FUN_1404b7860(AppArgs[0]))` = the **size in bytes of the client
+ *     executable**. For CS2D.exe of this install that is 14789120 bytes, which is exactly what the
+ *     2026-10-11 proxy capture sent - and the writer of core.edc stores the same value at +0x543
+ *     (0x1400ec850's caller: `WriteInt(FUN_1404b7860(AppArgs[0]))`).
+ * The id belongs to CS2D.exe, so we report that binary's size and fall back to the value core.edc was
+ * written with when the original is not next to us (OPEN_ISSUES "join messages").
+ */
+void cs2d_client_join_core_id(char *out, size_t out_size)
+{
+    char  id[36]   = {0};
+    long  stored   = 0;
+    FILE *f = fopen("sys/core/core.edc", "rb");
+    if (f) {
+        if (fseek(f, 0x523, SEEK_SET) == 0 && fread(id, 1, 32, f) == 32) {
+            for (int i = 0; i < 32; i++) {
+                if ((unsigned char)id[i] < 0x20 || (unsigned char)id[i] > 0x7e) { id[i] = '\0'; break; }
+            }
+            char n[4];
+            if (fread(n, 1, 4, f) == 4) {
+                stored = (long)((uint32_t)n[0] | ((uint32_t)n[1] << 8) | ((uint32_t)n[2] << 16) |
+                                ((uint32_t)n[3] << 24));
+            }
+        } else {
+            id[0] = '\0'; /* a short or unreadable file: the marker alone */
+        }
+        fclose(f);
+    }
+    long size = file_size_bytes("CS2D.exe");
+    if (size <= 0) size = stored;
+    snprintf(out, out_size, "\xFA" "0%s%ld", id, size);
+}
+
 /* FUN_1402c9f40: SHA-256 of maps/<map>.map (maps/temp.map in temporary mode), "" when the file is missing */
 static void join_map_checksum(cs2d_client_t *client)
 {
@@ -1420,15 +1466,25 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 if (pos >= recvd) break;
                 uint8_t sub = buffer[pos++];
 
+                /* Every [252,x] message belongs to the join step the client is on (the original compares it
+                 * with joinstep, FUN_1402ce7c0): after a refused/aborted join (step 0) the rest of the
+                 * server's stream is ignored until a new connect restarts the handshake */
+                if (sub != 0 && client->join_stage == 0) break;
+
                 if (sub == 0 && client->join_stage == 0) {
                     /* Stage 0 reply: [252, 0, RStr(raw_secret)] -> Send [252, 1] */
                     cs2d_pkt_r_str(buffer, recvd, &pos, client->net_raw_secret, sizeof(client->net_raw_secret));
+                    char core_id[64];
+                    cs2d_client_join_core_id(core_id, sizeof(core_id));
                     cs2d_pkt_t p1;
                     cs2d_net_build_join_stage1(
                         &p1,
                         client->config.name,
                         client->net_password,
                         client->net_raw_secret,
+                        client->config.spray_logo,
+                        client->config.language,
+                        core_id,
                         client->config.window_width,
                         client->config.window_height,
                         client->xfer.map_mode
@@ -1665,28 +1721,23 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                             }
                         }
                     } else if (snap_type == 9) {
-                        /* Custom tiles (case 6 = section 9): Tcustomtile.list cleared, count u8, then count x
-                         * {x u16, y u16, tile, rot, r, g, b, overlay, blend} (11 bytes) through addcheck, one batch */
-                        cs2d_customtile_clear(&client->game.map);
-                        if (pos < recvd) {
-                            int count = buffer[pos++];
-                            cs2d_settile_t tiles[255];
-                            int n = 0;
-                            for (; n < count && pos + 11 <= recvd; n++, pos += 11) {
-                                const uint8_t *r = &buffer[pos];
-                                cs2d_settile_defaults(&tiles[n], r[0] | (r[1] << 8), r[2] | (r[3] << 8), r[4]);
-                                tiles[n].rot = r[5];
-                                tiles[n].r = r[6];
-                                tiles[n].g = r[7];
-                                tiles[n].b = r[8];
-                                tiles[n].overlay = r[9];
-                                tiles[n].blend = r[10];
-                            }
-                            if (n < count) {
-                                cs2d_client_console_print(client, 255, 0, 0, "ERROR: failed to load custom tile data");
-                                pos = recvd;
-                            }
-                            client_settile(client, tiles, n);
+                        /* Custom tiles (case 6 = section 9): the module clears Tcustomtile.list, reads count u8
+                         * and count x 11 bytes through addcheck, then one endbatch */
+                        int b[4];
+                        bool cut = false;
+                        if (cs2d_customtile_read_snapshot(&client->game.map, buffer, recvd, &pos, b, &cut)) {
+                            cs2d_render_tiles_changed(&client->game.map, b[0], b[1], b[2], b[3]);
+                        }
+                        if (cut) {
+                            /* An entry with fewer than 11 bytes left: the original prints this and runs the shared
+                             * join abort (LAB_1402cf3ee): joinstep 0, Tcustomtile.endbatch, world teardown +
+                             * Tgui_win::closeall, then Tgui_joinmen.errorprompt(0xc9). 0xc9 = 201, "Connection
+                             * problems! Failed to receive all server data." (lang 0396); no [253] is sent here -
+                             * the original sends [253,9] only when Okay/Cancel is pressed */
+                            cs2d_client_console_print(client, 255, 0, 0, "ERROR: failed to load custom tile data");
+                            join_error_prompt(client, 201);
+                            cs2d_client_set_scene(client, CS2D_SCENE_LOBBY);
+                            pos = recvd;
                         }
                     } else if (snap_type == 10) {
                         /* Resource paths (case 7 = section 10): Trestable client table for the images' "?" paths */

@@ -17,6 +17,10 @@
 static cs2d_client_t g_client;
 static bool          g_running = true;
 
+/* Frames a --screenshot / --capture run could not write (a bad prefix, a missing directory): the run
+ * then exits non-zero, so a script cannot mistake a silent no-op for a successful capture. */
+static int screenshot_writes_failed = 0;
+
 static int sdl_key_to_cs2d_key(SDL_Keycode key)
 {
     /* Letters: SDL3 defines SDLK_A..SDLK_Z as 'a'..'z' (0x61..0x7a) */
@@ -110,8 +114,35 @@ static void save_gl_screenshot_bmp(const char *filepath, int w, int h)
         fwrite(info_hdr, 1, 40, f);
         fwrite(pixels,   1, (size_t)data_size, f);
         fclose(f);
+    } else {
+        /* A missing directory must not look like a saved frame */
+        fprintf(stderr, "[screenshot] cannot write '%s'\n", filepath);
+        screenshot_writes_failed++;
     }
     free(pixels);
+}
+
+/*
+ * Output prefix of the --screenshot tour (below): the frames land in "<prefix><suffix>.bmp", one per
+ * step, plus "<prefix>.bmp" for the first one. Default "screens/client_screenshot" (the git-ignored
+ * directory the --capture harness writes to); "--screenshot:<prefix>" (and, when the OS hands over the
+ * whole command line as WinMain does, "--screenshot <prefix>") picks another one, e.g. for comparing two
+ * runs side by side.
+ */
+static const char *auto_screenshot_prefix = "screens/client_screenshot";
+
+/*
+ * One step of the --screenshot tour: saves the current frame as "<prefix><suffix>.bmp" and reports the
+ * path, so the run log (and the agent reading it) knows where the frames landed instead of guessing a
+ * directory. The prefix comes from the command line, see auto_screenshot_prefix.
+ */
+static void auto_screenshot_save(const char *suffix)
+{
+    char path[MAX_PATH];
+    cs2d_platform_screenshot_path(path, sizeof(path), auto_screenshot_prefix, suffix);
+    cs2d_platform_mkdir_parent(path);
+    save_gl_screenshot_bmp(path, g_client.config.window_width, g_client.config.window_height);
+    printf("[screenshot] %s\n", path);
 }
 
 /*
@@ -214,9 +245,14 @@ static int run_client_app(const char *cmdline)
     /* No argument opens the main menu; a map name starts a game on that map */
     const char *map_name = NULL;
     if (cmdline && strlen(cmdline) > 0) {
-        if (strstr(cmdline, "--screenshot") != NULL) {
+        if (strncmp(cmdline, "--screenshot", 12) == 0) {
+            /* "--screenshot[:<file prefix>]" (" "[<prefix>] too, WinMain hands over the whole line):
+             * the tour writes <prefix><suffix>.bmp frames, default screens/client_screenshot* */
             auto_screenshot = true;
             map_name = "de_dust2";
+            if ((cmdline[12] == ':' || cmdline[12] == ' ') && cmdline[13]) {
+                auto_screenshot_prefix = cmdline + 13;
+            }
         } else if (strncmp(cmdline, "--capture", 9) == 0) {
             capture_cmd = (cmdline[9] == ':') ? cmdline + 10 : "";
         } else {
@@ -333,7 +369,7 @@ static int run_client_app(const char *cmdline)
         SDL_Delay((auto_screenshot || capture_cmd) ? 16 : 1);
     }
     client_shutdown();
-    return 0;
+    return screenshot_writes_failed ? 1 : 0;
 #endif
 }
 
@@ -453,43 +489,36 @@ static bool client_frame(void)
         }
     }
     if (auto_screenshot && frame_count == 45) {
-        save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot.bmp",
-                               g_client.config.window_width, g_client.config.window_height);
+        auto_screenshot_save("");
         g_client.console_open = true;
         g_client.mouse_screen_x = 180.0f;
         g_client.mouse_screen_y = 290.0f;
     } else if (auto_screenshot && frame_count == 50) {
-        save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_console.bmp",
-                               g_client.config.window_width, g_client.config.window_height);
+        auto_screenshot_save("_console");
         cs2d_client_console_exec(&g_client, "help");
         cs2d_client_console_exec(&g_client, "status");
         strcpy(g_client.console_input, "sun 135");
         g_client.console_cursor = 7;
     } else if (auto_screenshot && frame_count == 55) {
-        save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_console_cmd.bmp",
-                               g_client.config.window_width, g_client.config.window_height);
+        auto_screenshot_save("_console_cmd");
         g_client.console_open       = false;
         g_client.create_server_open = true;
         g_client.create_server_tab  = 0;
     } else if (auto_screenshot && frame_count == 60) {
-        save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_createserver.bmp",
-                               g_client.config.window_width, g_client.config.window_height);
+        auto_screenshot_save("_createserver");
         g_client.create_server_tab  = 1;
     } else if (auto_screenshot && frame_count == 65) {
-        save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_map.bmp",
-                               g_client.config.window_width, g_client.config.window_height);
+        auto_screenshot_save("_map");
         g_client.create_server_open = false;
         g_client.options_open       = true;
         g_client.options_tab        = 1;
     } else if (auto_screenshot && frame_count == 70) {
-        save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_options.bmp",
-                               g_client.config.window_width, g_client.config.window_height);
+        auto_screenshot_save("_options");
         g_client.options_open = false;
         cs2d_client_console_exec(&g_client, "map prison_funst3r");
         cs2d_client_console_exec(&g_client, "tp 44 25");
     } else if (auto_screenshot && frame_count == 75) {
-        save_gl_screenshot_bmp("C:/Users/Gabriel/.gemini/antigravity/brain/b1e9fe06-c5b4-4a13-a42a-859765d696e1/scratch/client_screenshot_prison.bmp",
-                               g_client.config.window_width, g_client.config.window_height);
+        auto_screenshot_save("_prison");
         cs2d_render_end_frame(window);
         return false;
     }

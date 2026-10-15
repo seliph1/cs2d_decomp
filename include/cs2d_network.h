@@ -292,6 +292,9 @@ void    cs2d_net_build_join_stage1(
     const char *player_name,
     const char *password,
     const char *raw_secret,
+    const char *spray_logo,   /* sys/config.cfg "spraylogo" */
+    const char *language,     /* sys/config.cfg "language": the language file base name */
+    const char *client_id,    /* "\xfa" + "0" + g_core_edc_id + number */
     int         screen_w,
     int         screen_h,
     int         map_mode      /* DAT_140ddf3dc: 0 normal, 1 temp.map, 2 overwrite */

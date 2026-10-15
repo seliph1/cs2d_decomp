@@ -830,7 +830,7 @@ static void shot_bullets(cs2d_client_t *client, const cs2d_player_t *pl, const c
     bool shotgun = (pl->current_weapon == CS2D_WEP_M3 || pl->current_weapon == CS2D_WEP_XM1014);
     int acc = shotgun ? cs2d_weapon_accuracy(pl->current_weapon) : 0;
     float reach = cs2d_weapon_shot_reach(wep);
-    float muzzle = (wep->slot == CS2D_SLOT_SECONDARY) ? 22.0f : 30.0f;
+    float muzzle = (float)wep->muzzle;   /* 0x1409f5d20: per-weapon offset along the aim (cs2d_weapons_init) */
     int shell = shotgun ? 2 : (wep->slot == CS2D_SLOT_SECONDARY ? 0 : 1);
 
     for (int i = 0; i < (shotgun ? 5 : 1); i++) {

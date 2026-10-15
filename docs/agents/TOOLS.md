@@ -125,6 +125,7 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 | `weapontables.py <objdump listing> <exe> <global…>` | Recovers the per-weapon tables of `init_weapons` (`0x140230000..0x140236000`), which `initarrays.py` cannot follow because each store is indexed by the current id `DAT_140ddf57c`: prints `global id:value …`. Used for the Buy menu stats and the muzzle offsets (`knowledge/buy-menu.md`) |
 | `bbstr.py <exe> <hexaddr…>` | Prints the BlitzMax string objects at those addresses: decodes the `bbs__` literals of the dump. Feed it the `lea` targets of a range: `objdump -d -M intel --start-address=… --stop-address=… CS2D.exe \| grep -o "# 0x140a[0-9a-f]*"`. `--array <pointer global> <i or $> <n>` reads a static BBArray (arrays filled at runtime point to `bbEmptyArray`: use `initarrays.py`) |
 | `map_grid.c` | Prints the collision or mode grid around a tile |
+| `pixel_diff.py <ref> <ours> [--window-shot] [--crop x,y,w,h] [--mask x,y,w,h]… [--tol n] [--diff out.png]` | Pixel comparison of two screenshots (Pillow): differing pixels (%), mean/max channel delta, PSNR, a per-band breakdown and the worst 32x32 cells; `--window-shot` crops a `drive_orig.ps1 shot:` to the client area (3 px border, 26 px title), `--mask` leaves the HUD out of the statistics. Recipe and measured numbers: `knowledge/rendering-notes.md` "Pixel comparison" |
 | `emu_cs2d.py` | Library: runs single `CS2D.exe` functions in Unicorn (`pip install unicorn pefile`) with the Max2D primitives (SetColor, SetBlend, DrawRect, DrawImage, DrawPoly, buffers, ...) replaced by recorders. Win64 calls with 8-byte stack slots; unhooked code runs for real |
 | `emu_light.py CS2D.exe <scene> <floor\|day\|main\|color>` | Runs the **original** light engine (`TSmartLighting`) on a scene file written by our client (`lightdump`, `cs2d_light_dump_scene`) and prints its draw calls in our trace format |
 | `light_trace.c` | Our light engine on a map and camera: prints the trace (`cs2d_light_set_trace`) and writes the scene file. `DAYLIGHT=<angle>` overrides the sun; `FLASHLIGHT="x y rot"` turns player 1's flashlight on, `FLASH="x y"` adds a muzzle light |
@@ -158,6 +159,7 @@ Lua probes:
 | `hudtxt_probe.lua` | On join: hudtxt with every align / size / colour tag, hudtxt2, then move / alpha / colour fades at +25 s, an empty text at +32 s and hudtxtclear at +36 s (`HT` lines) |
 | `spec_probe.lua` | Adds a T and a CT bot; logs `specswitch` (whom each spectator follows, `SP` lines) and team changes |
 | `settile_probe.lua` | settile before the first join (snapshot `[252,7,9]`) and 4 s after it (`[62]`), with rotation / color / overlay / blend and a tile set back to its map frame; prints `tile()` values (`ST` lines) |
+| `pixdiff_probe.lua` | Pixel-comparison scene: `spawnplayer 1 1424 816` (tile 44,25 of `prison_funst3r`) on the `join` **and** `team` hooks and a `setpos` on top, so the original and our client end up on the same tile; the `team` hook is what makes it work for our client, which has to pick a team first (see "Pixel comparison") |
 
 Notes:
 
@@ -180,6 +182,16 @@ The harness runs one step every 5 frames, then saves `screens/capture.bmp` and e
 | `!mouse x y [down\|up\|rdown\|rup]` | Move the pointer; with `down`/`up` (`rdown`/`rup`), press or release the left (right) button |
 | `!shot file.bmp` | Save the current frame |
 | `!console`, `!text`, `!key <SDL key> [shift] [ctrl]`, `!wheel n` | UI tests |
+
+`cs2d_client.exe --screenshot[:<prefix>]` is a fixed **desktop tour** (not a script of steps): it loads
+`de_dust2`, then at frames 45..75 saves one frame per screen — main view, console, console command,
+Create Server (tabs 0 and 1), Options and `prison_funst3r` — and exits. The frames are
+`<prefix><suffix>.bmp`, default `screens/client_screenshot[_console|_console_cmd|_createserver|_map|
+_options|_prison].bmp`; the directory is created when missing and every path is printed as
+`[screenshot] <path>`, so a run log says where the frames went. A frame that cannot be written is
+reported on stderr and makes the run exit 1 (a script must not read a silent no-op as a capture).
+Use it for the "compare with CS2D.exe" screenshots (the prefix is the only thing that changed from the
+old hardcoded scratch path).
 
 Debug console commands:
 

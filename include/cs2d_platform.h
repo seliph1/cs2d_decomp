@@ -12,6 +12,7 @@
  */
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef _WIN32
@@ -83,6 +84,16 @@ bool cs2d_platform_dir_exists(const char *path);
 /* Creates / removes (empty) one directory level; true on success */
 bool cs2d_platform_mkdir(const char *path);
 bool cs2d_platform_rmdir(const char *path);
+/* Creates every missing level of the directory that contains path; true when it exists afterwards */
+bool cs2d_platform_mkdir_parent(const char *path);
+
+/*
+ * Output path of a screenshot: "<prefix><suffix>.bmp" (the BMP writer needs the extension). A prefix
+ * that already ends in ".bmp" keeps it instead of growing a second one, so the caller may pass either
+ * a stem ("screens/dust2") or a file name ("screens/dust2.bmp") and still gets
+ * "screens/dust2_console.bmp" for suffix "_console" / empty. Returns out.
+ */
+const char *cs2d_platform_screenshot_path(char *out, size_t out_size, const char *prefix, const char *suffix);
 
 /*
  * Calls fn for each regular file of dir (names only, no directories), in the order the platform

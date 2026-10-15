@@ -236,6 +236,7 @@ typedef struct {
     int                recoil_recover;    /* PTR_DAT_14059d400 (from weapons_recoil.cfg) */
     int                recoil_attack;     /* PTR_DAT_14059d3f8 (from weapons_recoil.cfg) */
     int                visual_recoil;     /* 0x1409eda18 in CS2D.exe: visual backward kickback px on shot */
+    int                muzzle;            /* 0x1409f5d20 in CS2D.exe: tracer / muzzle flash start offset px */
     int                range;             /* PTR_DAT_14059d458 (range, default 300) */
     bool               is_automatic;
     bool               shell_reload;      /* 0x1409efcf8 in CS2D.exe: reloads one shell per stage (M3, XM1014) */
