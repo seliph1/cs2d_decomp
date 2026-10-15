@@ -423,6 +423,7 @@ void cs2d_client_shutdown(cs2d_client_t *client)
     cs2d_scene_get(client->scene)->leave(client);
     cs2d_sv_browser_close(&client->servers);
     cs2d_xfer_free(&client->xfer);
+    cs2d_xfer_cache_clear();
     cs2d_gfx_bank_free(cs2d_render_get_gfx_bank());
 }
 
@@ -5569,13 +5570,37 @@ static void cs2d_client_render_download(cs2d_client_t *client, int screen_w, int
     if (!client->download_open) return;
     if (!s_tex_gui_shade.id) cs2d_texture_load_ex(&s_tex_gui_shade, "gfx/gui_shade.bmp", 3);
 
-    const cs2d_xfer_t *x = &client->xfer;
+    cs2d_xfer_t *x = &client->xfer;
     float win_x, win_y;
     download_window_pos(screen_w, screen_h, &win_x, &win_y);
     const float c = 150.0f / 255.0f; /* gui color 255 x (alpha 0 + 150) / 255, measured on a screenshot */
     float tx = win_x + 16.0f;
     float bar_w = DL_WIN_W - 32.0f;
     char line[CS2D_XFER_PATH + 32];
+
+    if (cs2d_xfer_http_active(x)) {
+        /* HTTP downloads once every UDP file arrived: one Thttp.get step per frame, then the HTTP layout */
+        if (cs2d_xfer_http_get(x, cs2d_xfer_http_size_limit(client->config.download))) {
+            /* Thttp.get: the list ran empty -> [252,51, Tgui_joinmen +0x68] (menu, 10 in this window) */
+            uint8_t pkt[3] = { 252, 51, 10 };
+            cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+        }
+        const cs2d_http_t *h = &x->http;
+        float perc = h->bytestoread < 1 ? 0.0f : (float)h->read / (float)h->bytestoread;
+        if (perc > 1.0f) perc = 1.0f;
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, tx, win_y + 32.0f, "Downloading data (HTTP)...", c, c, c, 1.0f);
+        download_bar(tx, win_y + 62.0f, bar_w, perc, c);
+        float line_w = cs2d_render_text_width_ex(CS2D_FONT_REGULAR, h->dest);
+        float sx = (line_w > bar_w) ? bar_w / line_w : 1.0f;
+        cs2d_render_text_scaled_ex(CS2D_FONT_REGULAR, tx, win_y + 87.0f, h->dest, sx, c, c, c, 1.0f);
+        snprintf(line, sizeof(line), "%d/%d kb - %d %%", h->read / 1024, h->bytestoread / 1024, (int)(perc * 100.0f));
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, tx, win_y + 107.0f, line, c, c, c, 1.0f);
+        int num = h->total - h->count + 1;
+        if (num > h->total) num = h->total;
+        snprintf(line, sizeof(line), "File %d of %d", num, h->total);
+        cs2d_render_text_ex(CS2D_FONT_REGULAR, tx, win_y + 132.0f, line, c, c, c, 1.0f);
+        return;
+    }
 
     cs2d_render_text_ex(CS2D_FONT_REGULAR, tx, win_y + 32.0f, "Downloading data...", c, c, c, 1.0f);
     float all = (float)(x->files_received - 1) + x->perc;

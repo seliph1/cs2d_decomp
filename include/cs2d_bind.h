@@ -34,5 +34,7 @@ const char *cs2d_binds_find(const cs2d_binds_t *b, const char *key);
 /* Key codes F1..F12 (CS2D_KEY_F1 + n): outside the ASCII / VK range, where VK_F1.. would collide with 'p'..'{' */
 #define CS2D_KEY_F1 0x1000
 const char *cs2d_bind_key_name(int key);
+/* controls.cfg name of a mouse button (1 left, 2 right, 3 middle): "mouse1".."mouse3", or NULL */
+const char *cs2d_bind_mouse_name(int button);
 
 #endif /* CS2D_BIND_H */

@@ -3041,6 +3041,8 @@ static void game_use_online(cs2d_client_t *client, cs2d_player_t *pl)
     cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
 }
 
+static bool game_bound_cmd(cs2d_client_t *client, cs2d_player_t *pl, const char *bound, bool pressed, bool online);
+
 static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
 {
     cs2d_player_t *pl = &client->game.players[client->local_player_id];
@@ -3078,101 +3080,81 @@ static void game_handle_key(cs2d_client_t *client, int key, bool pressed)
         }
         return;
     }
-    /* "showscores" (bind "tab") is held, not pressed: the command dispatcher sets DAT_140ddf480 while the key is down */
-    const char *held_cmd = cs2d_binds_find(&client->binds, cs2d_bind_key_name(key));
-    if (held_cmd && _stricmp(held_cmd, "showscores") == 0) {
-        client->show_scores = pressed;
-        return;
-    }
-    /* Bindings of sys/controls.cfg: weapon selection ("1".."9", "0"), buying ("B", "C", ",", ".") and chat ("Y", "U") */
-    const char *bound = pressed ? cs2d_binds_find(&client->binds, cs2d_bind_key_name(key)) : NULL;
-    if (bound) {
-        if (_stricmp(bound, "say") == 0 || _stricmp(bound, "sayteam") == 0) {
-            cs2d_client_console_exec(client, bound);
-            return;
-        }
-        if (_stricmp(bound, "serverinfo") == 0 || _stricmp(bound, "console") == 0) {
-            if (_stricmp(bound, "console") == 0) cs2d_client_handle_console_key(client, SDLK_GRAVE);
-            else cs2d_client_console_exec(client, bound);
-            return;
-        }
-        /* "serveraction1..3" (0x1401b1446..): FUN_1401de400(local id, 4, "1".."3") sends them as a [240] message of
-         * mode 4 with the action digit as text; the dedicated turns it into the Lua serveraction hook */
-        if (_strnicmp(bound, "serveraction", 12) == 0 && bound[12] >= '1' && bound[12] <= '3' && !bound[13]) {
-            if (client->connected && client->join_stage == 5) cs2d_client_send_chat(client, 4, bound + 12);
-            return;
-        }
-        if (_stricmp(bound, "flashlight") == 0) {
-            /* bind "F" "flashlight": FUN_140167440(local id, 1 - flashlight, 1) */
-            int me = client->local_player_id;
-            if (me >= 1 && me <= CS2D_MAX_PLAYERS) cs2d_client_flashlight(client, me, !client->game.players[me].flashlight, true);
-            return;
-        }
-        if (cs2d_scene_game_inv_cmd(client, bound) || cs2d_scene_game_buy_cmd(client, bound)) return;
-    }
+    /* Every game key goes through its sys/controls.cfg binding (the command dispatcher at 0x1401b3e30): nothing is
+     * hardcoded, so an unbound key does nothing. Held commands (showscores DAT_140ddf480, movement, speed, use)
+     * follow the key state; the others run on the press. */
+    const char *bound = cs2d_binds_find(&client->binds, cs2d_bind_key_name(key));
+    if (bound) game_bound_cmd(client, pl, bound, pressed, online);
+}
 
-    switch (key) {
-        case 'Y': case 'y':
-            if (pressed) { cs2d_client_console_exec(client, "say"); return; }
-            break;
-        case 'U': case 'u':
-            if (pressed) { cs2d_client_console_exec(client, "sayteam"); return; }
-            break;
+/* Runs one bound command for the key / button state; false if it is not a game command */
+static bool game_bound_cmd(cs2d_client_t *client, cs2d_player_t *pl, const char *bound, bool pressed, bool online)
+{
+    if (_stricmp(bound, "showscores") == 0) { client->show_scores = pressed; return true; }
+    if (_stricmp(bound, "forward") == 0)    { client->key_forward = pressed; return true; }
+    if (_stricmp(bound, "back") == 0)       { client->key_back = pressed; return true; }
+    if (_stricmp(bound, "left") == 0)       { client->key_left = pressed; return true; }
+    if (_stricmp(bound, "right") == 0)      { client->key_right = pressed; return true; }
+    if (_stricmp(bound, "speed") == 0)      { client->key_walk = pressed; return true; }
+    if (_stricmp(bound, "attack") == 0)     { client->mouse_fire = pressed; return true; }
+    if (_stricmp(bound, "attack2") == 0)    { client->mouse_attack2 = pressed; return true; }
+    if (_stricmp(bound, "use") == 0) {
+        /* Use key: the server evaluates the target online; offline the client runs Trigger_Use itself */
+        client->key_use = pressed;
+        if (pressed && pl->alive) {
+            if (client->connected) game_use_online(client, pl);
+            else cs2d_ents_try_use(&client->ents, pl->pos.x, pl->pos.y, pl->angle, pl->team);
+        }
+        return true;
+    }
+    if (!pressed) return false;
 
-        case 'W': case 'w': case VK_UP:
-            client->key_forward = pressed;
-            break;
-        case 'S': case 's': case VK_DOWN:
-            client->key_back = pressed;
-            break;
-        case 'A': case 'a': case VK_LEFT:
-            client->key_left = pressed;
-            break;
-        case 'D': case 'd': case VK_RIGHT:
-            client->key_right = pressed;
-            break;
-        case VK_SHIFT:
-            client->key_walk = pressed;
-            break;
-        case 'R': case 'r':
-            /* [16, 1]: the server answers [16, player, 1] and refills the clip with [16, player, 2] */
-            if (pressed && cs2d_weapon_reload(pl) && online) {
-                uint8_t pkt[2] = { (uint8_t)CS2D_NET_RELOAD, 1 };
+    if (_stricmp(bound, "say") == 0 || _stricmp(bound, "sayteam") == 0 || _stricmp(bound, "serverinfo") == 0) {
+        cs2d_client_console_exec(client, bound);
+        return true;
+    }
+    if (_stricmp(bound, "console") == 0) {
+        cs2d_client_handle_console_key(client, SDLK_GRAVE);
+        return true;
+    }
+    /* "serveraction1..3" (0x1401b1446..): FUN_1401de400(local id, 4, "1".."3") sends them as a [240] message of
+     * mode 4 with the action digit as text; the dedicated turns it into the Lua serveraction hook */
+    if (_strnicmp(bound, "serveraction", 12) == 0 && bound[12] >= '1' && bound[12] <= '3' && !bound[13]) {
+        if (online) cs2d_client_send_chat(client, 4, bound + 12);
+        return true;
+    }
+    if (_stricmp(bound, "flashlight") == 0) {
+        /* bind "F" "flashlight": FUN_140167440(local id, 1 - flashlight, 1) */
+        int me = client->local_player_id;
+        if (me >= 1 && me <= CS2D_MAX_PLAYERS) cs2d_client_flashlight(client, me, !client->game.players[me].flashlight, true);
+        return true;
+    }
+    if (_stricmp(bound, "reload") == 0) {
+        /* [16, 1]: the server answers [16, player, 1] and refills the clip with [16, player, 2] */
+        if (cs2d_weapon_reload(pl) && online) {
+            uint8_t pkt[2] = { (uint8_t)CS2D_NET_RELOAD, 1 };
+            cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+        }
+        return true;
+    }
+    if (_stricmp(bound, "drop") == 0) {
+        if (online) {
+            /* [24, type, clip u16, reserve u16, 0]; the server's drop record removes it */
+            const cs2d_weapon_def_t *w = cs2d_weapon_get(pl->current_weapon);
+            if (w && w->slot != CS2D_SLOT_MELEE) {
+                int c = pl->clip_ammo[pl->current_weapon], r = pl->reserve_ammo[pl->current_weapon];
+                uint8_t pkt[7] = { (uint8_t)CS2D_NET_DROP, pl->current_weapon,
+                                   (uint8_t)(c & 0xFF), (uint8_t)(c >> 8), (uint8_t)(r & 0xFF), (uint8_t)(r >> 8), 0 };
                 cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
             }
-            break;
-        case 'G': case 'g':
-            if (!pressed) break;
-            if (online) {
-                /* [24, type, clip u16, reserve u16, 0]; the server's drop record removes it */
-                const cs2d_weapon_def_t *w = cs2d_weapon_get(pl->current_weapon);
-                if (w && w->slot != CS2D_SLOT_MELEE) {
-                    int c = pl->clip_ammo[pl->current_weapon], r = pl->reserve_ammo[pl->current_weapon];
-                    uint8_t pkt[7] = { (uint8_t)CS2D_NET_DROP, pl->current_weapon,
-                                       (uint8_t)(c & 0xFF), (uint8_t)(c >> 8), (uint8_t)(r & 0xFF), (uint8_t)(r >> 8), 0 };
-                    cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
-                }
-            } else {
-                cs2d_player_drop_weapon(pl);
-            }
-            break;
-        case 'E': case 'e':
-            /* Use key: the server evaluates the target online; offline the client runs Trigger_Use itself */
-            client->key_use = pressed;
-            if (pressed && pl->alive) {
-                if (client->connected) game_use_online(client, pl);
-                else cs2d_ents_try_use(&client->ents, pl->pos.x, pl->pos.y, pl->angle, pl->team);
-            }
-            break;
-        case VK_SPACE:    /* sys/controls.cfg: bind "space" "specplayer" */
-            if (pressed) cs2d_scene_game_specplayer(client);
-            break;
-        case VK_LCONTROL: /* bind "leftctrl" "specmode" */
-            if (pressed) cs2d_scene_game_specmode(client);
-            break;
-        default:
-            break;
+        } else {
+            cs2d_player_drop_weapon(pl);
+        }
+        return true;
     }
+    if (_stricmp(bound, "specplayer") == 0) { cs2d_scene_game_specplayer(client); return true; }
+    if (_stricmp(bound, "specmode") == 0)   { cs2d_scene_game_specmode(client); return true; }
+    return cs2d_scene_game_inv_cmd(client, bound) || cs2d_scene_game_buy_cmd(client, bound);
 }
 
 static void game_handle_mouse(cs2d_client_t *client, float mx, float my, int button, bool pressed)
@@ -3215,9 +3197,13 @@ static void game_handle_mouse(cs2d_client_t *client, float mx, float my, int but
         if (!pressed) { client->mouse_fire = false; client->mouse_attack2 = false; }
         return;
     }
+    /* Past the menus the buttons go through their bindings (bind "mouse1" "attack", "mouse2" "attack2") */
+    const char *bound = cs2d_binds_find(&client->binds, cs2d_bind_mouse_name(button));
+    bool is_attack  = bound && _stricmp(bound, "attack") == 0;
+    bool is_attack2 = bound && _stricmp(bound, "attack2") == 0;
     /* attack / attack2 with the weapon selection HUD open hold the highlighted item instead of firing, and the
      * fire timer waits 400 ms (FUN_140219820 / FUN_14021b910) */
-    if (pressed && (button == 1 || button == 2) && me->alive && client->invsel.slot != 0) {
+    if (pressed && (is_attack || is_attack2) && me->alive && client->invsel.slot != 0) {
         uint8_t w = cs2d_invsel_confirm(&client->invsel, me);
         if (w != CS2D_WEP_NONE) {
             hold_weapon(client, me, w);
@@ -3235,15 +3221,11 @@ static void game_handle_mouse(cs2d_client_t *client, float mx, float my, int but
         request_respawn(client);
         return;
     }
-    if (pressed && button == 2 && local_can_build_mode(client)) {
+    if (pressed && is_attack2 && local_can_build_mode(client)) {
         wrench_attack2(client);
         return;
     }
-    if (button == 1) {        /* Left click: attack */
-        client->mouse_fire = pressed;
-    } else if (button == 2) { /* Right click: attack2 */
-        client->mouse_attack2 = pressed;
-    }
+    if (bound) game_bound_cmd(client, me, bound, pressed, client->connected && client->join_stage == 5);
 }
 
 /* ---------------------------------------------------------------------------

@@ -30,6 +30,14 @@ Source: REA / dump (`FUN_140166fb0` invnext / invprev, `FUN_1401cc180` slotN, `F
   "0 x - Remote" (0763).
 - **Bindings** (`sys/controls.cfg`, `bind "<key>" "<command>"`): `mwheelup` invprev, `mwheeldown` invnext, `0`..`9`
   slot10 / slot1..slot9.
+- **Key names** (UTF-16 strings in CS2D.exe 0xa2a3f0..0xa47130): letters / digits, `uparrow` `downarrow` `leftarrow`
+  `rightarrow`, `leftshift` `rightshift` `leftctrl` `rightctrl` `leftalt` `rightalt` `leftsys` `rightsys`, `space`
+  `tab` `enter` `return` `escape` `backspace` `ins` `del` `home` `end` `print`, `kp_0`..`kp_9`-style (`kp_ins`
+  `kp_end` `kp_downarrow` `kp_pgdn` `kp_leftarrow` `kp_5` ... `kp_enter` `kp_plus` `kp_minus` `kp_multiply`
+  `kp_divide` `kp_del`), `mouse1`..`mouse3`, `mwheelup` / `mwheeldown`, `F1`..`F12`.
+- **Ours** (2026-10-15): `game_bound_cmd` (`cs2d_scene_game.c`) runs every bound game command; held ones (forward,
+  back, left, right, speed, use, attack, attack2, showscores) follow press / release. No hardcoded keys: arrows do
+  nothing unless bound (the shipped file does not bind them). `cs2d_binds_defaults` = the shipped file.
 - **Our model** (2026-10-14): `cs2d_player_t.owned[id]` is the item list (`Titem.list`); `inventory[slot]` is only the
   slot's main item (last given / held). The HUD lists `owned` by slot and order; "n x" is `clip_ammo[id]`.
 - **Counts** (`Titem` +0x14 ammo, +0x18 ammoin; "n x" = ammoin = our clip_ammo): `Titem.give(pid, type, ammo,

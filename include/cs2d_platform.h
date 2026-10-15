@@ -78,6 +78,9 @@ bool cs2d_platform_net_init(void);
 
 /* Non-blocking mode for a UDP socket (FIONBIO) */
 void cs2d_platform_set_nonblocking(SOCKET s);
+/* Blocking TCP connect to host:port (first IPv4 address, like BlitzMax HostIp + TSocket.Connect); INVALID_SOCKET
+ * when the name does not resolve or the connection fails */
+SOCKET cs2d_platform_tcp_connect(const char *host, const char *port);
 
 bool cs2d_platform_file_exists(const char *path);
 bool cs2d_platform_dir_exists(const char *path);

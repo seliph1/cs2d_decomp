@@ -439,6 +439,7 @@ static bool client_frame(void)
                 int btn = 0;
                 if (event.button.button == SDL_BUTTON_LEFT)       btn = 1;
                 else if (event.button.button == SDL_BUTTON_RIGHT) btn = 2;
+                else if (event.button.button == SDL_BUTTON_MIDDLE) btn = 3;
                 if (btn != 0) {
                     cs2d_client_handle_mouse(&g_client, event.button.x, event.button.y, btn, pressed);
                 }

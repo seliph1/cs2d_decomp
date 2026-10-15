@@ -27,13 +27,13 @@ static void xfer_log(const cs2d_xfer_t *x, uint8_t r, uint8_t g, uint8_t b, cons
 void cs2d_xfer_init(cs2d_xfer_t *x)
 {
     memset(x, 0, sizeof(*x));
-    x->accept = 1;
+    x->accept    = 1;
+    x->http.sock = INVALID_SOCKET;
 }
 
 void cs2d_xfer_reset(cs2d_xfer_t *x)
 {
     x->request_count  = 0;
-    x->cached_count   = 0;
     x->file[0]        = '\0';
     x->tsize          = 0;
     x->data_len       = 0;
@@ -42,18 +42,19 @@ void cs2d_xfer_reset(cs2d_xfer_t *x)
     x->perc           = 0.0f;
     x->prog[0]        = '\0';
     x->saved_map[0]   = '\0';
+    cs2d_xfer_http_reset(x);
 }
 
 void cs2d_xfer_free(cs2d_xfer_t *x)
 {
-    free(x->requests);
-    free(x->cached);
-    free(x->data);
-    x->requests = NULL;
-    x->cached   = NULL;
-    x->data     = NULL;
-    x->data_cap = 0;
     cs2d_xfer_reset(x);
+    free(x->requests);
+    free(x->data);
+    free(x->http.jobs);
+    x->requests  = NULL;
+    x->data      = NULL;
+    x->data_cap  = 0;
+    x->http.jobs = NULL;
 }
 
 /* --- String helpers (BlitzMax Instr / ExtractExt / Lower) --- */
@@ -182,13 +183,72 @@ static void add_request(cs2d_xfer_t *x, const char *path)
     snprintf(x->requests[x->request_count++], CS2D_XFER_PATH, "%s", path);
 }
 
-static const char *cached_sha(const cs2d_xfer_t *x, const char *path)
+/* --- Transfer cache (lua_filetransfer.cache, a TMap keyed by the exact path) --- */
+
+typedef struct {
+    char path[CS2D_XFER_PATH];
+    char sha[65];
+} xfer_cached_t;
+
+static xfer_cached_t *s_cache;
+static int            s_cache_count;
+static int            s_cache_cap;
+
+void cs2d_xfer_cache_clear(void)
 {
-    for (int i = 0; i < x->cached_count; i++) {
-        if (strcmp(x->cached[i].path, path) == 0) return x->cached[i].sha;
+    free(s_cache);
+    s_cache       = NULL;
+    s_cache_count = 0;
+    s_cache_cap   = 0;
+}
+
+void cs2d_xfer_cache_add(const char *path, const char *sha)
+{
+    for (int i = 0; i < s_cache_count; i++) {
+        if (strcmp(s_cache[i].path, path) == 0) {
+            snprintf(s_cache[i].sha, sizeof(s_cache[i].sha), "%s", sha);
+            return;
+        }
+    }
+    if (s_cache_count >= s_cache_cap) {
+        int cap = s_cache_cap ? s_cache_cap * 2 : 64;
+        xfer_cached_t *grown = realloc(s_cache, (size_t)cap * sizeof(*grown));
+        if (!grown) return;
+        s_cache     = grown;
+        s_cache_cap = cap;
+    }
+    xfer_cached_t *c = &s_cache[s_cache_count++];
+    snprintf(c->path, sizeof(c->path), "%s", path);
+    snprintf(c->sha, sizeof(c->sha), "%s", sha);
+}
+
+const char *cs2d_xfer_cache_get(const char *path)
+{
+    for (int i = 0; i < s_cache_count; i++) {
+        if (strcmp(s_cache[i].path, path) == 0) return s_cache[i].sha[0] ? s_cache[i].sha : NULL;
     }
     return NULL;
 }
+
+/* Tres.add: CacheGet(rpath) <> "" -> rpath = "sys/cache/transfer/" + sha */
+const char *cs2d_xfer_cache_resolve(const char *path, char *out, size_t out_size)
+{
+    const char *sha = path ? cs2d_xfer_cache_get(path) : NULL;
+    if (sha) {
+        snprintf(out, out_size, "sys/cache/transfer/%s", sha);
+    } else {
+        snprintf(out, out_size, "%s", path ? path : "");
+    }
+    return out;
+}
+
+/* FUN_1400a1750: each word as 8 hex digits, most significant first, "A".."F" (digit + 0x37) */
+void cs2d_xfer_sha_text(const uint32_t h[8], char out[65])
+{
+    for (int k = 0; k < 8; k++) sprintf(out + k * 8, "%08X", h[k]);
+}
+
+static const char *cached_sha(const char *path) { return cs2d_xfer_cache_get(path); }
 
 /* "mods/<mod>/<rest>" -> "sys/cache/mods/<mod>/<rest>" */
 static bool mod_cache_path(const char *path, char *out, size_t out_size)
@@ -228,8 +288,9 @@ static void check_mod_file(cs2d_xfer_t *x, const char *path)
              path, reason);
 }
 
-/* FUN_1402cb9e0: "url > path" entries are HTTP downloads. Not implemented: well-formed ones are skipped silently. */
-static void check_http(const cs2d_xfer_t *x, const char *entry)
+/* FUN_1402cb9e0: "url > path" entries are HTTP downloads, queued when the destination does not exist and
+ * FUN_1402cb770 does not return 0 (a negative reason still queues it, as in the original) */
+static void check_http(cs2d_xfer_t *x, const char *entry)
 {
     const char *gt = strchr(entry, '>');
     char src[CS2D_XFER_PATH], dst[CS2D_XFER_PATH];
@@ -246,6 +307,11 @@ static void check_http(const cs2d_xfer_t *x, const char *entry)
     }
     if (strlen(src) <= 2 || strlen(dst) <= 2) {
         xfer_log(x, XFER_RED, "Malformed HTTP download! Source: '%s', destination: '%s' - skipping", src, dst);
+        return;
+    }
+    /* FileType(dst) = 0: neither a file nor a folder */
+    if (!file_exists(dst) && !dir_exists(dst) && cs2d_xfer_check_path(dst, x->accept) != CS2D_XFER_UNKNOWN) {
+        cs2d_xfer_http_addjob(x, src, dst);
     }
 }
 
@@ -295,7 +361,7 @@ static void list_done(cs2d_xfer_t *x)
 {
     int kept = 0;
     for (int i = 0; i < x->request_count; i++) {
-        const char *sha = cached_sha(x, x->requests[i]);
+        const char *sha = cached_sha(x->requests[i]);
         char cache_file[CS2D_XFER_PATH];
         if (sha) {
             snprintf(cache_file, sizeof(cache_file), "sys/cache/transfer/%s", sha);
@@ -329,13 +395,13 @@ int cs2d_xfer_build_requests(const cs2d_xfer_t *x, cs2d_pkt_t *pkts, int max_pkt
         for (int k = 0; k < count; k++) cs2d_pkt_w_str(p, x->requests[i + k]);
     }
     if (n < max_pkts) {
-        /* Terminator: 0xffff when HTTP downloads are queued (Thttp.list not empty); we queue none */
+        /* Terminator: 0xffff when HTTP downloads are queued (Thttp.list not empty) */
         cs2d_pkt_t *p = &pkts[n++];
         p->pos = 0;
         cs2d_pkt_w_byte(p, 252);
         cs2d_pkt_w_byte(p, 50);
         cs2d_pkt_w_byte(p, 2);
-        cs2d_pkt_w_short(p, 0);
+        cs2d_pkt_w_short(p, x->http.count > 0 ? 0xffff : 0);
     }
     return n;
 }
@@ -499,7 +565,7 @@ static cs2d_xfer_event_t finish(cs2d_xfer_t *x, const char *file)
     char dest[CS2D_XFER_PATH];
     snprintf(dest, sizeof(dest), "%s", file);
     bool is_map = strcmp(ext, "map") == 0;
-    const char *sha = cached_sha(x, file);
+    const char *sha = cached_sha(file);
     if (x->map_mode == 1 && is_map) {
         xfer_log(x, XFER_GRAY, "Saving map '%s' as 'maps/temp.map' (temporary mode)", file);
         snprintf(dest, sizeof(dest), "maps/temp.map");
@@ -562,12 +628,10 @@ cs2d_xfer_event_t cs2d_xfer_on_message(cs2d_xfer_t *x, const uint8_t *buf, int l
                 if (!rd_i32(buf, len, pos, &v)) return CS2D_XFER_EV_NONE;
                 h[k] = (uint32_t)v;
             }
-            if (!x->cached) x->cached = calloc(CS2D_XFER_MAX_FILES, sizeof(*x->cached));
-            if (!x->cached || x->cached_count >= CS2D_XFER_MAX_FILES) continue;
-            cs2d_xfer_cached_t *c = &x->cached[x->cached_count++];
-            snprintf(c->path, sizeof(c->path), "%s", name);
-            /* FUN_1400a1750: 8 words as hex, the same text as cs2d_net_sha256_file (assumed) */
-            for (int k = 0; k < 8; k++) sprintf(c->sha + k * 8, "%08x", h[k]);
+            /* "Adding file to transfer cache: ..." goes to the engine log only (thunk_FUN_1408db980) */
+            char sha[65];
+            cs2d_xfer_sha_text(h, sha);
+            cs2d_xfer_cache_add(name, sha);
         }
         return CS2D_XFER_EV_NONE;
     }
@@ -602,4 +666,288 @@ cs2d_xfer_event_t cs2d_xfer_on_message(cs2d_xfer_t *x, const uint8_t *buf, int l
     *pos += n;
     if (sub == 7) return finish(x, name);
     return CS2D_XFER_EV_NONE;
+}
+
+/* --- HTTP downloads (Thttp) --- */
+
+/* Download size limits for "download" 4..10 (DAT_140bc89e0); other values allow 16 MB */
+static const int s_http_limits[7] = { 51200, 102400, 256000, 512000, 1048576, 2097152, 3145728 };
+
+int cs2d_xfer_http_size_limit(int download)
+{
+    if (download >= 4 && download <= 10) return s_http_limits[download - 4];
+    return 0x1000000;
+}
+
+bool cs2d_xfer_http_active(const cs2d_xfer_t *x)
+{
+    return x->http.count > 0 && x->files_total <= x->files_received;
+}
+
+static void http_close(cs2d_http_t *h)
+{
+    if (h->sock != INVALID_SOCKET) closesocket(h->sock);
+    if (h->file) fclose(h->file);
+    h->sock = INVALID_SOCKET;
+    h->file = NULL;
+    h->rpos = h->rlen = 0;
+}
+
+/* Thttp.reset */
+void cs2d_xfer_http_reset(cs2d_xfer_t *x)
+{
+    cs2d_http_t *h = &x->http;
+    http_close(h);
+    h->count       = 0;
+    h->bytestoread = 0;
+    h->fails       = 0;
+    h->state       = 0;
+    h->read        = 0;
+    h->i           = 0;
+    h->total       = 0;
+}
+
+void cs2d_xfer_http_addjob(cs2d_xfer_t *x, const char *url, const char *dest)
+{
+    cs2d_http_t *h = &x->http;
+    for (int i = 0; i < h->count; i++) {
+        if (strcmp(h->jobs[i].url, url) == 0 && strcmp(h->jobs[i].dest, dest) == 0) return;
+    }
+    if (!h->jobs) {
+        h->jobs = calloc(CS2D_XFER_MAX_FILES, sizeof(*h->jobs));
+        if (!h->jobs) return;
+    }
+    if (h->count >= CS2D_XFER_MAX_FILES) return;
+    snprintf(h->jobs[h->count].url, CS2D_XFER_PATH, "%s", url);
+    snprintf(h->jobs[h->count].dest, CS2D_XFER_PATH, "%s", dest);
+    h->count++;
+    h->total++;
+}
+
+/* Blocking socket stream reads (BlitzMax TSocketStream): -1 when the connection closed */
+static int http_byte(cs2d_http_t *h)
+{
+    if (h->rpos >= h->rlen) {
+        int n = recv(h->sock, (char *)h->rbuf, (int)sizeof(h->rbuf), 0);
+        if (n <= 0) return -1;
+        h->rpos = 0;
+        h->rlen = n;
+    }
+    return h->rbuf[h->rpos++];
+}
+
+/* ReadLine: up to LF, CR dropped; false at the end of the stream with nothing read (Eof) */
+static bool http_line(cs2d_http_t *h, char *out, size_t out_size)
+{
+    size_t n = 0;
+    int c = 0;
+    bool any = false;
+    while ((c = http_byte(h)) >= 0) {
+        any = true;
+        if (c == '\n') break;
+        if (c != '\r' && n + 1 < out_size) out[n++] = (char)c;
+    }
+    out[n] = '\0';
+    return any;
+}
+
+/* ReadBytes: blocks until n bytes arrived; returns how many did */
+static int http_read(cs2d_http_t *h, uint8_t *out, int n)
+{
+    int got = 0;
+    while (got < n) {
+        if (h->rpos < h->rlen) {
+            int k = h->rlen - h->rpos;
+            if (k > n - got) k = n - got;
+            memcpy(out + got, h->rbuf + h->rpos, (size_t)k);
+            h->rpos += k;
+            got += k;
+            continue;
+        }
+        int r = recv(h->sock, (char *)out + got, n - got, 0);
+        if (r <= 0) break;
+        got += r;
+    }
+    return got;
+}
+
+/* The current job is over (LAB_1402ccc38): close it and drop it; true when the list is empty now */
+static bool http_job_done(cs2d_http_t *h)
+{
+    http_close(h);
+    if (h->count > 0) {
+        memmove(&h->jobs[0], &h->jobs[1], (size_t)(h->count - 1) * sizeof(*h->jobs));
+        h->count--;
+    }
+    h->bytestoread = 0;
+    h->fails       = 0;
+    h->state       = 0;
+    h->read        = 0;
+    h->i           = 0;
+    return h->count == 0;
+}
+
+/* Status 200: every folder of ExtractDir(dest) is checked and created, then the file is opened */
+static bool http_open_dest(cs2d_xfer_t *x)
+{
+    cs2d_http_t *h = &x->http;
+    char dir[CS2D_XFER_PATH];
+    snprintf(dir, sizeof(dir), "%s", h->dest);
+    for (char *c = dir; *c; c++) {
+        if (*c == '\\') *c = '/';
+    }
+    char *last = strrchr(dir, '/');
+    if (last) {
+        *last = '\0';
+    } else {
+        dir[0] = '\0'; /* No folder: nothing to create (the original calls CreateDir("") here) */
+    }
+    char path[CS2D_XFER_PATH] = "";
+    char *part = dir;
+    for (int index = 0; dir[0]; index++) {
+        char *slash = strchr(part, '/');
+        if (slash) *slash = '\0';
+        if (strcmp(part, ".") == 0 || strcmp(part, "..") == 0) {
+            xfer_log(x, XFER_RED, "NET: Transmission of '%s' failed (path contains dots which is not allowed)", h->dest);
+            return false;
+        }
+        if (index == 0) {
+            char low[CS2D_XFER_PATH];
+            snprintf(low, sizeof(low), "%s", part);
+            str_lower(low);
+            if (strcmp(low, "sys") == 0) {
+                xfer_log(x, XFER_RED, "NET: Transmission of '%s' failed (tried to access 'sys' folder)", h->dest);
+                return false;
+            }
+            snprintf(path, sizeof(path), "%s", part);
+        } else {
+            size_t n = strlen(path);
+            snprintf(path + n, sizeof(path) - n, "/%s", part);
+        }
+        if (!dir_exists(path)) {
+            if (!cs2d_platform_mkdir(path)) {
+                /* "created" as in the original string */
+                xfer_log(x, XFER_RED, "ERROR: Failed to created directory '%s' for received files", path);
+                return false;
+            }
+            xfer_log(x, XFER_GRAY, "Created directory '%s' for received files", path);
+        }
+        if (!slash) break;
+        part = slash + 1;
+    }
+    h->file = fopen(h->dest, "wb");
+    if (!h->file) {
+        xfer_log(x, XFER_RED, "NET: Failed To write '%s'", h->dest); /* closing quote assumed */
+        return false;
+    }
+    return true;
+}
+
+bool cs2d_xfer_http_get(cs2d_xfer_t *x, int size_limit)
+{
+    cs2d_http_t *h = &x->http;
+    if (h->count == 0) return false;
+
+    if (h->state == 1) {
+        if (!h->file) {
+            xfer_log(x, XFER_GRAY, "Failed to write '%s'", h->dest);
+        } else if (h->sock == INVALID_SOCKET) {
+            xfer_log(x, XFER_GRAY, "HTTP connection lost");
+        } else if (h->i < h->bytestoread) {
+            /* 4 KB per call */
+            uint8_t block[0x1000];
+            int n = h->bytestoread - h->i;
+            if (n > 0x1000) n = 0x1000;
+            int got = http_read(h, block, n);
+            if (got < n) memset(block + got, 0, (size_t)(n - got));
+            h->read += n;
+            fwrite(block, 1, (size_t)n, h->file);
+            h->i += 0x1000;
+            return false;
+        } else {
+            xfer_log(x, XFER_GRAY, "File loaded (%d b)", h->bytestoread);
+            fclose(h->file);
+            h->file = NULL;
+            log_download(h->dest);
+        }
+        return http_job_done(h);
+    }
+
+    /* State 0: connect to the first job's host, send the request, read the headers */
+    snprintf(h->url, sizeof(h->url), "%s", h->jobs[0].url);
+    snprintf(h->dest, sizeof(h->dest), "%s", h->jobs[0].dest);
+    char url[CS2D_XFER_PATH * 3];
+    const char *u = h->url;
+    if (str_starts(u, "http://")) u += 7;
+    size_t n = 0;
+    for (; *u && n + 4 < sizeof(url); u++) { /* " " -> "%20" */
+        if (*u == ' ') {
+            memcpy(url + n, "%20", 3);
+            n += 3;
+        } else {
+            url[n++] = *u;
+        }
+    }
+    url[n] = '\0';
+    char host[CS2D_XFER_PATH * 3];
+    const char *file = "/";
+    char *slash = strchr(url, '/');
+    snprintf(host, sizeof(host), "%.*s", slash ? (int)(slash - url) : (int)strlen(url), url);
+    if (slash) file = slash;
+
+    h->sock = cs2d_platform_tcp_connect(host, "80");
+    if (h->sock == INVALID_SOCKET) {
+        if (++h->fails < 11) return false;
+        xfer_log(x, XFER_GRAY, "HTTP Timeout");
+        return http_job_done(h);
+    }
+    h->rpos = h->rlen = 0;
+    xfer_log(x, XFER_GRAY, "HTTP download '%s' to '%s'", h->url, h->dest); /* closing quote assumed */
+    char req[CS2D_XFER_PATH * 8];
+    int len = snprintf(req, sizeof(req), "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: CS2D\r\nAccept: */*\r\n\r\n",
+                       file, host);
+    send(h->sock, req, len, 0);
+
+    /* Status: the 3 characters after the first space of an "HTTP..." line */
+    char line[1024], code[16] = "";
+    if (http_line(h, line, sizeof(line)) && str_starts(line, "HTTP")) {
+        const char *sp = strchr(line, ' ');
+        if (sp) snprintf(code, sizeof(code), "%.3s", sp + 1);
+    }
+    /* Headers up to the empty line: Lower(key + ": ") selects content-length / location */
+    for (;;) {
+        bool more = http_line(h, line, sizeof(line));
+        const char *sep = strstr(line, ": ");
+        if (sep) {
+            char key[64];
+            snprintf(key, sizeof(key), "%.*s", (int)(sep + 2 - line), line);
+            str_lower(key);
+            if (strcmp(key, "content-length: ") == 0) h->bytestoread = atoi(sep + 2);
+        }
+        if (line[0] == '\0' || !more) break;
+    }
+    if (size_limit < h->bytestoread) snprintf(code, sizeof(code), "sizelimit");
+
+    if (strcmp(code, "200") == 0) {
+        if (http_open_dest(x)) {
+            h->state = 1;
+            h->read  = 0;
+            h->i     = 0;
+            return false;
+        }
+    } else if (strcmp(code, "404") == 0) {
+        xfer_log(x, XFER_GRAY, "File not found (404)");
+    } else if (strcmp(code, "301") == 0 || strcmp(code, "302") == 0 || strcmp(code, "303") == 0 ||
+               strcmp(code, "307") == 0) {
+        /* The original keeps "location" in its url global and returns with the job still queued; the next call
+         * reads file_url again, so a redirect is retried from the same address every frame (not followed) */
+        http_close(h);
+        h->bytestoread = 0;
+        return false;
+    } else if (strcmp(code, "sizelimit") == 0) {
+        xfer_log(x, XFER_GRAY, "File is too large and will not be downloaded");
+    } else {
+        xfer_log(x, XFER_GRAY, "Unexpected reply (%s)", code); /* closing parenthesis assumed */
+    }
+    return http_job_done(h);
 }

@@ -2015,8 +2015,50 @@ static bool test_file_transfer(void)
     if (ev5 != CS2D_XFER_EV_NONE || !half || ev7 != CS2D_XFER_EV_FILE_FAILED || x.data_len != 8 || pos != l7) {
         TEST_FAIL("Transfer blocks", "blocks not joined, or the .lua file was accepted");
     }
+
+    /* FUN_1402cb9e0: "url > path" queues an HTTP job once (Thttp.addjob) when the destination is missing and
+     * FUN_1402cb770 is not 0; the request list then ends with 0xffff */
+    cs2d_xfer_reset(&x);
+    static const char *http_names[3] = {
+        "http://example.com/a b.png > gfx/xfer_test_http/a.png", "http://example.com/a b.png > gfx/xfer_test_http/a.png",
+        "x > gfx/b.png"
+    };
+    cl = 0;
+    chunk[cl++] = 0xfc; chunk[cl++] = 0x32; chunk[cl++] = 0x01; chunk[cl++] = 0x03; chunk[cl++] = 0x00;
+    for (int i = 0; i < 3; i++) xfer_put_str(chunk, &cl, http_names[i]);
+    pos = 2;
+    cs2d_xfer_on_message(&x, chunk, cl, &pos);
+    pos = 2;
+    cs2d_xfer_on_message(&x, list_end, (int)sizeof(list_end), &pos);
+    n = cs2d_xfer_build_requests(&x, pkts, 4);
+    if (x.http.count != 1 || x.http.total != 1 || strcmp(x.http.jobs[0].url, "http://example.com/a b.png") != 0 ||
+        strcmp(x.http.jobs[0].dest, "gfx/xfer_test_http/a.png") != 0 || x.request_count != 0 || n != 1 ||
+        pkts[0].buf[3] != 0xff || pkts[0].buf[4] != 0xff || !cs2d_xfer_http_active(&x)) {
+        TEST_FAIL("Transfer HTTP", "wrong Thttp job list or [252,50,2] terminator");
+    }
+    /* DAT_140bc89e0: "download" 4..10 limits, else 16 MB */
+    if (cs2d_xfer_http_size_limit(4) != 51200 || cs2d_xfer_http_size_limit(10) != 3145728 ||
+        cs2d_xfer_http_size_limit(1) != 0x1000000) {
+        TEST_FAIL("Transfer HTTP", "wrong size limits");
+    }
+
+    /* [252,50,3]: path -> FUN_1400a1750 text (upper-case hex) in lua_filetransfer.cache; Tres.add resolves it */
+    cl = 0;
+    chunk[cl++] = 0xfc; chunk[cl++] = 0x32; chunk[cl++] = 0x03; chunk[cl++] = 0x01; chunk[cl++] = 0x00;
+    xfer_put_str(chunk, &cl, "gfx/lua/img.png");
+    for (int k = 0; k < 8; k++) xfer_put_i32(chunk, &cl, (int32_t)(0xA1B2C3D4u + (uint32_t)k));
+    pos = 2;
+    cs2d_xfer_on_message(&x, chunk, cl, &pos);
+    char resolved[CS2D_XFER_PATH];
+    cs2d_xfer_reset(&x); /* the cache outlives the join */
+    if (pos != cl || strcmp(cs2d_xfer_cache_resolve("gfx/lua/img.png", resolved, sizeof(resolved)),
+                            "sys/cache/transfer/A1B2C3D4A1B2C3D5A1B2C3D6A1B2C3D7A1B2C3D8A1B2C3D9A1B2C3DAA1B2C3DB") != 0 ||
+        strcmp(cs2d_xfer_cache_resolve("gfx/lua/other.png", resolved, sizeof(resolved)), "gfx/lua/other.png") != 0) {
+        TEST_FAIL("Transfer cache", "[252,50,3] entry not resolved to sys/cache/transfer/<SHA>");
+    }
+    cs2d_xfer_cache_clear();
     cs2d_xfer_free(&x);
-    TEST_PASS("Join file transfer: path rules, [252,50,1] list, [252,50,2] requests, blocks, uncompress");
+    TEST_PASS("Join file transfer: path rules, [252,50,1] list, [252,50,2] requests, blocks, uncompress, HTTP jobs, cache");
     return true;
 }
 
@@ -2825,6 +2867,28 @@ static bool test_weapon_select(void)
     if (s_ws.game.players[1].current_weapon != CS2D_WEP_USP || s_ws.invsel.slot != 0 || s_ws.mouse_fire ||
         fabsf(s_ws.game.players[1].fire_cooldown - 0.4f) > 1e-6f) {
         TEST_FAIL("wheel confirm", "The click must hold the USP, close the HUD, not fire, and wait 400 ms");
+    }
+
+    /* Every game key / button goes through sys/controls.cfg: rebinding moves the command, an unbound key does nothing */
+    cs2d_client_handle_key(&s_ws, 'W', true);
+    if (!s_ws.key_forward) TEST_FAIL("bind forward", "W (bind \"W\" \"forward\") must hold forward");
+    cs2d_client_handle_key(&s_ws, 'W', false);
+    cs2d_binds_set(&s_ws.binds, "W", "");
+    cs2d_binds_set(&s_ws.binds, "uparrow", "forward");
+    cs2d_binds_set(&s_ws.binds, "mouse3", "attack");
+    cs2d_client_handle_key(&s_ws, 'W', true);
+    if (s_ws.key_forward) TEST_FAIL("bind unbound", "An unbound W must not move");
+    cs2d_client_handle_key(&s_ws, VK_UP, true);
+    if (!s_ws.key_forward) TEST_FAIL("bind rebind", "uparrow bound to forward must hold forward");
+    cs2d_client_handle_key(&s_ws, VK_UP, false);
+    if (s_ws.key_forward) TEST_FAIL("bind release", "Releasing uparrow must release forward");
+    cs2d_client_handle_mouse(&s_ws, 400.0f, 240.0f, 3, true);
+    if (!s_ws.mouse_fire) TEST_FAIL("bind mouse3", "mouse3 bound to attack must fire");
+    cs2d_client_handle_mouse(&s_ws, 400.0f, 240.0f, 3, false);
+    if (s_ws.mouse_fire) TEST_FAIL("bind mouse3 up", "Releasing mouse3 must stop firing");
+    cs2d_binds_defaults(&s_ws.binds);
+    if (!cs2d_binds_find(&s_ws.binds, "mouse1") || strcmp(cs2d_binds_find(&s_ws.binds, "R"), "reload") != 0) {
+        TEST_FAIL("bind defaults", "The defaults must be the whole shipped controls.cfg");
     }
 
     /* Grenades share HUD slot 4, listed by order (HE 0, Flashbang 1, Smoke 2); removing one keeps the others */

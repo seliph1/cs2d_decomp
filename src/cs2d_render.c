@@ -9,6 +9,7 @@
 #include "cs2d_fx.h"
 #include "cs2d_gen.h"
 #include "cs2d_player.h"
+#include "cs2d_transfer.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
 #include <stdio.h>
@@ -1363,9 +1364,12 @@ const cs2d_texture_t *cs2d_gfx_get_sprite_ex(cs2d_gfx_bank_t *bank, const char *
     entry->mask_mode = mask_mode;
     entry->is_atlas  = false;
 
+    /* Tres.add (0x1401ad1e0): a path in the transfer cache loads sys/cache/transfer/<sha> */
+    char cached[CS2D_XFER_PATH];
+    const char *load_path = cs2d_xfer_cache_resolve(rel_path, cached, sizeof(cached));
     if (cell_w > 0 && cell_h > 0) {
-        cs2d_texture_load_grid(&entry->tex, rel_path, mask_mode, cell_w, cell_h);
-    } else if (!cs2d_texture_load_ex(&entry->tex, rel_path, mask_mode)) {
+        cs2d_texture_load_grid(&entry->tex, load_path, mask_mode, cell_w, cell_h);
+    } else if (!cs2d_texture_load_ex(&entry->tex, load_path, mask_mode)) {
         char alt[160];
         snprintf(alt, sizeof(alt), "gfx/sprites/%s", rel_path);
         cs2d_texture_load_ex(&entry->tex, alt, mask_mode);

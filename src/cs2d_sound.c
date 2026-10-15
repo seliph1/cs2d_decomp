@@ -1,5 +1,6 @@
 #include "cs2d_sound.h"
 #include "cs2d_types.h"
+#include "cs2d_transfer.h"
 
 #include <SDL3/SDL.h>
 #include <math.h>
@@ -145,6 +146,10 @@ static snd_sample_t *snd_load(const char *path)
     memset(s, 0, sizeof(*s));
     snprintf(s->path, sizeof(s->path), "%s", path);
 
+    /* Tres.add (0x1401ad1e0): a path in the transfer cache loads sys/cache/transfer/<sha>; the format still
+     * follows the listed name (the cache file has no extension) */
+    char cached[CS2D_XFER_PATH];
+    const char *load_path = cs2d_xfer_cache_resolve(path, cached, sizeof(cached));
     SDL_AudioSpec src;
     Uint8 *buf = NULL;
     Uint32 len = 0;
@@ -152,7 +157,7 @@ static snd_sample_t *snd_load(const char *path)
     if (ends_with(path, ".ogg")) {
         int ch = 0, rate = 0;
         short *pcm = NULL;
-        int n = stb_vorbis_decode_filename(path, &ch, &rate, &pcm);
+        int n = stb_vorbis_decode_filename(load_path, &ch, &rate, &pcm);
         if (n <= 0 || !pcm) return s;
         src.format = SDL_AUDIO_S16;
         src.channels = ch;
@@ -160,7 +165,7 @@ static snd_sample_t *snd_load(const char *path)
         buf = (Uint8 *)pcm;
         len = (Uint32)n * (Uint32)ch * 2;
         owned_by_sdl = false;
-    } else if (!SDL_LoadWAV(path, &src, &buf, &len)) {
+    } else if (!SDL_LoadWAV(load_path, &src, &buf, &len)) {
         return s;
     }
     SDL_AudioSpec dst = { SDL_AUDIO_F32, 2, SND_RATE };

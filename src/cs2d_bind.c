@@ -3,18 +3,64 @@
 #include <stdio.h>
 #include <string.h>
 
+/* The shipped sys/controls.cfg, line for line */
+static const char *const s_default_binds[][2] = {
+    { "I", "radio1" },
+    { "O", "radio2" },
+    { "P", "radio3" },
+    { "Y", "say" },
+    { "U", "sayteam" },
+    { "Z", "voicesay" },
+    { "B", "buy" },
+    { ",", "buyammo1" },
+    { ".", "buyammo2" },
+    { "C", "buyequip" },
+    { "M", "chooseteam" },
+    { "0", "slot10" },
+    { "1", "slot1" },
+    { "2", "slot2" },
+    { "3", "slot3" },
+    { "4", "slot4" },
+    { "5", "slot5" },
+    { "6", "slot6" },
+    { "7", "slot7" },
+    { "8", "slot8" },
+    { "9", "slot9" },
+    { "tab", "showscores" },
+    { "backspace", "bot" },
+    { "V", "votemenu" },
+    { "F1", "serverinfo" },
+    { "F2", "serveraction1" },
+    { "F3", "serveraction2" },
+    { "F4", "serveraction3" },
+    { "F6", "console" },
+    { "W", "forward" },
+    { "S", "back" },
+    { "A", "left" },
+    { "D", "right" },
+    { "leftshift", "speed" },
+    { "mouse1", "attack" },
+    { "mouse2", "attack2" },
+    { "R", "reload" },
+    { "mwheelup", "invprev" },
+    { "mwheeldown", "invnext" },
+    { "Q", "lastinv" },
+    { "N", "nightvision" },
+    { "G", "drop" },
+    { "E", "use" },
+    { "T", "spray" },
+    { "F", "flashlight" },
+    { "F5", "snapshot" },
+    { "leftctrl", "specmode" },
+    { "space", "specplayer" },
+};
+
 void cs2d_binds_defaults(cs2d_binds_t *b)
 {
     memset(b, 0, sizeof(*b));
-    char key[2] = { 0, 0 }, cmd[8];
-    for (int i = 1; i <= 9; i++) {
-        key[0] = (char)('0' + i);
-        snprintf(cmd, sizeof(cmd), "slot%d", i);
-        cs2d_binds_set(b, key, cmd);
+    for (size_t i = 0; i < sizeof(s_default_binds) / sizeof(s_default_binds[0]); i++) {
+        cs2d_binds_set(b, s_default_binds[i][0], s_default_binds[i][1]);
     }
-    cs2d_binds_set(b, "0", "slot10");
-    cs2d_binds_set(b, "mwheelup", "invprev");
-    cs2d_binds_set(b, "mwheeldown", "invnext");
 }
 
 void cs2d_binds_set(cs2d_binds_t *b, const char *key, const char *cmd)
@@ -102,6 +148,12 @@ const char *cs2d_bind_key_name(int key)
         case VK_SHIFT:    return "leftshift";
         case VK_TAB:      return "tab";
         case VK_BACK:     return "backspace";
+        case VK_UP:       return "uparrow";
+        case VK_DOWN:     return "downarrow";
+        case VK_LEFT:     return "leftarrow";
+        case VK_RIGHT:    return "rightarrow";
+        case VK_MENU:     return "leftalt";
+        case VK_RETURN:   return "enter";
         default:          break;
     }
     if (key >= CS2D_KEY_F1 && key < CS2D_KEY_F1 + 12) {
@@ -110,4 +162,14 @@ const char *cs2d_bind_key_name(int key)
         return fname;
     }
     return NULL;
+}
+
+const char *cs2d_bind_mouse_name(int button)
+{
+    switch (button) {
+        case 1:  return "mouse1";
+        case 2:  return "mouse2";
+        case 3:  return "mouse3";
+        default: return NULL;
+    }
 }

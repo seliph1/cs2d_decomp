@@ -115,9 +115,10 @@ the same one.
     (2026-10-14) follows FUN_14020ce60 but was not reproduced against the dedicated (does it send [25] for a stack
     that only partly fits?).
   - The HUD sound on closing / confirming (`wpn_hudoff` d638), `lastinv`, and the gamepad path (`FUN_140239bd0`).
-  - Bindings: only the weapon selection commands go through `sys/controls.cfg`; movement, reload, use, buy, drop and
-    the spectator keys are still hardcoded in `game_handle_key`. `cs2d_bind_key_name` knows only digits, letters,
-    space, leftctrl and leftshift. The HUD font scale is fixed at 1 (13 px).
+  - Bindings (2026-10-15): every game key and mouse button goes through `sys/controls.cfg`. Not done: the other
+    key names (kp_*, rightshift / rightctrl / rightalt are folded into the left ones, keypad digits act as the digit
+    row, ins / del / home / end / pgup), `mouse4/5`, and the commands radio1..3, voicesay, chooseteam, votemenu, bot,
+    lastinv, nightvision, spray, snapshot (bound but run nothing). The HUD font scale is fixed at 1 (13 px).
 - **Buy menu, not reconstructed** (KNOWLEDGE "Buy menu" has what is done):
   - `autobuy` / `rebuy` only print a message (the original's `FUN_1401fff70` path with `DAT_140ddf2e0` / `2e4`).
   - The custom buy menu (`custombuy`, when the setting `0x140a14e20[1]` is longer than 2 characters) and the "menu
@@ -139,13 +140,11 @@ the same one.
   - Long names: the original scales them down to fit (`SetScale(225 / width)`), ours clips them
     (`cs2d_render_text_scaled_ex` exists but the server list does not use it).
 - **Join file transfer, not reconstructed** (see KNOWLEDGE "join-time file transfer"):
-  - HTTP downloads (`url > path` entries, `Thttp`): well-formed ones are skipped and we always end the request with
-    `0`, never `0xffff`.
-  - `[252,4,11]` (the local map differs from the server's): the original asks "save as temp.map / overwrite /
-    cancel" and joins again with map mode 1 or 2. We only print the status; the mode stays 0.
-  - Files cached under `sys/cache/transfer/<sha>` (`[252,50,3]`) are saved there, but nothing reads them back yet
-    (the original resolves Lua image paths through that cache). The checksum text format of `FUN_1400a1750` is assumed
-    to be 8 × `%08x`.
+  - HTTP downloads (`Thttp`) are ported but not checked live against the original (needs a web server on port 80 and
+    `url > path` lines in the dedicated's `sys/servertransfer.lst`). Unverified: the closing literals of
+    "HTTP download '…' to '…'", "Failed To write '…'", "Unexpected reply (…"; the `[252,51]` byte (Tgui_joinmen +0x68,
+    taken as `menu` = 10); what the server does after `[252,51]`.
+  - When the original clears `lua_filetransfer.cache` (CacheClear callers unclear); ours keeps it until exit.
   - The spinner icon (`gfx/gui_load.bmp`) next to the "Downloading" title.
   - Our Tudp has no retransmission of our own reliable packets; the request burst (26 messages) only works because
     nothing is lost on a LAN.

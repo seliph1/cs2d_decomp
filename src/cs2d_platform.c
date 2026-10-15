@@ -176,3 +176,26 @@ const char *cs2d_platform_screenshot_path(char *out, size_t out_size, const char
     snprintf(out, out_size, "%.*s%s.bmp", (int)len, prefix, suffix);
     return out;
 }
+
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
+#include <netdb.h>
+#endif
+
+SOCKET cs2d_platform_tcp_connect(const char *host, const char *port)
+{
+    if (!cs2d_platform_net_init()) return INVALID_SOCKET;
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, port, &hints, &res) != 0 || !res) return INVALID_SOCKET;
+    SOCKET s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (s != INVALID_SOCKET && connect(s, res->ai_addr, (cs2d_socklen_t)res->ai_addrlen) != 0) {
+        closesocket(s);
+        s = INVALID_SOCKET;
+    }
+    freeaddrinfo(res);
+    return s;
+}

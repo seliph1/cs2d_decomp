@@ -10,6 +10,23 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-15 — Claude — join transfer: HTTP downloads, transfer cache read-back
+- `Thttp` ported into `cs2d_transfer.c` (addjob / get / reset, size limits `DAT_140bc89e0`, `[252,50,2]` 0xffff
+  terminator, `[252,51,10]` when done, HTTP window layout); `cs2d_platform_tcp_connect` added. `[252,50,3]` now fills
+  a global path → SHA cache (upper-case hex, `FUN_1400a1750`) that sprite and sound loading resolve (`Tres.add`).
+  `[252,4,11]` dialog was already implemented (OPEN_ISSUES entry was stale).
+- Verified: `build.bat` clean, `test_cs2d.exe` 61 / 61 (transfer test: HTTP jobs, terminator, limits, cache).
+  No live HTTP capture yet.
+- Left (OPEN_ISSUES "Join file transfer"): live HTTP check, assumed string tails, cache clear point.
+
+## 2026-10-15 — Claude — every game key / button goes through sys/controls.cfg
+- Movement, speed, reload, drop, use, specplayer / specmode, say / sayteam and mouse1 / mouse2 (attack / attack2)
+  were hardcoded in `game_handle_key` / `game_handle_mouse`; now `game_bound_cmd` dispatches the bound command
+  (held commands follow press and release). Key names `uparrow`.., `leftalt`, `enter`, `mouse1..3` from the
+  CS2D.exe strings; the middle button reaches the game; `cs2d_binds_defaults` = the whole shipped controls.cfg.
+- Verified: `build.bat` clean, `test_cs2d.exe` 61 / 61; `test_weapon_select` gains unbind / rebind / mouse3 cases.
+- Left (OPEN_ISSUES "Weapon selection HUD"): kp_* / right-side modifier names, unimplemented bound commands.
+
 ## 2026-10-15 — Cline — bug: a weapon dropped on a public server vanished at once (client-side fade)
 - Symptom (user, playing on 140.238.183.194:36963): dropping a weapon made it invisible immediately.
 - Cause: the earlier session took the drop timer from `Titem.update` but missed **two gates** of the same block in
@@ -64,42 +81,4 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - Left (OPEN_ISSUES): the "Muzzle offsets" and weapon-HUD-string items are gone; the rest of the weapon selection HUD
   (grenade counts vs a screenshot, the Medikit clip 5, the HUD sound, `lastinv`, the gamepad path and the bindings)
   stays open.
-
-
-## 2026-10-15 — Cline — settile: a cut `[252,7,9]` now aborts the join (OPEN_ISSUES item 1)
-- New `cs2d_customtile_read_snapshot` (`cs2d_customtile.c/.h`) owns join section `[252,7,9]` (FUN_1402ce7c0 case 6):
-  Tcustomtile.list clear, count u8, count x 11 bytes through addcheck, one endbatch; it reports an entry cut short
-  (fewer than 11 bytes) through `*cut`. The client's inline parser is gone.
-- `cs2d_client.c`: on a cut it prints the red `ERROR: failed to load custom tile data`, then `join_error_prompt(201)`
-  and back to the lobby - the original's shared abort **LAB_1402cf3ee** (joinstep 0, `FUN_1401d0160` world teardown,
-  `Tgui_win::closeall`, `Tgui_joinmen.errorprompt(0xc9)`); `0xc9` = **201** "Connection problems! Failed to receive all
-  server data." (lang 0396). No `[253]` at that point (the window's Okay/Cancel sends `[253,9]`).
-- Added the original's rule that a `[252,x]` message is only accepted while its step matches the client's joinstep
-  (`if (sub != 0 && client->join_stage == 0) break;`), so the rest of the stream cannot re-enter a join we gave up on.
-- Verified: `test_settile` now drives the new function (full payload + a cut payload that must set `*cut` and keep the
-  complete entries), suite **60/60**; a live join through the proxy (`capture_ours.sh`, `-offline`, prison_funst3r)
-  still reaches `join_stage=5 / CONNECTED`; `git status sys/` clean, no processes left.
-- Left (OPEN_ISSUES): the settile screenshot comparison, `Ttileblend.updatetile`'s stored 0x40 flag and the
-  `s_minimap_full` tiles (unchanged).
-
-
-## 2026-10-15 — Cline — docs cleanup + the flaky `Print throughput` test
-- `OPEN_ISSUES.md`: removed four stale, already-resolved entries - the three `RESOLVED` "Known gaps" bullets
-  (the first-frame freeze / 1447 ms -> 7.7 ms sprite-atlas fix, the 64-sprite cache ceiling -> dynamic
-  `sprite_cache`, and `Env_Image` / `Env_Object` unculled size learning) plus the "Practical note - the
-  `libwinpthread-1.dll` trap (fixed 2026-10-12)". All were already recorded in `worklog/archive.md`
-  ("Sprite atlasing..." + the libwinpthread entry), so no history is lost.
-- Fixed the flaky `test_console` perf assertion (`tests/test_cs2d.c`): 100k prints failed above 500 ms, but
-  the same O(1) append loop measured 7-900 ms run to run on one machine (OS / CPU / process noise), so the
-  suite reported 59/60 about half the time. The timing is now printed as `[INFO]` only; the ring-buffer
-  correctness checks above it stay the guard (a throughput guard belongs in a benchmark, not in the suite).
-- Verified: `build.bat` clean; `test_cs2d.exe` run 6x in a row -> **60/60** every time (one run measured
-  672.63 ms, which the old 500 ms budget would have failed); `git status sys/` clean.
-- Left (OPEN_ISSUES): the rest of the known gaps. The "GL 1.x / GDI+ removal" section is now a completed
-  milestone tracker (Phases 1 and 3 DONE, Phase 2 DONE off Windows) that keeps only its open decisions - the
-  desktop stb switch, the legacy-context fallback, and the owed daylight / `light 0..5` / `mapshadows` pixel sweep.
-
-
-
-
 
