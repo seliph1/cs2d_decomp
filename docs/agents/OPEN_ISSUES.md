@@ -98,10 +98,13 @@ the same one.
   (DAT_140a14f88), the mp_hud kill flag (0x40), Lua `customkill` images (`[226]`-style case 4 in FUN_1401de400, wpnimg
   -1) and offline kills (our offline damage has no killer). Specials 0xfd / 0xfe / 0xff assume 0x1409f79f8 is indexed
   by building type (Turret / Gate Field / Barbed Wire).
-- **Opcode 40 (kill dropped weapon):** solved - `[40, id u16]`, reliable, sent by `Titem.fadeout` (0x14004cd20) when
-  a *dropped* item's timer (0x140a14d94 = 15 frames, per drawn frame) runs out; `knowledge/net-messages.md`. Left to
-  verify on a capture: the 15-frame threshold and the original's gates (`DAT_140ddf540`, `0x140a14e48[1] & 0xfb`), and
-  whether the fade also happens for the client when the server did not ask for it.
+- **Opcode 40 (kill dropped weapon):** `[40, id u16]`, reliable, sent by `Titem.fadeout` (0x14004cd20) to every
+  connected player. Its trigger is the tail block of `Titem.draw` (0x140147b80 / 0x1401483a0): a *dropped* item's
+  timer steps **once per 1 s tick** (`DAT_140ddf540`) and only while this instance runs the server
+  (`DAT_140ddf400`), so the threshold `0x140a14d94` = 15 is **15 s**, and a network client never fades an item
+  itself (`cs2d_ground_item_step`; `knowledge/net-messages.md` "Ground item lifetime"). Still to verify on a
+  capture: that the dedicated broadcasts `[40]` ~15 s after a drop (and that our client removes the item then),
+  and the third gate `0x140a14e48[..] & 0xfb`, an unidentified setting we assume on.
 - **Round start and ground items:** whether dropped weapons are removed at round start is unknown.
 - **Spray:** our client sends a blank spray logo.
 - **Dedicated broadcast quirk:** after some round restarts the dedicated stops broadcasting entity

@@ -394,9 +394,12 @@ typedef struct {
 
 /* Weapon / item lying on the ground (server: spawnitem 33, drop 24, collect 25) */
 #define CS2D_MAX_GROUND_ITEMS 256
-/* Titem: a *dropped* item (Titem.dropped, +0x34) ages one step per drawn frame in Titem.update (0x140147dc0)
- * and fades at the threshold 0x140a14d94 (= 15, .data); a Lua fadeout hook returning 1 sets droptimer to
- * 10000 instead, which stops the timer (Titem.fadeout 0x14004cd20). */
+/* Titem: a *dropped* item (Titem.dropped, +0x34) ages one step per **1 s tick** (DAT_140ddf540, the main
+ * loop's 1000 ms timer 0x140236801) in the tail block both Titem.draw overloads share (0x140147b80 /
+ * 0x1401483a0) and fades at the threshold 0x140a14d94 (= 15, .data), i.e. after 15 s. The whole block also
+ * needs DAT_140ddf400 != 0, which is 1 only while this instance runs the server, so a network client never
+ * expires items itself. A Lua fadeout hook returning 1 sets droptimer to 10000 instead, which stops the timer
+ * (Titem.fadeout 0x14004cd20). */
 #define CS2D_GROUND_ITEM_FADE 15
 #define CS2D_GROUND_ITEM_VETO 10000
 typedef struct {

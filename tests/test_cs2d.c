@@ -5444,6 +5444,50 @@ static bool test_random_and_dropwep(void)
         TEST_FAIL("[40]", "a missing / short buffer must be refused");
     }
     TEST_PASS("[40] kill dropped weapon is [40, id u16] (3 bytes, wbyte 0x28 + wshort id)");
+
+    /*
+     * Ground item drop timer (the tail block of both Titem.draw overloads, 0x140147b80 / 0x1401483a0): one
+     * step per **1 s tick** (DAT_140ddf540, the main loop's 1000 ms timer 0x140236801) and only while this
+     * instance runs the server (DAT_140ddf400); the threshold 0x140a14d94 = 15 is therefore 15 s. A network
+     * client never ages an item - that was the "dropped weapon turns invisible" bug: 15 *frames* at 167 FPS
+     * faded it in 90 ms and told the server to delete it.
+     */
+    cs2d_ground_item_t it = { true, 7, CS2D_WEP_AWP, 48.0f, 80.0f, 30, 90, true, 0 };
+
+    /* A client (DAT_140ddf400 == 0) leaves the timer alone, whatever the tick says */
+    for (int i = 0; i < 600; i++) {
+        if (cs2d_ground_item_step(&it, false, true)) TEST_FAIL("drop timer", "a client must not expire the item");
+    }
+    if (it.droptimer != 0) TEST_FAIL("drop timer", "a client must not age the item");
+    TEST_PASS("drop timer: a network client (DAT_140ddf400 == 0) never ages a dropped item");
+
+    /* The server steps once per second: frames that are not the 1 s tick change nothing */
+    for (int i = 0; i < 60; i++) {
+        if (cs2d_ground_item_step(&it, true, false)) TEST_FAIL("drop timer", "only the 1 s tick steps the timer");
+    }
+    if (it.droptimer != 0) TEST_FAIL("drop timer", "off-tick frames must not age the item");
+    for (int s = 1; s <= 14; s++) {
+        if (cs2d_ground_item_step(&it, true, true) || it.droptimer != s) TEST_FAIL("drop timer", "15 s threshold");
+    }
+    if (!cs2d_ground_item_step(&it, true, true) || it.droptimer != 15) {
+        TEST_FAIL("drop timer", "the item must expire on the 15th second (0x140a14d94)");
+    }
+    TEST_PASS("drop timer: the server steps once per second and fades at 15 s (0x140a14d94)");
+
+    /* Only *dropped* items age; a Lua fadeout veto and a dead slot never do */
+    cs2d_ground_item_t spawned = { true, 8, CS2D_WEP_AWP, 48.0f, 80.0f, 30, 90, false, 0 };
+    if (cs2d_ground_item_step(&spawned, true, true) || spawned.droptimer != 0) {
+        TEST_FAIL("drop timer", "map / server spawned items never age");
+    }
+    cs2d_ground_item_t veto = { true, 9, CS2D_WEP_AWP, 48.0f, 80.0f, 30, 90, true, CS2D_GROUND_ITEM_VETO };
+    if (cs2d_ground_item_step(&veto, true, true) || veto.droptimer != CS2D_GROUND_ITEM_VETO) {
+        TEST_FAIL("drop timer", "the Lua fadeout veto (10000) must stop the timer");
+    }
+    cs2d_ground_item_t dead = { false, 10, CS2D_WEP_AWP, 48.0f, 80.0f, 30, 90, true, 0 };
+    if (cs2d_ground_item_step(&dead, true, true) || cs2d_ground_item_step(NULL, true, true)) {
+        TEST_FAIL("drop timer", "inactive slots and NULL must be refused");
+    }
+    TEST_PASS("drop timer: spawned items stay, the Lua veto (10000) and dead slots are refused");
     return true;
 }
 

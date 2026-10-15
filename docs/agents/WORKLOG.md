@@ -10,6 +10,27 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-15 — Cline — bug: a weapon dropped on a public server vanished at once (client-side fade)
+- Symptom (user, playing on 140.238.183.194:36963): dropping a weapon made it invisible immediately.
+- Cause: the earlier session took the drop timer from `Titem.update` but missed **two gates** of the same block in
+  `Titem.draw` (the tail of both 0x140147b80 and 0x1401483a0): `DAT_140ddf540`, the main loop's 1000 ms timer (1 for
+  the single frame that closes a second, 140230000.c:6800) and `DAT_140ddf400`, which is 1 only while this instance
+  runs the server (create server 1401e0000.c:1499, cleared on join 1401d0000.c:128 / 1402c0000.c:6747). The timer
+  therefore counts **seconds** (0x140a14d94 = 15 -> 15 s), not frames, and a pure network client never runs it.
+  We aged one step per *frame* at up to 167 FPS (no frame cap, OPEN_ISSUES), so the item faded in ~90 ms and our
+  `[40]` then told the server to delete the weapon for everyone.
+- Changed: new `cs2d_ground_item_step` (`cs2d_client.c`, exported for the test) ports the original condition;
+  `cs2d_client_update` drives it from a 1 s accumulator (`cs2d_client_t.item_tick` = DAT_140ddf540) with
+  server_instance = false (we are always a network client). New incoming `[40, id u16]` branch removes the item when
+  the server's own fade reports it; before, that unknown opcode cut the rest of the datagram
+  (`knowledge/net-messages.md`, `cs2d_types.h`).
+- Verified: `build.bat` clean, `test_cs2d.exe` **61 / 61**; `test_random_and_dropwep` locks the rule (600 client
+  ticks do not age an item, off-tick frames do not, the 15th second expires it, spawned items / the Lua veto 10000 /
+  dead slots stay).
+- Left (OPEN_ISSUES): a proxy capture on a public dedicated to confirm the server broadcasts `[40]` ~15 s after a
+  drop (and that our client then removes the item); the third gate `0x140a14e48[..] & 0xfb` stays unidentified.
+
+
 ## 2026-10-15 — Cline — OPEN_ISSUES curation: removed the entries that were already done
 - Re-read the whole list against the modules each bullet names and deleted the elements that were 100% resolved,
   keeping every still-open item: the "Join messages (fixed 2026-10-15)" bullet (the handshake lives in KNOWLEDGE
@@ -78,32 +99,7 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
   milestone tracker (Phases 1 and 3 DONE, Phase 2 DONE off Windows) that keeps only its open decisions - the
   desktop stb switch, the legacy-context fallback, and the owed daylight / `light 0..5` / `mapshadows` pixel sweep.
 
-## 2026-10-15 — Cline — the [252,6] spread seed (TRandom.SeedTable) + opcode 40
-- New `src/cs2d_random.c` + `include/cs2d_random.h` reproduce BlitzMax `TRandom`: `GenerateSeed` (0x14000fe90) fills a
-  **1000-entry** table (`SeedTable`; the loop ends at `data + 0xfa0`) with values < **Range = 123**
-  (`mov dword [0x140dde720],0x7b` at 0x14030720e; `B`/`aX` at 0x140dde728 / 0x140dde724, pointer 0x140dde730). The
-  seed is the i32 in the join settings `[252,6]` (0x1402d0560: `Tudp_p.rint` + `GenerateSeed`), now read into
-  `client->net_seed`; `Tpl.shoot` spreads with `SeedTable[Tpl.random] % (2*acc) - acc` per pellet, so the shotgun
-  spreads like the server instead of `rand()` (`pl->shot_random` mirrors `Tpl.random`, `(random+1)%200` per pellet).
-  Details: `knowledge/random.md`.
-- Opcode 40 "kill dropped weapon" decoded: `[40, id u16]`, **reliable** (`Tudp_con.Createpacket(1,0)`; p1 == 1 takes
-  the reliable id) from `Titem.fadeout` (0x14004cd20: `wbyte(0x28)` at 0x14004cec2 + `wshort(id)`). Its trigger is
-  `Titem.update` (0x140147dc0): a *dropped* item (`Titem.dropped`, +0x34) ages +1 per drawn frame and fades at
-  `0x140a14d94` (= 15). New `cs2d_client_send_kill_dropped_weapon` + a per-frame timer in `cs2d_client_update`; the
-  `[24]` handler marks the item `dropped` (flags and the bomb stay 0, 1401f0000.c:1004).
-- Verified: `test_random_and_dropwep` locks four seeds' tables (`cs2d_random_table` / `cs2d_random_get`) and the three
-  packet bytes, suite **61/61**; `build.bat` warning-free; a live offline join (`-offline`, de_dust2, `CS2D_NET_LOG=1`)
-  logs `[net seed 33081]` and `[net seed_table_1 113]`, which the algorithm reproduces; `git status sys/` clean.
-- Left (OPEN_ISSUES): the 15-frame fade threshold and the original's gates need a capture (the accuracy question
-  is answered by the follow-up below).
-- Follow-up (same session): extracted the **whole** accuracy table 0x1409f5d18 with `tools/agent/weapontables.py`
-  after teaching it the `lea reg,[base+id*4]` form this build uses (init_weapons writes `[base + id*4]`): the 17
-  values in `cs2d_weapon_accuracy` were already right, the 1..6 / 31 / 33 / 34 / 35 zeros are what init_weapons
-  writes, and the id 92 (2) is an item we do not model. `Tpl.attack` (0x14021a6xx) calls `Tpl.shoot` - the only
-  consumer - for typ 10 / 11 alone and sends every other weapon through `Tpl.shoot_recoil` (0x140209a90), so a
-  player shot of any other weapon has no accuracy spread: our shotgun-only gate is the faithful behaviour, now
-  stated in the comments and locked by the full table in `test_weapon_modes` (suite **61/61**). Also noted the
-  muzzle candidates the re-extraction produced (shield 22, bomb 1, items 16, an id 92) as unverified.
+
 
 
 

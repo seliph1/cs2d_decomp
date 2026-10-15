@@ -191,6 +191,7 @@ struct cs2d_client {
     float           cam_y;
     cs2d_spec_t     spec;              /* Spectator camera while the local player is not alive */
     float           spec_tick;         /* Seconds since the last 1 s tick (DAT_140ddf540): [32] and showcase */
+    float           item_tick;         /* Seconds since the last 1 s tick (DAT_140ddf540): ground item drop timer */
     cs2d_invsel_t   invsel;            /* Weapon selection HUD (invnext / invprev / slotN) */
     cs2d_binds_t    binds;             /* sys/controls.cfg */
 
@@ -436,6 +437,9 @@ bool cs2d_client_connect(cs2d_client_t *client, const char *ip, int port);
 void cs2d_client_send_udp(cs2d_client_t *client, const uint8_t *payload, size_t len, bool reliable);
 /* Opcode 40: tell the server a dropped item is gone (Titem.fadeout 0x14004cd20) - [40, id u16] */
 void cs2d_client_send_kill_dropped_weapon(cs2d_client_t *client, uint16_t item_id);
+/* One step of the ground item drop timer (Titem.draw 0x1401483a0): returns true when the item expires.
+ * server_instance = DAT_140ddf400, second_tick = DAT_140ddf540 (see the definition in cs2d_client.c) */
+bool cs2d_ground_item_step(cs2d_ground_item_t *it, bool server_instance, bool second_tick);
 void cs2d_client_poll_network(cs2d_client_t *client);
 
 /*

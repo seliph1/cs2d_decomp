@@ -713,6 +713,32 @@ static void fade_ground_item(cs2d_client_t *client, cs2d_ground_item_t *it)
 }
 
 /*
+ * Ground item drop timer. The original steps `droptimer` by one in the tail block that both Titem.draw
+ * overloads share (0x140147b80 and 0x1401483a0 in docs/dump/cs2d/Titem.c, lines 967 and 1130), whose whole
+ * condition is
+ *
+ *   DAT_140ddf540 != 0 && DAT_140ddf400 != 0 && (array[..] & 0xfb) != 0 && dropped == 1 && droptimer != 10000
+ *   -> droptimer++, and at DAT_140a14d94 <= droptimer: fadeout(id)
+ *
+ *   - DAT_140ddf540 is the main loop's 1000 ms timer (0x140236801 in 140230000.c:6800): it is 1 for the
+ *     single frame that closes a second and 0 for the rest, so `droptimer` counts **seconds**, not frames;
+ *   - DAT_140ddf400 is 1 only while this instance runs the server (set by the create-server path
+ *     1401e0000.c:1499, cleared on join 1401d0000.c:128 / 1402c0000.c:6747), so a pure network client
+ *     never expires an item itself: the server owns the lifetime and reports the removal with [40]
+ *     (Titem.fadeout broadcasts wbyte(0x28) + wshort(id) to every player).
+ *   - the third gate indexes a settings array (0x140a14e48); its exact setting is not identified yet, so we
+ *     assume it is on (only reachable for the host, which we are not).
+ * The threshold 0x140a14d94 = 15 is therefore 15 s of the server's clock. A Lua fadeout hook returning 1
+ * pins droptimer at CS2D_GROUND_ITEM_VETO and stops the timer.
+ */
+bool cs2d_ground_item_step(cs2d_ground_item_t *it, bool server_instance, bool second_tick)
+{
+    if (!it || !it->active || !server_instance || !second_tick) return false;
+    if (!it->dropped || it->droptimer == CS2D_GROUND_ITEM_VETO) return false;
+    return ++it->droptimer >= CS2D_GROUND_ITEM_FADE;
+}
+
+/*
  * Titem.give (FUN_14020ce60) case 0x46 / 0x47: a player touches a flag ([25] collect, type 70 red / 71 blue). The
  * enemy team takes it (Tpl.flag = 1, sys/language 0707 / 0708 in the team color, 0709 to the carrier); the owner
  * team returns it, which the server reports with [31] (cs2d_scene_game_apply_entity_state: "... Flag returned").
@@ -2209,6 +2235,13 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 if (drop && type != CS2D_WEP_REDFLAG && type != CS2D_WEP_BLUEFLAG && type != CS2D_WEP_BOMB)
                     drop->dropped = true;
                 pos += 15;
+            } else if (opcode == CS2D_NET_KILL_DROPPED_WEP) {
+                /* Server -> Client: [40, item id u16] (3 bytes). The server's own drop timer ran out and its
+                 * Titem.fadeout (0x14004cd20) told every player (the client sends the same opcode to ask for
+                 * a fade). Without this the item would stay on our screen. */
+                if (pos + 3 > recvd) break;
+                remove_ground_item(client, (uint16_t)(buffer[pos + 1] | (buffer[pos + 2] << 8)));
+                pos += 3;
             } else if (opcode == CS2D_NET_SELECT_WEAPON) {
                 /* Server -> Client: [9, player, type, mode] (4 bytes): weapon held (e.g. Lua setweapon) */
                 if (pos + 4 > recvd) break;
@@ -3771,13 +3804,17 @@ void cs2d_client_update(cs2d_client_t *client, float delta_time)
         client->net_bytes_down_accum = 0;
     }
 
-    /* Titem.update (0x140147dc0): a dropped item ages one step per drawn frame and fades at the threshold
-     * 0x140a14d94 (15); the fade tells the server with [40] (Titem.fadeout 0x14004cd20). A Lua fadeout hook
-     * that returns 1 pins droptimer at 10000 instead. Map and server spawned items never age. */
+    /* The original's 1 s timer (DAT_140ddf540, main loop 0x140236801) paces the ground item drop timer */
+    client->item_tick += delta_time;
+    bool item_tick = client->item_tick >= 1.0f;
+    if (item_tick) client->item_tick = 0.0f;
+
+    /* Titem.draw (0x1401483a0) drop timer: only the instance that runs the server (DAT_140ddf400) ages a
+     * dropped item, one step per second, fading at 15 (DAT_140a14d94 -> 15 s). We are always a network
+     * client, so the timer cannot fire here: the server ends the item's life and tells us with [40]. */
     for (int i = 0; i < CS2D_MAX_GROUND_ITEMS; i++) {
         cs2d_ground_item_t *it = &client->ground_items[i];
-        if (!it->active || !it->dropped || it->droptimer == CS2D_GROUND_ITEM_VETO) continue;
-        if (++it->droptimer >= CS2D_GROUND_ITEM_FADE) fade_ground_item(client, it);
+        if (cs2d_ground_item_step(it, false, item_tick)) fade_ground_item(client, it);
     }
 
     cs2d_scene_get(client->scene)->update(client, delta_time);

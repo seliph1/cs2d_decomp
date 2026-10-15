@@ -10,7 +10,7 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 | Select weapon | `[9][type][0]` | |
 | Reload | `[16][1]` | |
 | Drop | `[24][type][clip u16][reserve u16][0]` | |
-| Kill dropped weapon | `[40][id u16]` | Reliable (`Tudp_con.Createpacket(1,0)`). `Titem.fadeout` (0x14004cd20) removes the item locally and sends `wbyte(0x28) + wshort(id)` (0x14004cec2) for every connected player; the client uses it when a *dropped* item's timer runs out |
+| Kill dropped weapon | `[40][id u16]` | Reliable (`Tudp_con.Createpacket(1,0)`). `Titem.fadeout` (0x14004cd20) removes the item locally and sends `wbyte(0x28) + wshort(id)` (0x14004cec2) for every connected player. The client only does this while it runs the server; a network client waits for the server's own `[40]` (see the server → client table) |
 | Buy | `[23][type][0]` | |
 | Use | `[26][mode u8][target i32][x u16][y u16]` | Always sent on E (FUN_14014f820). Mode 100 = Trigger_Use with its tile; 1/2 = hostage use/release (target = hostage id), 3 = defuse (target = defuse kit); nothing found = mode 0 with zeros, still reported to the Lua `use` hook (verified, `use_probe.lua`). Target ray at 0, 16 and 32 px along the aim |
 | Team | `[20][team][look]` | `team`: 0 Spectator (`look = 5`), 1 T, 2 CT; `look`: `0..3` class skin or `4` Auto-Select skin |
@@ -41,6 +41,7 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 | 27 | `[27,pid,type,x u16,y u16,dir u16,flydist u16]` | Projectile broadcast (11 bytes, REA `0x1402d3340`) |
 | 31 | `[31,x u16,y u16,state]` | Entity event |
 | 33 | `[33,type,item id u16,tile x u16,tile y u16,clip u16,reserve u16]` | Spawn item |
+| 40 | `[40, id u16]` | The server says a ground item is gone (its own drop timer, see "Ground item lifetime"). Our client removes it; `remove_ground_item` |
 | 41 | `[41,id,pid]` | Kill/detonate projectile (3 bytes, REA `0x1402daf80`) |
 | 42 | `[42,pid,field,value u16]` | Playerdata. Fields: 0 health, 1 score, 2 money, 3 armor, 4 deaths, 5 weapon given, 6 weapon taken, 8 max health, 9 assists, 10 MVPs (REA `FUN_1401cc9d0`) |
 | 64 | `[64,t u16,ct u16]` | Team scores (`setteamscores`, REA `FUN_1402de440`) |
@@ -56,3 +57,25 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 | 229 | `[229, srv_ts i32]` | Clock Ping / Anti-speedhack (REA `0x1401d7690`, `0x1402e2ed0`, proxy): used when `sv_antiaccel > 0` (default); client replies unreliable `[229, srv_ts i32, cli_ts i32]` (9 bytes); server calculates RTT latency (`now - srv_ts`) into `player->ping` (`Tpl +0xd0`) and tracks `clock_diff` / `clock_ratio` |
 | 249 | `[249, srv_ts i32]` | Normal In-Game Ping (REA `0x1401d9f10`, `0x1402e6080`): used when `sv_antiaccel == 0`; client replies unreliable `[249, srv_ts i32]` (5 bytes) |
 | 65 | `[65, x u16 + 32768, y u16 + 32768, len u8, path]` | Positional sound (REA `FUN_1402de5f0` -> `FUN_1401e3890(x, y, path, 0)`, proxy 157.90.170.75:10003): Lua servers send `player/build.wav` right before a `spawnobject` `[49]` in the same datagram. Not handling it dropped the `[49]` |
+
+## Ground item lifetime (the drop timer behind `[40]`)
+
+Source: the tail block both `Titem.draw` overloads share (0x140147b80 and 0x1401483a0).
+
+- The step is `droptimer = droptimer + 1` and the fade at `DAT_140a14d94 <= droptimer` (`fadeout(id)`), but the
+  whole statement is gated by `DAT_140ddf540 != 0 && DAT_140ddf400 != 0 && (0x140a14e48[..] & 0xfb) != 0 &&
+  dropped == 1 && droptimer != 10000`, where:
+  - `DAT_140ddf540` is the main loop's 1000 ms timer (0x140236801, 140230000.c:6800): 1 for the single frame that
+    closes a second, 0 for the rest, so the timer counts **seconds**;
+  - `DAT_140ddf400` is 1 only while this instance runs the server (create server 1401e0000.c:1499, cleared on join
+    1401d0000.c:128 / 1402c0000.c:6747), so a network client never expires a ground item itself;
+  - the third gate indexes a settings array (0x140a14e48); the setting is not identified yet (assumed on - only the
+    host can reach it).
+- `DAT_140a14d94` = 15, so a dropped item lives **15 s** of the server's clock; a Lua `fadeout` hook returning 1
+  pins `droptimer` at 10000 and stops the timer. Map / server spawned (`[33]`) items have `dropped = 0` and never
+  age.
+- `Titem.fadeout` (0x14004cd20) removes the item and broadcasts `[40, id u16]` to every connected player, which is
+  how a client learns an item is gone. Ported as `cs2d_ground_item_step` + the `[40]` receive branch in
+  `src/cs2d_client.c`; the user-visible bug of the old per-frame port (a dropped weapon faded in ~90 ms at 167 FPS)
+  is locked by `test_random_and_dropwep`.
+
