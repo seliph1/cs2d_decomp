@@ -891,11 +891,15 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
 {
     cs2d_sv_player_t *pl = (c->player > 0) ? &sv->players[c->player] : NULL;
     switch (op) {
-    case 253: /* leave */
-        rd_byte(r);
-        if (pl) sv_remove_player(sv, c->player, 0);
+    case 253: { /* leave: [253, reason u8, optional reason str] (FUN_1401e3790) */
+        int reason = 0;
+        char reason_str[128] = "";
+        if (rd_left(r) > 0) reason = rd_byte(r);
+        if (reason >= 16 && rd_left(r) > 0) rd_str(r, reason_str, sizeof(reason_str));
+        if (pl) sv_remove_player(sv, c->player, reason);
         c->active = false;
         return false;
+    }
     case 20: { /* team: [20,team,look] (FUN_1401cd140 -> FUN_1401624c0) */
         if (rd_left(r) < 2) return false;
         int team = rd_byte(r), look = rd_byte(r);
@@ -1152,6 +1156,7 @@ void cs2d_server_frame(cs2d_server_t *sv)
     }
 
     cs2d_sv_relay_movement(sv);
+    cs2d_sv_step_round(sv);
 
     sv->frames++;
     if (now - sv->second_ms >= 1000) {

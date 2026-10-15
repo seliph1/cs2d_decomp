@@ -1,5 +1,26 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-15 — Cline — bug: a weapon dropped on a public server vanished at once (client-side fade)
+- Symptom (user, playing on 140.238.183.194:36963): dropping a weapon made it invisible immediately.
+- Cause: the earlier session took the drop timer from `Titem.update` but missed **two gates** of the same block in
+  `Titem.draw` (the tail of both 0x140147b80 and 0x1401483a0): `DAT_140ddf540`, the main loop's 1000 ms timer (1 for
+  the single frame that closes a second, 140230000.c:6800) and `DAT_140ddf400`, which is 1 only while this instance
+  runs the server (create server 1401e0000.c:1499, cleared on join 1401d0000.c:128 / 1402c0000.c:6747). The timer
+  therefore counts **seconds** (0x140a14d94 = 15 -> 15 s), not frames, and a pure network client never runs it.
+  We aged one step per *frame* at up to 167 FPS (no frame cap, OPEN_ISSUES), so the item faded in ~90 ms and our
+  `[40]` then told the server to delete the weapon for everyone.
+- Changed: new `cs2d_ground_item_step` (`cs2d_client.c`, exported for the test) ports the original condition;
+  `cs2d_client_update` drives it from a 1 s accumulator (`cs2d_client_t.item_tick` = DAT_140ddf540) with
+  server_instance = false (we are always a network client). New incoming `[40, id u16]` branch removes the item when
+  the server's own fade reports it; before, that unknown opcode cut the rest of the datagram
+  (`knowledge/net-messages.md`, `cs2d_types.h`).
+- Verified: `build.bat` clean, `test_cs2d.exe` **61 / 61**; `test_random_and_dropwep` locks the rule (600 client
+  ticks do not age an item, off-tick frames do not, the 15th second expires it, spawned items / the Lua veto 10000 /
+  dead slots stay).
+- Left (OPEN_ISSUES): a proxy capture on a public dedicated to confirm the server broadcasts `[40]` ~15 s after a
+  drop (and that our client then removes the item); the third gate `0x140a14e48[..] & 0xfb` stays unidentified.
+
+
 ## 2026-10-15 — Cline — OPEN_ISSUES curation: removed the entries that were already done
 - Re-read the whole list against the modules each bullet names and deleted the elements that were 100% resolved,
   keeping every still-open item: the "Join messages (fixed 2026-10-15)" bullet (the handshake lives in KNOWLEDGE

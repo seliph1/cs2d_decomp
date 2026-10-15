@@ -170,13 +170,16 @@ cs2d_pkt_t     *cs2d_sv_packet(cs2d_server_t *sv, cs2d_sv_conn_t *c, bool reliab
 cs2d_sv_conn_t *cs2d_sv_conn_of_player(cs2d_server_t *sv, int id);
 uint32_t        cs2d_sv_now(void);
 
-/* cs2d_sv_game.c: team, spawn, movement relay (phase 2) */
+/* cs2d_sv_game.c: team, spawn, movement relay, rounds (phase 2) */
 void cs2d_sv_team(cs2d_server_t *sv, int id, int team, int look);          /* FUN_1401624c0 */
 void cs2d_sv_spawn(cs2d_server_t *sv, int id);                             /* FUN_140160740 */
 void cs2d_sv_relay_movement(cs2d_server_t *sv);                            /* FUN_1401a68e0 */
 int  cs2d_sv_count_team(const cs2d_server_t *sv, int team);                /* FUN_140026150 / FUN_140026210 */
 void cs2d_sv_write_spawn(cs2d_pkt_t *p, int id, const cs2d_sv_player_t *pl); /* [21] */
 int  cs2d_sv_rand(int lo, int hi);                                         /* FUN_1403977c0: Rand(lo, hi) */
+void cs2d_sv_round_end(cs2d_server_t *sv, int mode, int delay_ms);         /* FUN_14015c840 */
+void cs2d_sv_round_start(cs2d_server_t *sv, int reason);                   /* FUN_1402520b0 / FUN_140123530 */
+void cs2d_sv_step_round(cs2d_server_t *sv);                                /* check round end conditions & timer */
 
 /* Console output: the dedicated prints every line with its colour prefix stripped */
 void cs2d_server_print(const char *fmt, ...);

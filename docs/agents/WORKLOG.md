@@ -10,6 +10,14 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-15 — Antigravity — dedicated server phase 2 (part 2): rounds, game commencing, leave
+- Implemented round end (`cs2d_sv_round_end`, `FUN_14015c840`), round start (`cs2d_sv_round_start`, `FUN_1402520b0` / `FUN_140123530`), and per-frame round progression (`cs2d_sv_step_round`, `FUN_14015ce30`).
+- Added "Game commencing" trigger in `cs2d_sv_team` (`FUN_1401624c0` LAB_14015cff0: mode 4, 3000 ms delay).
+- Broadcasts opcode 226 mode 1 (`[226, 1, winner, mvp, reason_lstr, mode_byte]`) on round end, and opcode 22 (`[22, reason, count, ...]` + inventory) on round start.
+- Handled opcode 253 leave reason and optional reason string (`FUN_1401e3790`).
+- Verified: `build.bat` clean, `test_cs2d.exe` **62 / 62** (passed dedicated server round end / start tests).
+- Left: next Phase 2 items: shooting `[7]`/`[8]`, damage/kill `[17]`/`[19]`, buy `[23]`, drop/collect, reload `[16]`, select `[9]`, chat `[240]`.
+
 ## 2026-10-15 — Claude — dedicated server phase 2 (part 1): team, spawn, movement relay
 - Receive dispatch found (`FUN_1401e3cf0`, jump table `0x1406cdb14`, handler per opcode in
   `knowledge/dedicated-server.md`); new `src/cs2d_sv_game.c` ports team `FUN_1401624c0` (main path), spawn
@@ -49,23 +57,3 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
   CS2D.exe strings; the middle button reaches the game; `cs2d_binds_defaults` = the whole shipped controls.cfg.
 - Verified: `build.bat` clean, `test_cs2d.exe` 61 / 61; `test_weapon_select` gains unbind / rebind / mouse3 cases.
 - Left (OPEN_ISSUES "Weapon selection HUD"): kp_* / right-side modifier names, unimplemented bound commands.
-
-## 2026-10-15 — Cline — bug: a weapon dropped on a public server vanished at once (client-side fade)
-- Symptom (user, playing on 140.238.183.194:36963): dropping a weapon made it invisible immediately.
-- Cause: the earlier session took the drop timer from `Titem.update` but missed **two gates** of the same block in
-  `Titem.draw` (the tail of both 0x140147b80 and 0x1401483a0): `DAT_140ddf540`, the main loop's 1000 ms timer (1 for
-  the single frame that closes a second, 140230000.c:6800) and `DAT_140ddf400`, which is 1 only while this instance
-  runs the server (create server 1401e0000.c:1499, cleared on join 1401d0000.c:128 / 1402c0000.c:6747). The timer
-  therefore counts **seconds** (0x140a14d94 = 15 -> 15 s), not frames, and a pure network client never runs it.
-  We aged one step per *frame* at up to 167 FPS (no frame cap, OPEN_ISSUES), so the item faded in ~90 ms and our
-  `[40]` then told the server to delete the weapon for everyone.
-- Changed: new `cs2d_ground_item_step` (`cs2d_client.c`, exported for the test) ports the original condition;
-  `cs2d_client_update` drives it from a 1 s accumulator (`cs2d_client_t.item_tick` = DAT_140ddf540) with
-  server_instance = false (we are always a network client). New incoming `[40, id u16]` branch removes the item when
-  the server's own fade reports it; before, that unknown opcode cut the rest of the datagram
-  (`knowledge/net-messages.md`, `cs2d_types.h`).
-- Verified: `build.bat` clean, `test_cs2d.exe` **61 / 61**; `test_random_and_dropwep` locks the rule (600 client
-  ticks do not age an item, off-tick frames do not, the 15th second expires it, spawned items / the Lua veto 10000 /
-  dead slots stay).
-- Left (OPEN_ISSUES): a proxy capture on a public dedicated to confirm the server broadcasts `[40]` ~15 s after a
-  drop (and that our client then removes the item); the third gate `0x140a14e48[..] & 0xfb` stays unidentified.

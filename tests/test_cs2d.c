@@ -5991,7 +5991,6 @@ static bool test_server_join(void)
     bool spawn_ok = sp->alive && sp->item_count == 2 && sp->items[0] == 1 && sp->items[1] == 50 &&
                     sp->weapon == 1 && sp->money == 16000 && sp->health == 100 &&
                     ((int)sp->x - 16) % 32 == 0 && ((int)sp->y - 16) % 32 == 0;
-    cs2d_map_free(&sv.map);
     if (!spawn_ok) TEST_FAIL("Spawn", "items / weapon / money / tile centre");
     sp->x = 976; sp->y = 1360;
     p.pos = 0;
@@ -5999,8 +5998,18 @@ static bool test_server_join(void)
     wn = hex_bytes("15 01 d0 03 50 05 01 00 80 3e 02 01 32", want, sizeof(want));
     if (p.pos != wn || memcmp(p.buf, want, (size_t)wn) != 0) TEST_FAIL("[21] spawn", "differs from the original");
     TEST_PASS("Spawn: CT items 1 + 50, holds the USP, [21] equal to the original's");
+
+    /* Round end / Round start (phase 2) */
+    cs2d_sv_round_end(&sv, 2, 5000); /* CTs win */
+    if (sv.round_end != 2 || sv.round_end_delay != 5000) TEST_FAIL("round_end", "pending mode / delay not set");
+    cs2d_sv_round_start(&sv, 2);
+    if (sv.round_end != 0 || sv.score_ct != 1) TEST_FAIL("round_start", "scores not updated or round_end not cleared");
+    TEST_PASS("Dedicated server rounds: round_end 2 (CT win), score increment, round_start respawn");
+
+    cs2d_map_free(&sv.map);
     return true;
 }
+
 
 
 int main(void)

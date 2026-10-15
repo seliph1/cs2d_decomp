@@ -242,7 +242,18 @@ void cs2d_sv_team(cs2d_server_t *sv, int id, int team, int look)
             if ((int)secs <= sv->set.mp_postspawn) cs2d_sv_spawn(sv, id);
         }
     }
-    /* "Game commencing" (both teams filled for the first time -> round end 4 after 3000 ms) is the next step */
+
+    /* "Game commencing": when both teams have at least 1 player (or DM has >= 2) and no round end is pending (FUN_1401624c0 LAB_14015cff0) */
+    if (sv->round_end == 0) {
+        int t = cs2d_sv_count_team(sv, 1);
+        int ct = cs2d_sv_count_team(sv, 2);
+        if (sv_mode(sv)->respawn == 0) {
+            /* Standard mode: if t == 1 && ct == 1 (or 2 vs 0 / 0 vs 2), trigger round end 4 with 3000 ms */
+            if ((t == 1 && ct == 1) || (t == 2 && ct == 0) || (ct == 2 && t == 0)) {
+                cs2d_sv_round_end(sv, 4, 3000);
+            }
+        }
+    }
 }
 
 /* FUN_1401a68e0, once per server frame */
@@ -291,3 +302,174 @@ void cs2d_sv_relay_movement(cs2d_server_t *sv)
         pl->rot_flag = 0;
     }
 }
+
+/* FUN_14015c840: triggers a round end and broadcasts opcode 226 mode 1 (the end message banner) */
+void cs2d_sv_round_end(cs2d_server_t *sv, int mode, int delay_ms)
+{
+    if (mode < 0 || sv->round_end != 0) return;
+    sv->round_end = mode;
+    sv->round_end_delay = delay_ms;
+    sv->round_end_ms = cs2d_sv_now();
+
+    /* Find MVP player (kills * 2 + assists) or specific player based on mode (FUN_14015c080) */
+    int mvp_id = 0;
+    int best_score = -1;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_player_t *pl = &sv->players[i];
+        if (!pl->used || pl->team < 1) continue;
+        int pts = pl->score * 2 + pl->assists;
+        if (pts > best_score) {
+            best_score = pts;
+            mvp_id = i;
+        }
+    }
+
+    const char *reason_str = " - ";
+    switch (mode) {
+    case 1: case 2: case 0x16: reason_str = "for most eliminations"; break;
+    case 0xb:                  reason_str = "for escaping from the terrorists"; break;
+    case 0xc:                  reason_str = "for killing the VIP"; break;
+    case 0x14:                 reason_str = "for detonating the bomb"; break;
+    case 0x15:                 reason_str = "for defusing the bomb"; break;
+    case 0x1f:                 reason_str = "for rescuing most hostages"; break;
+    case 0x3c:                 reason_str = "for most infections"; break;
+    case 0x3d:                 reason_str = "for killing most zombies"; break;
+    default: break;
+    }
+
+    /* Broadcast opcode 226 mode 1: [226, 1, winner_team, mvp_id, text_lstr, reason_byte] */
+    int winner_team = (mode == 1) ? 1 : (mode == 2 || mode == 0xb || mode == 0x15) ? 2 : 0;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
+        if (!c || !sv->players[i].joined) continue;
+        cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+        cs2d_pkt_w_byte(p, 226);
+        cs2d_pkt_w_byte(p, 1);
+        cs2d_pkt_w_byte(p, (uint8_t)winner_team);
+        cs2d_pkt_w_byte(p, (uint8_t)mvp_id);
+        cs2d_pkt_w_lstr(p, reason_str);
+        cs2d_pkt_w_byte(p, (uint8_t)mode);
+    }
+}
+
+/* FUN_1402520b0 / FUN_140123530: start of a new round, respawning players and sending [22] */
+void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
+{
+    sv->round_end = 0;
+    sv->round_start_ms = cs2d_sv_now();
+
+    /* Update team scores according to round end reason (FUN_1402520b0 / cs2d_game_apply_round_reason) */
+    uint64_t bit = (reason >= 0 && reason <= 61) ? (1ULL << reason) : 0;
+    if (bit & 0x1004010040101000ULL) {
+        sv->score_t++;
+    } else if ((bit & 0x2008020080000804ULL) || reason == 21 || reason == 22) {
+        sv->score_ct++;
+    } else if (bit & 0x30ULL) {
+        sv->score_t = sv->score_ct = 0;
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            cs2d_sv_player_t *pl = &sv->players[i];
+            pl->score = pl->assists = pl->deaths = pl->mvp = 0;
+        }
+    }
+
+    /* Respawn all team players */
+    int count = 0;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_player_t *pl = &sv->players[i];
+        if (pl->used && pl->team >= 1) {
+            count++;
+            float x, y;
+            if (sv_pick_spawn(sv, i, &x, &y)) {
+                pl->x = x;
+                pl->y = y;
+            }
+            pl->health = 100;
+            pl->armor = 0;
+            pl->alive = true;
+            pl->move_flag = pl->rot_flag = 0;
+
+            const sv_mode_t *m = sv_mode(sv);
+            pl->item_count = 0;
+            const char *list = (pl->team == 1) ? m->items_t : m->items_ct;
+            for (const char *q = list; *q;) {
+                int t = atoi(q);
+                if (t > 0 && !sv_has_item(pl, t)) sv_give(pl, t);
+                while (*q && *q != ',') q++;
+                if (*q == ',') q++;
+            }
+            int melee = (pl->team == 1) ? m->melee_t : m->melee_ct;
+            if (!sv_has_item(pl, melee)) sv_give(pl, melee);
+            sv_best_weapon(sv, pl);
+        }
+    }
+
+    /* Send [22, round_reason u8, count u8] + count * 12-byte player records + recipient inventory */
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
+        if (!c || !sv->players[i].joined) continue;
+        cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+        cs2d_pkt_w_byte(p, 22);
+        cs2d_pkt_w_byte(p, (uint8_t)reason);
+        cs2d_pkt_w_byte(p, (uint8_t)count);
+
+        for (int q = 1; q <= CS2D_SV_MAX_PLAYERS; q++) {
+            cs2d_sv_player_t *pl = &sv->players[q];
+            if (!pl->used || pl->team < 1) continue;
+            cs2d_pkt_w_byte(p, (uint8_t)q);
+            cs2d_pkt_w_short(p, (uint16_t)(int)pl->x);
+            cs2d_pkt_w_short(p, (uint16_t)(int)pl->y);
+            float angle = pl->rot;
+            uint32_t angle_bits;
+            memcpy(&angle_bits, &angle, 4);
+            cs2d_pkt_w_int(p, (int32_t)angle_bits);
+            cs2d_pkt_w_byte(p, (uint8_t)pl->weapon);
+            cs2d_pkt_w_byte(p, (uint8_t)pl->armor);
+            cs2d_pkt_w_byte(p, (uint8_t)pl->special);
+        }
+
+        /* Inventory of the recipient */
+        cs2d_sv_player_t *recip = &sv->players[i];
+        cs2d_pkt_w_short(p, (uint16_t)recip->money);
+        cs2d_pkt_w_byte(p, (uint8_t)recip->item_count);
+        for (int k = 0; k < recip->item_count; k++) {
+            cs2d_pkt_w_byte(p, recip->items[k]);
+        }
+    }
+}
+
+/* Called every server tick to handle pending round end delay and standard win conditions (FUN_14015ce30) */
+void cs2d_sv_step_round(cs2d_server_t *sv)
+{
+    uint32_t now = cs2d_sv_now();
+    if (sv->round_end != 0) {
+        if (now - sv->round_end_ms >= (uint32_t)sv->round_end_delay) {
+            int reason = sv->round_end;
+            cs2d_sv_round_start(sv, reason);
+        }
+        return;
+    }
+
+    /* Standard win condition check: if all players of one team are dead (FUN_14015ce30) */
+    const sv_mode_t *m = sv_mode(sv);
+    if (m->respawn == 0) {
+        int t_total = cs2d_sv_count_team(sv, 1);
+        int ct_total = cs2d_sv_count_team(sv, 2);
+        if (t_total > 0 && ct_total > 0) {
+            int t_alive = 0, ct_alive = 0;
+            for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+                cs2d_sv_player_t *pl = &sv->players[i];
+                if (!pl->used || !pl->alive) continue;
+                if (pl->team == 1) t_alive++;
+                else if (pl->team == 2) ct_alive++;
+            }
+            if (t_alive == 0 && ct_alive == 0) {
+                cs2d_sv_round_end(sv, 3, 3000); /* Round draw */
+            } else if (t_alive == 0) {
+                cs2d_sv_round_end(sv, 2, 5000); /* CTs win */
+            } else if (ct_alive == 0) {
+                cs2d_sv_round_end(sv, 1, 5000); /* Terrorists win */
+            }
+        }
+    }
+}
+

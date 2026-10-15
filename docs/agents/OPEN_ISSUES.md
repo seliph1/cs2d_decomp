@@ -237,11 +237,11 @@ sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT 
   counters are ours (fps / bytes), `[253]` leave text, U.S.G.N. / serverlist (we never register: always offline).
 - **Phase 2 (in progress, 2026-10-15):** done: team choice (look 5 / auto team / random skin / balance refusal
   10-11), the `mp_postspawn` first spawn, spawn (`[21]` byte-equal), `[10]/[11]/[70]` input and the per-frame
-  relay `FUN_1401a68e0`, `[248]` join notice. Next, in order: "game commencing" + round end / round start
-  (`FUN_14015c080`, `[22]`, `[226]`), `[253]` leave text and item drop, shooting `[7]`/`[8]` (FUN_1401c8930) and
-  damage / kill `[17]`/`[19]`, buy `[23]` (FUN_1401cd710), drop / collect, reload `[16]`, select `[9]`, chat
-  `[240]`, spectate `[67]`/`[32]`, death and respawn timers per mode. Gaps inside what is done: position
-  validation `FUN_1401c99a0` + anti-speeder `FUN_1401ca500`, killing a living player who changes team
+  relay `FUN_1401a68e0`, `[248]` join notice, "game commencing" trigger, round end (`FUN_14015c840`, `[226]`),
+  round start (`FUN_1402520b0`, `[22]`), and `[253]` leave reason parsing. Next, in order: shooting `[7]`/`[8]`
+  (FUN_1401c8930) and damage / kill `[17]`/`[19]`, buy `[23]` (FUN_1401cd710), drop / collect, reload `[16]`,
+  select `[9]`, chat `[240]`, spectate `[67]`/`[32]`, death and respawn timers per mode. Gaps inside what is done:
+  position validation `FUN_1401c99a0` + anti-speeder `FUN_1401ca500`, killing a living player who changes team
   (`FUN_1401647d0`), the Lua `spawn` / `team` hooks, spectator aim relay `[70]-[72]`, mp_startmoney default
   (800 is not verified), team code 12 and the per-team `+0x2a0` limits.
 - **Phase 3:** console commands (`cs2d_netcode_codes.txt`, server.cfg cvars, rcon `[236]/[241]/[242]`).
