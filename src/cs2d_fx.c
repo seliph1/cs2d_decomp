@@ -119,9 +119,10 @@ void cs2d_fx_explosion(cs2d_fx_t *fx, float x, float y, float range)
     p->max_life = p->life = 0.6f;
     p->size     = range * 2.0f > 64.0f ? range * 2.0f : 64.0f;
     p->rot      = frand(fx) * 360.0f;
-    /* Tp.explosion (particles > 3, light on): Tp.CreateLight(x, y, 255, Rand(150, 255), 0 -> 35, 180, 5), an orange light
-     * of radius 180 shrinking 5 per frame. (The original skips it once explosion_count reaches 11: not tracked) */
-    cs2d_light_flash((int)x, (int)y, 255, 150 + (int)(frand(fx) * 106.0f), 35, 180.0f, 5.0f, 1.0f);
+    /* Tp.explosion (0x14011a500, particles > 3, light on): explosion_count += 5 first; while it is below 11,
+     * Tp.CreateLight(x, y, 255, Rand(150, 255), 0 -> 35, 180, 5), an orange light of radius 180 shrinking 5 per frame */
+    fx->explosion_count += 5;
+    if (fx->explosion_count < 11) cs2d_light_flash((int)x, (int)y, 255, 150 + (int)(frand(fx) * 106.0f), 35, 180.0f, 5.0f, 1.0f);
 }
 
 void cs2d_fx_breakable_break(cs2d_fx_t *fx, const cs2d_entity_t *e)
@@ -450,6 +451,57 @@ void cs2d_fx_snow_puff(cs2d_fx_t *fx, float x, float y, int count)
     }
 }
 
+void cs2d_fx_flare(cs2d_fx_t *fx, float x, float y, float r, float g, float b, float a, float sx, float rot, float fade)
+{
+    if (!fx || a <= 0.0f) return;
+    cs2d_fx_particle_t *p = alloc_particle(fx);
+    p->kind  = CS2D_FX_FLARE;
+    p->x     = x;
+    p->y     = y;
+    p->r = r; p->g = g; p->b = b;
+    p->alpha = a;
+    p->size  = sx;
+    p->rot   = rot;
+    p->drag  = -1.0f;                                     /* Does not move */
+    p->light_once = cs2d_light_active();
+    /* a -= fade * g_dt: gone after a / fade frames of 60 Hz */
+    p->max_life = p->life = fade > 0.0f ? a / (fade * 60.0f) : 1.0f;
+}
+
+void cs2d_fx_muzzle_flare(cs2d_fx_t *fx, float mx, float my, float angle_deg, bool silenced)
+{
+    if (!fx) return;
+    float x = mx + (float)((int)(frand(fx) * 5.0f) - 2), y = my + (float)((int)(frand(fx) * 5.0f) - 2);
+    float r = (230.0f + frand(fx) * 25.0f) / 255.0f, g = (150.0f + frand(fx) * 80.0f) / 255.0f, b = frand(fx) * 20.0f / 255.0f;
+    float a = 0.7f + frand(fx) * 0.2f;
+    float sx = silenced ? 0.1f + frand(fx) * 0.1f : 0.5f + frand(fx) * 0.5f;
+    cs2d_fx_flare(fx, x, y, r, g, b, a, sx, angle_deg, 0.3f);
+}
+
+void cs2d_fx_muzzle_light(cs2d_fx_t *fx, float mx, float my, float angle_deg, bool silenced)
+{
+    if (!fx) return;
+    cs2d_fx_muzzle_flare(fx, mx, my, angle_deg, silenced);
+    if (silenced) return;
+    int ox = (int)(frand(fx) * 5.0f) - 2, oy = (int)(frand(fx) * 5.0f) - 2;
+    cs2d_light_flash((int)((float)ox + mx), (int)((float)oy + my), 255, 255, 35, 100.0f, 25.0f, 0.7f);
+}
+
+void cs2d_fx_laser_light(cs2d_fx_t *fx, float mx, float my, int mode)
+{
+    if (!fx) return;
+    int r, g, b;
+    switch (mode) {
+        case 1:  r = 100 + (int)(frand(fx) * 156.0f); g = (int)(frand(fx) * 76.0f);         b = 0; break;
+        case 2:  r = 100 + (int)(frand(fx) * 156.0f); g = 100 + (int)(frand(fx) * 156.0f); b = 0; break;
+        case 3:  r = 0; g = (int)(frand(fx) * 76.0f); b = 100 + (int)(frand(fx) * 156.0f);          break;
+        default: r = (int)(frand(fx) * 51.0f);        g = 100 + (int)(frand(fx) * 156.0f); b = 0; break;
+    }
+    int ox = (int)(frand(fx) * 5.0f) - 2, oy = (int)(frand(fx) * 5.0f) - 2;
+    cs2d_light_flash((int)((float)ox + mx), (int)((float)oy + my), r < 35 ? 35 : r, g < 35 ? 35 : g, b < 35 ? 35 : b,
+                     100.0f, 5.0f, 1.0f);
+}
+
 void cs2d_fx_update(cs2d_fx_t *fx, float dt)
 {
     if (!fx) return;
@@ -466,12 +518,13 @@ void cs2d_fx_update(cs2d_fx_t *fx, float dt)
     int keep = 0;
     for (int i = 0; i < fx->count; i++) {
         cs2d_fx_particle_t *p = &fx->p[i];
+        if (p->light_once && p->queued) continue;   /* Tp 2 under the light engine: freed after its light sprite */
         p->life -= dt;
         if (p->life <= 0.0f) continue;
         p->x   += p->vx * dt;
         p->y   += p->vy * dt;
         p->rot += p->vrot * dt;
-        float drag = 1.0f - (p->drag > 0.0f ? p->drag : 2.5f) * dt; /* Debris slows down on the floor */
+        float drag = p->drag < 0.0f ? 1.0f : 1.0f - (p->drag > 0.0f ? p->drag : 2.5f) * dt; /* Debris slows down */
         if (drag < 0.0f) drag = 0.0f;
         p->vx *= drag;
         p->vy *= drag;

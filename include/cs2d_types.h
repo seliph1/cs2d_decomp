@@ -319,6 +319,14 @@ typedef struct {
     int                param2;       /* alias for int_settings[1] */
 } cs2d_entity_t;
 
+/* A tile changed at runtime by settile (Tcustomtile, scope 0x140a021c0): its map values before the first change */
+typedef struct {
+    uint16_t x, y;
+    uint8_t  old_tile;      /* Tcustomtile.oldvalue */
+    uint8_t  old_mod;       /* Tcustomtile.oldmodifier */
+    uint8_t  old_data[4];   /* Tcustomtile.olddata, in the tile_data layout */
+} cs2d_customtile_t;
+
 /* Map (exact structure from cs2d_spec_map_format.txt sections 1-5) */
 typedef struct {
     /* Section (1) Header */
@@ -373,6 +381,11 @@ typedef struct {
     uint8_t      *base_collision;        /* Tile-only collision; entity overlays are applied on top */
     uint8_t      *object_collision;      /* Building overlay (cs2d_dynobj.c), applied over the entities; 0 = none */
     uint8_t      *object_shadow;         /* 1 where a solid building casts a wall shadow (shadow map) */
+
+    /* Tcustomtile.list (0x140ddeb98): the tiles settile changed (cs2d_customtile.c) */
+    cs2d_customtile_t *custom_tiles;
+    uint32_t      custom_tile_count;
+    uint32_t      custom_tile_cap;
 } cs2d_map_t;
 
 /* Weapon / item lying on the ground (server: spawnitem 33, drop 24, collect 25) */

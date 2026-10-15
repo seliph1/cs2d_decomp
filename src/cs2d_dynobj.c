@@ -367,7 +367,7 @@ static void npc_attack(cs2d_dynobj_world_t *w, cs2d_dynobj_t *o, int pid, int ki
 {
     static const char *zm_attack[4] = { "sfx/player/zm_attack1.wav", "sfx/player/zm_attack2.wav",
                                         "sfx/player/zm_attack3.wav", "sfx/player/zm_attack4.wav" };
-    cs2d_dynobj_fx_t f = { 5, o->x, o->y, o->rot, false, NULL };
+    cs2d_dynobj_fx_t f = { 5, o->x, o->y, o->rot, false, NULL, 0 };
     switch (o->player) {
         case 1: o->rotvar = 40.0f; f.slash = true; f.sound = zm_attack[rand() % 4]; break;
         case 2: o->rotvar = 20.0f; f.slash = true; f.sound = "sfx/npc/headcrab_attack.wav"; break;
@@ -383,11 +383,12 @@ static void npc_attack(cs2d_dynobj_world_t *w, cs2d_dynobj_t *o, int pid, int ki
                 o->m_x = o->x;
                 o->m_y = o->y;
             } else if (kind == 2) {
-                o->upgrade = 0; /* Tdo.shoot (beam, weapon 0xf9) is not drawn */
+                o->upgrade = 0;
+                f.shot = 2;     /* Tdo.shoot(none, x, y, 0xf9, 40, style 2) */
                 f.sound = "sfx/npc/vortigaunt_ranged.wav";
             }
             break;
-        case 5: f.sound = "sfx/weapons/mp5.wav"; break; /* Tdo.shoot (weapon 0xf8) is not drawn */
+        case 5: f.sound = "sfx/weapons/mp5.wav"; f.shot = 1; break; /* Tdo.shoot(none, x, y, 0xf8, 5, style 0) */
         default: break;
     }
     if (fx) *fx = f;

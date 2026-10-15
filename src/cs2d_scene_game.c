@@ -849,6 +849,8 @@ static void shot_bullets(cs2d_client_t *client, const cs2d_player_t *pl, const c
             float r = a * 0.017453292519943295f;
             cs2d_fx_laser(&client->fx, pl->pos.x + sinf(r) * muzzle, pl->pos.y - cosf(r) * muzzle, hx, hy,
                           pl->weapon_mode[CS2D_WEP_LASER]);
+            cs2d_fx_laser_light(&client->fx, pl->pos.x + sinf(r) * muzzle, pl->pos.y - cosf(r) * muzzle,
+                                pl->weapon_mode[CS2D_WEP_LASER]);
         } else if (pl->current_weapon == CS2D_WEP_FLAMETHROWER) {
             /* Tshoot.Shoot style 3: flames along the path, no tracer, flash, case or ricochet */
             cs2d_fx_flame(&client->fx, pl->pos.x, pl->pos.y, a, sqrtf(ddx * ddx + ddy * ddy));
@@ -857,18 +859,10 @@ static void shot_bullets(cs2d_client_t *client, const cs2d_player_t *pl, const c
             bool hit_wall = (hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < reach - 1.0f);
             if (i == 0 && flash) {
                 cs2d_fx_shot(&client->fx, pl->pos.x, pl->pos.y, a, muzzle, hx, hy, hit_wall, shell);
-                /* Tshoot.Shoot 0x140205d9d (first pellet, particles > 3): Tp.CreateLight at the muzzle + Rand(-2, 2),
-                 * (255, 255, 0) raised to (255, 255, 35), radius 100 shrinking 25 per frame, then ChangeAlpha(0.7)
-                 * (0x140bd6cc0). Silenced
-                 * shots (style 4, Tpl.attack with the silencer on) light nothing */
                 bool silenced = cs2d_weapon_attack2_type(pl->current_weapon) == CS2D_ATTACK2_SILENCER &&
                                 cs2d_weapon_mode(pl) != 0;
-                if (!silenced) {
-                    float r = a * 0.017453292519943295f;
-                    int ox = rand() % 5 - 2, oy = rand() % 5 - 2;
-                    cs2d_light_flash((int)((float)ox + pl->pos.x + sinf(r) * muzzle),
-                                     (int)((float)oy + pl->pos.y - cosf(r) * muzzle), 255, 255, 35, 100.0f, 25.0f, 0.7f);
-                }
+                float r = a * 0.017453292519943295f;
+                cs2d_fx_muzzle_light(&client->fx, pl->pos.x + sinf(r) * muzzle, pl->pos.y - cosf(r) * muzzle, a, silenced);
             } else {
                 float r = a * 0.017453292519943295f;
                 cs2d_fx_tracer(&client->fx, pl->pos.x + sinf(r) * muzzle, pl->pos.y - cosf(r) * muzzle, a, hx, hy,
@@ -1402,8 +1396,32 @@ static void game_leave(cs2d_client_t *client)
 
 static void update_dynobjs(cs2d_client_t *client, float delta_time);
 
+/*
+ * The planted C4's beep (FUN_1402553d0, every frame): when its timer runs out, sfx/weapons/c4.wav at the bomb, a red
+ * Tp 2 flare (fade 0.1, sx 0.4) and with particles > 3 and the light engine on Tp.CreateLight(255, 0, 0 -> 35, 80, 20).
+ * Next beep by the seconds left r = c4timer - elapsed s: r > 3: r < 8 200 ms, < 12 400, < 16 750, < 20 1000, else
+ * 1500; r <= 3: 100 ms. (The radar blink Thud_radar_blink for T / spectators is not drawn.)
+ */
+static void bomb_beep(cs2d_client_t *client)
+{
+    if (!client->game.bomb_planted || client->game.c4_time <= 0.0f) {
+        client->bomb_beep_ms = 0;
+        return;
+    }
+    uint64_t now = SDL_GetTicks();
+    if (client->bomb_beep_ms > now) return;
+    float bx = client->game.bomb_pos.x, by = client->game.bomb_pos.y;
+    cs2d_sound_play_at("sfx/weapons/c4.wav", bx, by, 1.0f, 0);   /* 0x140a0d748 */
+    cs2d_fx_flare(&client->fx, bx, by, 1.0f, 0.0f, 0.0f, 1.0f, 0.4f, 0.0f, 0.1f);
+    cs2d_light_flash((int)bx, (int)by, 255, 35, 35, 80.0f, 20.0f, 1.0f);
+    int r = (int)ceilf(client->game.c4_time);
+    int next = r <= 3 ? 100 : r < 8 ? 200 : r < 12 ? 400 : r < 16 ? 750 : r < 20 ? 1000 : 1500;
+    client->bomb_beep_ms = now + (uint64_t)next;
+}
+
 static void game_update(cs2d_client_t *client, float delta_time)
 {
+    bomb_beep(client);
     /* Update game simulation; online the server runs the round rules and only players are advanced */
     if (client->connected) {
         for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
@@ -1698,6 +1716,9 @@ static void update_dynobjs(cs2d_client_t *client, float delta_time)
                 int hit = cs2d_ents_trace_shot(&client->ents, bx, by, o->rot, 300.0f, &hx, &hy);
                 float ddx = hx - bx, ddy = hy - by;
                 cs2d_fx_shot(&client->fx, bx, by, o->rot, 16.0f, hx, hy, hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < 299.0f, 1);
+                /* Tdo.shoot: Tshoot.c_offset 15 px ahead (the rotation's Rnd(-3, 3) is left out) */
+                double ra = (double)o->rot * 0.017453292519943295;
+                cs2d_fx_muzzle_light(&client->fx, bx + (float)sin(ra) * 15.0f, by - (float)cos(ra) * 15.0f, o->rot, false);
             }
         }
     }
@@ -2646,7 +2667,7 @@ static void render_item_hover(cs2d_client_t *client, int screen_w, int screen_h)
 }
 
 /* Lua images (Tdo 40) of one pass */
-static void render_images(cs2d_client_t *client, cs2d_img_pass_t pass, int screen_w, int screen_h)
+static cs2d_img_ctx_t image_ctx(cs2d_client_t *client, int screen_w, int screen_h)
 {
     const cs2d_map_t *map = &client->game.map;
     cs2d_img_ctx_t ctx = {
@@ -2661,6 +2682,12 @@ static void render_images(cs2d_client_t *client, cs2d_img_pass_t pass, int scree
         .tile_max = map->tile_count,
         .hudscale = client->net_hudscale
     };
+    return ctx;
+}
+
+static void render_images(cs2d_client_t *client, cs2d_img_pass_t pass, int screen_w, int screen_h)
+{
+    cs2d_img_ctx_t ctx = image_ctx(client, screen_w, screen_h);
     cs2d_render_dynobj_images(&client->dynobj, pass, &ctx);
 }
 
@@ -2689,6 +2716,19 @@ static void game_render(cs2d_client_t *client, int screen_w, int screen_h)
     uint64_t freq = SDL_GetPerformanceFrequency();
     uint64_t t0 = SDL_GetPerformanceCounter();
     cs2d_render_image_lights(&client->dynobj); /* <light> images (Tdo.iniimage) */
+    {
+        cs2d_img_ctx_t ictx = image_ctx(client, screen_w, screen_h);
+        cs2d_render_image_shadows(&client->dynobj, &ictx);
+    }
+    /* Tpro.draw_flying_shadow (0x1401483b0): flying projectiles of types 49, 51..54, 72, 73, 76 and 89 */
+    for (int i = 0; i < CS2D_MAX_PROJECTILES; i++) {
+        const cs2d_projectile_t *pr = &client->projectiles.projectiles[i];
+        if (!pr->active || pr->state != CS2D_PROJ_STATE_FLYING) continue;
+        int t = pr->type;
+        if (!((t >= 51 && t <= 54) || t == 72 || t == 49 || t == 73 || t == 76 || t == 89)) continue;
+        const cs2d_texture_t *tex = cs2d_render_get_projectile_texture((uint8_t)t);
+        if (tex) cs2d_light_add_day_shadow(true, tex, 0, 0, 0, pr->x, pr->y, pr->rot, 1.0f, 1.0f);
+    }
     /* Tpl.update (0x14021d7e0..): each living player's flashlight follows the player, offset by the recoil kick
      * (-recoil sin(rot), recoil cos(rot)) truncated, turned to (int)rot; off while dead or mp_flashlight != 1, and for
      * Terrorists in Zombies */

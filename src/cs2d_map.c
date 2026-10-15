@@ -70,6 +70,20 @@ static void stream_read_line(cs2d_stream_t *s, char *out_buf, size_t max_len)
     }
 }
 
+uint8_t cs2d_map_mode_collision(uint8_t mode)
+{
+    if (mode == CS2D_TILE_WALL || mode == CS2D_TILE_WALL_NOSHADOW || mode == CS2D_TILE_WALL_FLOORLEVEL) {
+        return 1; /* Solid wall (blocks movement & bullets) */
+    }
+    if (mode == CS2D_TILE_OBSTACLE || mode == CS2D_TILE_OBSTACLE_NOSHADOW) {
+        return 2; /* Obstacle (blocks movement, allows bullets) */
+    }
+    if (mode >= CS2D_TILE_DEADLY_NORMAL && mode <= CS2D_TILE_DEADLY_ABYSS) {
+        return 3; /* Deadly tile */
+    }
+    return 0;     /* Walkable floor */
+}
+
 /* Reconstructed directly from FUN_1400493d0 & FUN_140113d50 in cs2d_dedicated.exe */
 bool cs2d_map_load_file(cs2d_map_t *map, const char *filepath)
 {
@@ -222,16 +236,7 @@ bool cs2d_map_load_file(cs2d_map_t *map, const char *filepath)
             size_t idx = (size_t)y * (size_t)map->width + (size_t)x;
             map->tiles[idx] = t;
 
-            uint8_t mode = map->tile_modes[t];
-            if (mode == CS2D_TILE_WALL || mode == CS2D_TILE_WALL_NOSHADOW || mode == CS2D_TILE_WALL_FLOORLEVEL) {
-                map->collision[idx] = 1; /* Solid wall (blocks movement & bullets) */
-            } else if (mode == CS2D_TILE_OBSTACLE || mode == CS2D_TILE_OBSTACLE_NOSHADOW) {
-                map->collision[idx] = 2; /* Obstacle (blocks movement, allows bullets) */
-            } else if (mode >= CS2D_TILE_DEADLY_NORMAL && mode <= CS2D_TILE_DEADLY_ABYSS) {
-                map->collision[idx] = 3; /* Deadly tile */
-            } else {
-                map->collision[idx] = 0; /* Walkable floor */
-            }
+            map->collision[idx] = cs2d_map_mode_collision(map->tile_modes[t]);
         }
     }
 
@@ -434,6 +439,9 @@ void cs2d_map_free(cs2d_map_t *map)
     map->object_collision = NULL;
     free(map->object_shadow);
     map->object_shadow = NULL;
+    free(map->custom_tiles);
+    map->custom_tiles = NULL;
+    map->custom_tile_count = map->custom_tile_cap = 0;
     map->width = 0;
     map->height = 0;
     map->entity_count = 0;

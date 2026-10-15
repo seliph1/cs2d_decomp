@@ -38,6 +38,7 @@
 #include "cs2d_hostage.h"
 #include "cs2d_hudmen.h"
 #include "cs2d_sound.h"
+#include "cs2d_customtile.h"
 #include <zlib.h>
 #include <SDL3/SDL.h>
 
@@ -4200,6 +4201,32 @@ static bool light_case_ex(const char *map_name, int cx, int cy, const char *part
     return true;
 }
 
+/* Tp 2 flare (Tp.Create case 2, Tp.draw case 2) and Tp.explosion's explosion_count, with the light engine off */
+static bool test_fx_light_particles(void)
+{
+    printf("\n=== Testing the Tp 2 flare and explosion_count (cs2d_fx) ===\n");
+    static cs2d_fx_t fx;
+    cs2d_fx_clear(&fx);
+    /* C4 beep: red, a 1, fade 0.1 per 60 Hz frame -> 10 frames */
+    cs2d_fx_flare(&fx, 100.0f, 100.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.4f, 0.0f, 0.1f);
+    if (fx.count != 1 || fx.p[0].kind != CS2D_FX_FLARE || fx.p[0].light_once ||
+        fabsf(fx.p[0].max_life - 10.0f / 60.0f) > 1e-4f || fx.p[0].size != 0.4f) {
+        TEST_FAIL("Tp 2 flare", "red beep flare: 10 frames at sx 0.4, drawn in the world while the engine is off");
+    }
+    cs2d_fx_update(&fx, 9.5f / 60.0f);
+    if (fx.count != 1) TEST_FAIL("Tp 2 flare", "gone before a / fade frames");
+    cs2d_fx_update(&fx, 1.0f / 60.0f);
+    if (fx.count != 0) TEST_FAIL("Tp 2 flare", "still there after a / fade frames");
+    /* explosion_count: + 5 per explosion (the light only while < 11), and the flare does not move */
+    cs2d_fx_clear(&fx);
+    cs2d_fx_explosion(&fx, 50.0f, 50.0f, 100.0f);
+    cs2d_fx_explosion(&fx, 50.0f, 50.0f, 100.0f);
+    cs2d_fx_explosion(&fx, 50.0f, 50.0f, 100.0f);
+    if (fx.explosion_count != 15) TEST_FAIL("Tp.explosion", "explosion_count != 3 x 5");
+    TEST_PASS("Tp 2 flare lasts a / fade frames; explosion_count adds 5 per explosion");
+    return true;
+}
+
 static bool light_case(const char *map_name, int cx, int cy, const char *part)
 {
     return light_case_ex(map_name, cx, cy, part, false);
@@ -5093,6 +5120,137 @@ static bool test_sound(void)
     return true;
 }
 
+/* =========================================================================
+ * settile: [62] / [252,7,9] parsing, Tcustomtile.addcheck and the map update (cs2d_customtile.c)
+ * Bytes from a proxy capture of cs2d_dedicated.exe running tools/agent/lua/settile_probe.lua
+ * ========================================================================= */
+static bool test_settile(void)
+{
+    printf("\n[Test] settile (Tcustomtile, [62], [252,7,9])\n");
+
+    /* Command blend byte (FUN_140195d00), checked against the dedicated's messages */
+    if (cs2d_settile_blend("left", "2") != 14 || cs2d_settile_blend("topright", "1") != 1 ||
+        cs2d_settile_blend("top", "1") != 0 || cs2d_settile_blend("bottom", "3") != 20 ||
+        cs2d_settile_blend("bottomleft", "5") != 37 || cs2d_settile_blend("", "2") != 0 ||
+        cs2d_settile_blend("left", "0") != 0 || cs2d_settile_blend("Left", "2") != 8) {
+        TEST_FAIL("settile blend", "blenddir / blendtype to blend byte");
+    }
+
+    /* Live [62] messages of one datagram: settile 15 10 10 / 16 10 11 1 10 20 30 5 bottom 3 /
+     * 17 10 12 2 255 255 255 0 bottomleft 5 / 10 10 0 */
+    static const uint8_t live[] = {
+        0x3e, 0x0f, 0x00, 0x0a, 0x00, 0x0a, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00,
+        0x3e, 0x10, 0x00, 0x0a, 0x00, 0x0b, 0x01, 0x0a, 0x14, 0x1e, 0x05, 0x14,
+        0x3e, 0x11, 0x00, 0x0a, 0x00, 0x0c, 0x02, 0xff, 0xff, 0xff, 0x00, 0x25,
+        0x3e, 0x0a, 0x00, 0x0a, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00
+    };
+    cs2d_settile_t st[4];
+    int pos = 0;
+    for (int i = 0; i < 4; i++) {
+        int n = cs2d_settile_read(live, (int)sizeof(live), pos, &st[i]);
+        if (n != 12) TEST_FAIL("settile [62]", "message length");
+        pos += n;
+    }
+    if (st[1].x != 16 || st[1].y != 10 || st[1].tile != 11 || st[1].rot != 1 || st[1].r != 10 || st[1].g != 20 ||
+        st[1].b != 30 || st[1].overlay != 5 || st[1].blend != 20 || st[2].blend != 37 || st[3].tile != 0) {
+        TEST_FAIL("settile [62]", "fields");
+    }
+    /* Short form (fewer than 6 bytes after the tile): defaults */
+    static const uint8_t shortmsg[] = { 0x3e, 0x02, 0x00, 0x03, 0x00, 0x07, 0x01, 0x02 };
+    cs2d_settile_t sh;
+    if (cs2d_settile_read(shortmsg, (int)sizeof(shortmsg), 0, &sh) != 6 || sh.x != 2 || sh.y != 3 || sh.tile != 7 ||
+        sh.rot != 0 || sh.r != 255 || sh.blend != 0 || cs2d_settile_read(shortmsg, 5, 0, &sh) != -1) {
+        TEST_FAIL("settile [62]", "short form");
+    }
+    if (cs2d_customtile_modifier(&st[1]) != 0xc1 || cs2d_customtile_modifier(&st[2]) != 0x42 ||
+        cs2d_customtile_modifier(&st[0]) != 0x00) {
+        TEST_FAIL("settile modifier", "rotation / 0x40 blend / 0x80 color bits");
+    }
+
+    /* Join snapshot section 9 (newest first): count 5, {x, y, tile, rot, r, g, b, overlay, blend} */
+    static const uint8_t snap[] = {
+        0x05,
+        0x0e, 0x00, 0x0a, 0x00, 0x09, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00,
+        0x0d, 0x00, 0x0a, 0x00, 0x08, 0x03, 0x00, 0x80, 0xff, 0x04, 0x01,
+        0x0c, 0x00, 0x0a, 0x00, 0x07, 0x02, 0xff, 0xff, 0xff, 0x03, 0x0e,
+        0x0b, 0x00, 0x0a, 0x00, 0x06, 0x01, 0xff, 0x00, 0x00, 0x00, 0x00,
+        0x0a, 0x00, 0x0a, 0x00, 0x05, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00
+    };
+    static cs2d_map_t m;
+    if (!cs2d_ed_new_map(&m, 20, 12, "cs2dnorm.bmp")) TEST_FAIL("settile", "new map failed");
+    m.tile_count = 20;
+    m.tile_modes[5] = CS2D_TILE_WALL;
+    m.tile_modes[6] = CS2D_TILE_OBSTACLE;
+    cs2d_customtile_batch_t b;
+    int bounds[4];
+    cs2d_customtile_begin(&b);
+    for (int k = 0; k < snap[0]; k++) {
+        const uint8_t *r = &snap[1 + k * 11];
+        cs2d_settile_t t;
+        cs2d_settile_defaults(&t, r[0] | (r[1] << 8), r[2] | (r[3] << 8), r[4]);
+        t.rot = r[5]; t.r = r[6]; t.g = r[7]; t.b = r[8]; t.overlay = r[9]; t.blend = r[10];
+        cs2d_customtile_addcheck(&m, &b, &t);
+    }
+    uint32_t solid = m.entity_solid_version;
+    if (!cs2d_customtile_end(&m, &b, bounds) || bounds[0] != 9 || bounds[1] != 9 || bounds[2] != 15 ||
+        bounds[3] != 11 || m.entity_solid_version == solid) {
+        TEST_FAIL("settile batch", "update bounds (changed tiles plus one) or light version");
+    }
+    size_t i10 = 10 * 20 + 10, i11 = i10 + 1, i12 = i10 + 2, i13 = i10 + 3, i14 = i10 + 4;
+    if (m.tiles[i10] != 5 || m.collision[i10] != 1 || m.tiles[i11] != 6 || m.collision[i11] != 2 ||
+        m.modifiers[i11] != 0x81 || m.tile_data[i11 * 4] != 255 || m.tile_data[i11 * 4 + 1] != 0 ||
+        m.modifiers[i12] != 0x42 || m.tile_data[i12 * 4 + 3] != 14 || m.modifiers[i13] != 0xc3 ||
+        m.modifiers[i14] != 0x00 || m.tiles[i14] != 9 || m.custom_tile_count != 5) {
+        TEST_FAIL("settile apply", "tile, modifier, color / blend data or collision");
+    }
+    const cs2d_customtile_t *c = cs2d_customtile_get(&m, 12, 10);
+    if (!c || c->old_tile != 0 || c->old_mod != 0 || cs2d_customtile_get(&m, 15, 10)) {
+        TEST_FAIL("settile list", "Tcustomtile.get");
+    }
+
+    /* Back to the map values ("settile 10 10 0"): the entry goes, the wall collision too */
+    cs2d_settile_t back;
+    cs2d_settile_defaults(&back, 10, 10, 0);
+    cs2d_customtile_begin(&b);
+    cs2d_customtile_addcheck(&m, &b, &back);
+    if (!cs2d_customtile_end(&m, &b, bounds) || m.tiles[i10] != 0 || m.collision[i10] != 0 ||
+        m.custom_tile_count != 4 || cs2d_customtile_get(&m, 10, 10)) {
+        TEST_FAIL("settile restore", "the entry of a tile set back to its map values stays");
+    }
+    /* A map tile without a Tmap_d set to itself still gets an entry (Tcustomtile.add) */
+    cs2d_settile_t same;
+    cs2d_settile_defaults(&same, 3, 3, 0);
+    cs2d_customtile_begin(&b);
+    cs2d_customtile_addcheck(&m, &b, &same);
+    if (!cs2d_customtile_end(&m, &b, bounds) || !cs2d_customtile_get(&m, 3, 3)) {
+        TEST_FAIL("settile same", "no entry for a tile without map data");
+    }
+    /* A colored map tile set to the same values changes nothing */
+    size_t i0 = 0;
+    m.modifiers[i0] = 0x80;
+    m.tile_data[0] = 10; m.tile_data[1] = 20; m.tile_data[2] = 30; m.tile_data[3] = 2;
+    cs2d_settile_t col;
+    cs2d_settile_defaults(&col, 0, 0, 0);
+    col.r = 10; col.g = 20; col.b = 30; col.overlay = 2;
+    cs2d_customtile_begin(&b);
+    cs2d_customtile_addcheck(&m, &b, &col);
+    /* Out of range: tile above the last frame, position outside the map */
+    cs2d_settile_t bad;
+    cs2d_settile_defaults(&bad, 1, 1, 21);
+    cs2d_customtile_addcheck(&m, &b, &bad);
+    cs2d_settile_defaults(&bad, 20, 1, 1);
+    cs2d_customtile_addcheck(&m, &b, &bad);
+    if (cs2d_customtile_end(&m, &b, bounds) || m.tiles[20 + 1] != 0) {
+        TEST_FAIL("settile no-op", "an unchanged or out of range settile updated the map");
+    }
+    cs2d_customtile_clear(&m);
+    if (m.custom_tile_count != 0 || m.tiles[i11] != 6) TEST_FAIL("settile clear", "list.Clear touched the tiles");
+    cs2d_map_free(&m);
+
+    TEST_PASS("settile: [62] / [252,7,9] layouts, blend byte, addcheck entries, collision update");
+    return true;
+}
+
 int main(void)
 {
     printf("============================================================\n");
@@ -5100,7 +5258,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 53;
+    int total = 55;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -5143,6 +5301,7 @@ int main(void)
     if (test_tile_blending()) passed++;
     if (test_hud_action_progress_bar()) passed++;
     if (test_light_engine()) passed++;
+    if (test_fx_light_particles()) passed++;
     if (test_image_decode()) passed++;
     if (test_sprite_atlas_packer()) passed++;
     if (test_new_game_maplist()) passed++;
@@ -5155,6 +5314,7 @@ int main(void)
     if (test_sound()) passed++;
     if (test_weapon_modes()) passed++;
     if (test_special_items()) passed++;
+    if (test_settile()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

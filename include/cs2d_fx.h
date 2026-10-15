@@ -28,7 +28,8 @@ typedef enum {
     CS2D_FX_SPARKLE    = 10, /* Bright flare sparkle */
     CS2D_FX_BLOOD      = 11, /* Gut bomb blood drop / splat */
     CS2D_FX_SNOW       = 12, /* Snowball snow puff */
-    CS2D_FX_LASER      = 13  /* Laser beam: Tp.CreateLine width 3 in the laser colour */
+    CS2D_FX_LASER      = 13, /* Laser beam: Tp.CreateLine width 3 in the laser colour */
+    CS2D_FX_FLARE      = 14  /* Tp type 2: flare3 additive (muzzle flare, C4 beep, flashbang) */
 } cs2d_fx_kind_t;
 
 typedef struct {
@@ -43,6 +44,9 @@ typedef struct {
     float          r, g, b;
     int            frame;      /* Fragment frame / tile index */
     int            quarter;    /* Tile part: 0 TL, 1 TR, 2 BL, 3 BR */
+    float          alpha;      /* Flare: start alpha (Tp.a), drawn x life / max_life */
+    bool           light_once; /* Flare made while the light engine runs: one frame of light sprite, then freed */
+    bool           queued;     /* light_once flare already handed to the light engine (cs2d_render_fx) */
 } cs2d_fx_particle_t;
 
 #define CS2D_FX_MAX_SHELLS 64
@@ -53,6 +57,7 @@ typedef struct cs2d_fx_s {
     cs2d_fx_particle_t shells[CS2D_FX_MAX_SHELLS]; /* Ring buffer: cases stay on the floor */
     int                shell_next;
     uint32_t           seed;
+    int                explosion_count;   /* Tp.explosion_count: + 5 per explosion, - 1 per Tp.draw call (8 a frame) */
 } cs2d_fx_t;
 
 void cs2d_fx_clear(cs2d_fx_t *fx);
@@ -116,6 +121,30 @@ void cs2d_fx_fire_puff(cs2d_fx_t *fx, float x, float y, float size);
 void cs2d_fx_sparkle(cs2d_fx_t *fx, float x, float y, float r, float g, float b);
 void cs2d_fx_blood_splat(cs2d_fx_t *fx, float x, float y, int count);
 void cs2d_fx_snow_puff(cs2d_fx_t *fx, float x, float y, int count);
+
+/*
+ * Tp type 2 (Tp.Create 0x14004ac20 case 2, Tp.draw 0x140263cc0 case 2): gfx/sprites/flare3.bmp, additive, rotation rot,
+ * scale sx, color (r, g, b) 0..1, alpha a fading by fade per 60 Hz frame. While the light engine runs it is not drawn
+ * in the world: for one frame it is a light sprite (TLightingSprite.DrawSprite flare3 in its color x a), then freed.
+ */
+void cs2d_fx_flare(cs2d_fx_t *fx, float x, float y, float r, float g, float b, float a, float sx, float rot, float fade);
+/* Tshoot.Shoot's muzzle flare (first pellet of style 0 / 4): Tp 2 at the muzzle + Rand(-2, 2) with the Tp.Create
+ * colors Rand(230, 255), Rand(150, 230), Rand(0, 20), fade 0.3, a Rnd(0.7, 0.9), sx Rnd(0.5, 1) (silenced: Rnd(0.1, 0.2)) */
+void cs2d_fx_muzzle_flare(cs2d_fx_t *fx, float mx, float my, float angle_deg, bool silenced);
+
+/*
+ * Tshoot.Shoot's muzzle effects of a style 0 / 4 shot's first pellet at the muzzle (mx, my): the Tp 2 flare, then with
+ * particles > 3 and the light engine on Tp.CreateLight at the muzzle + Rand(-2, 2), (255, 255, 0) raised to (255, 255,
+ * 35), radius 100 shrinking 25 per frame, and ChangeAlpha(0.7) (0x140205d9d, 0x140bd6cc0). Silenced shots (style 4)
+ * get a small flare and no light. Players, turrets (Tdo.shoot weapon 0xfd) and NPC soldiers (0xf8) alike.
+ */
+void cs2d_fx_muzzle_light(cs2d_fx_t *fx, float mx, float my, float angle_deg, bool silenced);
+/*
+ * Tshoot.Shoot style 2 (laser, 0x140208735..0x1402057e9): a light at the muzzle + Rand(-2, 2) in the color of the beam's
+ * last glow particle (Tp 0xe: mode 0 (0..50, 100..255, 0), 1 (100..255, 0..75, 0), 2 (100..255, 100..255, 0),
+ * 3 (0, 0..75, 100..255)), channels raised to 35, radius 100 shrinking 5 per frame
+ */
+void cs2d_fx_laser_light(cs2d_fx_t *fx, float mx, float my, int mode);
 
 void cs2d_fx_update(cs2d_fx_t *fx, float dt);
 

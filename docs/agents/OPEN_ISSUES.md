@@ -30,7 +30,7 @@ the same one.
   compared with the original; texts are cleared on map load (original reset point not checked).
 - **Gen_* entities (2026-10-13, `src/cs2d_gen.c`):** not screenshot-compared with CS2D.exe. Missing: wind on Tp 22 / 0x20 (not spawned by us), screen shake
   from explosions / Lua (only Info_Quake feeds `gen.shake`),
-  the FOW hiding (`FUN_140146fd0`) and the lighting sprites (`TLightingSprite::DrawSprite` when DAT_140ddf185).
+  the FOW hiding (`FUN_140146fd0`). Light sprites of Tp 3 / 19 / 20 / 21 are done (2026-10-15).
   Settings gating rain / snow / effects (DAT_140a1b068, 140a1b05c, 140ddf540) are assumed on, "particles" = 4.
   Thunder decoded as a 10..30 *frame* countdown (assembly 0x14027525b), which seems very frequent: verify on the
   original. smokepuff masks (mode 3) are our choice. Spawns follow 60 Hz, the original spawns per rendered frame.
@@ -210,15 +210,16 @@ the same one.
     for movement, kill rewards and `mp_building_limit` / `mp_building_price` overrides.
   - `g_prop_class[cellprop] == 1` is approximated by our collision 0; the team-game table `0x140a015d0` is assumed
     (every mode but Deathmatch) and the respawn-mode table `0x1409f57b8` as modes 1..4.
-  - `[252,7,9]` custom tiles (Tcustomtile) are skipped; `[252,7,11]` weapon settings are not read.
+  - `[252,7,11]` weapon settings are not read.
 - **CTF:** take / drop / return messages and the carried flag are done; capture messages (0589 / 0590), scores (`[64]`)
   and the return money bonus are not. Dropped ground items have no random rotation (Titem.add Rnd(360)). The draw order
   of the base / carried flag over the walls is from a screenshot, not from the code.
 - **Light engine, not reconstructed** (KNOWLEDGE "Light engine"; what exists matches the original call for call):
-  - Done 2026-10-14: flashlights, light particles of firearm shots, explosions and flashbangs (knowledge "Light pool").
-    Still missing: the light particles of the lightning / laser (style 6) / turret / flamethrower shots and alarms,
-    `Tp.explosion`'s explosion_count cap, light sprites of particles, `TSparkle`, projectiles and buildings (`Tdo`), the
-    shadows of buildings (`FUN_14025f0e0`) and of flying projectiles (`Tpro.draw_flying_shadow`).
+  - Done 2026-10-15: flashlights, every Tshoot light, C4 beep, explosion cap, Tp 2 flares, particle / building / Lua
+    image light sprites, Lua image and flying projectile day shadows (knowledge "Light pool" ff.). Approximations:
+    our fx particles are not a Tp port, so their light sprites mirror our sizes; the Vortigaunt beam color (mode 0)
+    and NPC shot spread are assumed; images on physics objects keep no shadow; the C4 radar blink is not drawn.
+    `FUN_14025f0e0` / `draw_flying_shadow` are not covered by the emulator (stubbed), only by eye.
   - Flashlights: `Tpl.fog` (FOW-hidden players) does not switch them off; the flare1 on the player skips the per-frame
     mp_flashlight / Zombies check (the flag is only set when they pass); the `ChangeRotation` argument (xmm9) is
     assumed to be Tpl.rot read at 0x14021d185; `FUN_140146fd0` (FOW) does not hide muzzle lights.
@@ -302,3 +303,8 @@ of scope, and this is *not* the Wasm port — the phases just happen to be the s
 - **Original + our client, one session:** not re-run after the latest join/leave fix (the session ended
   in a BSOD). Run `twoplayer_probe.lua` with the original firing next to our client and check the remote
   shot effects on screen.
+- **settile (2026-10-15, `cs2d_customtile.c`):** bytes and Lua results verified on the dedicated; the look of changed
+  tiles is not screenshot-compared with CS2D.exe. `Ttileblend.updatetile` clearing the 0x40 flag next to a same tile is
+  still not stored (we test it at draw time), so addcheck's "already like this" test can differ for such tiles. The
+  advanced radar image (`s_minimap_full`) keeps the map's tiles. A cut `[252,7,9]` prints the error but does not abort
+  the join (the original disconnects).

@@ -65,6 +65,20 @@ void cs2d_light_draw_buffer(void);  /* DrawLayer2: the light buffer, shade blend
  */
 void cs2d_light_add_sprite(bool floor, const cs2d_texture_t *tex, float hx, float hy, float x, float y, float sx, float sy,
                            int r, int g, int b, float rot, float alpha);
+/* A light sprite of one cell_w x cell_h frame of a sheet (0 = the whole texture), midhandled, at world (x, y): the
+ * particles of Tp.draw / TSparkle.draw (explosion frames, glow dots, flares, smoke puffs) */
+void cs2d_light_add_sprite_frame(const cs2d_texture_t *tex, int cell_w, int cell_h, int frame, float x, float y,
+                                 float sx, float sy, int r, int g, int b, float rot, float alpha);
+/* ObstacleShadow2 of one frame of a sheet (Lua images, FUN_14025eb80), midhandled, at screen (x, y) */
+void cs2d_light_add_obstacle_frame(const cs2d_texture_t *tex, int cell_w, int cell_h, int frame, float x, float y,
+                                   float sx, float sy, float rot);
+/*
+ * A black silhouette in the day shadows at world (x, y), midhandled; submit before cs2d_light_frame. projectile false:
+ * a Lua image's shadow (FUN_14025f0e0: x, y already moved by the shadow offset; transform rot, sx, sy); true: a flying
+ * projectile (Tpro.draw_flying_shadow: 3 px lower right, scaled by the buffer, half again for images of 64 px or more)
+ */
+void cs2d_light_add_day_shadow(bool projectile, const cs2d_texture_t *tex, int cell_w, int cell_h, int frame, float x,
+                               float y, float rot, float sx, float sy);
 void cs2d_light_add_obstacle(const cs2d_texture_t *tex, float hx, float hy, float x, float y, float sx, float sy, float rot);
 /* One part of a player's silhouette in the day shadows (FUN_140112340: armor, held weapon, bomb / kit, body; midhandled,
  * black, 4 px away from the sun), at screen (x, y) for this frame's camera; submit before cs2d_light_frame */

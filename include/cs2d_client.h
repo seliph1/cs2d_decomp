@@ -230,6 +230,7 @@ struct cs2d_client {
     char                net_server_name[64];
     int                 net_sv_fow;        /* sv_fow from [252,6] (enables the spectator "Fog" button) */
     int                 net_sv_gamemode;   /* sv_gamemode from [252,6]: 0 Normal, 1 Deathmatch, 2 Team DM, 3 Construction, 4 Zombies */
+    uint64_t            bomb_beep_ms;      /* Next planted C4 beep (0x140a1afc8 timer), 0 = beep now */
     int                 net_flashlight;    /* mp_flashlight (0x140a14e10[1], [252,6] / [237,14]): 1 = players may switch theirs on */
     int                 net_hovertext;     /* mp_hovertext (0x140a14e00[1], [252,6] / [237,16]): 1|2 players, 4 hostages, 8 buildings, 16 items */
     uint8_t             net_supply_items[255]; /* mp_supply_items (0x140a14e28[1], [252,6] / [237,11]): one item id per char */

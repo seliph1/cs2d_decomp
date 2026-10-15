@@ -64,6 +64,7 @@ Our client must be able to play on the original dedicated server without the ser
 | `src/cs2d_fx.c` | Cosmetic effects: breakable debris, explosions, tracer, muzzle flash, shells |
 | `src/cs2d_gen.c` | Gen_Particles / Gen_Sprites / Gen_Weather / Gen_FX particles (Te.draw pass 2 + Tp types), Info_NoWeather, thunder flash |
 | `src/cs2d_dynobj.c` | Dynamic objects (`Tdo`): buildings, their messages and snapshot, collision overlay, build rules |
+| `src/cs2d_customtile.c` | settile (`Tcustomtile`): `[62]`, join section `[252,7,9]`, tile / modifier / color / blend changes and the map update |
 | `src/cs2d_tilefx.c` | Info_TileFX frame generation (scroll / noise / wave, `Ttilefx.CreateTileFX`) |
 | `src/cs2d_serverlist.c` | Server browser (Find Servers): server list, `svl.cache`, info/ping queries, LAN scan |
 | `src/cs2d_editor.c` | Map editor model: brush / modifier byte, painting, tile properties and `.inf`, entity tables |

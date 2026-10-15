@@ -1222,6 +1222,50 @@ static void draw_sprites(bool floor)
     s_sprite_count[k] = 0;
 }
 
+/* Day buffer silhouettes queued with the world position: the Lua images' shadows (FUN_14025f0e0, one per Tdo in
+ * GenerateDayBuffer after the players) and the flying projectiles' (Tpro.draw_flying_shadow) */
+#define DAY_SHADOW_MAX 256
+typedef struct {
+    int   img, frame;
+    float x, y, rot, sx, sy;
+} light_day_shadow_t;
+
+static light_day_shadow_t s_day_shadows[2][DAY_SHADOW_MAX];
+static int s_day_shadow_count[2];
+
+/* FUN_14025f0e0 -> FUN_14025eb80 with the image's color and blend zeroed and alpha 1: black, alpha blend, transform
+ * (rot, scalex, scaley) at the world position + shadow - the camera (not divided by the buffer scale) */
+static void draw_image_shadows(void)
+{
+    for (int i = 0; i < s_day_shadow_count[0]; i++) {
+        const light_day_shadow_t *d = &s_day_shadows[0][i];
+        m2d_transform(d->rot, d->sx, d->sy);
+        m2d_color(0, 0, 0);
+        m2d_alpha(1.0f);
+        m2d_blend(3);
+        m2d_image(d->img, d->x - L.cam_x, d->y - L.cam_y, d->frame);
+    }
+    s_day_shadow_count[0] = 0;
+}
+
+/* Tpro.draw_flying_shadow (0x1401483b0): alpha blend in the current color, transform (rot, s, s) at
+ * ((x + 3 - camx) * p1, (y + 3 - camy) * p1); s = p1, or p1 * 0.5 * p1 for an image 64 px or taller */
+static void draw_projectile_shadows(float p1)
+{
+    if (s_day_shadow_count[1] == 0) return;
+    m2d_blend(3);
+    m2d_scale(p1, p1);
+    for (int i = 0; i < s_day_shadow_count[1]; i++) {
+        const light_day_shadow_t *d = &s_day_shadows[1][i];
+        float s = d->sx >= 64.0f ? p1 * 0.5f * p1 : p1;
+        m2d_transform(d->rot, s, s);
+        m2d_image(d->img, (d->x + 3.0f - L.cam_x) * p1, (d->y + 3.0f - L.cam_y) * p1, d->frame);
+    }
+    m2d_rotation(0.0f);
+    m2d_scale(1.0f, 1.0f);
+    s_day_shadow_count[1] = 0;
+}
+
 /* ObstacleShadow2 list (0x140dde178): images added white into the day buffer, so what they cover is not shaded */
 #define OBSTACLE_MAX 1024
 typedef struct {
@@ -1639,8 +1683,11 @@ static void generate_day_buffer(void)
         else draw_player_shadows();
     }
     s_part_count = 0;
+    draw_image_shadows();
     m2d_alpha(1.0f);
+    /* The emulator stubs Tpro.draw_flying_shadow: a trace prints a marker in its place */
     m2d_marker("projectileshadows");
+    draw_projectile_shadows(1.0f / L.scale_night);
     m2d_alpha(1.0f);
     int row0 = cty - 1 < 0 ? 0 : cty - 1;
     {
@@ -2278,6 +2325,7 @@ void cs2d_light_load_map(const cs2d_map_t *map)
     s_sprite_count[0] = s_sprite_count[1] = 0;
     s_obstacle_count = 0;
     s_part_count = 0;
+    s_day_shadow_count[0] = s_day_shadow_count[1] = 0;
     s_flash_count = 0;   /* Tp.freetype(0x1f) */
     for (int i = 0; i < CS2D_MAX_PLAYERS; i++) s_flashlight[i] = -1;
     if (!map || !map->tiles || map->width == 0 || map->height == 0) return;
@@ -2534,6 +2582,15 @@ void cs2d_light_add_sprite(bool floor, const cs2d_texture_t *tex, float hx, floa
     queue_sprite(floor, ext_image(tex, hx, hy), x, y, sx, sy, r, g, b, rot, alpha, 0);
 }
 
+void cs2d_light_add_sprite_frame(const cs2d_texture_t *tex, int cell_w, int cell_h, int frame, float x, float y,
+                                 float sx, float sy, int r, int g, int b, float rot, float alpha)
+{
+    if (!cs2d_light_active() || !tex) return;
+    float fw = (float)(cell_w ? cell_w : tex->width), fh = (float)(cell_h ? cell_h : tex->height);
+    queue_sprite(false, ext_image_cells(tex, fw * 0.5f, fh * 0.5f, cell_w, cell_h), x, y, sx, sy, r, g, b, rot, alpha,
+                 frame);
+}
+
 void cs2d_light_add_player_part(const cs2d_texture_t *tex, int cell_w, int cell_h, int frame, float x, float y,
                                 float rot, float scale)
 {
@@ -2544,6 +2601,34 @@ void cs2d_light_add_player_part(const cs2d_texture_t *tex, int cell_w, int cell_
     light_part_t *pt = &s_parts[s_part_count++];
     pt->img = img; pt->frame = frame;
     pt->x = x; pt->y = y; pt->rot = rot; pt->sx = scale; pt->sy = scale;
+}
+
+void cs2d_light_add_day_shadow(bool projectile, const cs2d_texture_t *tex, int cell_w, int cell_h, int frame, float x,
+                               float y, float rot, float sx, float sy)
+{
+    int k = projectile ? 1 : 0;
+    if (!cs2d_light_active() || L.cfg.mapshadows <= 1 || !tex || s_day_shadow_count[k] >= DAY_SHADOW_MAX) return;
+    float fw = (float)(cell_w ? cell_w : tex->width), fh = (float)(cell_h ? cell_h : tex->height);
+    int img = ext_image_cells(tex, fw * 0.5f, fh * 0.5f, cell_w, cell_h);
+    if (img < 0) return;
+    light_day_shadow_t *d = &s_day_shadows[k][s_day_shadow_count[k]++];
+    d->img = img; d->frame = frame;
+    d->x = x; d->y = y; d->rot = rot;
+    /* A projectile keeps its image height in sx for the 64 px test */
+    d->sx = projectile ? fh : sx;
+    d->sy = sy;
+}
+
+void cs2d_light_add_obstacle_frame(const cs2d_texture_t *tex, int cell_w, int cell_h, int frame, float x, float y,
+                                   float sx, float sy, float rot)
+{
+    if (!cs2d_light_active() || L.cfg.mapshadows <= 1 || !tex || s_obstacle_count >= OBSTACLE_MAX) return;
+    float fw = (float)(cell_w ? cell_w : tex->width), fh = (float)(cell_h ? cell_h : tex->height);
+    int img = ext_image_cells(tex, fw * 0.5f, fh * 0.5f, cell_w, cell_h);
+    if (img < 0) return;
+    light_obstacle_t *o = &s_obstacles[s_obstacle_count++];
+    o->img = img; o->frame = frame;
+    o->x = x; o->y = y; o->sx = sx; o->sy = sy; o->rot = rot;
 }
 
 void cs2d_light_add_obstacle(const cs2d_texture_t *tex, float hx, float hy, float x, float y, float sx, float sy, float rot)

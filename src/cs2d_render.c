@@ -2143,6 +2143,63 @@ static void mark_shadow_region_dirty(int min_tx, int min_ty, int max_tx, int max
 }
 
 /*
+ * Effective tile modes and heights of tiles [x0..x1, y0..y1] (inclusive): the tile's mode and custom height
+ * (0x1401414b4..0x1401415c0), overridden by active Func_DynWall / Env_Breakable, then by solid buildings
+ */
+static void shadow_eff_region(const cs2d_map_t *map, int x0, int y0, int x1, int y1)
+{
+    for (int y = y0; y <= y1; y++) {
+        for (int x = x0; x <= x1; x++) {
+            size_t idx = (size_t)y * map->width + (size_t)x;
+            uint8_t t = map->tiles[idx];
+            s_shadow_sys.eff_modes[idx] = map->tile_modes[t];
+            s_shadow_sys.eff_heights[idx] = (map->save_tile_heights != 0 && map->tile_heights[t] > 0) ? map->tile_heights[t] : 0;
+        }
+    }
+
+    /* Override effective tile modes with active Func_DynWall and Env_Breakable */
+    for (uint32_t i = 0; i < map->entity_count; i++) {
+        const cs2d_entity_t *e = &map->entities[i];
+        if (map->entity_state[i]) continue;
+        if (e->x < x0 || e->y < y0 || e->x > x1 || e->y > y1) continue;
+        size_t idx = (size_t)e->y * (size_t)map->width + (size_t)e->x;
+        int tile_f = e->int_settings[0];
+        if (e->type == CS2D_ENT_FUNC_DYNWALL) {
+            switch (e->int_settings[1]) {
+                case 0:  s_shadow_sys.eff_modes[idx] = CS2D_TILE_WALL; break;
+                case 1:  s_shadow_sys.eff_modes[idx] = CS2D_TILE_OBSTACLE; break;
+                case 2:  s_shadow_sys.eff_modes[idx] = CS2D_TILE_WALL_NOSHADOW; break;
+                case 3:  s_shadow_sys.eff_modes[idx] = CS2D_TILE_OBSTACLE_NOSHADOW; break;
+                default:
+                    s_shadow_sys.eff_modes[idx] = (tile_f >= 0 && tile_f <= (int)map->tile_count)
+                                                  ? map->tile_modes[tile_f] : CS2D_TILE_FLOOR_NOSOUND;
+                    break;
+            }
+            s_shadow_sys.eff_heights[idx] = (map->save_tile_heights != 0 && tile_f >= 0 && tile_f < 256 && map->tile_heights[tile_f] > 0)
+                                             ? map->tile_heights[tile_f] : 0;
+        } else if (e->type == CS2D_ENT_ENV_BREAKABLE) {
+            if (e->int_settings[6] == 2)      s_shadow_sys.eff_modes[idx] = CS2D_TILE_FLOOR_NOSOUND;
+            else if (e->int_settings[6] == 3) s_shadow_sys.eff_modes[idx] = CS2D_TILE_OBSTACLE;
+            else                              s_shadow_sys.eff_modes[idx] = CS2D_TILE_WALL;
+            s_shadow_sys.eff_heights[idx] = (map->save_tile_heights != 0 && tile_f >= 0 && tile_f < 256 && map->tile_heights[tile_f] > 0)
+                                             ? map->tile_heights[tile_f] : 0;
+        }
+    }
+
+    /* Solid buildings (cs2d_dynobj_casts_shadow) shadow like a 32 px wall tile */
+    if (map->object_shadow) {
+        for (int y = y0; y <= y1; y++) {
+            for (int x = x0; x <= x1; x++) {
+                size_t idx = (size_t)y * map->width + (size_t)x;
+                if (!map->object_shadow[idx]) continue;
+                s_shadow_sys.eff_modes[idx] = CS2D_TILE_WALL;
+                s_shadow_sys.eff_heights[idx] = 0;
+            }
+        }
+    }
+}
+
+/*
  * Reconstructed from 0x1401413b0..0x14014276d, 0x140260330..0x1402626d0, and 0x1401da4a6..0x1401da82d in CS2D.exe:
  * Manages the chunk grid (16x16 tiles each). When solid_version changes (e.g. Func_DynWall toggled or
  * construction built), only the affected chunks are invalidated instead of freezing the game with a full map rebuild.
@@ -2177,52 +2234,7 @@ static void ensure_shadow_chunks(const cs2d_map_t *map)
             return;
         }
 
-        /* Base tile modes and custom heights (0x1401414b4..0x1401415c0) */
-        for (size_t idx = 0; idx < map_tiles; idx++) {
-            uint8_t t = map->tiles[idx];
-            s_shadow_sys.eff_modes[idx] = map->tile_modes[t];
-            if (map->save_tile_heights != 0 && map->tile_heights[t] > 0) {
-                s_shadow_sys.eff_heights[idx] = map->tile_heights[t];
-            }
-        }
-
-        /* Override effective tile modes with active Func_DynWall and Env_Breakable */
-        for (uint32_t i = 0; i < map->entity_count; i++) {
-            const cs2d_entity_t *e = &map->entities[i];
-            if (map->entity_state[i]) continue;
-            if (e->x < 0 || e->y < 0 || (uint32_t)e->x >= map->width || (uint32_t)e->y >= map->height) continue;
-            size_t idx = (size_t)e->y * (size_t)map->width + (size_t)e->x;
-            int tile_f = e->int_settings[0];
-            if (e->type == CS2D_ENT_FUNC_DYNWALL) {
-                switch (e->int_settings[1]) {
-                    case 0:  s_shadow_sys.eff_modes[idx] = CS2D_TILE_WALL; break;
-                    case 1:  s_shadow_sys.eff_modes[idx] = CS2D_TILE_OBSTACLE; break;
-                    case 2:  s_shadow_sys.eff_modes[idx] = CS2D_TILE_WALL_NOSHADOW; break;
-                    case 3:  s_shadow_sys.eff_modes[idx] = CS2D_TILE_OBSTACLE_NOSHADOW; break;
-                    default:
-                        s_shadow_sys.eff_modes[idx] = (tile_f >= 0 && tile_f <= (int)map->tile_count)
-                                                      ? map->tile_modes[tile_f] : CS2D_TILE_FLOOR_NOSOUND;
-                        break;
-                }
-                s_shadow_sys.eff_heights[idx] = (map->save_tile_heights != 0 && tile_f >= 0 && tile_f < 256 && map->tile_heights[tile_f] > 0)
-                                                 ? map->tile_heights[tile_f] : 0;
-            } else if (e->type == CS2D_ENT_ENV_BREAKABLE) {
-                if (e->int_settings[6] == 2)      s_shadow_sys.eff_modes[idx] = CS2D_TILE_FLOOR_NOSOUND;
-                else if (e->int_settings[6] == 3) s_shadow_sys.eff_modes[idx] = CS2D_TILE_OBSTACLE;
-                else                              s_shadow_sys.eff_modes[idx] = CS2D_TILE_WALL;
-                s_shadow_sys.eff_heights[idx] = (map->save_tile_heights != 0 && tile_f >= 0 && tile_f < 256 && map->tile_heights[tile_f] > 0)
-                                                 ? map->tile_heights[tile_f] : 0;
-            }
-        }
-
-        /* Solid buildings (cs2d_dynobj_casts_shadow) shadow like a 32 px wall tile */
-        if (map->object_shadow) {
-            for (size_t idx = 0; idx < map_tiles; idx++) {
-                if (!map->object_shadow[idx]) continue;
-                s_shadow_sys.eff_modes[idx] = CS2D_TILE_WALL;
-                s_shadow_sys.eff_heights[idx] = 0;
-            }
-        }
+        shadow_eff_region(map, 0, 0, (int)map->width - 1, (int)map->height - 1);
 
         /* Snapshot initial state for fast delta tracking */
         s_shadow_sys.last_entity_count = map->entity_count;
@@ -3800,6 +3812,19 @@ void cs2d_render_ensure_shadow_chunks(const cs2d_map_t *map)
     ensure_shadow_chunks(map);
 }
 
+void cs2d_render_tiles_changed(const cs2d_map_t *map, int x0, int y0, int x1, int y1)
+{
+    if (!map || !map->tiles || !s_shadow_sys.chunks || !s_shadow_sys.eff_modes || !s_shadow_sys.eff_heights) return;
+    if (s_shadow_sys.map_w != map->width || s_shadow_sys.map_h != map->height) return;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 >= (int)map->width) x1 = (int)map->width - 1;
+    if (y1 >= (int)map->height) y1 = (int)map->height - 1;
+    if (x0 > x1 || y0 > y1) return;
+    shadow_eff_region(map, x0, y0, x1, y1);
+    mark_shadow_region_dirty(x0 - 4, y0 - 4, x1 + 4, y1 + 4);
+}
+
 void cs2d_render_get_shadow_chunk_info(int *out_chunks_x, int *out_chunks_y, int *out_dirty_count)
 {
     if (out_chunks_x) *out_chunks_x = s_shadow_sys.chunks_x;
@@ -4995,6 +5020,13 @@ static void dynobj_flare(const cs2d_gfx_bank_t *bank, float cx, float cy, float 
                              rgb[0], rgb[1], rgb[2], a, 4);
 }
 
+/* Tdo.draw_ground with the light engine on: flare1 as a light sprite at world (wx, wy), rotation (int)rot, alpha 1 */
+static void dynobj_flare_light(const cs2d_gfx_bank_t *bank, float wx, float wy, float rot, float scale, const float rgb[3])
+{
+    cs2d_light_add_sprite_frame(&bank->tex_flare1, 0, 0, 0, wx, wy, scale, scale, (int)(rgb[0] * 255.0f),
+                                (int)(rgb[1] * 255.0f), (int)(rgb[2] * 255.0f), (float)(int)rot, 1.0f);
+}
+
 /* incbindata/shadow.bmp in black (Max2D alpha blend) */
 static void dynobj_shadow(const cs2d_gfx_bank_t *bank, float cx, float cy, float scale, float a)
 {
@@ -5087,6 +5119,12 @@ void cs2d_render_dynobjs(const cs2d_dynobj_world_t *w, cs2d_dynobj_layer_t layer
             continue;
         }
         if (layer == CS2D_DO_LAYER_GROUND) {
+            /* Tdo.draw_ground (0x140284a40) cases 6, 10, 0xd, 0xe end with flare1 x 1.2 in the team color, rotation
+             * ms / 10, as a light sprite at the center */
+            if (o->typ == CS2D_DO_GATE_FIELD || o->typ == CS2D_DO_SITE || o->typ == CS2D_DO_TELE_ENTRANCE ||
+                o->typ == CS2D_DO_TELE_EXIT) {
+                dynobj_flare_light(bank, o->x + 16.0f, o->y + 16.0f, (float)(ms / 10), 1.2f, tc);
+            }
             switch (o->typ) {
                 case CS2D_DO_BARBED_WIRE: {
                     /* Rotated by rot + 90; a hit ([36,id,5]) wobbles it for 60 frames */
@@ -5127,11 +5165,14 @@ void cs2d_render_dynobjs(const cs2d_dynobj_world_t *w, cs2d_dynobj_layer_t layer
                     const float *pc = o->typ == CS2D_DO_ORANGE_PORTAL ? orange : blue;
                     dynobj_shadow(bank, cx, cy, 0.5f, 0.4f);
                     dynobj_flare(bank, cx, cy, ((float)ms + o->rot) * 0.05f, 1.0f, pc, 1.0f);
+                    dynobj_flare_light(bank, o->x + 16.0f, o->y + 16.0f, ((float)ms + o->rot) * 0.05f, 1.0f, pc);
                     float sc = (float)(fabs(sin((double)(ms / 30) * 0.017453292519943295)) * 0.3 + 0.4);
                     float spin = ((float)ms + o->rot) * -0.1f;
                     for (int k = 45; k != 405; k += 45) {
                         double a = (double)(ms / 10 + k) * 0.017453292519943295;
                         dynobj_flare(bank, cx + (float)(sin(a) * 10.0), cy - (float)(cos(a) * 10.0), spin, sc, pc, 1.0f);
+                        dynobj_flare_light(bank, o->x + 16.0f + (float)(sin(a) * 10.0), o->y + 16.0f - (float)(cos(a) * 10.0),
+                                           spin, sc, pc);
                     }
                     break;
                 }
@@ -5344,6 +5385,38 @@ void cs2d_render_dynobj_images(const cs2d_dynobj_world_t *w, cs2d_img_pass_t pas
         cs2d_render_sprite_frame(src.tex, src.cw, src.ch, frame, x, y, (float)src.cw * sx, (float)src.ch * sy, rot,
                                  (float)o->color[0] / 255.0f, (float)o->color[1] / 255.0f, (float)o->color[2] / 255.0f,
                                  a, blend);
+        /* FUN_14025eb80 with the light engine on: an image without shadow in mode 1 or above 132 keeps its area out of
+         * the day shadows (ObstacleShadow2); mode 3 is also a light sprite in its color x alpha */
+        if (pass != CS2D_IMG_PASS_HUD && cs2d_light_active()) {
+            if (o->shadow == 0 && (o->mode == 1 || o->mode > 132)) {
+                cs2d_light_add_obstacle_frame(src.tex, src.cw, src.ch, frame, x, y, sx, sy, (float)(int)rot);
+            } else if (o->mode == 3) {
+                cs2d_light_add_sprite_frame(src.tex, src.cw, src.ch, frame, x + camx, y + camy, sx, sy, o->color[0],
+                                            o->color[1], o->color[2], (float)(int)rot, o->alpha);
+            }
+        }
+    }
+}
+
+void cs2d_render_image_shadows(const cs2d_dynobj_world_t *w, const cs2d_img_ctx_t *ctx)
+{
+    /* FUN_14025f0e0 (GenerateDayBuffer, each Tdo): an image of mode 0, 1, 3 or 4 with alpha > 0.0001 and shadow > 0, seen
+     * by this player, is drawn black at its position + (shadow, shadow). (Images on physics objects are not handled.) */
+    if (!w || !ctx || !cs2d_light_active()) return;
+    int ms = (int)GetTickCount();
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *o = &w->objs[i];
+        if (!o->active || o->typ != CS2D_DO_IMAGE || o->shadow <= 0 || !(0.0001f < o->alpha)) continue;
+        if (o->mode != 0 && o->mode != 1 && o->mode != 3 && o->mode != 4) continue;
+        if (o->player != 0 && o->player != ctx->local_id) continue;
+        image_src_t src;
+        if (!image_source(o, ctx, &src)) continue;
+        int frame = src.frame >= 0 ? src.frame : o->frame;
+        if (frame < 0) frame = 0;
+        if (frame >= src.frames) frame = src.frames - 1;
+        float rot = o->rot + (src.spin ? (float)(ms / 5) : 0.0f);
+        cs2d_light_add_day_shadow(false, src.tex, src.cw, src.ch, frame, o->x + (float)o->shadow, o->y + (float)o->shadow,
+                                  rot, o->scalex, o->scaley);
     }
 }
 
@@ -5407,6 +5480,9 @@ void cs2d_render_gen(const struct cs2d_gen_s *gen, int layer, float cam_x, float
             case 3:
             case 21:
                 draw_scaled(&bank->tex_smokepuff[p->frame & 3], x, y, p->sx, p->rot, p, p->a, 0);
+                /* Tp.draw with the light engine on: the puff as a white light sprite at a * 0.25 (3) / a * 0.5 (0x15) */
+                cs2d_light_add_sprite_frame(&bank->tex_smokepuff[p->frame & 3], 0, 0, 0, p->x, p->y, p->sx, p->sx, 255,
+                                            255, 255, (float)(int)p->rot, p->a * (p->typ == 3 ? 0.25f : 0.5f));
                 break;
             case 12:
                 if (p->a > 0.0f)
@@ -5425,10 +5501,18 @@ void cs2d_render_gen(const struct cs2d_gen_s *gen, int layer, float cam_x, float
             case 19: /* Screen space: offset * depth / 30 from the centre, scale sx * depth / 100 */
                 draw_scaled(&bank->tex_snowflake, hw + p->x * p->sy * (1.0f / 30.0f), hh + p->y * p->sy * (1.0f / 30.0f),
                             p->sx * p->sy * 0.01f, 0.0f, p, p->a, 0);
+                /* Tp 0x13 with the light engine on: also a white light sprite, alpha 1, at the same spot */
+                cs2d_light_add_sprite_frame(&bank->tex_snowflake, 0, 0, 0, hw + p->x * p->sy * (1.0f / 30.0f) + cam_x,
+                                            hh + p->y * p->sy * (1.0f / 30.0f) + cam_y, p->sx * p->sy * 0.01f,
+                                            p->sx * p->sy * 0.01f, 255, 255, 255, 0.0f, 1.0f);
                 break;
             case 20:
                 draw_scaled(&bank->tex_raindrop, hw + p->x * p->sy * (1.0f / 30.0f), hh + p->y * p->sy * (1.0f / 30.0f),
                             p->sx * p->sy * 0.02f, p->rot, p, p->a, 0);
+                /* Tp 0x14 with the light engine on: also a white light sprite, alpha 1 */
+                cs2d_light_add_sprite_frame(&bank->tex_raindrop, 0, 0, 0, hw + p->x * p->sy * (1.0f / 30.0f) + cam_x,
+                                            hh + p->y * p->sy * (1.0f / 30.0f) + cam_y, p->sx * p->sy * 0.02f,
+                                            p->sx * p->sy * 0.02f, 255, 255, 255, (float)(int)p->rot, 1.0f);
                 break;
             default:
                 break;
@@ -5463,7 +5547,7 @@ void cs2d_render_fx_shells(const struct cs2d_fx_s *fx, float cam_x, float cam_y)
     }
 }
 
-void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2d_texture_t *tileset_tex, float cam_x, float cam_y)
+void cs2d_render_fx(struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2d_texture_t *tileset_tex, float cam_x, float cam_y)
 {
     if (!fx) return;
     cs2d_gfx_bank_t *bank = cs2d_render_get_gfx_bank();
@@ -5475,10 +5559,16 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
     int cols = has_tileset ? (tileset_tex->width / tile_src) : 1;
     if (cols < 1) cols = 1;
 
+    /* Light sprites of the particles (Tp.draw / TSparkle.draw with the light engine on): queued for the next light
+     * buffer like the original, which draws them during the world pass */
+    bool lit = cs2d_light_active();
+    /* Tp.draw runs 8 times a frame (layers 0..7, 0x140280348..), each taking 1 off explosion_count */
+    fx->explosion_count = fx->explosion_count > 8 ? fx->explosion_count - 8 : 0;
     for (int i = 0; i < fx->count; i++) {
-        const cs2d_fx_particle_t *p = &fx->p[i];
+        cs2d_fx_particle_t *p = &fx->p[i];
         float t = p->max_life > 0.0f ? p->life / p->max_life : 0.0f; /* 1 -> 0 */
         float sx = p->x - cam_x, sy = p->y - cam_y;
+#define LIGHT_RGB(p) (int)((p)->r * 255.0f), (int)((p)->g * 255.0f), (int)((p)->b * 255.0f)
 
         if (p->kind == CS2D_FX_TILE_PART && has_tileset) {
             /* UV quarter of the tile frame (same layout as draw_tile_frame) */
@@ -5508,11 +5598,24 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
             cs2d_render_sprite_frame(&bank->tex_fragments, 32, 32, p->frame, sx, sy, p->size, p->size,
                                      p->rot, p->r, p->g, p->b, t, 0);
         } else if (p->kind == CS2D_FX_MUZZLE && bank) {
-            /* Yellow light around the shooter, then the flash stretched along the aim */
-            cs2d_render_sprite_frame(&bank->tex_flare3, 0, 0, 0, p->x2 - cam_x, p->y2 - cam_y, 320.0f, 320.0f,
-                                     0.0f, 1.0f, 0.85f, 0.35f, 0.6f * t, 3);
+            /* MuzzleFlash.Draw (0x140149600): the flash stretched along the aim (its light is the Tp 2 flare and the
+             * light particle of Tshoot.Shoot) */
             cs2d_render_sprite_frame(&bank->tex_flare_x, 0, 0, 0, sx, sy, p->size * 1.7f, p->size * 2.9f,
                                      p->rot, 1.0f, 1.0f, 1.0f, t, 3);
+        } else if (p->kind == CS2D_FX_FLARE && bank && bank->tex_flare3.id) {
+            /* Tp 2: light engine on -> one light sprite (flare3 in its color x a, rotation (int)rot), then freed;
+             * off -> flare3 additive, transform (rot, sx, sx), alpha a */
+            float fw = (float)bank->tex_flare3.width, fh = (float)bank->tex_flare3.height;
+            if (p->light_once) {
+                if (!p->queued) {
+                    cs2d_light_add_sprite_frame(&bank->tex_flare3, 0, 0, 0, p->x, p->y, p->size, p->size, LIGHT_RGB(p),
+                                                (float)(int)p->rot, p->alpha);
+                    p->queued = true;
+                }
+            } else {
+                cs2d_render_sprite_frame(&bank->tex_flare3, 0, 0, 0, sx, sy, fw * p->size, fh * p->size, p->rot,
+                                         p->r, p->g, p->b, p->alpha * t, 4);
+            }
         } else if (p->kind == CS2D_FX_TRACER) {
             cs2d_gl_set_blend(CS2D_GL_BLEND_ADD);
             cs2d_render_line(sx, sy, p->x2 - cam_x, p->y2 - cam_y, 1.0f, 0.9f, 0.4f, 0.6f * t);
@@ -5530,12 +5633,20 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
         } else if (p->kind == CS2D_FX_GLOWDOT && bank) {
             cs2d_render_sprite_frame(&bank->tex_glowdot, 0, 0, 0, sx, sy, p->size + 1.0f, p->size + 1.0f,
                                      0.0f, p->r, p->g, p->b, t, 3);
+            /* Tp 7: glowdot light sprite in its color x a, scale 1 */
+            if (lit && bank->tex_glowdot.width > 0) {
+                float s = (p->size + 1.0f) / (float)bank->tex_glowdot.width;
+                cs2d_light_add_sprite_frame(&bank->tex_glowdot, 0, 0, 0, p->x, p->y, s, s, LIGHT_RGB(p), 0.0f, t);
+            }
         } else if (p->kind == CS2D_FX_EXPLOSION && bank) {
             int frame = (int)((1.0f - t) * 25.0f);
             if (frame > 24) frame = 24;
             /* Additive (LIGHTBLEND) */
             cs2d_render_sprite_frame(&bank->tex_explosion, 64, 64, frame, sx, sy, p->size, p->size,
                                      p->rot, 1.0f, 1.0f, 1.0f, 1.0f, 4);
+            /* Tp 9: the same explosion frame as a white light sprite (scale sx * 0.5, rotation (int)rot, alpha a) */
+            if (lit) cs2d_light_add_sprite_frame(&bank->tex_explosion, 64, 64, frame, p->x, p->y, p->size / 64.0f,
+                                                 p->size / 64.0f, 255, 255, 255, (float)(int)p->rot, 1.0f);
         } else if (p->kind == CS2D_FX_KNIFESLASH && bank && bank->tex_knifeslash.id) {
             /* Tp type 13 (0x140265220..0x140265361): gfx/knifeslash.bmp, LIGHTBLEND (4), rotated by angle */
             float w = (float)bank->tex_knifeslash.width;
@@ -5546,13 +5657,30 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
             float cur_size = p->size * (1.0f + (1.0f - t) * 0.8f);
             cs2d_render_sprite_frame(&bank->tex_glowdot, 0, 0, 0, sx, sy, cur_size, cur_size,
                                      p->rot, p->r, p->g, p->b, 0.45f * t, 3);
+            /* Tp 3 / 0x20: the smoke puff as a white light sprite at alpha a * 0.25 */
+            if (lit && bank->tex_smokepuff[0].width > 0) {
+                const cs2d_texture_t *pf = &bank->tex_smokepuff[(i & 3)];
+                float s = cur_size / (float)pf->width;
+                cs2d_light_add_sprite_frame(pf, 0, 0, 0, p->x, p->y, s, s, 255, 255, 255, (float)(int)p->rot,
+                                            0.45f * t * 0.25f);
+            }
         } else if (p->kind == CS2D_FX_FIRE && bank) {
             float cur_size = p->size * (0.8f + t * 0.4f);
             cs2d_render_sprite_frame(&bank->tex_glowdot, 0, 0, 0, sx, sy, cur_size, cur_size,
                                      p->rot, p->r, p->g, p->b, t, 4);
+            /* Tp 0x17 (flames) / 0xe (laser glow): flare3 in its color x a, 4 x the flame's size */
+            if (lit && bank->tex_flare3.width > 0) {
+                float s = cur_size * 4.0f / (float)bank->tex_flare3.width;
+                cs2d_light_add_sprite_frame(&bank->tex_flare3, 0, 0, 0, p->x, p->y, s, s, LIGHT_RGB(p), (float)(int)p->rot, t);
+            }
         } else if (p->kind == CS2D_FX_SPARKLE && bank) {
             cs2d_render_sprite_frame(&bank->tex_glowdot, 0, 0, 0, sx, sy, p->size, p->size,
                                      p->rot, p->r, p->g, p->b, t, 4);
+            /* TSparkle / Tp 0x1d (portal glow): flare3 light sprite in its color x a at the drawn size */
+            if (lit && bank->tex_flare3.width > 0) {
+                float s = p->size / (float)bank->tex_flare3.width;
+                cs2d_light_add_sprite_frame(&bank->tex_flare3, 0, 0, 0, p->x, p->y, s, s, LIGHT_RGB(p), (float)(int)p->rot, t);
+            }
         } else if (p->kind == CS2D_FX_BLOOD && bank) {
             cs2d_render_sprite_frame(&bank->tex_fragments, 32, 32, p->frame, sx, sy, p->size, p->size,
                                      p->rot, p->r, p->g, p->b, t, 0);
@@ -5562,6 +5690,7 @@ void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2
                                      p->rot, p->r, p->g, p->b, 0.7f * t, 3);
         }
     }
+#undef LIGHT_RGB
 }
 
 /* Hostages (Thostage.draw 0x140147090): 48x48 shadow, legs, hostages.bmp frame `look`, rotated to `rot`.

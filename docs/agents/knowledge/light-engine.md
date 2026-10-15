@@ -70,8 +70,23 @@ Fixtures depend on the map files: `maps/fun_roleplay.map` was replaced in cbd56b
   firearm shot `Tshoot.Shoot` 0x140205d9d at the muzzle + Rand(-2, 2): (255, 255, 0), 100, 25, then `ChangeAlpha(0.7)`
   (0x140bd6cc0), not for style 4 (silencer on), only the first pellet; `Tp.explosion` (255, Rand(150, 255), 0, 180, 5)
   while explosion_count < 11; flashbang (Tpro.draw_ground 0x34) `Tp.Create(0x1f)` (255, 255, 0 unclamped, 100, 25)
-  + CreateLight white 100 / 15. Not ported: lightning (55, 105, 255), laser / style 6 and turret (p8 92: 15, 35, 255)
-  variants, flamethrower (Tp color, 100, 5), alarms (255, 0, 0, 80, 20 in FUN_1402553d0).
+  + CreateLight white 100 / 15; laser (style 2) at the muzzle in the last Tp 0xe glow color, 100 / 5; turrets
+  (`Tdo.shoot` 0xfd, style 0) and NPC soldiers (0xf8, style 0) like firearms; Vortigaunt ranged = style 2 beam (mode
+  0 assumed); planted C4 beep (FUN_1402553d0) (255, 0, 0), 80 / 20. The flamethrower (style 3) makes no light; style 6
+  (lightning, 55 105 255) and p8 92 (15 35 255) have no caller in the client. `Tp.explosion`: explosion_count += 5 per
+  explosion, -1 per `Tp.draw` call (8 a frame), light only while < 11.
+- **Tp 2 flare** (`cs2d_fx_flare`): light on -> not drawn in the world, one frame of light sprite (flare3, its color x a,
+  sx, (int)rot), then freed; light off -> flare3 additive fading by fx. Muzzle (230..255, 150..230, 0..20; a 0.7..0.9,
+  sx 0.5..1, silenced 0.1..0.2), C4 beep (red, fade 0.1, sx 0.4), flashbang (white, a 2, sx 0.6).
+- **Particle light sprites** (`Tp.draw` 0x140263cc0, light on): 3 / 0x20 smoke puff white x a * 0.25; 7 glowdot in its
+  color; 9 explosion frame white (scale sx * 0.5); 0xe / 0x1d / 0x1e flare3 in its color; 0x17 flames flare3 x 4;
+  `TSparkle` its image white; 0x1b sgsmoke floor sprite x 4, a * 0.5. Ours mirror each fx kind (cs2d_render_fx).
+- **Buildings** (`Tdo.draw_ground` 0x140284a40): cases 6 / 10 / 0xd / 0xe end with flare1 x 1.2 team color, rot ms / 10;
+  portals flare1 (255, 128, 0) / (50, 100, 255) + 8 circling flares. **Lua images** (`FUN_14025eb80`): shadow 0 and mode
+  1 or > 132 -> ObstacleShadow2; mode 3 -> light sprite in its color x alpha; shadow > 0 and mode 0 / 1 / 3 / 4 ->
+  `FUN_14025f0e0` black silhouette at + shadow in the day buffer (after the players, not scaled by the buffer).
+  `Tpro.draw_flying_shadow` (types 49, 51..54, 72, 73, 76, 89): black at + 3 px, scale p1 (p1 * 0.5 * p1 if the image
+  is >= 64 px), current color. The emulator stubs it ("projectileshadows" marker); both new queues are empty there.
 - **Flashlights** (`cs2d_light_flashlight`): map setup creates one per player, `CreateLight(-1000, -1000, 162, white,
   325, 0.0, 0, 359)`, LightType 1 (+0x6c), off. `Tpl.update` (0x14021e805): on when alive, not fogged, flashlight 1,
   mp_flashlight 1, not a T in Zombies; `ChangePosition(x + rx, y + ry)` (recoil kick), `ChangeRotation((int)rot)`.

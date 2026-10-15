@@ -1,5 +1,16 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-14 — Claude — Lua images and NPCs (Tdo 40 / 30)
+- `[51]` 0..9, `[59]`, image `[54]` tweens, snapshot sections 7 / 8 / 10 (Trestable "?" paths), NPC `[36,7]` / `[36,9]`,
+  NPC motion / attack fx, image passes (background hook in `cs2d_render_map_floor_ex`, floor, top, overwall, HUD).
+- Fix: map cycle is snapshot section 12 (9 = custom tiles, now skipped); the proxy shows 7..13 in order.
+- Verified: `test_images_and_npcs`, proxy + screenshots with `image_probe.lua` on the offline dedicated. Light engine test still fails (pre-existing).
+
+## 2026-10-14 — Claude — Portals and teleporters
+- `cs2d_dynobj_place_portal` / `_portal_tile` / `_teleport` (FUN_1401fc9f0, Tpl.tilepos 0xd/0x16/0x17): offline Portal
+  Gun placement on floor tiles, portal ↔ portal and Teleporter Entrance → Exit on tile entry; portal close flash.
+- Verified: `test_dynobjs` cases (dump-derived rules); not compared with a capture. Light engine test fails before and after.
+
 ## 2026-10-14 — Claude — item scale, [33] ammo offset, held weapon size
 - Ground items and held weapon drawn at native size with the original uniform scale (were squashed to 32x32 / per-axis
   halves); `[33]` clip / reserve read as u16 - 1 (FUN_14011c0b0) → no "(0)" on supply items. Source: dump.

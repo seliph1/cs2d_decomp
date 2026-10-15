@@ -6,6 +6,7 @@
 #include "cs2d_game.h"
 #include "cs2d_network.h"
 #include "cs2d_light.h"
+#include "cs2d_customtile.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -646,6 +647,17 @@ bool cs2d_client_connect(cs2d_client_t *client, const char *ip, int port)
     cs2d_client_send_udp(client, p0.buf, (size_t)p0.pos, true);
 
     return true;
+}
+
+/* settile on the game map: one Tcustomtile batch (startbatch, addcheck each, endbatch; FUN_1401957f0) */
+static void client_settile(cs2d_client_t *client, const cs2d_settile_t *tiles, int n)
+{
+    cs2d_map_t *map = &client->game.map;
+    cs2d_customtile_batch_t batch;
+    int b[4];
+    cs2d_customtile_begin(&batch);
+    for (int i = 0; i < n; i++) cs2d_customtile_addcheck(map, &batch, &tiles[i]);
+    if (cs2d_customtile_end(map, &batch, b)) cs2d_render_tiles_changed(map, b[0], b[1], b[2], b[3]);
 }
 
 static void add_ground_item(cs2d_client_t *client, uint16_t id, uint8_t type, int tx, int ty, int16_t clip, int16_t reserve)
@@ -1655,12 +1667,28 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                             }
                         }
                     } else if (snap_type == 9) {
-                        /* Custom tiles (case 6 = section 9): count, then {x u16, y u16, 7 bytes} (Tcustomtile.addcheck,
-                         * not reconstructed: read and skipped) */
+                        /* Custom tiles (case 6 = section 9): Tcustomtile.list cleared, count u8, then count x
+                         * {x u16, y u16, tile, rot, r, g, b, overlay, blend} (11 bytes) through addcheck, one batch */
+                        cs2d_customtile_clear(&client->game.map);
                         if (pos < recvd) {
                             int count = buffer[pos++];
-                            pos += count * 11;
-                            if (pos > recvd) pos = recvd;
+                            cs2d_settile_t tiles[255];
+                            int n = 0;
+                            for (; n < count && pos + 11 <= recvd; n++, pos += 11) {
+                                const uint8_t *r = &buffer[pos];
+                                cs2d_settile_defaults(&tiles[n], r[0] | (r[1] << 8), r[2] | (r[3] << 8), r[4]);
+                                tiles[n].rot = r[5];
+                                tiles[n].r = r[6];
+                                tiles[n].g = r[7];
+                                tiles[n].b = r[8];
+                                tiles[n].overlay = r[9];
+                                tiles[n].blend = r[10];
+                            }
+                            if (n < count) {
+                                cs2d_client_console_print(client, 255, 0, 0, "ERROR: failed to load custom tile data");
+                                pos = recvd;
+                            }
+                            client_settile(client, tiles, n);
                         }
                     } else if (snap_type == 10) {
                         /* Resource paths (case 7 = section 10): Trestable client table for the images' "?" paths */
@@ -2127,6 +2155,13 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     client->game.players[pid].reserve_ammo[type] = (int16_t)(buffer[pos + 5] | (buffer[pos + 6] << 8));
                 }
                 pos += 7;
+            } else if (opcode == CS2D_NET_SETTILE) {
+                /* Server -> Client: [62, x u16, y u16, tile (, rot, r, g, b, overlay, blend)] (FUN_140195b80) */
+                cs2d_settile_t st;
+                int n = cs2d_settile_read(buffer, recvd, pos, &st);
+                if (n < 0) break;
+                client_settile(client, &st, 1);
+                pos += n;
             } else if (opcode == CS2D_NET_BUY) {
                 /* Server -> Client: [23, player, type (250 = refused), money u16, u8] (6 bytes) */
                 if (pos + 6 > recvd) break;
@@ -2375,6 +2410,22 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     /* NPC attack (FUN_1401ed310): Tp 13 at the NPC along its angle, and the type's sound */
                     if (dfx.slash) cs2d_fx_knifeslash(&client->fx, dfx.x, dfx.y, dfx.rot);
                     if (dfx.sound) cs2d_sound_play_at(dfx.sound, dfx.x, dfx.y, 1.0f, 0);
+                    if (dfx.shot) {
+                        /* Tdo.shoot (0x140209b50): Tshoot.Shoot with c_dist 400 and c_offset 15 at the NPC's angle (its
+                         * Rnd(-3, 3) spread is left out). The beam's color is mode 0 (no shooting player: assumed) */
+                        float hx, hy, r = dfx.rot * 0.017453292519943295f;
+                        float mx = dfx.x + sinf(r) * 15.0f, my = dfx.y - cosf(r) * 15.0f;
+                        int hit = cs2d_ents_trace_shot(&client->ents, dfx.x, dfx.y, dfx.rot, 400.0f, &hx, &hy);
+                        float ddx = hx - dfx.x, ddy = hy - dfx.y;
+                        if (dfx.shot == 2) {
+                            cs2d_fx_laser(&client->fx, mx, my, hx, hy, 0);
+                            cs2d_fx_laser_light(&client->fx, mx, my, 0);
+                        } else {
+                            cs2d_fx_shot(&client->fx, dfx.x, dfx.y, dfx.rot, 15.0f, hx, hy,
+                                         hit < 0 && sqrtf(ddx * ddx + ddy * ddy) < 399.0f, 1);
+                            cs2d_fx_muzzle_light(&client->fx, mx, my, dfx.rot, false);
+                        }
+                    }
                 }
                 pos += n;
             } else if (opcode == CS2D_NET_DYNAMICIMAGE || opcode == CS2D_NET_IMAGEHITZONE) {
@@ -2709,6 +2760,26 @@ void cs2d_client_console_exec(cs2d_client_t *client, const char *cmd_line)
         }
         cs2d_client_console_print(client, 170, 170, 170, "%s", out);
         cs2d_client_console_print(client, 170, 170, 170, "entdump: %d entities in state 1", count);
+    } else if (_stricmp(cmd, "settile") == 0) {
+        /* Server command (FUN_140195d00): settile x y tile [rot] [r] [g] [b] [overlay] [blenddir] [blendtype].
+         * CS2D.exe runs it only as the server (DAT_140ddf400), so here only in a local game */
+        char a[10][64] = { { 0 } };
+        int argc = sscanf(cmd_line, "%*s %63s %63s %63s %63s %63s %63s %63s %63s %63s %63s", a[0], a[1], a[2], a[3],
+                          a[4], a[5], a[6], a[7], a[8], a[9]);
+        if (client->scene != CS2D_SCENE_GAME || client->connected || argc < 3) {
+            cs2d_client_console_print(client, 255, 45, 45,
+                                      "Usage: settile <x> <y> <tile> [rot] [r] [g] [b] [overlay] [blenddir] [blendtype] (local game)");
+            return;
+        }
+        cs2d_settile_t st;
+        cs2d_settile_defaults(&st, atoi(a[0]), atoi(a[1]), atoi(a[2]));
+        if (a[3][0]) st.rot = (uint8_t)atoi(a[3]);
+        if (a[4][0]) st.r = (uint8_t)atoi(a[4]);
+        if (a[5][0]) st.g = (uint8_t)atoi(a[5]);
+        if (a[6][0]) st.b = (uint8_t)atoi(a[6]);
+        if (a[7][0]) st.overlay = (uint8_t)atoi(a[7]);
+        st.blend = cs2d_settile_blend(a[8], a[9]);
+        client_settile(client, &st, 1);
     } else if (_stricmp(cmd, "entstate") == 0) {
         if (!map || n < 3) {
             cs2d_client_console_print(client, 255, 45, 45, "Usage: entstate <tile_x> <tile_y> (map required)");

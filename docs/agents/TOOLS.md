@@ -126,6 +126,7 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 | `light_diff.py <ours> <orig> [n]` | Compares two traces line by line (float tolerance 0.01 + 1e-4 x value), shows the first n differences |
 | `emu_lightshadow.py CS2D.exe [cases]` | Runs `TLightSource.CalculateShadow` alone on wall / light layouts and prints its `DrawLineLight` calls |
 | `gen_occlusion_table.py CS2D.exe` | Runs `DrawTilesFloor` on the 256 neighbour patterns and prints the occlusion table pasted into `src/cs2d_light.c` |
+| `lua/flashlight_probe.lua`, `lua/explosion_probe.lua` | Night de_dust at the CT spawn: flashlight + AK-47, or Laser then an HE grenade (light comparisons) |
 | `lua/*.lua` | Dedicated Lua probes; output lines start with `BP` / `WP` / `PD` / `JL` |
 
 Performance (GPU cost), see `knowledge/performance.md` (2026-10-13):
@@ -150,6 +151,7 @@ Lua probes:
 | `night_probe.lua` | `sv_daylighttime 90` (night), then `light_probe.lua` |
 | `hudtxt_probe.lua` | On join: hudtxt with every align / size / colour tag, hudtxt2, then move / alpha / colour fades at +25 s, an empty text at +32 s and hudtxtclear at +36 s (`HT` lines) |
 | `spec_probe.lua` | Adds a T and a CT bot; logs `specswitch` (whom each spectator follows, `SP` lines) and team changes |
+| `settile_probe.lua` | settile before the first join (snapshot `[252,7,9]`) and 4 s after it (`[62]`), with rotation / color / overlay / blend and a tile set back to its map frame; prints `tile()` values (`ST` lines) |
 
 Notes:
 

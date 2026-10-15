@@ -190,6 +190,8 @@ typedef struct {
 } cs2d_img_ctx_t;
 /* Draws the Lua images (Tdo 40) of one pass */
 void cs2d_render_dynobj_images(const struct cs2d_dynobj_world_s *w, cs2d_img_pass_t pass, const cs2d_img_ctx_t *ctx);
+/* Lua image shadows into the light engine's day shadows (FUN_14025f0e0; once per frame, before cs2d_light_frame) */
+void cs2d_render_image_shadows(const struct cs2d_dynobj_world_s *w, const cs2d_img_ctx_t *ctx);
 /* <light> images as dynamic light sources (once per frame, before cs2d_light_frame) */
 void cs2d_render_image_lights(const struct cs2d_dynobj_world_s *w);
 /* Frame count of an image path once loaded (1 for a plain image, cells for a sprite sheet, 0 when it can't load) */
@@ -325,7 +327,7 @@ void cs2d_render_gen(const struct cs2d_gen_s *gen, int layer, float cam_x, float
 void cs2d_render_gen_flash(const struct cs2d_gen_s *gen, int screen_w, int screen_h);
 
 void cs2d_render_fx_shells(const struct cs2d_fx_s *fx, float cam_x, float cam_y);
-void cs2d_render_fx(const struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
+void cs2d_render_fx(struct cs2d_fx_s *fx, const cs2d_map_t *map, const cs2d_texture_t *tileset_tex,
                     float cam_x, float cam_y);
 
 /* HUD number drawing (reconstructed from FUN_140113000 in CS2D.exe using gfx/hud_nums.bmp) */
@@ -440,6 +442,8 @@ bool  cs2d_render_get_item_shadows(void);
 void  cs2d_render_set_vsync(bool enabled);
 bool  cs2d_render_get_vsync(void);
 void  cs2d_render_ensure_shadow_chunks(const cs2d_map_t *map);
+/* settile changed tiles [x0..x1, y0..y1] (cs2d_customtile_end): recomputes their wall shadows */
+void  cs2d_render_tiles_changed(const cs2d_map_t *map, int x0, int y0, int x1, int y1);
 void  cs2d_render_get_shadow_chunk_info(int *out_chunks_x, int *out_chunks_y, int *out_dirty_count);
 void  cs2d_render_clear_shadow_dirty_test(void);
 

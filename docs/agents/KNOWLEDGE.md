@@ -42,6 +42,7 @@ When you confirm or refute something, update the topic file (or add one and list
 | [game-menu.md](knowledge/game-menu.md) | Ingame menu (Esc), vote [43], leaderboard [230], map briefing, [252,6] tail | 4 KB |
 | [scoreboard.md](knowledge/scoreboard.md) | Scoreboard | 2 KB |
 | [env-object-tileblend.md](knowledge/env-object-tileblend.md) | Env_Object and tile blending | 2 KB |
+| [settile.md](knowledge/settile.md) | settile: [62], [252,7,9], Tcustomtile, blend byte | 3 KB |
 | [rendering-notes.md](knowledge/rendering-notes.md) | Rendering notes | 3 KB |
 | [light-engine.md](knowledge/light-engine.md) | Light engine (TSmartLighting) | 5 KB |
 | [projectiles.md](knowledge/projectiles.md) | Projectiles and Persistent Fields (Tpro, Tfield) | 2 KB |

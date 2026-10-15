@@ -18,6 +18,9 @@ uint8_t cs2d_map_get_tile(const cs2d_map_t *map, uint32_t tx, uint32_t ty);
 /* Get tile mode (0=floor, 1=wall, 2=obstacle, etc.) at tile coordinates (tx, ty) */
 uint8_t cs2d_map_get_tile_mode(const cs2d_map_t *map, uint32_t tx, uint32_t ty);
 
+/* Collision value of a tile mode: 0 floor, 1 wall, 2 obstacle, 3 deadly (the map loader's mapping) */
+uint8_t cs2d_map_mode_collision(uint8_t mode);
+
 /* Check if pixel position (px, py) is solid (wall or obstacle) */
 bool cs2d_map_is_solid(const cs2d_map_t *map, float px, float py);
 
