@@ -1,5 +1,35 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-15 — Claude — join handshake: `[252,0]` / `[252,1]` now match the original byte for byte
+- `[252,0]` (cs2d_network.c) was 3 payload bytes: opcode, sub-opcode and an empty string nobody reads.
+  The original sends **2** (`fc 00`) and lets the server append the secret in its reply - proxy
+  `proxy_orig1.log` 2026-10-11: `C>S 7 02 00 03 32 00 fc 00`.
+- `[252,1]` was built from guesswork ("auth_type", "security_hash", "os_info", a spray field stamped with
+  `\xFA0opengl`). It is rebuilt in the order `FUN_1402ce7c0` writes it: name (sliced to 25), password
+  (`j01nk3y`), version (`funkymonky`), u16 1018, **usgn id** (`DAT_140ddf1f0`) + name, **os id**
+  (`DAT_140ddf5d8`: 1 Windows / 2 MacOS / 3 Linux - Tgui_hudmen draws the `Windows`/`MacOS`/`Linux` line
+  from it), steam name + id, **spray logo file name** (`0x140a14f90` = the `spraylogo` value of
+  sys/config.cfg, not the menu label), transformed secret, nickname scramble, client id, map mode,
+  screen w/h, **language name + code** (the two halves of the `language` setting, `EN-English`), and the
+  three trailing bytes 0/1/1 (4:3 `DAT_140ddf1c8`, voice available, `DAT_140ddf6a8`).
+- New `join_core_id` (`cs2d_client.c`) reproduces the client id of field 13: `"\xfa0"` + the 32-char id
+  `FUN_140060a10` reads at `sys/core/core.edc` +0x523 **+ the number the original appends, which is the
+  size in bytes of its executable** (`bbStringFromLong(FUN_1404b7860(AppArgs[0]))`; `PTR_bbEmptyArray_
+  140b13060` is AppArgs, and the writer of core.edc stores the same value at +0x543). CS2D.exe is
+  14789120 bytes = the capture's number, so field 13 is byte-identical now; without the original next to
+  us we fall back to core.edc's stored value.
+- Verified: `test_network_protocol` compares the whole 138-byte `[252,1]` payload against a literal taken
+  from the capture (`join1_want`), asserts `[252,0]` == 2 bytes and runs `cs2d_client_join_core_id` against
+  the real `sys/core/core.edc` + `CS2D.exe` (42 bytes, tail `14789120`) - it also proves `cs2d_net_secret`
+  returns the capture's `x!Ob448bb15R56` for `6X4XGs3PRs`; suite **60/60**. Live: `cs2d_dedicated.exe
+  -offline -map de_dust2 -port 36970` + `cs2d_client.exe --capture:"connect …;inv"` gives
+  `out/cli_join2.log`, whose `[net out 138] 04 00 fc 01 …` parses to **0 differing fields** against
+  `proxy_orig1.log` (only the transformed secret differs, it is random per join;
+  `out/join_compare.py` does the field-by-field diff). The dedicated answers `real is using IP …,
+  no U.S.G.N. ID and no Steam`. `git status sys/` clean, server.cfg / recentlyjoined.lst restored.
+- Left: the field 13 number; the `[252,1]` "nickname scramble" (`FUN_1402c97f0`) is empty in the capture
+  but the dump computes a mangled name there - unresolved, we follow the capture.
+
 ## 2026-10-15 — Claude — `--screenshot` writes where it is told (OPEN_ISSUES verification debt)
 - The tour wrote its 7 frames to a hardcoded absolute path inside one agent's scratch directory
   (`C:/Users/Gabriel/.gemini/antigravity/brain/<uuid>/scratch/`), so every other agent's run either failed

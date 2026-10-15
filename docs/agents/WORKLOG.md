@@ -10,6 +10,24 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-15 — Cline — OPEN_ISSUES curation: removed the entries that were already done
+- Re-read the whole list against the modules each bullet names and deleted the elements that were 100% resolved,
+  keeping every still-open item: the "Join messages (fixed 2026-10-15)" bullet (the handshake lives in KNOWLEDGE
+  "Network: join" and in WORKLOG), the Phase 1 image-decoding bullet, the Phase 2 "original plan", and the
+  phase-3 / pixel-comparison completion narration. The section is now "GL 1.x / GDI+ removal (done ...)" plus its
+  open decisions.
+- Trimmed the resolved clauses that sat inside still-open bullets (dated "done"/"fixed"/"now" sentences):
+  hostages-bomb "done: use ray ...", the Gen_* light sprites, the weapon-select grenade counts, the env-object
+  `test_file_transfer` note, dynobj team-menu x / turret tracer / NPC beams / debris-in-wall / hostage hover /
+  `g_prop_class`, the light-engine "Done 2026-10-15:" list, and the settile cut `[252,7,9]` abort (only its
+  remaining socket difference stays listed).
+- Docs only, no behaviour change: no build/test run needed. Verified the file reads top to bottom and every
+  remaining bullet names an open gap; also fixed two stale notes (`favorites.lst` writer exists via the menu
+  Favorite row, and the Node suite count).
+- Left (OPEN_ISSUES): the rest of the list is genuinely open - network/special weapons vs a proxy capture, the
+  audio gaps, the radars/scoreboard/buy-menu details, the map editor, the dynamic objects and the verification
+  debt (daylight pixel diff, `light`/`mapshadows` sweep, the `!mouse` UI click, the two-client session).
+
 ## 2026-10-15 — Cline — muzzle offsets + the weapon-select ammo line
 - `cs2d_weapon_def_t.muzzle` (`cs2d_types.h`) is filled in `cs2d_weapons_init` (`cs2d_weapons.c`) from the per-weapon
   table `0x1409f5d20` of `init_weapons` (FUN_140230330): 38 weapons, e.g. AK-47 26, AWP 33, pistols 19, M3 / XM1014
@@ -80,36 +98,6 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
   `git status sys/` clean, `server.cfg` / `recentlyjoined.lst` restored after every run.
 - Left (OPEN_ISSUES): the diff on a daylight map (de_dust2) and a `light 0..5` / `mapshadows 0..4` sweep;
   the darker tile region; the `!mouse` click question.
-
-## 2026-10-15 — Claude — join handshake: `[252,0]` / `[252,1]` now match the original byte for byte
-- `[252,0]` (cs2d_network.c) was 3 payload bytes: opcode, sub-opcode and an empty string nobody reads.
-  The original sends **2** (`fc 00`) and lets the server append the secret in its reply - proxy
-  `proxy_orig1.log` 2026-10-11: `C>S 7 02 00 03 32 00 fc 00`.
-- `[252,1]` was built from guesswork ("auth_type", "security_hash", "os_info", a spray field stamped with
-  `\xFA0opengl`). It is rebuilt in the order `FUN_1402ce7c0` writes it: name (sliced to 25), password
-  (`j01nk3y`), version (`funkymonky`), u16 1018, **usgn id** (`DAT_140ddf1f0`) + name, **os id**
-  (`DAT_140ddf5d8`: 1 Windows / 2 MacOS / 3 Linux - Tgui_hudmen draws the `Windows`/`MacOS`/`Linux` line
-  from it), steam name + id, **spray logo file name** (`0x140a14f90` = the `spraylogo` value of
-  sys/config.cfg, not the menu label), transformed secret, nickname scramble, client id, map mode,
-  screen w/h, **language name + code** (the two halves of the `language` setting, `EN-English`), and the
-  three trailing bytes 0/1/1 (4:3 `DAT_140ddf1c8`, voice available, `DAT_140ddf6a8`).
-- New `join_core_id` (`cs2d_client.c`) reproduces the client id of field 13: `"\xfa0"` + the 32-char id
-  `FUN_140060a10` reads at `sys/core/core.edc` +0x523 **+ the number the original appends, which is the
-  size in bytes of its executable** (`bbStringFromLong(FUN_1404b7860(AppArgs[0]))`; `PTR_bbEmptyArray_
-  140b13060` is AppArgs, and the writer of core.edc stores the same value at +0x543). CS2D.exe is
-  14789120 bytes = the capture's number, so field 13 is byte-identical now; without the original next to
-  us we fall back to core.edc's stored value.
-- Verified: `test_network_protocol` compares the whole 138-byte `[252,1]` payload against a literal taken
-  from the capture (`join1_want`), asserts `[252,0]` == 2 bytes and runs `cs2d_client_join_core_id` against
-  the real `sys/core/core.edc` + `CS2D.exe` (42 bytes, tail `14789120`) - it also proves `cs2d_net_secret`
-  returns the capture's `x!Ob448bb15R56` for `6X4XGs3PRs`; suite **60/60**. Live: `cs2d_dedicated.exe
-  -offline -map de_dust2 -port 36970` + `cs2d_client.exe --capture:"connect …;inv"` gives
-  `out/cli_join2.log`, whose `[net out 138] 04 00 fc 01 …` parses to **0 differing fields** against
-  `proxy_orig1.log` (only the transformed secret differs, it is random per join;
-  `out/join_compare.py` does the field-by-field diff). The dedicated answers `real is using IP …,
-  no U.S.G.N. ID and no Steam`. `git status sys/` clean, server.cfg / recentlyjoined.lst restored.
-- Left: the field 13 number; the `[252,1]` "nickname scramble" (`FUN_1402c97f0`) is empty in the capture
-  but the dump computes a mangled name there - unresolved, we follow the capture.
 
 
 

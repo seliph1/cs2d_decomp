@@ -13,8 +13,7 @@ the same one.
   traced), so our pellets differ from the server's. `[8]` not checked against a proxy capture; whether attack2 repeats
   while held (we do, 500 ms) is untested on the original; the scope hint text (`DAT_140ddf19c`, lang 0x36 group) and the
   Portal Gun (88/89) attack2 are missing; offline knife attack2 hurts breakables with dmg, not dmg_z1.
-- **Hostages / bomb (2026-10-14, `knowledge/hostages-bomb.md`):** done: use ray (hostage, planted bomb, Trigger_Use),
-  [26] echo, [29], [30], snapshot section 2, plant / defuse online, `[22]` special byte. Missing: c4 plant / defuse
+- **Hostages / bomb (2026-10-14, `knowledge/hostages-bomb.md`):** missing: c4 plant / defuse
   sounds, own Dispenser / Teleporter menu on E (Tdo 9 / 15), the green "following me" marker
   (Tp 100 at the hostage, mp_hovertext-like), [29] kind 4 blood (Tp 0x18) and the bomb blast particles (FUN_1401f1130,
   screenshake 50; ours uses cs2d_fx_explosion), hostage money HUD messages (Thud_msg.add_money), hostage legs (the original
@@ -30,7 +29,7 @@ the same one.
   compared with the original; texts are cleared on map load (original reset point not checked).
 - **Gen_* entities (2026-10-13, `src/cs2d_gen.c`):** not screenshot-compared with CS2D.exe. Missing: wind on Tp 22 / 0x20 (not spawned by us), screen shake
   from explosions / Lua (only Info_Quake feeds `gen.shake`),
-  the FOW hiding (`FUN_140146fd0`). Light sprites of Tp 3 / 19 / 20 / 21 are done (2026-10-15).
+  the FOW hiding (`FUN_140146fd0`).
   Settings gating rain / snow / effects (DAT_140a1b068, 140a1b05c, 140ddf540) are assumed on, "particles" = 4.
   Thunder decoded as a 10..30 *frame* countdown (assembly 0x14027525b), which seems very frequent: verify on the
   original. smokepuff masks (mode 3) are our choice. Spawns follow 60 Hz, the original spawns per rendered frame.
@@ -81,7 +80,6 @@ the same one.
   - The 3D mode (`Tile3D`).
   - The setting `DAT_140ddf17f` that turns tile blending off is not read; we always blend. In the editor, painting does
     not re-run `updatetile` (we compute the neighbour every frame, so a cleared 0x40 flag never stays cleared).
-    (`test_file_transfer` "Transfer list", once the only failing case here, passes again as of 2026-10-15: 56/56.)
 - **Radar (2026-10-14, `cs2d_radar.c`):** icon queue ported from FUN_140291bd0; minimap texture now uploaded once per
   map. Missing: hostages (no client hostage objects), death icons (`DeathIcon`, frame 4), beeps (`Thud_radar_blink`),
   `Tpl.radarblink` red pulse, `Mode 2` pulsing bomb / rescue / escape tiles, and the full map (`TSmartMinimap`).
@@ -97,7 +95,7 @@ the same one.
 - **Dedicated broadcast quirk:** after some round restarts the dedicated stops broadcasting entity
   changes; the original client shows the same, so it is server behaviour.
 - **Weapon selection HUD, not reconstructed** (KNOWLEDGE "Weapon selection HUD"):
-  - Grenade counts (fixed 2026-10-14): not checked on a screenshot of the original. The Medikit (89) keeps clip 0
+  - Grenade counts: not checked on a screenshot of the original. The Medikit (89) keeps clip 0
     in our table although 0x140a017a8 gives 5 (using it would then consume a count: not verified). Partial pickup
     (2026-10-14) follows FUN_14020ce60 but was not reproduced against the dedicated (does it send [25] for a stack
     that only partly fits?).
@@ -116,14 +114,15 @@ the same one.
   - U.S.G.N. serverlist download: the Internet tab always uses `sys/core/svl.cache`.
   - Filters dialog: the button only shows the count from `sys/filters.cfg`, and filters are not applied.
   - Right-click to add a favorite, and the "Add to Favorites" button in the middle of the footer.
-  - Writing `favorites.lst` / `recentlyjoined.lst`: joined servers go to the Recently Joined tab in memory only.
+  - Writing `recentlyjoined.lst`: joined servers go to the Recently Joined tab in memory only (the browser loads
+    `sys/favorites.lst` / `sys/recentlyjoined.lst`, but only the in-game menu's Favorite row writes favorites).
   - Sorting by the other columns, and the player list request `[FB][5]`.
 - **Server browser, not measured:**
   - The meaning of the "M" header icon (frame 5 of `gui_server.bmp`).
   - The "Connect to IP" dialog layout.
   - The hover / selection highlight alpha (calibrated by eye).
-  - Long names: the original scales them down to fit (`SetScale(225 / width)`), ours clips them.
-    `cs2d_render_text_scaled_ex` now does this (used by the download window).
+  - Long names: the original scales them down to fit (`SetScale(225 / width)`), ours clips them
+    (`cs2d_render_text_scaled_ex` exists but the server list does not use it).
 - **Join file transfer, not reconstructed** (see KNOWLEDGE "join-time file transfer"):
   - HTTP downloads (`url > path` entries, `Thttp`): well-formed ones are skipped and we always end the request with
     `0`, never `0xffff`.
@@ -135,11 +134,6 @@ the same one.
   - The spinner icon (`gfx/gui_load.bmp`) next to the "Downloading" title.
   - Our Tudp has no retransmission of our own reliable packets; the request burst (26 messages) only works because
     nothing is lost on a LAN.
-- **Join messages (fixed 2026-10-15):** `[252,0]` is 2 bytes like the original and `[252,1]` matches its
-  138-byte payload field for field (`knowledge/net-join.md`; the literal fixture is `join1_want` in
-  `test_network_protocol`, and a live join was diffed against the capture with 0 differing fields). Left:
-  the "nickname scramble" slot (`FUN_1402c97f0`) is empty in the capture although the dump computes a
-  mangled name there - we follow the capture.
 - **Spectator, not reconstructed** (KNOWLEDGE "Spectator" has what is done):
   - The Menu / Fog buttons open nothing (game menu, fog toggle). Map toggles the minimap; its hostage / flag / bomb /
     Dom_Point dots, the per-player fog test under sv_specmode 2 and the `TSmartMinimap` variant are missing.
@@ -174,29 +168,20 @@ the same one.
 - **Construction / dynamic objects, not reconstructed or not measured** (KNOWLEDGE "Construction mode"):
   - No screenshot of the original's buildings / "Construct" menu yet: the menu window colors reuse our Tgui window,
     the "X" button (`Tgui_hudmen.fbutton`) is drawn like a small button, and the center message shade bar and fade
-    (1 s) are calibrated. The team menu button x is resolved (2026-10-15): the reference screenshots put the
-    "Select Team" buttons at (205, 120) with the window at (125, 20) -> window + (80, 100), while the "Construct"
-    buttons are at window + (16, y) (KNOWLEDGE dynobj) - the two menus simply differ, our + 80 for the team menu is
-    the screenshot's value.
-  - Not drawn: laser mine beams, Construction Site smoke particles, dynamic lights; the turret tracer reach is the
-    `Tdo.shoot` `c_dist` 400 now (2026-10-15, was a calibrated 300).
+    (1 s) are calibrated. The "Select Team" button x is the screenshot's value (KNOWLEDGE dynobj: window +
+    (80, 100) for the team menu, window + (16, y) for "Construct").
+  - Not drawn: laser mine beams, Construction Site smoke particles, dynamic lights.
   - Lua images / NPCs (2026-10-14, KNOWLEDGE dynobj "Lua images"): not compared with a screenshot of the original.
     Images: player avatars (no avatar download; the avatar_load placeholder always spins), physics parents
     (`[51,8]`, no physics objects), image obstacle shadows (ObstacleShadow2 / TLightingSprite for shadow 0), 3D tiles
     (Tile3D) and fog of war on follow images are not done; solid blend draws as alpha 1; `<tile:N>` and the flag
-    images are assumed midhandled. The vortigaunt beam and the soldier tracer are drawn (`Tdo.shoot` 0x140209b50,
-    2026-10-15: `rot + Rnd(-3, 3)` with c_dist 400 / c_offset 15 - only the beam's colour mode 0 is still assumed),
-    the die sounds are done (`Tdo.kill` case 0x1e, all 5 types resolved from the sound loader) and the zombie sheet
-    is 64 x 96 (2 x 3 cells of 32 x 32, BMP header). The attack spin now decays per drawn frame (2026-10-15:
-    `render_npc`, not `update_npc`). Missing: the gore-gated ground blood decals and the snark's 9-particle
-    fountain, and the health table 0x1409ed7f0 (a runtime array).
-  - Building hit debris (`cs2d_fx_building_hit`): the fragments stop in a wall tile now (2026-10-15, Tp.draw case
-    0xc via `cs2d_fx_update`); the look is still not compared with a screenshot. `particles` (`DAT_140ddf182`) is read
+    images are assumed midhandled. The vortigaunt beam's colour mode 0 is still assumed. Missing: the gore-gated
+    ground blood decals and the snark's 9-particle fountain, and the health table 0x1409ed7f0 (a runtime array).
+  - Building hit debris (`cs2d_fx_building_hit`): the look is not compared with a screenshot. `particles` (`DAT_140ddf182`) is read
     from sys/config.cfg instead of the fixed 4; the `3 < particles` gates of the water splash / flashbang /
     explosion lights still assume the shipped value.
   - Building hover text (KNOWLEDGE "Construction mode"): not compared with a screenshot of the original; the text
-    height uses our 15 px line height for Max2D `TextHeight`. The hostage (bit 4) hover text is done (2026-10-15,
-    `cs2d_hostages_hovered` + `render_hostage_hover`) and so is the ground item hover (`FUN_14029ffb0`, `THudItemHover`).
+    height uses our 15 px line height for Max2D `TextHeight`.
   - Player hover text: no smoke cover check (no smoke grenades) and no `Tpl.fog` (no fog of war); the click on the
     hovered player to spectate it (`FUN_14029fc70`) is not done. `team_game()` stands for both `0x140a015d0` tests
     (buildings `== 1`, players `!= 0`): the table values are not read yet.
@@ -204,17 +189,13 @@ the same one.
     ("Select Teleporter Destination" 0528), Gate Field team blocking
     for movement, kill rewards and `mp_building_limit` / `mp_building_price` overrides.
   - The respawn-mode table `0x1409f57b8` is assumed as modes 1..4; like `0x140a015d0` it is a BlitzMax array filled
-    at runtime (`PTR_bbEmptyArray_...`), so it was not read. `g_prop_class` is no longer approximated by our collision:
-    `cs2d_map_prop_class` (`cs2d_map.c`) is the single helper (2026-10-15, `test_prop_class`); its global
-    (`0x140a0fd90`) is a runtime array too, so the values come from the mode names and the call sites, not a byte dump.
+    at runtime (`PTR_bbEmptyArray_...`), so it was not read.
   - `[252,7,11]` weapon settings are not read.
-- **CTF:** take / drop / return messages and the carried flag are done; capture messages (0589 / 0590), scores (`[64]`)
+- **CTF:** capture messages (0589 / 0590), scores (`[64]`)
   and the return money bonus are not. Dropped ground items have no random rotation (Titem.add Rnd(360)). The draw order
   of the base / carried flag over the walls is from a screenshot, not from the code.
 - **Light engine, not reconstructed** (KNOWLEDGE "Light engine"; what exists matches the original call for call):
-  - Done 2026-10-15: flashlights, every Tshoot light, C4 beep, explosion cap, Tp 2 flares, particle / building / Lua
-    image light sprites, Lua image and flying projectile day shadows (knowledge "Light pool" ff.). Approximations:
-    our fx particles are not a Tp port, so their light sprites mirror our sizes; the Vortigaunt beam color (mode 0)
+  - Approximations: our fx particles are not a Tp port, so their light sprites mirror our sizes; the Vortigaunt beam color (mode 0)
     and NPC shot spread are assumed; images on physics objects keep no shadow; the C4 radar blink is not drawn.
     `FUN_14025f0e0` / `draw_flying_shadow` are not covered by the emulator (stubbed), only by eye.
   - Flashlights: `Tpl.fog` (FOW-hidden players) does not switch them off; the flare1 on the player skips the per-frame
@@ -229,49 +210,34 @@ the same one.
   - The sprite / obstacle queues (Env_Sprite, palm / tree leaves, alarms) are not covered by the emulator test (the scene
     file does not carry them); they were checked on screenshots only.
 
-## GL 1.x / GDI+ removal (started 2026-10-12, independent of the Wasm port)
+## GL 1.x / GDI+ removal (done 2026-10-12..2026-10-15, independent of the Wasm port)
 Goal: drop the two Windows-only backends the renderer still depends on. The UDP network layer is explicitly out
 of scope, and this is *not* the Wasm port — the phases just happen to be the same work the port needs.
-- **Phase 1 — image decoding: DONE (2026-10-12).** `src/cs2d_image.c` + `third_party/stb_image.h` replaced
-  `GdipCreateBitmapFromFile` / `GdipCreateBitmapFromStream` / `GdipBitmapGetPixel` / `GdipDisposeImage` and the
-  `shlwapi` `SHCreateMemStream` trick for `.ico`; `build.bat` no longer links `-lgdi32`. Locked by
-  `test_image_decode` (9 assets, FNV-1a clip vs an independent decode); the measured format inventory is in
-  KNOWLEDGE "Image decoding is portable".
+All three phases are done (details in KNOWLEDGE "Image decoding is portable", "Text engine", "Renderer" and
+`knowledge/web-port.md`); only the decisions and the owed verification below stay open.
 - **Phase 2 — text: DONE off Windows (2026-10-15).** `src/cs2d_font.c` has a GDI+ backend (still the Windows
-  default) and an stb_truetype backend with identical metrics (KNOWLEDGE "Text engine"); the plan below was
-  followed. Left: decide whether the desktop switches to stb too (pixels differ by 6..12 / 255 on average).
-  The original plan:
-  - put it in an isolated, GL-free module (`src/cs2d_font.c`) so measurement can be unit-tested with no window;
-  - **the risk is metrics, not pixels:** every HUD and dialog measurement goes through
-    `cs2d_render_text_width_ex` / `cs2d_render_text_prefix_width`, so the stb advances must equal the
-    `GdipMeasureString` bounding box (including the measure-trailing-spaces flag) or the whole layout drifts;
-  - measure before switching: dump `<font, string, bbox>` for a corpus of real UI strings from the *current*
-    build, then compare stb_truetype advances string by string and lock the equal ones in a test;
-  - keep the raster conventions: white text on opaque black, coverage read from the G channel, and the
-    stem-darkening gamma (`pow(a, 0.62)` into `s_gamma_lut`).
-- **Phase 3 — OpenGL 1.x: DONE (2026-10-12) via GL 3.3 core + shaders** (the user chose core 3.3 + shaders
-  over `SDL_Renderer`; see WORKLOG). New `src/cs2d_gl.c` + `include/cs2d_gl.h` own the whole drawing path:
-  the GL 3.3 entry points are loaded from `SDL_GL_GetProcAddress` (opengl32 only exports GL 1.1), one shader
-  does `texture * vertex colour` with an alpha-test `discard` (replacing `glAlphaFunc`), and one streaming
-  VAO/VBO is fed by a batcher. `cs2d_render.c` and `cs2d_light.c` no longer contain a single fixed-function
-  call; the FBO loader kept only the core names. The entry-point inventory is in KNOWLEDGE "Renderer".
-  - **Pixel comparison: DONE (2026-10-15).** `tools/agent/pixel_diff.py` + `pixdiff_probe.lua` compare our
-    frame with the original's on the same scene (prison_funst3r, tile 44,25, 850x480): whole frame
-    **18.52 %** of pixels differ, mean |delta| 4.93, PSNR 23.30 dB; playfield only (HUD + radar masked)
-    **14.13 % / 2.32 / 28.19 dB**, against a run-to-run noise floor of 3.9-4.7 % / 0.35-0.83. The residual
-    is the HUD strips plus a region where ours is darker (tiles (38..41, 23..28) of that map). Recipe and
-    numbers: `knowledge/rendering-notes.md` "Pixel comparison". Still owed: the same diff on a daylight map
-    (de_dust2) and with `light 0..5` / `mapshadows 0..4` swept.
+  default) and an stb_truetype backend with identical metrics (KNOWLEDGE "Text engine").
+  Left: decide whether the desktop switches to stb too (pixels differ by 6..12 / 255 on average); the metrics
+  corpus and the raster conventions it had to match are in KNOWLEDGE "Text engine".
+- **Phase 3 — OpenGL 1.x: DONE (2026-10-12) via GL 3.3 core + shaders.** `src/cs2d_gl.c` + `include/cs2d_gl.h`
+  own the drawing path (entry points from `SDL_GL_GetProcAddress`, one `texture * vertex colour` shader with an
+  alpha-test `discard` in place of `glAlphaFunc`, one streaming VAO/VBO batcher); no fixed-function call is left.
+  Entry-point inventory: KNOWLEDGE "Renderer".
+  - **Pixel comparison (2026-10-15):** our frame vs the original's on the same scene (prison_funst3r, tile 44,25,
+    850x480): whole frame **18.52 %** differing pixels, mean |delta| 4.93, PSNR 23.30 dB; playfield only (HUD +
+    radar masked) **14.13 % / 2.32 / 28.19 dB**, against a 3.9-4.7 % / 0.35-0.83 run-to-run noise floor. **Still
+    owed:** the residual (HUD strips + a darker region, tiles (38..41, 23..28)), the same diff on a daylight map
+    (de_dust2) and a `light 0..5` / `mapshadows 0..4` sweep. Recipe and numbers: `knowledge/rendering-notes.md`
+    "Pixel comparison".
   - **Light engine on core:** `glBlendFuncSeparate` + render-to-texture are core in 3.3 and the `emu_light.py`
     trace test still passes; the on-screen compositing (`m2d_draw_buffer`, `cs2d_gl_bind_target`) is now
     covered *with the light engine on* by the pixel comparison above, but not by a `light 0..5` /
     `mapshadows 0..4` sweep.
   - **Fallback removed:** the compatibility context is gone; a machine without a 3.3 core context fails to
     start (clear stderr message). Decide later whether to keep a legacy path.
-  - `include/cs2d_render.h` includes `cs2d_platform.h` instead of `<windows.h>` (2026-10-15).
 
 ## Web port (Emscripten) — started 2026-10-15
-- **Done:** phase 0 (the suite under Node: `tools/web/build_tests.sh`, 56/56) and an offline client in WebGL2
+- **Done:** phase 0 (the suite under Node via `tools/web/build_tests.sh`) and an offline client in WebGL2
   (`tools/web/build_client.sh` + `serve.sh`, `out/web/cs2d.html?de_dust2`): main menu and de_dust2 render like
   the desktop capture (headless Chromium screenshots; eyeballed, no pixel diff). Facts in KNOWLEDGE
   "Web/Wasm portability".
@@ -302,6 +268,6 @@ of scope, and this is *not* the Wasm port — the phases just happen to be the s
 - **settile (2026-10-15, `cs2d_customtile.c`):** bytes and Lua results verified on the dedicated; the look of changed
   tiles is not screenshot-compared with CS2D.exe. `Ttileblend.updatetile` clearing the 0x40 flag next to a same tile is
   still not stored (we test it at draw time), so addcheck's "already like this" test can differ for such tiles. The
-  advanced radar image (`s_minimap_full`) keeps the map's tiles. A cut `[252,7,9]` now shows error 201 and returns to the
-  menu (2026-10-15); the original keeps the join socket open until Okay/Cancel sends `[253,9]` - we close it with the
-  game scene and send no `[253]` at all (no `[253]` is sent at abort time in either case).
+  advanced radar image (`s_minimap_full`) keeps the map's tiles. A cut `[252,7,9]` aborts like the original's shared
+  path (`[253]` is only sent by the error window's Okay/Cancel; `knowledge/net-join.md`); we close the join socket
+  with the game scene instead of leaving it open for that answer.
