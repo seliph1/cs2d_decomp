@@ -71,6 +71,14 @@ Most useful tools:
 Limitations:
 
 - `procedure_pseudo_code` fails ("Response buffer size exceeded") on huge functions. Use objdump.
+- **REA can time out while Ghidra runs its first analysis of a freshly opened binary** (`open_binary` succeeds,
+  then every call answers `MCP request to "rea" timed out after 60s`; the MCP timeout lives in
+  `cline_mcp_settings.json`). The objdump path works meanwhile: `objdump -d -M intel <exe> > all.asm`, then grep
+  the disassembly for the *resolved* target of a `lea`. BlitzMax string constants are single objects in `.data`
+  (class `0x14061e580` at `+0x00`, length i32 at `+0x0c`, UTF-16 text at `+0x10`), so scanning the file for that
+  class pointer lists a literal block together with its VAs (WORKLOG 2026-10-16 has the one-liner). Remember
+  `VA = section file offset + (section VMA - section file offset)` from `objdump -h` - guessing it costs an
+  off-by-0x10000.
 - BlitzMax calls methods through type tables, so direct callers are often missing. Search the PE for
   the function pointer with `python -I tools/agent/peptr.py CS2D.exe <hexaddr>` to find the vtable slot.
 - Globals loaded by the resource registry are documented in `docs/cs2d_gfx_descriptors.json`
@@ -115,6 +123,7 @@ All output goes to `tools/agent/out/`, which is git-ignored.
 | `capture_original.sh <lua> <tag> "<steps>" [map] [secs]` | Dedicated (offline, optional Lua probe) + UDP proxy + **original** `CS2D.exe`, driven by `drive_orig.ps1` |
 | `capture_ours.sh <lua> <tag> "<capture steps>" [map] [secs]` | Same, but **our** `cs2d_client.exe --capture:…` with `CS2D_NET_LOG=1` |
 | `capture_transfer.sh <ded dir> <tag> "<steps>" [map] [secs] [password]` | A dedicated in **another folder** (e.g. the modded server in `C:\C4`) + proxy + our client run from a fresh copy of the game data in `out/game_<tag>/`, so downloads never land in the repo. Lists the new files. `CLIENT=orig` runs the original `CS2D.exe` there (steps are `drive_orig.ps1` steps); `KEEP=1` reuses the copy (second join). Restores the dedicated's `sys/server.cfg` |
+| `capture_two.sh <lua> <tag> "<orig steps>" "<our steps>" [map] [secs]` | **Two clients at once on one original dedicated**: the original `CS2D.exe` (proxy 36980) and our `cs2d_client.exe --capture` (proxy 36981), both -> 36970. Output `ded_two_<tag>.log`, `proxy_two_<tag>_{orig,our}.log`, `cli_two_<tag>.log` and an opcode histogram per direction; each client needs its own proxy because `udp_proxy.py` replies to a single address. Used with `lua/twoclient_fire_probe.lua` (places and arms both players) for the multi-client relay check |
 | `capture_server.sh <tag> "<steps>" [map] [secs]` | **Our** `cs2d_server.exe` (-offline, port 36970) + proxy + the **original** `CS2D.exe` (same driver steps as `capture_original.sh`): `srv_<tag>.log`, `proxy_srv_<tag>.log`. Diff the `S>C` lines of `dumpops.py` against a `capture_original.sh` run |
 | `udp_proxy.py <listen> <server> <log> <secs>` | Logs every datagram as `t C>S/S>C len hex`. `<server>` is a local port or `host:port` (for a remote server, run the client from a copy such as `out/game_remote_orig/` so downloads stay out of the repo) |
 | `browser_proxy.py <log> <secs> [server port]` | Server browser: listens on 127.0.0.1:36980 (put it in a test `sys/core/svl.cache`) and 0.0.0.0:36963 (LAN broadcast), forwards to the dedicated. Back up and restore `svl.cache` |

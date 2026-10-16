@@ -848,6 +848,32 @@ static void sv_recv_join1(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
     cs2d_pkt_t *p = sv_packet(sv, c, true, false);
     cs2d_pkt_w_byte(p, 252);
     cs2d_pkt_w_byte(p, 2);
+
+    /*
+     * connect_attempt runs before every sanity check: the dedicated parses the whole [252,1],
+     * calls the per-IP flood guard FUN_1400d4c90(ip, 0xfc, 200, 60000) (0x1401dcd12) and then
+     * the whole hook list of the +0xc8 slot (0x1401dcd41 -> 0x1401de995). The hook therefore
+     * sees the unverified name / USGN / Steam fields, exactly as help.php warns. A non-empty
+     * returned string aborts the join: the server logs
+     *   JOIN FAILURE: <name> (<ip>:<port>) can't join (Lua connect_attempt returned: <value>)
+     * and answers [252, 2, 4, <value>] (0x1401dcdd8, 0x1401dce77, 0x1401dcec7): status 4 is the
+     * ban status and the string is the ban reason the client displays.
+     */
+    char ip_str[32];
+    snprintf(ip_str, sizeof(ip_str), "%s", inet_ntoa(c->addr.sin_addr));
+    int port = ntohs(c->addr.sin_port);
+    char reason[192];
+    if (cs2d_sv_lua_hook_connect_attempt(sv, name, ip_str, port, (int)usgn, usgn_name, steam_id, steam_name,
+                                         reason, sizeof(reason)) == 1) {
+        char why[256];
+        snprintf(why, sizeof(why), "can't join (Lua connect_attempt returned: %s)", reason);
+        sv_join_fail_log(c, name, why);
+        cs2d_pkt_w_byte(p, 4);
+        cs2d_pkt_w_lstr(p, reason);
+        sv_flush(sv, c);
+        return;
+    }
+
     int status = 0;
     int len = (int)strlen(name);
 
@@ -892,8 +918,6 @@ static void sv_recv_join1(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
             status = 2;
         } else {
             char ban_reason[64] = "";
-            char ip_str[32];
-            snprintf(ip_str, sizeof(ip_str), "%s", inet_ntoa(c->addr.sin_addr));
             if (cs2d_sv_is_banned(sv, ip_str, usgn, steam_id, ban_reason, sizeof(ban_reason))) {
                 sv_join_fail_log(c, name, "can't join (banned)");
                 status = 4;

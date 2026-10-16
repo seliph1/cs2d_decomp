@@ -52,4 +52,5 @@ When you confirm or refute something, update the topic file (or add one and list
 | [special-weapons.md](knowledge/special-weapons.md) | Laser, flamethrower, launchers, Portal Gun; consumable items, spawned item ammo | 3 KB |
 | [sound.md](knowledge/sound.md) | Sound effects: play formulas, sound globals → files, triggers | 3 KB |
 | [dedicated-server.md](knowledge/dedicated-server.md) | Dedicated server port: Tudp server side, recv 252 join checks / status codes, [252,6] fields, snapshot builders, ping block, Lua 5.1.4 static | 5 KB |
+| [standard-gamemode.md](knowledge/standard-gamemode.md) | Standard game mode (`sv_gamemode 0`): round end reasons [226], win conditions, time out, freezetime, V.I.P., hostages, bomb | 6 KB |
 | [performance.md](knowledge/performance.md) | Performance (measured 2026-10-12, desktop, 850x480) | 11 KB |

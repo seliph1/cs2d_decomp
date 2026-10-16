@@ -5,6 +5,17 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **Standard game mode (2026-10-16, `docs/agents/knowledge/standard-gamemode.md`):** the dedicated's
+  round model is now a port of the original (round end reasons + winner/MVP table, the per-mission time
+  out, the freezetime phase, the V.I.P. and the >50 % hostage rule) - see `src/cs2d_sv_game.c`. Still
+  open: the MVP ranking stands in `score * 2 + assists` because our `Tpl` has no separate `kills`
+  counter; the V.I.P. announcement (`[20, id, 3, look]` plus `[42, id, 3, 200]`) and the round start
+  sound (`0x1403977c0` `Rand(1,4)` + the samples) are not compared on a proxy capture; the freezetime
+  gate is not verified with two clients (our client does not freeze its input yet); the offline client
+  model (`src/cs2d_game.c`) still has the simplified win conditions without the mission types, and its
+  `cs2d_game_start_plant` / `cs2d_game_tick_plant` are dead code: offline (`cs2d_client.exe` without a
+  server) a plant never completes and no planted-bomb ground item is created, so the C4 stays invisible
+  and cannot be defused there (the online path is fixed - see `knowledge/hostages-bomb.md`).
 - **Special weapons / items (2026-10-14):** none checked against a proxy capture. The client `[33]` handler is
   `FUN_14011c0b0` (clip / reserve sent + 1, then FUN_14011ba70). Missing: money indicator `Thud_msg.add_money` on Coins/Money/Gold, laser / flame
   lights and TSparkle details, Tp 23 / Tp 0x1d sprites (approximated with glowdot), Satchel Charge attack / attack2
@@ -33,7 +44,9 @@ the same one.
   vote lists have no scrolling; vote player names are drawn gray (original screenshot shows team colours). Leaderboard:
   no avatars (`drawAvatarRect`), MVP star drawn as text, the "no answer yet" placeholder text (`bbs____`) not drawn.
   Briefing lines are not word-wrapped (Tgui_tb). The original keeps the menu behind sub-windows; ours closes it.
-  Not checked: what the original sends on Disconnect (we send `[253,0]` like before).
+  Disconnect packet **verified** (2026-10-16): the original sends `[253, reason]` (`FUN_1401c7500`, `0x1401c7970`)
+  and "Disconnect / Quit" passes reason 0, i.e. `fd 00` - byte-identical to ours (`knowledge/net-messages.md`).
+  Still open: the reason codes the *server* sends in `[253,pid,reason]` to the other clients are not compared.
 - **Lua HUD texts (2026-10-14, `src/cs2d_hudtxt.c`):** `mp_hudscale` implemented (modes 0..3, zoom, aspect letterbox, and sharpness scaling when screen_h > 589); [54] tweens of Tdo targets (Lua images) are parsed and skipped; `®path` inline images not
   compared with the original; texts are cleared on map load (original reset point not checked).
 - **Gen_* entities (2026-10-13, `src/cs2d_gen.c`):** not screenshot-compared with CS2D.exe. Missing: wind on Tp 22 / 0x20 (not spawned by us), screen shake
@@ -231,7 +244,8 @@ sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT 
 `knowledge/dedicated-server.md`; test: `tools/agent/capture_server.sh`.
 - **Phase 1 (done 2026-10-15):** transport, connections, join, snapshot, server info, ping block. Gaps inside it:
   `[252,10]` spray data is dropped (no `[28]` relay, Tpl `+0x3c8`), `[252,50]` map transfer (status 13), the Lua
-  `connect_attempt` hook, ban list, flood guard `FUN_1400d4c90`, secret generator, player id allocation order
+  `connect` / `connect_initplayer` hooks (`connect_attempt` is done, 2026-10-16: `sv_recv_join1`), ban list,
+  flood guard `FUN_1400d4c90`, secret generator, player id allocation order
   (`FUN_140098050`), resend interval / timeout (estimated 500 ms / 30 s), section 11 raw table is a capture
   literal (build it from the weapon tables), sections 2..9 always empty, `FUN_1401dba60` (3 zero bytes), `[247]`
   counters are ours (fps / bytes), `[253]` leave text, U.S.G.N. / serverlist (we never register: always offline).
@@ -261,7 +275,15 @@ sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT 
   Dynamic object integration with `cs2d_dynobj` world. Generic cvar storage (`sv->cvars[128]`), settings `mp_luaserver`, `mp_luamap`.
   Console log hook `hook "log"` wired to `cs2d_server_print`. Locked in `test_server_phase6_lua` (68/68 tests pass).
 - **Phase 7 (done 2026-10-16):** Live client interaction against CS2D.exe, 100% Lua commands (88/88) and hooks (79/79) coverage, file transfer system (`[252,50]` and `sv_maptransfer`), dynamic objects snapshot section 5 (`[252,7,5]`), spray logo storage and relay (`[252,10]`, `[28]`, `sv_spraytransfer`). Locked in `test_server_phase7_transfer_and_spray` (69/69 tests pass).
-- **Phase 8 (next):** Dedicated server full multi-client game scenario testing & network proxy verification against original client / server.
+- **Phase 8 (in progress, 2026-10-16):** the two-client harness exists (`tools/agent/capture_two.sh` +
+  `twoclient_fire_probe.lua`): one original dedicated, the original `CS2D.exe` and our client behind separate
+  proxies. The recorded session proved the cross-relays both ways (join/leave notices, `[7]` shots, `[12]` rot,
+  `[10]` positions, spawn / team / round-start broadcasts) and that our message shapes match the original's -
+  see `knowledge/net-messages.md` "Multi-client session". Left: the original's first datagram carries the control
+  triple `03 32 00` and ours does not (the only byte-level difference found; the dedicated tolerates both, type 3
+  is not decompiled); our position reporting while walking was not comparable in that run (harness artifact, not
+  verified); a longer scenario (buy, kill/death, spectate, chat, round end, map change) is not captured yet, and
+  two clients were never run against **our** dedicated (`capture_server.sh` runs one).
 
 ## GL 1.x / GDI+ removal (done 2026-10-12..2026-10-15, independent of the Wasm port)
 Goal: drop the two Windows-only backends the renderer still depends on. The UDP network layer is explicitly out

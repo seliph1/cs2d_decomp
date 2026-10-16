@@ -148,7 +148,18 @@ void cs2d_sv_lua_hook_clientsetting(cs2d_server_t *sv, int id, int setting, int 
 void cs2d_sv_lua_hook_itemfadeout(cs2d_server_t *sv, int iid, int type, int x, int y);
 void cs2d_sv_lua_hook_shutdown(cs2d_server_t *sv);
 int  cs2d_sv_lua_hook_connect(cs2d_server_t *sv, const char *ip, int port, const char *usgn, const char *name);
-int  cs2d_sv_lua_hook_connect_attempt(cs2d_server_t *sv, const char *ip, int port);
+/*
+ * connect_attempt(name, ip, port, usgnID, usgnName, steamID, steamName), the 7 arguments of
+ * help.php. steamID is a string there and the original pushes it as one (cs2d_dedicated.exe
+ * 0x1401dea4a, bbStringFromLong).
+ *
+ * Returns 1 and fills out_reason with the value the script returned when that value is not
+ * empty: the caller then cancels the join with status 4 (ban) and the string as ban reason.
+ * Returns 0 when no script or every script returned "".
+ */
+int  cs2d_sv_lua_hook_connect_attempt(cs2d_server_t *sv, const char *name, const char *ip, int port,
+                                      int usgn, const char *usgn_name, int64_t steam_id,
+                                      const char *steam_name, char *out_reason, size_t max_reason);
 void cs2d_sv_lua_hook_connect_initplayer(cs2d_server_t *sv, int id);
 void cs2d_sv_lua_hook_disconnect(cs2d_server_t *sv, int id, const char *reason);
 int  cs2d_sv_lua_hook_hitzone(cs2d_server_t *sv, int image_id, int player, float x, float y);

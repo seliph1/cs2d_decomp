@@ -38,6 +38,14 @@ Probes: `tools/agent/lua/hostage_probe.lua` (cs_office), `bomb_probe.lua` (de_du
   (removes item 63, big particle burst FUN_1401f1130, screenshake 50).
 - Lua: `equip 55` is refused ("this would lead to problems"); `spawnplayer` resets the inventory (use `setpos`).
 - Item 63 is "Planted Bomb" (`gfx/weapons/plantedbomb_d.bmp`), not Gold (68).
+- **Planted C4 is never a pickup (fixed 2026-10-16):** `cs2d_sv_step_items`' generic "does the player
+  already own it" fallback also matched item 63 (its `CS2D_SLOT_ITEM` matches no branch), so the
+  *planter*, who keeps standing on the tile he planted, collected the C4 on the next tick. The server
+  broadcast `[25]` and every client removed the ground item (and the use key of
+  `cs2d_scene_game` looks up that item to start a defuse), so the bomb was invisible for both teams
+  and could not be defused - the round only ended with the explosion. The original only ever touches
+  the planted item with the defuse use (`[26, 3]`). Regression: `test_server_phase5_bomb_hostages_bots`
+  (the plant must survive a `cs2d_sv_step_items` with the planter on the tile, no `[25]`).
 - **Planted C4 beep** (`FUN_1402553d0`, per frame): `sfx/weapons/c4.wav` at the bomb, red Tp 2 flare (fade 0.1, sx 0.4),
   light particle (255, 0, 0 -> 35, 80, 20); next beep by seconds left r: r <= 3 100 ms, < 8 200, < 12 400, < 16 750,
   < 20 1000, else 1500. Radar blink (`Thud_radar_blink`, T / spectators) not drawn. Code: `bomb_beep` (scene_game).

@@ -2601,10 +2601,42 @@ int cs2d_sv_lua_hook_connect(cs2d_server_t *sv, const char *ip, int port, const 
     return dispatch_hook(sv, "connect", 4, push_connect, &a, NULL, 0);
 }
 
-int cs2d_sv_lua_hook_connect_attempt(cs2d_server_t *sv, const char *ip, int port)
+/*
+ * connect_attempt: 7 arguments in the order the original pushes them (cs2d_dedicated.exe
+ * 0x1401de995, the +0xc8 slot of the hook list array - the client dump uses the same 200):
+ * name (0x90 rsi), DottedIP(ip) (0x14041f690), port (u16 of the connection +0x10), usgn id,
+ * usgn name, the steam id as a string (bbStringFromLong) and the steam name. The returned
+ * value is read back as a string; the join path only looks at whether it is empty.
+ */
+typedef struct {
+    const char *name, *ip, *usgn_name, *steam_name;
+    int64_t     steam_id;
+    int         port, usgn;
+} connect_attempt_args_t;
+
+static int push_connect_attempt(lua_State *L, void *ctx) {
+    connect_attempt_args_t *a = (connect_attempt_args_t *)ctx;
+    char steam[32];
+    snprintf(steam, sizeof(steam), "%lld", (long long)a->steam_id);   /* help.php: steamID is a string */
+    lua_pushstring(L, a->name ? a->name : "");
+    lua_pushstring(L, a->ip ? a->ip : "");
+    lua_pushinteger(L, a->port);
+    lua_pushinteger(L, a->usgn);
+    lua_pushstring(L, a->usgn_name ? a->usgn_name : "");
+    lua_pushstring(L, steam);
+    lua_pushstring(L, a->steam_name ? a->steam_name : "");
+    return 7;
+}
+
+int cs2d_sv_lua_hook_connect_attempt(cs2d_server_t *sv, const char *name, const char *ip, int port,
+                                     int usgn, const char *usgn_name, int64_t steam_id,
+                                     const char *steam_name, char *out_reason, size_t max_reason)
 {
-    hook_args_t a = { .s1 = ip, .a = port };
-    return dispatch_hook(sv, "connect_attempt", 2, push_leave, &a, NULL, 0);
+    if (out_reason && max_reason > 0) out_reason[0] = '\0';
+    connect_attempt_args_t a = { .name = name, .ip = ip, .usgn_name = usgn_name, .steam_name = steam_name,
+                                 .steam_id = steam_id, .port = port, .usgn = usgn };
+    dispatch_hook(sv, "connect_attempt", 7, push_connect_attempt, &a, out_reason, max_reason);
+    return (out_reason && out_reason[0] != '\0') ? 1 : 0;
 }
 
 void cs2d_sv_lua_hook_connect_initplayer(cs2d_server_t *sv, int id)

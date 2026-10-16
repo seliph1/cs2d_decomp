@@ -20,6 +20,36 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 | Process | `[30][mode]` | 1 plant start, 2 plant abort, 4 defuse abort (`FUN_1401cb510`, `FUN_1401f5f60`) |
 | Spec position | `[32][x+32768 u16][y+32768 u16]` | Unreliable, once per second while dead or Spectator: the camera center |
 | Flashlight | `[57][state]` | Reliable (proxy `flashlight_probe.lua`). Bind `flashlight` (F): `FUN_140167440(id, 1 - flashlight, 1)`, sent only while alive in a team, `mp_flashlight` 1 and not a T in Zombies; the flag changes on the server's echo |
+| Leave | `[253][reason][reason str if reason ≥ 16]` | Reliable. `FUN_1401c7500` sends it at `0x1401c7970` (`Createpacket(1,0)` + `wbyte(0xfd)` + `wbyte(reason)`); "Disconnect / Quit" (Tgui_hudmen menu 2, `Tgui_hudmen.c:2246/2273`) passes reason **0**, so the wire bytes are `fd 00` (our own console: `[net out 4] 0e 00 fd 00`). Ded `FUN_1401e3790` reads the byte, reads a u8 string when `reason >= 0x10`, and returns 5 (drop datagram) when `reason == 4` |
+**Disconnect codes are not opcodes.** The client prints `Disconnect Reason: <text> (Code N)` and then `----- Disconnected -----` from that same `FUN_1401c7500` (dump `1401c0000.c:2549` sets `bbs_Client_request` when `param_2 == 0`, `:2713-2719` builds the line): 0 = Client request (the player left), 7 = Error during join process, 8 = Failed to load map, 9 = Join process cancelled by client, 0x13 = Chat flood; 1..6 and 10..0x12 come from language tables, the default is `Unknown`. **A message opcode 0 does not exist**: the dedicated's receive jump table (`0x1406cdb14`) is indexed by `opcode - 7` (7..253, `cs2d_netcode_codes.txt` starts at `recv 7 fire`), so a lone `00` byte in a payload is either a leave *reason* or a desynchronised parser (see `net-transport.md`).
+
+## Multi-client session: the original client + ours on one original dedicated (2026-10-16)
+
+`tools/agent/capture_two.sh` (+ `twoclient_fire_probe.lua`) runs the original `CS2D.exe` and our
+`cs2d_client.exe` against the *same* original dedicated, each through its own `udp_proxy.py` (36980 / 36981 ->
+36970, because the proxy forwards replies to one client address). Decoded logs of the session that verified the
+table below: `tools/agent/out/{proxy_two_two2_orig,proxy_two_two2_our,cli_two_two2}.log`.
+
+- **Join / leave of the other player reaches both clients**: `[248,pid,name…]` (`f8 02 06 "real 2" …` to the
+  original) and the spray `[28,pid,2,…]` (`1c 02 02 15 00 …`); on leave `[253,pid,0,…]` (`fd 02 00 e2 01 00 00
+  03 00 20 2d 20 03`). Our client sends `[253,0]` when its socket closes; the original sends nothing when it is
+  killed (`taskkill`).
+- **Shots cross both ways** and the layouts match: a client sends `[7][counter u8]` (`07 00`, then `07 02`,
+  `07 03`, … - both clients produced the identical sequence) and the server relays `[7][pid][counter]`
+  (`07 02 01…0f` to the original for our shots, `07 01 01…09` to ours for the original's).
+- **Rotation**: ours sends `[70][rot u16][aim u8]` (`46 4e 3c 37`) and the server relays `[12][pid][rot u16]`
+  (`0c 02 4e 3c`), which is the same relay the original's own `[71]` produces (`47 b0 06 2d 07 00 c0 35` = run,
+  x 1712, y 1837, rot `00 c0`, aim `35`).
+- **Position**: both send the 5-byte `[10][x u16][y u16]` (ours `0a 30 05 10 03`, the original `0a b0 06 2a 07`)
+  and receive the other one as `[10][pid][x][y]` (`0a 01 b0 06 22 07`). The original reports position far more
+  often while walking (~60 Hz vs a handful in our run) - likely the capture harness walking only a few frames,
+  not verified.
+- **Shared broadcasts** seen by both clients: `[20]` team, `[21]` spawn, `[22]` round start (12 bytes/player),
+  `[15][pid][x][y][…]` teleport/position, `[247]` ping list, `[240]` chat/server info.
+- **Only byte-level difference found**: the original's *first* datagram is `02 00 03 32 00 fc 00`, i.e. its
+  payload starts with the control triple `03 32 00`; ours is `02 00 fc 00`. The original dedicated accepts both
+  (the triple is skipped like the type 1..4 ACK triples), so ours omits it - see `OPEN_ISSUES.md`.
+
 
 ## Network: server → client (proxy, Lua)
 

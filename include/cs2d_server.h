@@ -244,6 +244,20 @@ typedef struct {
     int                round_end;       /* DAT_1407dfe6c: pending round end reason, 0 = round running */
     int                round_end_delay; /* DAT_1407dfe70 (ms) */
     uint32_t           round_end_ms;
+    int                round_end_type;  /* the type FUN_14015c840 was called with (winner/MVP source) */
+    int                round_winner;    /* _DAT_1407dfe78: 1 T, 2 CT, 0 draw (FUN_14015c080) */
+    int                round_mvp;       /* _DAT_1407dfe7c: MVP player id */
+    /* Standard game mode (sv_gamemode 0) mission state (phase 5) */
+    int                round_phase;     /* DAT_1407dfea0: 0 freezetime, 1 playing (2 = decided; our
+                                         * port keeps phase 1 and gates the time out on bomb_planted) */
+    uint32_t           round_phase_ms;  /* start of the current phase */
+    uint32_t           round_clock_ms;  /* round start / clock start (mp_roundtime counts from here) */
+    int                mission_vips;      /* DAT_1407dfac8: map("mission_vips") */
+    int                mission_hostages;  /* DAT_1407dfac4: map("mission_hostages") */
+    int                mission_bombspots; /* DAT_1407dfac0: map("mission_bombspots") */
+    int                vip_id;          /* this round's VIP player (team 3), 0 = none */
+    int                hostages_rescued;/* hostages that reached a rescue point this round */
+    int                round_number;    /* DAT_1407dfe9c: rounds played on this map */
     void              *lua;             /* cs2d_sv_lua_t (phase 4) */
     /* Hostages (Phase 5) */
     cs2d_sv_hostage_t  hostages[CS2D_SV_MAX_HOSTAGES];
@@ -293,6 +307,12 @@ int  cs2d_sv_rand(int lo, int hi);                                         /* FU
 void cs2d_sv_round_end(cs2d_server_t *sv, int mode, int delay_ms);         /* FUN_14015c840 */
 void cs2d_sv_round_start(cs2d_server_t *sv, int reason);                   /* FUN_1402520b0 / FUN_140123530 */
 void cs2d_sv_step_round(cs2d_server_t *sv);                                /* check round end conditions & timer */
+/* Standard game mode (sv_gamemode 0): mission objectives and rounds (FUN_14015ce30, FUN_14015c840) */
+void cs2d_sv_count_missions(cs2d_server_t *sv);                            /* DAT_1407dfac0/4/8 counts */
+void cs2d_sv_round_end_ex(cs2d_server_t *sv, int type, int mode, int delay_ms, int player_id); /* FUN_14015c840 */
+void cs2d_sv_assign_vip(cs2d_server_t *sv);                                /* 0x1401717a1: team 3 + 200 armor */
+void cs2d_sv_vip_check(cs2d_server_t *sv);                                 /* VIP death (0xa) / escape (0xb) */
+void cs2d_sv_hostage_escaped(cs2d_server_t *sv, int h_id, int ct_id);      /* rescue point: >50 % -> 0x1f */
 void cs2d_sv_select_weapon(cs2d_server_t *sv, int id, int weapon, int mode); /* FUN_140158060: [9] */
 void cs2d_sv_fire(cs2d_server_t *sv, int id, int seed);                    /* FUN_140191a70: [7] */
 void cs2d_sv_attack2(cs2d_server_t *sv, int id, int mode);                 /* FUN_1401fd590: [8] */

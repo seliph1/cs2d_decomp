@@ -6013,15 +6013,41 @@ static bool test_server_join(void)
     cs2d_sv_round_start(&sv, 3);
     sv.players[1].alive = true;
 
-    /* Round time expiration check in standard mode */
+    /* Round time expiration in the standard mode: the mission type of the map picks the winner
+     * (0x1401a3128: vips -> 12, hostages -> 30, bombspots -> 22, no mission -> draw). Both sides need
+     * a player, a team without members draws the round (FUN_14015ce30). */
     sv.set.mp_roundtime = 2; /* 2 minutes */
-    sv.round_start_ms = cs2d_sv_now() - 121000; /* 121s elapsed */
-    cs2d_sv_step_round(&sv);
-    if (sv.round_end != 22) TEST_FAIL("round_end time out", "round did not end with CT win (reason 22) on timeout");
-    cs2d_sv_round_start(&sv, 22);
+    sv.set.mp_freezetime = 0;
+    sv.players[1].team = 2;                                    /* the CT of the timeout checks */
+    sv.players[2].used = true;
+    sv.players[2].team = 1;                                    /* the tanking T */
+    sv.players[2].health = 100;
+    static const struct { int vips, hostages, bombspots, want; } s_timeouts[] = {
+        { 0, 0, 1, 22 },   /* DE: target has been protected (CT win) */
+        { 0, 1, 0, 30 },   /* CS: hostages have not been rescued (T win) */
+        { 1, 0, 0, 12 },   /* AS: the V.I.P. did not escape (T win) */
+        { 0, 0, 0, 3 },    /* no mission: draw */
+    };
+    for (size_t ti = 0; ti < sizeof(s_timeouts) / sizeof(s_timeouts[0]); ti++) {
+        sv.mission_vips = s_timeouts[ti].vips;
+        sv.mission_hostages = s_timeouts[ti].hostages;
+        sv.mission_bombspots = s_timeouts[ti].bombspots;
+        sv.round_phase = 1;                                   /* past the freezetime */
+        sv.round_clock_ms = sv.round_start_ms = cs2d_sv_now() - 121000; /* 121 s elapsed */
+        sv.players[1].alive = true;
+        sv.players[2].alive = true;
+        cs2d_sv_step_round(&sv);
+        if (sv.round_end != s_timeouts[ti].want) {
+            TEST_FAIL("round_end time out", "mission type did not pick the documented reason");
+        }
+        cs2d_sv_round_start(&sv, s_timeouts[ti].want);
+    }
+    sv.mission_vips = sv.mission_hostages = sv.mission_bombspots = 0;
+    sv.players[2].used = false;
     sv.set.mp_roundtime = 5;
+    sv.players[1].alive = true;
 
-    TEST_PASS("Dedicated server rounds: round_end 2 (CT win), single player death round end, round timer expiration, round_start respawn");
+    TEST_PASS("Dedicated server rounds: round_end 2 (CT win), single player death round end, mission time out, round_start respawn");
 
     /* Weapon selection [9] & firing [7]/[8] */
     cs2d_sv_select_weapon(&sv, 1, 50, 0); /* select knife */
@@ -6845,6 +6871,20 @@ static bool test_server_phase5_bomb_hostages_bots(void)
     if (!sv.bomb_planted) TEST_FAIL("Bomb Planted", "sv.bomb_planted should be true");
     if (sv.bomb_tx != 10 || sv.bomb_ty != 10) TEST_FAIL("Bomb Coordinates", "Bomb tile coordinates mismatch");
 
+    /* The planted C4 is not a pickup: the planter keeps standing on its tile and used to collect it
+     * ([25] + the client removed the ground item), which made the bomb invisible for both teams and
+     * impossible to defuse. The objective is only touched by the defuse use ([26, 3]). */
+    int planted_slot = -1;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (sv.items[i].active && sv.items[i].type == CS2D_WEP_PLANTEDBOMB) planted_slot = i;
+    }
+    if (planted_slot < 0) TEST_FAIL("Planted item", "the planted C4 is not a ground item");
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_step_items(&sv);
+    if (!sv.items[planted_slot].active) TEST_FAIL("Planted item collected", "the planted C4 was collected");
+    if (sv.conns[0].out.pos != 0) TEST_FAIL("Planted item [25]", "a [25] pickup of the planted C4 was sent");
+
     /* 2. Test Bomb Defusing */
     cs2d_sv_defuse_start(&sv, 2, 10, 10);
     if (!sv.players[2].is_defusing) TEST_FAIL("Defuse Start", "Player 2 should be defusing");
@@ -6899,7 +6939,8 @@ static bool test_server_phase5_bomb_hostages_bots(void)
     sv.hostages[0].y = 2.0f * 32.0f + 16.0f;
     cs2d_sv_step_hostages(&sv);
     if (sv.hostages[0].health != 0) TEST_FAIL("Hostage Rescued", "Hostage should be rescued (health 0)");
-    if (sv.round_end != 21) TEST_FAIL("Hostage Win", "All hostages rescued should trigger CT victory (mode 21)");
+    /* >50 % of the map's hostages rescued -> CT win, reason 31 (0x14015ff9f) */
+    if (sv.round_end != 31) TEST_FAIL("Hostage Win", "More than half the hostages rescued should trigger the CT win (reason 31)");
 
     /* 5. Test Projectile, Flashlight and Kill Projectile */
     sv.players[1].alive = true;
@@ -7291,6 +7332,325 @@ static bool test_server_phase7_transfer_and_spray(void)
     TEST_PASS("Dedicated server Phase 7: DynObj Snapshot, Spray Logo relay & File Transfer configuration verified");
     return true;
 }
+/* =========================================================================
+ * Dedicated server: Lua hook connect_attempt ([252,1])
+ * =========================================================================
+ * The dedicated parses the whole [252,1], runs the per-IP flood guard
+ * FUN_1400d4c90(ip, 0xfc, 200, 60000) (0x1401dcd12) and then the hook list of the +0xc8
+ * slot (0x1401dcd41 -> 0x1401de995). A non-empty returned string cancels the join: status 4
+ * (ban) plus the string as ban reason, i.e. [252, 2, 4, <string>] (0x1401dce77, 0x1401dcec7).
+ */
+static bool test_server_connect_attempt_hook(void)
+{
+    printf("\n=== Testing Lua hook connect_attempt ([252,1]) ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+    if (!cs2d_sv_lua_init(&sv) || !sv.lua) {
+        TEST_FAIL("connect_attempt", "cs2d_sv_lua_init failed");
+    }
+
+    /* The hook records its arguments; an empty return lets the join continue */
+    bool rc = cs2d_sv_lua_dostring(&sv,
+        "ca_args = nil\n"
+        "function hook_ca(...)\n"
+        "    ca_args = {...}\n"
+        "    return ''\n"
+        "end\n"
+        "addhook('connect_attempt', 'hook_ca', 0)\n"
+    );
+    if (!rc) TEST_FAIL("connect_attempt", "addhook('connect_attempt') failed");
+
+    char reason[192];
+    int cancelled = cs2d_sv_lua_hook_connect_attempt(&sv, "Nick", "127.0.0.1", 36963, 12345,
+                                                     "USGN Nick", 76561198000000000LL, "Steam Nick",
+                                                     reason, sizeof(reason));
+    if (cancelled != 0 || reason[0] != '\0') {
+        TEST_FAIL("connect_attempt", "returning \"\" must not cancel the join");
+    }
+
+    /* help.php order: name, ip, port, usgnID, usgnName, steamID (string!), steamName */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(ca_args ~= nil and #ca_args == 7, 'expected 7 arguments')\n"
+        "assert(ca_args[1] == 'Nick' and ca_args[2] == '127.0.0.1' and ca_args[3] == 36963, 'name/ip/port')\n"
+        "assert(ca_args[4] == 12345 and ca_args[5] == 'USGN Nick', 'usgn id / usgn name')\n"
+        "assert(ca_args[6] == '76561198000000000' and ca_args[7] == 'Steam Nick', 'steam')\n"
+    );
+    if (!rc) TEST_FAIL("connect_attempt", "the 7 arguments do not match help.php");
+
+    /* Any other return cancels the connection and becomes the ban reason */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "freehook('connect_attempt', 'hook_ca')\n"
+        "function hook_ca_ban(...)\n"
+        "    ca_args = {...}\n"
+        "    return 'You are not welcome'\n"
+        "end\n"
+        "addhook('connect_attempt', 'hook_ca_ban', 0)\n"
+    );
+    if (!rc) TEST_FAIL("connect_attempt", "re-registering the hook failed");
+
+    cancelled = cs2d_sv_lua_hook_connect_attempt(&sv, "Nick", "127.0.0.1", 36963, 0, "", 0, "",
+                                                reason, sizeof(reason));
+    if (cancelled != 1 || strcmp(reason, "You are not welcome") != 0) {
+        TEST_FAIL("connect_attempt", "a returned string must cancel the join and be the ban reason");
+    }
+    rc = cs2d_sv_lua_dostring(&sv, "assert(ca_args[6] == '0', 'steamID must be the string \"0\"')\n");
+    if (!rc) TEST_FAIL("connect_attempt", "a client without Steam has steamID \"0\"");
+
+    /* Packet level: the [252,1] handler answers [252,2,4,<ban reason>] and creates no player.
+     * The hook cancels before the checks, so the rest of the packet may be nonsense. */
+    sv.conns[0].active = true;
+    sv.conns[0].next_seq = 2;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+
+    static const char want[] = "You are not welcome";
+    uint8_t m1[192];
+    int n = 0;
+    m1[n++] = 252;
+    m1[n++] = 1;
+    m1[n++] = 4; memcpy(m1 + n, "Nick", 4); n += 4;                     /* name (u8 str) */
+    m1[n++] = 0;                                                        /* password */
+    m1[n++] = 0;                                                        /* version */
+    m1[n++] = 0xfa; m1[n++] = 0x03;                                     /* u16 1018 */
+    for (int k = 0; k < 4; k++) m1[n++] = (uint8_t)(12345 >> (8 * k));  /* usgn i32 */
+    m1[n++] = 9; m1[n++] = 0; memcpy(m1 + n, "USGN Nick", 9); n += 9;   /* usgn name (u16 str) */
+    m1[n++] = 1;                                                        /* os */
+    m1[n++] = 0; m1[n++] = 0;                                           /* steam name (u16 str, empty) */
+    for (int k = 0; k < 8; k++) m1[n++] = 0;                            /* steam id i64 */
+    m1[n++] = 0;                                                        /* spray */
+    m1[n++] = 0;                                                        /* secret */
+    m1[n++] = 0;                                                        /* scramble */
+    m1[n++] = 0;                                                        /* client id */
+
+    int left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m1, n);
+    uint8_t *out = sv.conns[0].out.buf;
+    if (left != 0) TEST_FAIL("connect_attempt", "the [252,1] payload was not consumed");
+    /* sv_flush resets out.pos, so only the bytes of the datagram can be checked here */
+    if (out[0] != 252 || out[1] != 2 || out[2] != 4 || out[3] != (uint8_t)(sizeof(want) - 1) || out[4] != 0 ||
+        memcmp(out + 5, want, sizeof(want) - 1) != 0) {
+        TEST_FAIL("connect_attempt", "expected [252, 2, 4, reason] on the wire");
+    }
+    if (sv.conns[0].player != 0 || sv.players[1].used) {
+        TEST_FAIL("connect_attempt", "the cancelled join created a player");
+    }
+
+    /* Without a registered hook nothing cancels and the reason buffer stays empty */
+    cs2d_sv_lua_dostring(&sv, "freehook('connect_attempt', 'hook_ca_ban')\n");
+    reason[0] = 'x';
+    cancelled = cs2d_sv_lua_hook_connect_attempt(&sv, "Nick", "127.0.0.1", 36963, 0, "", 0, "",
+                                                reason, sizeof(reason));
+    if (cancelled != 0 || reason[0] != '\0') {
+        TEST_FAIL("connect_attempt", "without hooks nothing may cancel the join");
+    }
+
+    cs2d_sv_lua_close(&sv);
+    free(sv.conns[0].pending);
+
+    TEST_PASS("Lua hook connect_attempt: 7 documented arguments, empty return continues, other return cancels with status 4");
+    return true;
+}
+
+/* =========================================================================
+ * Standard game mode (sv_gamemode 0): mission objectives and the round model
+ * (FUN_14015ce30 win conditions, FUN_14015c840 round end, 0x1401717a1 the V.I.P.)
+ * ========================================================================= */
+static void standard_gamemode_setup(cs2d_server_t *sv)
+{
+    memset(sv, 0, sizeof(*sv));
+    cs2d_sv_settings_default(&sv->set);
+    sv->set.sv_gamemode = 0;          /* Standard */
+    sv->set.mp_freezetime = 3;
+    sv->set.mp_roundtime = 3;
+
+    for (int i = 0; i < 4; i++) {
+        sv->conns[i].active = true;
+        sv->conns[i].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+        sv->conns[i].player = i + 1;
+        sv->players[i + 1].used = true;
+        sv->players[i + 1].joined = true;
+        sv->players[i + 1].alive = true;
+        sv->players[i + 1].conn = i;
+        sv->players[i + 1].health = 100;
+        sv->players[i + 1].maxhealth = 100;
+    }
+    sv->players[1].team = 1; sv->players[2].team = 1;   /* 2 terrorists */
+    sv->players[3].team = 2; sv->players[4].team = 2;   /* 2 counter-terrorists */
+
+    /* The map missions: a bomb spot (DE), a hostage + rescue point (CS), a VIP + escape point (AS) */
+    sv->map.entity_count = 7;
+    sv->map.entities[0].type = CS2D_ENT_INFO_BOMBSPOT;   sv->map.entities[0].x = 10; sv->map.entities[0].y = 10;
+    sv->map.entities[1].type = CS2D_ENT_INFO_HOSTAGE;    sv->map.entities[1].x = 5;  sv->map.entities[1].y = 5;
+    sv->map.entities[1].int_settings[0] = 90;
+    sv->map.entities[1].int_settings[1] = 1;
+    sv->map.entities[2].type = CS2D_ENT_INFO_RESCUEPOINT;sv->map.entities[2].x = 7;  sv->map.entities[2].y = 7;
+    sv->map.entities[3].type = CS2D_ENT_INFO_VIP;        sv->map.entities[3].x = 60; sv->map.entities[3].y = 60;
+    sv->map.entities[4].type = CS2D_ENT_INFO_ESCAPE;     sv->map.entities[4].x = 50; sv->map.entities[4].y = 50;
+    sv->map.entities[5].type = CS2D_ENT_INFO_T;          sv->map.entities[5].x = 20; sv->map.entities[5].y = 20;
+    sv->map.entities[6].type = CS2D_ENT_INFO_CT;         sv->map.entities[6].x = 30; sv->map.entities[6].y = 30;
+}
+
+
+
+static bool test_standard_gamemode(void)
+{
+    static cs2d_server_t sv;   /* cs2d_server_t embeds cs2d_map_t: too large for the stack */
+    standard_gamemode_setup(&sv);
+
+    /* 1. The mission counters (DAT_1407dfac0/4/8 = map("mission_bombspots"/"mission_hostages"/"mission_vips")) */
+    cs2d_sv_count_missions(&sv);
+    if (sv.mission_bombspots != 1 || sv.mission_hostages != 1 || sv.mission_vips != 1) {
+        TEST_FAIL("Standard missions", "count_missions did not count the map entities");
+    }
+
+    /* 2. Round start: freezetime phase, the C4 on a terrorist and a V.I.P. (team 3, 200 armor) */
+    cs2d_sv_round_start(&sv, 0);
+    if (sv.round_phase != 0) {
+        TEST_FAIL("Standard freezetime", "a new round does not start in the freezetime phase");
+    }
+    bool has_c4 = false;
+    for (int i = 0; i < sv.players[1].item_count; i++) {
+        if (sv.players[1].items[i] == CS2D_WEP_BOMB) has_c4 = true;
+    }
+    for (int i = 0; i < sv.players[2].item_count; i++) {
+        if (sv.players[2].items[i] == CS2D_WEP_BOMB) has_c4 = true;
+    }
+    if (!has_c4) {
+        TEST_FAIL("Standard bomb", "the C4 was not given to a terrorist");
+    }
+    if (sv.vip_id < 1 || sv.players[sv.vip_id].team != 3) {
+        TEST_FAIL("Standard VIP", "no counter-terrorist became the V.I.P. (team 3)");
+    }
+    if (sv.players[sv.vip_id].armor != 200) {
+        TEST_FAIL("Standard VIP armor", "the V.I.P. does not have the 200 armor (0x1401717d1)");
+    }
+    if ((int)sv.players[sv.vip_id].x != 60 * 32 + 16 || (int)sv.players[sv.vip_id].y != 60 * 32 + 16) {
+        TEST_FAIL("Standard VIP spawn", "the V.I.P. did not spawn on the Info_VIP entity");
+    }
+    /* The V.I.P. cannot buy (help/howtoplay.txt) */
+    sv.players[sv.vip_id].money = 8000;
+    sv.conns[sv.players[sv.vip_id].conn].out.pos = 0;
+    sv.conns[sv.players[sv.vip_id].conn].out_open = false;
+    cs2d_sv_buy(&sv, sv.vip_id, 28);   /* AK-47 */
+    if (sv.players[sv.vip_id].money != 8000) {
+        TEST_FAIL("Standard VIP buy", "the V.I.P. bought equipment");
+    }
+
+    /* 3. The freezetime rejects movement (0x1401c9a02) and the phase opens after mp_freezetime */
+    sv.players[1].x = sv.players[1].last_valid_x = 100.0f;
+    sv.players[1].y = sv.players[1].last_valid_y = 100.0f;
+    sv.players[1].last_move_ms = cs2d_sv_now();
+    if (cs2d_sv_validate_move(&sv, 1, 132.0f, 100.0f, 10)) {
+        TEST_FAIL("Standard frozen move", "movement was accepted during the freezetime");
+    }
+    sv.set.mp_freezetime = 0;
+    sv.round_phase_ms = cs2d_sv_now() - 5000;
+    cs2d_sv_step_round(&sv);
+    if (sv.round_phase != 1) {
+        TEST_FAIL("Standard freezetime end", "the round did not leave the freezetime");
+    }
+    if (!cs2d_sv_validate_move(&sv, 1, 132.0f, 100.0f, 10)) {
+        TEST_FAIL("Standard playing move", "movement was rejected after the freezetime");
+    }
+
+    /* 4. The V.I.P. objectives: death -> reason 10 (T win), escape -> reason 11 (CT win) */
+    sv.round_end = 0;
+    sv.players[sv.vip_id].alive = false;
+    cs2d_sv_step_round(&sv);
+    if (sv.round_end != 10 || sv.round_winner != 1) {
+        TEST_FAIL("Standard VIP death", "the V.I.P. death did not end the round with reason 10 (T win)");
+    }
+    cs2d_sv_round_start(&sv, 10);
+    sv.set.mp_freezetime = 0;
+    sv.round_phase = 1;
+    sv.round_clock_ms = sv.round_start_ms = cs2d_sv_now();
+    sv.round_end = 0;
+    int vip = sv.vip_id;
+    sv.players[vip].x = 50.0f * 32.0f + 16.0f;
+    sv.players[vip].y = 50.0f * 32.0f + 16.0f;
+    cs2d_sv_step_round(&sv);
+    if (sv.round_end != 11 || sv.round_winner != 2) {
+        TEST_FAIL("Standard VIP escape", "the V.I.P. on the escape point did not end the round with reason 11 (CT win)");
+    }
+
+    /* 5. The [226] banner (FUN_14015c840): e2 01 <winner> <mvp> <mvp text (lstr)> <reason> */
+    for (int i = 0; i < 4; i++) { sv.conns[i].out.pos = 0; sv.conns[i].out_open = false; }
+    sv.round_end = 0;
+    cs2d_sv_round_end(&sv, 11, 3000);   /* V.I.P. escaped: CT win, no MVP */
+    uint8_t *b = sv.conns[0].out.buf;
+    if (sv.conns[0].out.pos < 8 || b[0] != 226 || b[1] != 1 || b[2] != 2 || b[3] != 0) {
+        TEST_FAIL("Standard [226]", "the round end banner is not [226, 1, winner, mvp, ...]");
+    }
+    if (b[sv.conns[0].out.pos - 1] != 11) {
+        TEST_FAIL("Standard [226] reason", "the last byte of [226] is not the round end reason");
+    }
+
+    /* 6. The winner table of FUN_14015c080 (round end type -> winner team, 0 = draw) */
+    static const struct { int type, winner; } s_winners[] = {
+        { 1, 1 }, { 2, 2 }, { 3, 0 }, { 10, 1 }, { 11, 2 }, { 12, 1 }, { 20, 1 },
+        { 21, 2 }, { 22, 2 }, { 30, 1 }, { 31, 2 }, { 60, 1 }, { 61, 2 },
+    };
+    for (size_t wi = 0; wi < sizeof(s_winners) / sizeof(s_winners[0]); wi++) {
+        sv.round_end = 0;
+        cs2d_sv_round_end(&sv, s_winners[wi].type, 5000);
+        if (sv.round_winner != s_winners[wi].winner) {
+            TEST_FAIL("Standard winner table", "the round end type did not pick the documented winner");
+        }
+    }
+
+    /* 7. More than half of the hostages rescued -> CT win, reason 31 (the float 0.5 at 0x1406da614) */
+    sv.round_end = 0;
+    sv.mission_hostages = 2;
+    sv.hostages_rescued = 1;
+    cs2d_sv_hostage_escaped(&sv, 1, 3);
+    if (sv.round_end != 0) {
+        TEST_FAIL("Standard hostages 1/2", "exactly half of the hostages must not end the round");
+    }
+    sv.hostages_rescued = 2;
+    cs2d_sv_hostage_escaped(&sv, 2, 3);
+    if (sv.round_end != 31 || sv.round_winner != 2) {
+        TEST_FAIL("Standard hostages 2/2", "more than half of the hostages did not end the round as a CT win (31)");
+    }
+    sv.mission_hostages = 1;
+
+    /* 8. Elimination with a planted C4: nobody alive wins the round for the terrorists (FUN_14015ce30) */
+    sv.set.mp_roundtime = 3;
+    sv.round_phase = 1;
+    sv.round_clock_ms = sv.round_start_ms = cs2d_sv_now();
+    for (int i = 1; i <= 4; i++) sv.players[i].alive = false;
+    sv.vip_id = 0;                     /* no VIP objective in these cases */
+    sv.round_end = 0; sv.bomb_planted = false;
+    cs2d_sv_step_round(&sv);
+    if (sv.round_end != 3) {
+        TEST_FAIL("Standard elimination", "no C4 + nobody alive must be a draw (3)");
+    }
+    sv.round_end = 0; sv.bomb_planted = true;
+    cs2d_sv_step_round(&sv);
+    if (sv.round_end != 1 || sv.round_winner != 1) {
+        TEST_FAIL("Standard elimination C4", "a planted C4 must win the round for the terrorists (1)");
+    }
+    /* All terrorists dead with the C4 ticking: the round continues (0x14015ce30) */
+    sv.round_end = 0; sv.bomb_planted = true;
+    sv.players[1].alive = sv.players[2].alive = false;
+    sv.players[3].alive = sv.players[4].alive = true;
+    cs2d_sv_step_round(&sv);
+    if (sv.round_end != 0) {
+        TEST_FAIL("Standard T dead C4", "the round must continue while the planted C4 ticks");
+    }
+    /* All terrorists dead without the C4: CT win (2) */
+    sv.round_end = 0; sv.bomb_planted = false;
+    cs2d_sv_step_round(&sv);
+    if (sv.round_end != 2 || sv.round_winner != 2) {
+        TEST_FAIL("Standard T dead", "all terrorists dead without a C4 must be a CT win (2)");
+    }
+
+    for (int i = 0; i < 4; i++) free(sv.conns[i].pending);
+    TEST_PASS("Standard game mode: missions, VIP (10/11), hostage 50 % rule (31), winner table, freezetime, elimination");
+    return true;
+}
 
 int main(void)
 {
@@ -7300,7 +7660,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 70;
+    int total = 72;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -7372,6 +7732,8 @@ int main(void)
     if (test_server_phase5_bomb_hostages_bots()) passed++;
     if (test_server_phase6_lua()) passed++;
     if (test_server_phase7_transfer_and_spray()) passed++;
+    if (test_server_connect_attempt_hook()) passed++;
+    if (test_standard_gamemode()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

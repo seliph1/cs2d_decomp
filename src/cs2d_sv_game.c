@@ -60,6 +60,18 @@ int cs2d_sv_count_team(const cs2d_server_t *sv, int team)
     return n;
 }
 
+/* FUN_140026150 (side 1) / FUN_140026210 (side 2): the original counts the T side as team == 1 and the
+ * CT side as team > 1, so the V.I.P. (team 3) belongs to the counter-terrorists. */
+static int sv_count_side(const cs2d_server_t *sv, int side)
+{
+    int n = 0;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (!sv->players[i].used) continue;
+        if (side == 1 ? sv->players[i].team == 1 : sv->players[i].team >= 2) n++;
+    }
+    return n;
+}
+
 static void sv_broadcast_joined(cs2d_server_t *sv, const uint8_t *msg, int len)
 {
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
@@ -469,62 +481,258 @@ void cs2d_sv_relay_movement(cs2d_server_t *sv)
     }
 }
 
-/* FUN_14015c840: triggers a round end and broadcasts opcode 226 mode 1 (the end message banner) */
-void cs2d_sv_round_end(cs2d_server_t *sv, int mode, int delay_ms)
+/* FUN_14015c080: the winner team of a round end type (0 = draw). The type decides the winner and the
+ * MVP banner (FUN_14015c840's switch); the last byte of [226] carries the round end *reason*.
+ *   1 T win / 2 CT win                                  elimination
+ *  10 VIP assassinated (T)  11 VIP escaped (CT)         12 VIP did not escape (T, AS time out)
+ *  20 bomb detonated (T)    21 bomb defused (CT)        22 target protected (CT, DE time out)
+ *  30 hostages not rescued (T, CS time out)             31 hostages rescued (CT)
+ *  40/50 T objective wins   41/51 CT objective wins     60/61 zombies
+ */
+static int sv_round_winner_of(int type)
 {
-    if (mode < 0 || sv->round_end != 0) return;
-    sv->round_end = mode;
-    sv->round_end_delay = delay_ms;
-    sv->round_end_ms = cs2d_sv_now();
+    switch (type) {
+    case 1: case 10: case 12: case 20: case 30: case 40: case 50: case 60: return 1;
+    case 2: case 11: case 21: case 22: case 31: case 41: case 51: case 61: return 2;
+    default: return 0;      /* 3 draw, 4 game commencing, 5 round restart */
+    }
+}
 
-    /* Find MVP player (kills * 2 + assists) or specific player based on mode (FUN_14015c080) */
-    int mvp_id = 0;
-    int best_score = -1;
+/* FUN_14015c840's MVP banner text (the literals of the original's switch) */
+static const char *sv_round_mvp_text(int type)
+{
+    switch (type) {
+    case 1: case 2: case 22: return "for most eliminations";
+    case 11:                 return "for escaping from the terrorists";
+    case 12:                 return "for killing the VIP";
+    case 20:                 return "for detonating the bomb";
+    case 21:                 return "for defusing the bomb";
+    case 31:                 return "for rescuing most hostages";
+    case 60:                 return "for most infections";
+    case 61:                 return "for killing most zombies";
+    default:                 return " - ";
+    }
+}
+
+/* FUN_14015c080: the best player of one team (kills * 2 + assists, the highest value wins). The
+ * original reads its Kills / Assists stats; our port has no separate kill counter yet, so score
+ * (1 per enemy kill) stands in. Team 2 only: the VIP (team 3) never becomes the MVP. */
+static int sv_best_of_team(cs2d_server_t *sv, int team)
+{
+    int best = 0, best_val = 0;
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
         cs2d_sv_player_t *pl = &sv->players[i];
-        if (!pl->used || pl->team < 1) continue;
+        if (!pl->used || pl->team != team) continue;
         int pts = pl->score * 2 + pl->assists;
-        if (pts > best_score) {
-            best_score = pts;
-            mvp_id = i;
-        }
+        if (pts > best_val) { best_val = pts; best = i; }
+    }
+    return best;
+}
+
+/* FUN_14015c840(type, mode, delay, player): end the round. `type` picks winner and MVP
+ * (FUN_14015c080), `mode` is the reason byte of [226] and the reason handed to the next round,
+ * `player_id` is the planter / defuser (r9 of the bomb calls) or the best rescuer (type 31).
+ * type 0 is the original's silent reset (FUN_14015c840(0, -1, 3000, null)). */
+void cs2d_sv_round_end_ex(cs2d_server_t *sv, int type, int mode, int delay_ms, int player_id)
+{
+    if (type < 0 || sv->round_end != 0) return;
+
+    if (type == 0) {                    /* flush only, no banner (FUN_14015c840 param_1 == 0) */
+        sv->round_end = 0;
+        sv->round_winner = 0;
+        sv->round_mvp = 0;
+        return;
     }
 
-    const char *reason_str = " - ";
-    switch (mode) {
-    case 1: case 2: case 0x16: reason_str = "for most eliminations"; break;
-    case 0xb:                  reason_str = "for escaping from the terrorists"; break;
-    case 0xc:                  reason_str = "for killing the VIP"; break;
-    case 0x14:                 reason_str = "for detonating the bomb"; break;
-    case 0x15:                 reason_str = "for defusing the bomb"; break;
-    case 0x1f:                 reason_str = "for rescuing most hostages"; break;
-    case 0x3c:                 reason_str = "for most infections"; break;
-    case 0x3d:                 reason_str = "for killing most zombies"; break;
-    default: break;
+    sv->round_end       = (mode != 0) ? mode : type;
+    sv->round_end_type  = type;
+    sv->round_end_delay = delay_ms;
+    sv->round_end_ms    = cs2d_sv_now();
+    sv->round_winner    = sv_round_winner_of(type);
+    sv->round_mvp       = 0;
+
+    /* FUN_14015c080: the MVP plus its +1 mvp count ([42, id, 10, n]) */
+    int mvp = 0;
+    switch (type) {
+    case 1:  mvp = sv_best_of_team(sv, 1); break;
+    case 2:  mvp = sv_best_of_team(sv, 2); break;
+    case 20: case 21: mvp = player_id; break;    /* the planter / the defuser */
+    case 31: mvp = player_id; break;             /* the best rescuer */
+    case 60: mvp = sv_best_of_team(sv, 1); break;
+    case 61: mvp = sv_best_of_team(sv, 2); break;
+    default: break;    /* 3, 10, 11, 12, 22, 30, 40, 41, 50, 51: no MVP (FUN_14015c080) */
+    }
+    if (mvp >= 1 && mvp <= CS2D_SV_MAX_PLAYERS && sv->players[mvp].used) {
+        sv->round_mvp = mvp;
+        cs2d_sv_set_playerdata(sv, mvp, 10, sv->players[mvp].mvp + 1);
     }
 
-    /* Broadcast opcode 226 mode 1: [226, 1, winner_team, mvp_id, text_lstr, reason_byte] */
-    int winner_team = (mode == 1) ? 1 : (mode == 2 || mode == 0xb || mode == 0x15) ? 2 : 0;
+    /* [226, 1, winner, mvp, mvp_text (lstr), reason] to every joined player */
+    const char *mvp_text = sv_round_mvp_text(type);
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
         cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
         if (!c || !sv->players[i].joined) continue;
         cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
         cs2d_pkt_w_byte(p, 226);
         cs2d_pkt_w_byte(p, 1);
-        cs2d_pkt_w_byte(p, (uint8_t)winner_team);
-        cs2d_pkt_w_byte(p, (uint8_t)mvp_id);
-        cs2d_pkt_w_lstr(p, reason_str);
-        cs2d_pkt_w_byte(p, (uint8_t)mode);
+        cs2d_pkt_w_byte(p, (uint8_t)sv->round_winner);
+        cs2d_pkt_w_byte(p, (uint8_t)sv->round_mvp);
+        cs2d_pkt_w_lstr(p, mvp_text);
+        cs2d_pkt_w_byte(p, (uint8_t)sv->round_end);
     }
-    cs2d_sv_lua_hook_endround(sv, mode);
+    cs2d_sv_lua_hook_endround(sv, sv->round_end);
+}
+
+/* FUN_14015c840 with type == mode (every standard mode call site of the original) */
+void cs2d_sv_round_end(cs2d_server_t *sv, int mode, int delay_ms)
+{
+    cs2d_sv_round_end_ex(sv, mode, mode, delay_ms, 0);
+}
+
+/* DAT_1407dfac0 / 1407dfac4 / 1407dfac8: the mission entity counts of the map (the numbers the Lua
+ * map("mission_bombspots" / "mission_hostages" / "mission_vips") queries return). They decide the
+ * standard mode time out (0x1401a31e0: vips > 0 -> 12, hostages > 0 -> 30, bombspots > 0 -> 22). */
+void cs2d_sv_count_missions(cs2d_server_t *sv)
+{
+    sv->mission_bombspots = 0;
+    sv->mission_hostages = 0;
+    sv->mission_vips = 0;
+    for (uint32_t e = 0; e < sv->map.entity_count; e++) {
+        switch (sv->map.entities[e].type) {
+        case CS2D_ENT_INFO_BOMBSPOT: sv->mission_bombspots++; break;
+        case CS2D_ENT_INFO_HOSTAGE:  sv->mission_hostages++;  break;
+        case CS2D_ENT_INFO_VIP:      sv->mission_vips++;      break;
+        default: break;
+        }
+    }
+}
+
+/* 0x1401717a1 / 0x140174254: one counter-terrorist becomes the V.I.P. each round. He is team 3 (a CT
+ * for the client), gets 200 armor (0xc8 through the armor object, 0x1401717d1) and - per
+ * help/howtoplay.txt - "a knife, a pistol and extra armor": the CT spawn list (pistol + knife) is his
+ * inventory and the buy menu refuses team 3. The team is set before the spawn so the VIP uses an
+ * Info_VIP spawn point; the armor and the [20] team update follow the spawn. */
+static int sv_pick_vip(cs2d_server_t *sv)
+{
+    sv->vip_id = 0;
+
+    /* the previous round's VIP is a normal counter-terrorist again until a new one is picked */
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (sv->players[i].used && sv->players[i].team == 3) sv->players[i].team = 2;
+    }
+
+    if (sv->set.sv_gamemode != 0 || sv->mission_vips <= 0) return 0;
+
+    int cts[CS2D_SV_MAX_PLAYERS], n = 0;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (sv->players[i].used && sv->players[i].team == 2) cts[n++] = i;
+    }
+    if (n == 0) return 0;
+
+    int id = cts[cs2d_sv_rand(0, n - 1)];
+    sv->players[id].team = 3;
+    sv->vip_id = id;
+    return id;
+}
+
+static void sv_announce_vip(cs2d_server_t *sv)
+{
+    if (sv->vip_id < 1 || sv->vip_id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[sv->vip_id];
+    if (!pl->used) return;
+    cs2d_sv_set_playerdata(sv, sv->vip_id, 3, 200);          /* [42, id, 3, 200]: the 200 armor */
+    uint8_t pkt[4] = { 20, (uint8_t)sv->vip_id, 3, (uint8_t)pl->look };
+    sv_broadcast_joined(sv, pkt, 4);                         /* the VIP is team 3 */
+    cs2d_server_print("%s is the V.I.P.\n", pl->name);
+}
+
+void cs2d_sv_assign_vip(cs2d_server_t *sv)
+{
+    sv_pick_vip(sv);
+    sv_announce_vip(sv);
+}
+
+/* 0x14015d230 / 0x140160500 (VIP death) and 0x140188167 (VIP escape): the two VIP objectives. The
+ * death is reason 10 (T win, 5000 ms), the escape reason 11 (CT win, 3000 ms). */
+void cs2d_sv_vip_check(cs2d_server_t *sv)
+{
+    if (sv->set.sv_gamemode != 0) return;
+    if (sv->round_end != 0 || sv->round_phase == 0) return;
+    if (sv->vip_id < 1 || sv->vip_id > CS2D_SV_MAX_PLAYERS) return;
+
+    cs2d_sv_player_t *vip = &sv->players[sv->vip_id];
+    if (!vip->used) return;
+
+    if (!vip->alive) {                     /* 0x14015d230: the VIP died -> terrorists win */
+        if (sv->round_end == 0) cs2d_sv_round_end(sv, 10, 5000);
+        return;
+    }
+
+    /* the VIP standing on an Info_EscapePoint escapes (the same 2 tile tolerance the hostages use;
+     * the original reads the escape entity at the VIP's tile) */
+    int tx = (int)(vip->x * 0.03125f), ty = (int)(vip->y * 0.03125f);
+    for (uint32_t e = 0; e < sv->map.entity_count; e++) {
+        if (sv->map.entities[e].type != CS2D_ENT_INFO_ESCAPE) continue;
+        if (abs((int)sv->map.entities[e].x - tx) <= 2 && abs((int)sv->map.entities[e].y - ty) <= 2) {
+            cs2d_sv_round_end(sv, 11, 3000);
+            return;
+        }
+    }
+}
+
+/* 0x14015ff80 (FUN_14015ffb0's tail): a hostage that reached an Info_RescuePoint. The round is won
+ * by the counter-terrorists as soon as MORE THAN HALF of the map's hostages are rescued
+ * (rescued / mission_hostages > 0.5, the float 0x1406da614 = 0.5f): reason 31, 3000 ms. */
+void cs2d_sv_hostage_escaped(cs2d_server_t *sv, int h_id, int ct_id)
+{
+    (void)h_id;
+    int total = sv->mission_hostages > 0 ? sv->mission_hostages : sv->hostage_count;
+    if (total <= 0) return;
+    if ((float)sv->hostages_rescued / (float)total > 0.5f) {
+        cs2d_sv_round_end_ex(sv, 31, 31, 3000, ct_id);
+    }
+}
+
+/* DAT_1407dfea0: 0 = freezetime (the original rejects movement, 0x1401c9a02), 1 = playing,
+ * 2 = the round is decided (the round clock runs on, the time out no longer ends the round). */
+static bool sv_round_frozen(const cs2d_server_t *sv)
+{
+    /* round_start_ms is only set by cs2d_sv_round_start; a server that never started a round (the
+     * unit tests build the state directly) is never frozen */
+    return sv->round_phase == 0 && sv->round_start_ms != 0;
+}
+
+static void sv_step_phase(cs2d_server_t *sv)
+{
+    if (sv->round_phase != 0 || sv->round_end != 0) return;
+    if (sv->round_start_ms == 0) { sv->round_phase = 1; return; }
+    uint32_t freeze_ms = (uint32_t)sv->set.mp_freezetime * 1000u;
+    if (cs2d_sv_now() - sv->round_phase_ms < freeze_ms) return;
+
+    sv->round_phase = 1;
+    sv->round_phase_ms = cs2d_sv_now();
+    sv->round_clock_ms = sv->round_phase_ms;   /* mp_roundtime counts from the end of the freeze */
 }
 
 /* FUN_1402520b0 / FUN_140123530: start of a new round, respawning players and sending [22] */
 void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
 {
     sv->round_end = 0;
+    sv->round_winner = 0;
+    sv->round_mvp = 0;
     sv->round_start_ms = cs2d_sv_now();
+    sv->round_number++;
     cs2d_sv_lua_hook_startround(sv, reason);
+
+    /* Standard mode: the map's mission counters and this round's VIP (0x1401717a1). The new round
+     * starts in the freezetime phase (mp_freezetime); the round clock begins when it ends
+     * (0x1401a326e sets DAT_1407dfea0 = 1 and the players then may move, 0x1401c9a02). */
+    cs2d_sv_count_missions(sv);
+    sv_pick_vip(sv);
+    sv->round_phase = 0;
+    sv->round_phase_ms = sv->round_start_ms;
+    sv->round_clock_ms = sv->round_start_ms;
+    sv->hostages_rescued = 0;
 
     /* Reset bomb state (Phase 5) */
     sv->bomb_planted = false;
@@ -594,15 +802,8 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
         }
     }
 
-    /* If map has Info_BombSpot, give bomb to a random alive T in standard mode */
-    bool has_bombspot = false;
-    for (uint32_t e = 0; e < sv->map.entity_count; e++) {
-        if (sv->map.entities[e].type == CS2D_ENT_INFO_BOMBSPOT) {
-            has_bombspot = true;
-            break;
-        }
-    }
-    if (has_bombspot && sv->set.sv_gamemode == 0) {
+    /* The C4 goes to a random terrorist in the standard mode (the map has Info_BombSpot entities) */
+    if (sv->mission_bombspots > 0 && sv->set.sv_gamemode == 0) {
         int t_ids[CS2D_SV_MAX_PLAYERS];
         int t_cnt = 0;
         for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
@@ -617,6 +818,8 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
             sv_best_weapon(sv, tpl);
         }
     }
+
+    sv_announce_vip(sv);   /* [42, id, 3, 200] + [20, id, 3, look] after the spawn */
 
     /* Send [22, round_reason u8, count u8] + count * 12-byte player records + recipient inventory */
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
@@ -652,71 +855,71 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
     }
 }
 
-/* Called every server tick to handle pending round end delay and standard win conditions (FUN_14015ce30) */
+/* Called every server tick: the freezetime phase, the pending round end delay and the standard mode
+ * win conditions (FUN_14015ce30) with its time out (0x1401a3128). */
 void cs2d_sv_step_round(cs2d_server_t *sv)
 {
     uint32_t now = cs2d_sv_now();
     if (sv->round_end != 0) {
         if (now - sv->round_end_ms >= (uint32_t)sv->round_end_delay) {
-            int reason = sv->round_end;
-            cs2d_sv_round_start(sv, reason);
+            cs2d_sv_round_start(sv, sv->round_end);
         }
         return;
     }
 
+    sv_step_phase(sv);                      /* freezetime -> playing (DAT_1407dfea0, 0x1401a326e) */
+    if (sv_round_frozen(sv)) return;        /* frozen: no movement (0x1401c9a02), no objectives */
+
     /* Standard win condition check: if all players of one team are dead or single player dies (FUN_14015ce30) */
     const sv_mode_t *m = sv_mode(sv);
-    if (m->respawn == 0) {
-        int t_total = cs2d_sv_count_team(sv, 1);
-        int ct_total = cs2d_sv_count_team(sv, 2);
+    if (m->respawn == 0 && m->balance == 1) {
+        int t_total = sv_count_side(sv, 1);
+        int ct_total = sv_count_side(sv, 2);
 
         int t_alive = 0, ct_alive = 0;
         for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
             cs2d_sv_player_t *pl = &sv->players[i];
             if (!pl->used || !pl->alive) continue;
             if (pl->team == 1) t_alive++;
-            else if (pl->team == 2) ct_alive++;
+            else if (pl->team >= 2) ct_alive++;         /* the VIP counts for the CT side */
         }
 
-        /* If at least one team has players registered */
-        if (t_total > 0 || ct_total > 0) {
-            /* If only one team exists on the server (e.g. single player or same team) and no one is alive */
-            if (t_total == 0 || ct_total == 0) {
-                if (t_alive == 0 && ct_alive == 0) {
-                    /* Original dedicated: if (t_total == 0 || ct_total == 0) -> round draw (reason 3, 3000 ms) */
-                    cs2d_sv_round_end(sv, 3, 3000);
-                    return;
-                }
-            } else {
-                /* Both teams have players */
-                if (t_alive == 0 && ct_alive == 0) {
-                    if (sv->bomb_planted) {
-                        cs2d_sv_round_end(sv, 1, 5000); /* Terrorists win (bomb planted) */
-                    } else {
-                        cs2d_sv_round_end(sv, 3, 3000); /* Round draw */
-                    }
-                    return;
-                } else if (t_alive == 0) {
-                    if (!sv->bomb_planted) {
-                        cs2d_sv_round_end(sv, 2, 5000); /* CTs win */
-                        return;
-                    }
-                } else if (ct_alive == 0) {
-                    cs2d_sv_round_end(sv, 1, 5000); /* Terrorists win */
-                    return;
-                }
-            }
+        /* A team without players cannot play the round: draw (FUN_14015ce30 LAB_14015d0c7) */
+        if (t_total == 0 || ct_total == 0) {
+            cs2d_sv_round_end(sv, 3, 3000);
+            return;
         }
 
-        /* Round timer expiration check (0x1401a3128) */
-        if (sv->set.mp_roundtime > 0 && sv->set.mp_roundtime < 100) {
-            uint32_t round_duration_ms = (uint32_t)sv->set.mp_roundtime * 60000;
-            if (now - sv->round_start_ms >= round_duration_ms) {
-                if (!sv->bomb_planted) {
-                    /* Time ran out without bomb: CTs win (reason 22 = target saved / time out) */
-                    cs2d_sv_round_end(sv, 22, 5000);
-                    return;
-                }
+        /* Elimination: the bomb already planted keeps the round alive for the terrorists */
+        if (t_alive + ct_alive == 0) {                  /* nobody alive */
+            if (sv->bomb_planted) cs2d_sv_round_end(sv, 1, 5000);
+            else                  cs2d_sv_round_end(sv, 3, 3000);
+            return;
+        }
+        if (t_alive == 0) {                             /* all terrorists dead */
+            if (!sv->bomb_planted) cs2d_sv_round_end(sv, 2, 5000);
+            return;
+        }
+        if (ct_alive == 0) {                            /* all counter-terrorists dead */
+            cs2d_sv_round_end(sv, 1, 5000);
+            return;
+        }
+
+        /* The mission objectives (VIP escape / death, hostage rescue) are checked every tick */
+        cs2d_sv_vip_check(sv);
+
+        /* Time out (0x1401a3128): skipped while the C4 ticks; the map's mission type decides the winner
+         * (vips -> 12 "did not escape", hostages -> 30 "not rescued", bombspots -> 22 "protected",
+         * no mission -> draw). mp_roundtime 100 = endless (0x1401a3137). */
+        if (sv->round_end == 0 && !sv->bomb_planted &&
+            sv->set.mp_roundtime > 0 && sv->set.mp_roundtime < 100) {
+            uint32_t round_duration_ms = (uint32_t)sv->set.mp_roundtime * 60000u;
+            uint32_t clock = sv->round_clock_ms ? sv->round_clock_ms : sv->round_start_ms;
+            if (now - clock >= round_duration_ms) {
+                if (sv->mission_vips > 0)           cs2d_sv_round_end(sv, 12, 5000);
+                else if (sv->mission_hostages > 0)  cs2d_sv_round_end(sv, 30, 5000);
+                else if (sv->mission_bombspots > 0) cs2d_sv_round_end(sv, 22, 5000);
+                else                                cs2d_sv_round_end(sv, 3, 3000);
             }
         }
     }
@@ -766,6 +969,7 @@ void cs2d_sv_fire(cs2d_server_t *sv, int id, int seed)
     if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
     cs2d_sv_player_t *pl = &sv->players[id];
     if (!pl->used || !pl->alive || pl->team < 1) return;
+    if (sv_round_frozen(sv)) return;   /* DAT_1407dfea0 == 0: no attacks during the freezetime */
 
     /* FUN_140191a70 / Tpl.decammo (0x140003260): deduct bullet on firearm shot */
     if (pl->weapon > 0) {
@@ -911,6 +1115,7 @@ void cs2d_sv_buy(cs2d_server_t *sv, int id, int weapon_id)
     if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
     cs2d_sv_player_t *pl = &sv->players[id];
     if (!pl->used || !pl->alive || pl->team < 1) return;
+    if (pl->team == 3) return;   /* the V.I.P. "can't buy any equipment" (help/howtoplay.txt) */
 
     if (cs2d_sv_lua_hook_buy(sv, id, weapon_id) == 1) return;
 
@@ -1084,6 +1289,13 @@ void cs2d_sv_step_items(cs2d_server_t *sv)
 
             const cs2d_weapon_def_t *def = cs2d_weapon_get(it->type);
             if (!def) continue;
+            /* The planted C4 (63) is the round objective, not a pickup: no branch below matches its
+             * CS2D_SLOT_ITEM, so it used to fall through to the generic "does the player own it"
+             * check and the planter - who keeps standing on the tile he planted - collected it on
+             * the next tick. The server then sent [25] and every client removed the ground item, so
+             * neither team could see or defuse the bomb (the round only ended with the explosion).
+             * The original only ever touches it with the defuse use ([26, 3]). */
+            if (it->type == CS2D_WEP_PLANTEDBOMB) continue;
 
             bool can_pickup = false;
             if (def->slot == CS2D_SLOT_PRIMARY) {
@@ -1363,6 +1575,11 @@ bool cs2d_sv_validate_move(cs2d_server_t *sv, int id, float new_x, float new_y, 
     if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return false;
     cs2d_sv_player_t *pl = &sv->players[id];
     if (!pl->used || !pl->alive || pl->team < 1) return false;
+
+    /* DAT_1407dfea0 == 0 (freezetime / round not running): the original bails out before any
+     * collision work (0x1401c9a02), so the player keeps his spawn position. */
+    if (sv_round_frozen(sv)) return false;
+
     cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, id);
 
     /* 1. Map boundary check (if map is loaded) */
@@ -1908,8 +2125,8 @@ void cs2d_sv_defuse_complete(cs2d_server_t *sv, int id)
     cs2d_sv_lua_hook_bombdefuse(sv, id);
     cs2d_server_print("Bomb has been defused by %s", pl->name);
 
-    /* CT victory: mode 21 = Bomb defused, CT win */
-    cs2d_sv_round_end(sv, 21, 5000);
+    /* CT victory: type 21 = Bomb defused, CT win; the defuser is the MVP (r9 of 0x14016aa78) */
+    cs2d_sv_round_end_ex(sv, 21, 21, 5000, id);
 }
 
 /* FUN_140169830: [30, 6] bomb explode */
@@ -1945,8 +2162,8 @@ void cs2d_sv_bomb_explode(cs2d_server_t *sv)
         }
     }
 
-    /* T victory: mode 20 = Target bombed, T win */
-    cs2d_sv_round_end(sv, 20, 5000);
+    /* T victory: type 20 = Bomb detonated, T win; the planter is the MVP (r9 of 0x14016aca2) */
+    cs2d_sv_round_end_ex(sv, 20, 20, 5000, sv->bomb_planter);
 }
 
 void cs2d_sv_step_bomb(cs2d_server_t *sv)
@@ -2181,11 +2398,12 @@ void cs2d_sv_step_hostages(cs2d_server_t *sv)
                 }
             }
             if (rescued) {
+                uint16_t rescuer = (uint16_t)h->follow;   /* capture before the follow flag is cleared */
                 h->health = 0;
                 h->follow = 0;
                 uint8_t pkt[7];
                 pkt[0] = 29; pkt[1] = (uint8_t)h->id; pkt[2] = 2;
-                uint16_t zero = 0, rescuer = (uint16_t)h->follow;
+                uint16_t zero = 0;
                 memcpy(&pkt[3], &zero, 2); memcpy(&pkt[5], &rescuer, 2);
                 sv_broadcast_joined(sv, pkt, 7);
                 cs2d_sv_lua_hook_hostagerescue(sv, (int)rescuer, htx, hty);
@@ -2198,13 +2416,8 @@ void cs2d_sv_step_hostages(cs2d_server_t *sv)
                     }
                 }
 
-                int rem = 0;
-                for (int k = 0; k < sv->hostage_count; k++) {
-                    if (sv->hostages[k].health > 0) rem++;
-                }
-                if (rem == 0) {
-                    cs2d_sv_round_end(sv, 21, 5000);
-                }
+                sv->hostages_rescued++;
+                cs2d_sv_hostage_escaped(sv, (int)h->id, (int)rescuer);
             }
         }
     }

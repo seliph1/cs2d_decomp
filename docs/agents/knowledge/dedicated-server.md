@@ -27,6 +27,30 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
     connection already a player **9**; `DAT_1405a6514` clients per IP **23**; usgn 0 with sv_usgnonly **2**;
     online U.S.G.N. verification **6**. Success: `[252,2,0,id,map,secret]`, then `FUN_1401bb970` prints
     `<name> is using IP <ip>:<port>, no U.S.G.N. ID and no Steam`.
+  - **Lua `connect_attempt` inside `[252,1]` (2026-10-16, ded `0x1401dcd12`..`0x1401dcecd`):** after the whole
+    packet is parsed and after the flood guard `FUN_1400d4c90(ip, 0xfc, 200, 60000)`, and **before every sanity
+    check**, a "hooks on" test (`array +0x64 == 1`, `0x1401dcd41`) sends the handler to `0x1401de995`, which
+    iterates the hook list at slot **`+0xc8`** of the array in `PTR_14059ea70` (the client dump uses the same
+    index, 200). Arguments in order: name, DottedIP(ip) (`0x14041f690`), the connection's u16 port (`+0x10`),
+    usgn id, usgn name, **steam id as a string** (`bbStringFromLong`) and steam name - the *unverified* values,
+    exactly as help.php warns. A **non-empty returned string** cancels the join: the server logs
+    `JOIN FAILURE: <name> (<ip>:<port>) can't join (Lua connect_attempt returned: <value>)` (literal
+    `0x1405ee540`; the prefix literal `0x1405af700` holds `A9 00` + `255255000JOIN FAILURE: ` in `.data` -
+    BlitzMax keeps the escape form there, our port logs the plain `JOIN FAILURE: ...` like its other messages)
+    and answers **`[252,2,4,<value>]`**: status **4**
+    (ban, `0x1401dce77`) plus the returned string as ban reason (`+0xd0` u8 string, `0x1401dcec7`). An empty
+    string falls through to the checks above. Ported in `sv_recv_join1` (`src/cs2d_server.c`).
+  - The `) can't join (...)` reason literals live in `.data` (object VA -> text); every one is logged as
+    `JOIN FAILURE: <name> (<ip>:<port>) ` + literal: `0x1405EDC40` `) can't join (wrong password)`,
+    `0x1405EDCA0` `) can't join (wrong game version)`, `0x1405EDD00` `) can't join (too many clients with this ip)`,
+    `0x1405EDD80` `) can't join (tiles missing)`, `0x1405EDDE0` `) can't join (server is full)`,
+    `0x1405EDE40` `) can't join (server is busy)`, `0x1405EDEA0` `) can't join (precon. auth failed)`,
+    `0x1405EDF00` `) can't join (post load checksum missing)`, `0x1405EDF80` `) can't join (post load checksum mismatch)`,
+    `0x1405EE000` `) can't join (no registered U.S.G.N. user)`, `0x1405EE080` `) can't join (map missing)`,
+    `0x1405EE0E0` `) can't join (map differs)`, `0x1405EE140` `) can't join (map differs - unknown join mode: `,
+    `0x1405EE1C0` `) can't join (loaded wrong map: '`, `0x1405EE420` `) can't join (auth failed)`,
+    `0x1405EE480` `) can't join (auth failed [v])`, `0x1405EE4E0` `) can't join (already connected)`,
+    `0x1405EE540` `) can't join (Lua connect_attempt returned: `.
   - `[252,3, sha, enc secret, download]` → `[252,4,status]`: enc secret = reverse(secret) shifted by the key
     table `DAT_1405f02d0` (= client's `"!aCz0jK5f\xfc"`) else **10** "client verification failed"; then the map
     checks (0 ok, 11 differs, 12 missing, 13 transfer follows).

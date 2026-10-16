@@ -10,6 +10,73 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-16 — Cline — standard game mode (sv_gamemode 0) reconstructed from cs2d_dedicated.exe
+- New `docs/agents/knowledge/standard-gamemode.md`: the round end model of `FUN_14015c840` +
+  `FUN_14015c080` (`type` → winner/MVP, `mode` = the reason byte of `[226]`), the 19 reason ↔ language
+  message pairs (0576..0594), the win conditions of `FUN_14015ce30` (a team without players draws), the
+  per-mission time out (`0x1401a3128`: vips → 12, hostages → 30, bombspots → 22, else draw; skipped
+  while the C4 ticks), the round phases `DAT_1407dfea0` (0 = freezetime rejects movement at `0x1401c9a02`
+  for `mp_freezetime` seconds, then 1 = playing, 2 = decided), the V.I.P. (team 3, 200 armor, cannot
+  buy; death 10 / escape 11 / time out 12) and the hostage rule (>50 % of the map's hostages → 31, the
+  float 0.5f at `0x1406da614`).
+- `src/cs2d_sv_game.c` + `include/cs2d_server.h`: `cs2d_sv_round_end_ex(type, mode, delay, player)` with
+  the winner/MVP table and the per-type MVP (`[42, id, 10, n]`), `cs2d_sv_count_missions`,
+  `cs2d_sv_assign_vip` / `cs2d_sv_vip_check` / `cs2d_sv_hostage_escaped`, the freezetime phase
+  (`sv_step_phase`), the mission-based time out, the VIP objective check every tick, and the bomb
+  explode/defuse round ends now carry the planter/defuser as the MVP. The VIP cannot buy, movement and
+  attacks are rejected while frozen, and `sv_count_side` counts team > 1 as the CT side (VIP included).
+- Tests: `test_standard_gamemode` (missions, VIP 200 armor + no buy, freezetime gate, VIP 10/11, the
+  `[226]` shape, the winner table, the 50 % hostage rule, the elimination cases) and the updated time out
+  and hostage expectations. `build.bat` clean, `test_cs2d.exe` **72 / 72**.
+- Left (OPEN_ISSUES): the MVP ranking stands in `score * 2 + assists` (no separate `kills` counter), and
+  the `[20, id, 3, look]` VIP announcement plus the round start sound are not proxy-verified.
+- **Bug found and fixed on the way (planted C4 invisible):** the user reported that a planted bomb never
+  showed on the ground and could not be defused. Reproduced with our client against our dedicated
+  (`tools/agent/out/bomb_shot.sh`: walk to the de_dust2 bomb spot (25,22), `slot5`, attack, walk away,
+  `!shot`) and measured rather than guessed: temporary prints showed the client *did* receive `[30,3]`
+  and add the ground item, so the server was the culprit - `cs2d_sv_step_items`' generic pickup fallback
+  matched item 63 (`CS2D_SLOT_ITEM` hits no branch) and the planter, standing on the tile, collected the
+  C4 on the next tick; the `[25]` then removed the item on every client. Fixed by skipping
+  `CS2D_WEP_PLANTEDBOMB` in the pickup loop; a regression check was added to
+  `test_server_phase5_bomb_hostages_bots` and the screenshot now shows the C4 sprite. Details in
+  `knowledge/hostages-bomb.md`.
+
+
+## 2026-10-16 — Cline — protocol: no message opcode 0; the disconnect packet is [253, reason]
+- Question answered from the shipped dumps (no source change). The `Code 0` in the client's own `Disconnect Reason:` line (`sys/logs/*.txt`) is the *reason* byte of the reliable leave packet `[253, reason]`, not a message opcode.
+- `FUN_1401c7500` (`0x1401c7970`) writes `0xfd` + `param_2`; "Disconnect / Quit" (`Tgui_hudmen.c:2246/2273`) passes 0, so the original sends `fd 00` - identical to ours (`[net out 4] 0e 00 fd 00`, `tools/agent/out/cli_ba.log:110`). Reason >= 0x10 appends a u8 string; reason 4 makes the dedicated drop the datagram (`docs/dump/dedicated/FUN_1401e3790_leave.c`).
+- A message opcode 0 does not exist: the dedicated receive jump table `0x1406cdb14` is indexed by `opcode - 7` (7..253).
+- Docs: `knowledge/net-messages.md` gained the `[253]` row and the code-table note; the `OPEN_ISSUES.md` item "Not checked: what the original sends on Disconnect" is verified and narrowed to the server-side `[253,pid,reason]`.
+
+## 2026-10-16 — Claude — Phase 8: two-client session (original + ours) on one original dedicated
+- New `tools/agent/capture_two.sh` + `tools/agent/lua/twoclient_fire_probe.lua`: one original dedicated, the
+  original `CS2D.exe` behind proxy 36980 and our `cs2d_client.exe --capture` behind proxy 36981 (each client needs
+  its own `udp_proxy.py`, which replies to a single address), the original driven by `drive_orig.ps1`. The script
+  prints an opcode histogram per direction and restores `sys/server.cfg` / `sys/recentlyjoined.lst`.
+- Recorded session `two2` (prison_funst3r, 45 s): both clients joined (ids 1 and 2), the probe placed and armed
+  both, and both fired. Verified the multi-client relays in both directions, and that our `[7]` / `[10]` / `[70]`
+  shapes match the original's `[7]` / `[10]` / `[71]` (byte examples in `knowledge/net-messages.md`).
+- Only byte-level difference found: the original's first datagram is `02 00 03 32 00 fc 00` (control triple
+  `03 32 00`), ours is `02 00 fc 00`. Recorded in `OPEN_ISSUES.md`, not implemented (the type-3 semantics are not
+  decompiled and the original dedicated accepts both).
+- No source change this session: `build.bat` and `test_cs2d.exe` re-run clean (71/71).
+
+## 2026-10-16 — Claude — dedicated: Lua hook connect_attempt bound in [252,1] (status 4 + ban reason)
+- Found the call site in `cs2d_dedicated.exe` with `objdump -d -M intel` plus a scan of the BlitzMax string objects
+  in `.data` (REA `open_binary` worked, but the Ghidra analysis was still running and every call hit the 60 s MCP
+  timeout): the hook list of slot `+0xc8` runs at `0x1401de995`, reached from `0x1401dcd41` right after the per-IP
+  flood guard `FUN_1400d4c90(ip, 0xfc, 200, 60000)` (`0x1401dcd12`) and **before every sanity check**, with the 7
+  documented arguments (steam id pushed as a string, `bbStringFromLong`). A non-empty returned string logs the
+  `Lua connect_attempt returned:` line (`0x1405ee540`) and answers `[252,2,4,<value>]`: status **4** (ban) plus the
+  string as ban reason (`0x1401dce77`, `0x1401dcec7`). Details in `knowledge/dedicated-server.md`.
+- `cs2d_sv_lua_hook_connect_attempt` now takes the 7 arguments and an `out_reason` buffer (`include/cs2d_sv_lua.h`,
+  `push_connect_attempt` in `src/cs2d_sv_lua.c`); `sv_recv_join1` (`src/cs2d_server.c`) calls it after the parse and
+  before the checks, and the old 2-argument stub is gone. New `test_server_connect_attempt_hook` locks the argument
+  order, the empty return and the cancel with status 4 (71/71).
+- Left: where `connect` / `connect_initplayer` run (both documented as "no return value", so each needs its own
+  evidence); the remaining Phase 1 gaps stay in OPEN_ISSUES.
+
+
 ## 2026-10-16 — Claude — dedicated server: client [71] read as 5 bytes (phantom flashlight [57] and silent disconnects)
 - Symptom: original client on `cs2d_server.exe` heard the flashlight sound while moving/shooting, then lost the connection.
 - Cause: client `[71]` is `x u16, y u16, rot u16, aim u8` (7 bytes, same as `[72]`; ded `FUN_1401d3fb0` / `FUN_1401d4430` read opcode + 3 shorts + 1 byte, need > 7 left; proxy `47 10 04 6b 05 c1 d6 87`). We read only 5, so 2 bytes ran as opcodes (57 flashlight echo, 253 leave without telling the client).
@@ -17,84 +84,3 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - Left: unknown client opcodes still `break` the datagram silently (e.g. `[40]`); probe longer sessions with `capture_server.sh`.
 - Follow-up 2026-10-16 (Claude): `[40]` on a dedicated is already faithful: handler `0x1401cfba0` returns 3 (`DAT_1407dfe48` set) or 4 without reading, so the original also drops the rest of the datagram. The `default` branch of `sv_recv_game` now logs `[sv] unhandled client opcode N` on stderr. Old proxy logs (C>S first opcode) show unported ones: 34 (`22 07 1f 00 53 00 00 e8 03`), 43 vote (`2b 01 01 00`), 53, 230 leaderboard (`e6 00`); handlers in the table in `knowledge/dedicated-server.md`. 70/70 tests. A new original-client capture was not run (it takes keyboard and mouse for ~90 s).
 
-## 2026-10-16 — Antigravity — dedicated server: frame pacing, timer resolution & accurate tick/FPS reporting
-- Fixed low/skewed tickrate and connection stability on dedicated server (`main_dedicated.c`, `cs2d_server.c`, `build.bat`):
-  - Enabled Windows 1ms timer resolution via `timeBeginPeriod(1)` on startup (and `timeEndPeriod(1)` on exit), linking `-lwinmm`.
-  - Implemented high-resolution frame pacing loop in `main_dedicated.c` using `QueryPerformanceCounter`/`QueryPerformanceFrequency` targeting 60 ticks/s (BlitzMax standard 60~63 FPS). Includes coarse sleep followed by microsecond spin-wait, and de-synchronization protection against latency spirals.
-  - Fixed `sv->second_ms` drift in `cs2d_server_frame`: calculates real `sv->fps = (sv->frames * 1000) / elapsed` and syncs `sv->second_ms = now` on each second barrier, preventing consecutive 0/1/3 FPS calculations from reporting erroneous red "Ticks: 3" to clients.
-- Verified: `build.bat` compiles cleanly, `test_cs2d.exe` **69 / 69** passing regression tests.
-
-## 2026-10-16 — Antigravity — dedicated server: weapon firing ammo deduction & reload state machine [16]
-- Fixed weapon firing ammo maintenance on dedicated server (`FUN_140191a70`, `Tpl.decammo`):
-  - Updated `cs2d_sv_fire` (`[7]` opcode handler) to decrement 1 bullet from `pl->clip[pl->weapon]` for bullet-based weapons with non-zero clip sizes.
-  - Previously, `pl->clip` was never decremented on the server when firing, meaning the server believed the clip was always full (12/12 for USP, 30/30 for M4A1) unless a weapon was dropped with depleted clip and re-collected. This caused reload requests (`[16, 1]`) to be rejected with `clip >= clip_size`.
-- Fixed weapon reload on dedicated server (`FUN_14018b1c0`, `FUN_140194650`, `0x1401cc750`):
-  - Added `is_reloading` and `reload_end_ms` to `cs2d_sv_player_t` (`+0x320`, `+0x328`).
-  - Implemented reload start (`mode 1` / `100`): validates living state, active weapon, ammo needs and absence of ongoing process (plant/defuse), sets `is_reloading = true` and `reload_end_ms = now + reload_ticks * 5`, and broadcasts `[16, pid, mode]`.
-  - Implemented authoritative server reload timer tick (`cs2d_sv_step_reloads`, `FUN_140194650` in main tick): when reload timer expires, automatically transitions clip weapons to `mode 2` (refill clip from reserve, or full on `mp_infammo`), and shell weapons (M3 / XM1014) to `mode 4` (1 shell per step, looping until full or out of ammo).
-  - Implemented client compensation (`mode 101` / `0x65`), reload aborts (`mode 3`) on weapon switch (`cs2d_sv_select_weapon`), player death (`cs2d_sv_kill`), and round respawn (`cs2d_sv_round_start`).
-  - Exposed accurate `player(id, 'reloading')` state in Lua API.
-- Verified: `build.bat` clean, `test_cs2d.exe` **69 / 69** passing regression tests with test cases covering firing ammo deduction, mode 1 initiation without drop/pickup, in-progress timer stepping, automatic clip refill on expiry, and multi-stage shell-by-shell reloading.
-
-## 2026-10-16 — Antigravity — dedicated server: fix weapon drop immediate re-pickup & standard gamemode win conditions
-- Fixed weapon drop immediate re-pickup bug:
-  - Added `dropped_by`, `drop_tx`, and `drop_ty` to `cs2d_sv_item_t`.
-  - When dropping a weapon via `[24]` (`cs2d_sv_drop`), records dropping player ID and tile.
-  - In `cs2d_sv_step_items`, player cannot immediately collect their dropped weapon on the drop tile until moving away to another tile.
-  - In `cs2d_sv_validate_move`, cleared `dropped_by` on ground items when player moves to a different tile (`new_tx != old_tx || new_ty != old_ty`).
-- Implemented standard gamemode (`sv_gamemode 0`) win condition progression (`FUN_14015ce30`, `cs2d_sv_step_round`):
-  - Fixed single-player death: when all players of a team die or a solo player on the server dies, round ends as round draw (`reason 3`, 3000 ms), matching official `cs2d_dedicated.exe` lines 69-74 (`if (t_total == 0 || ct_total == 0) -> round_end(3, 3000)`).
-  - Fixed team elimination logic: CTs win (`reason 2`, 5000 ms) when Ts are eliminated and no bomb is planted; Ts win (`reason 1`, 5000 ms) when CTs are eliminated or bomb is planted and all players die.
-  - Implemented standard mode round timer expiration (`0x1401a3128`): when `mp_roundtime` minutes elapse without a planted bomb, triggers round end with CT victory (`reason 22` Target Saved / Time Out, 5000 ms).
-- Verified: `build.bat` clean, `test_cs2d.exe` **69 / 69** passing regression tests including new drop immediate re-pickup prevention, single-player round draw, and round timer timeout.
-
-## 2026-10-16 — Antigravity — dedicated server phase 7 (part 2): join file transfer [252,50], dynamic objects snapshot [252,7,5] & spray logos [252,10]/[28]
-- Implemented file transfer protocol in dedicated server (`[252,50]`):
-  - Added `sv_maptransfer` setting (`sv_maptransfer 1` default). On `[252,3]` map checksum mismatch, server responds with `[252,4,13]` ("Downloading" window) followed by `[252,50,1,1,maps/<map>.map]` file list.
-  - Implemented handling of client file transfer requests (`[252,50,2]`): compresses requested file with zlib (`[raw size i32][zlib]`) and streams chunked payloads in 480-byte packets using `[252,50,5]` (first part with total length), `[252,50,6]` (middle parts), and `[252,50,7]` (final part).
-  - On transfer completion (`count == 0` or `0xffff`), server restarts handshake via reliable `[252,2]`.
-- Implemented Section 5 dynamic objects serialization in join snapshot (`sv_send_join_snapshot`): streams all active non-image buildings (`Tdo`) in 60-object chunks (`[252,7,5,count,{id, typ, health, mode, x, y, player, team, rot}]`).
-- Implemented spray logo storage and relay (`[252,10]` and `[28]`):
-  - Added spray storage buffer `spray_logo` to `cs2d_sv_player_t`.
-  - Parsed client spray payload on join (`[252, 10, 28, 2, size, ...]`): stores spray data and relays `[28, pid, 2, size, bytes]` to other joined players when `sv_spraytransfer == 1`.
-  - Relayed all existing players' sprays to newly connecting players in `[252,7]` snapshot tail after Section 200.
-- Verified: `build.bat` compiles all targets cleanly; `test_cs2d.exe` passed **69 / 69** regression tests (`test_server_phase7_transfer_and_spray`).
-- Left: Dedicated server end-to-end multi-client live gameplay validation against official binaries.
-
-## 2026-10-16 — Antigravity — dedicated server phase 7: live client interaction, 100% lua commands & hooks coverage, console commands
-- Performed deep automated scrape of `cs2d.com` official documentation into `docs/cs2d_help_db_complete.json` covering:
-  - 375 Console Commands (categories, parameters, full description texts).
-  - 79 Lua Hooks (parameters, return behaviors, triggers).
-  - 88 Lua Commands (signatures, return values, samples).
-- Achieved **100% coverage** in `cs2d_sv_lua.c` and `cs2d_sv_lua.h`:
-  - Registered **88 / 88** official Lua commands (0 missing).
-  - Dispatched **79 / 79** official Lua hooks (0 missing).
-- Added `-lua <path>` command-line argument to `main_dedicated.c` and integrated dofile execution at startup.
-- Implemented full live test harness `tools/agent/lua/full_live_suite.lua` and test orchestrator `tools/agent/run_live_test.ps1`:
-  - Spawned `cs2d_server.exe` with `full_live_suite.lua` and joined with the real official client `CS2D.exe`.
-  - Audited global availability and callable signatures of all 88 Lua commands (`check` passed).
-  - Registered all 79 Lua hooks dynamically using `addhook`.
-  - Executed batch of console commands and cvars (`mp_c4timer`, `mp_roundtime`, `mp_buytime`, `mp_startmoney`, `sv_gamemode`, `mp_friendlyfire`, `setmoney`, `sethealth`, `setarmor`, `equip`, `setweapon`, `hudtxt`).
-  - Successfully verified live network handshake, join, team placement, player spawn, and periodic hooks (`always`, `second`, `ms100`).
-- Verified: Live interactive test suite against `CS2D.exe` passed **37 / 37** checks; regression test suite `test_cs2d.exe` passed **68 / 68** tests. Clean build with 0 warnings.
-
-## 2026-10-16 — Antigravity — dedicated server phase 6: 1:1 Lua C API, world & dynobj queries, freeline raycasting, hook log, generic cvars & binds
-- Implemented all 18 missing CS2D Dedicated Server Lua API functions from `cs2d_dedicated.exe` (`FUN_14013a980`):
-  - World & Map: `map(prop)` (dimensions, tileset, counts, buildings), `tile(x, y, prop)`, `tileproperty(id)` (wall/obstacle/deadly collision modes).
-  - Combat & Items: `itemtype(type, prop)` (weapon damage, prices, slots, ammo), `item(id, prop)` (ground item states and slot queries).
-  - Dynamic Objects: `object(id, prop)`, `objectat(tx, ty)`, `closeobjects(x, y, r [, type])` integrated with `cs2d_dynobj`.
-  - Players & Geometry: `closeplayers(x, y, r [, team])` (`FUN_14004cc30`) and `hascloseplayers(x, y, r [, team])` (`FUN_14004ce50`), `freeline(x1, y1, x2, y2 [, mode])` collision raycasting.
-  - Entities & Stats: `entity(x, y, prop)` (int0..9, str0..9, state), `entitylist([type])`, `stats(id, prop)`.
-  - Client Binds & Stubs: `addbind(key)`, `removebind(key)`, `removeallbinds()`, `reqcld`, `reqhttp`.
-- Extended `player(id, prop)` with `tablebot`, `tablehuman`, `players`, `mousemapx/y`, `mapmousex/y`, `mousex/y/dist`, `language`, `favweapon`.
-- Extended `game(prop)` with version, dedicated, phase, round, ticks, time, maptimeleft, port, sysfolder, bombplanted, and generic cvar fallback.
-- Added generic cvar storage `sv->cvars[128]` with lookup and setting fallback, `mp_luaserver`, `mp_luamap`.
-- Implemented Console Log Hook (`hook "log"`): wired `cs2d_server_print` to `cs2d_sv_lua_log` with recursion protection.
-- Verified: `build.bat` compiles cleanly (`test_cs2d.exe`, `cs2d_client.exe`, `cs2d_server.exe`), `test_cs2d.exe` **68 / 68** tests pass (`test_server_phase6_lua`). `cs2d_server.exe -offline` starts and loads maps seamlessly.
-- Left: Server protocol end-to-end regression validation against live game scenarios.
-
-
-## 2026-10-16 — Claude — dedicated: [237] live cvar broadcast (all ids from the original)
-- Decompiled the sender `FUN_14015d960` (REA, saved to `docs/dump/dedicated/`) and mapped every call-site id to its cvar (23 ids, see `knowledge/dedicated-server.md`). The original only sends on a real change; strings are 1 / 11 / 12, the rest i32.
-- `sv_broadcast_setting` (`src/cs2d_server.c`) now follows that: old-vs-new check, string/i32, raw `sv_daylighttime`; `cs2d_sv_settings_get` also reads the typed int fields for settings still at default. Test: `test_server_phase7_transfer_and_spray` case 4 (70/70).
-- Not done: `connect_attempt` hook wiring (where it runs / return mapping not decompiled); id 21 / 25 senders; Phase 8 live proxy comparison.
