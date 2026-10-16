@@ -5,6 +5,7 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 | Message | Bytes | Notes |
 |---|---|---|
 | Position | `[10 run / 11 walk][x u16][y u16]` | Unreliable, sent on every frame where the integer position changed |
+| Move + rot + aim | `[71 run / 72 walk][x u16][y u16][rot u16][aim/2 u8]` | 7 bytes after the opcode (ded `FUN_1401d3fb0` / `FUN_1401d4430`; proxy `47 10 04 6b 05 c1 d6 87`), sent while moving and turning. Misreading the length makes the leftover bytes run as opcodes |
 | Rotation | `[70][angle u16 = deg·65536/360][aim distance/2 u8]` | Sent on change |
 | Fire | `[7][seed u8]` | Unreliable. Melee always 0; firearms 0, 2, 3, 4, … (global counter across weapons). The ded stores it at player+0x58, reading 0 as 1 (ded `FUN_1401c8930`) |
 | Select weapon | `[9][type][0]` | |

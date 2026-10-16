@@ -1719,20 +1719,13 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         }
         return true;
     }
-    case 71: { /* move + aim: [71, x u16, y u16, aim] (FUN_1401d3fb0) */
-        if (rd_left(r) < 5) return false;
-        int x = rd_short(r), y = rd_short(r), aim = rd_byte(r);
-        if (pl && pl->alive) {
-            cs2d_sv_validate_move(sv, c->player, (float)x, (float)y, 10);
-            pl->aim = (float)aim * 2.0f;
-        }
-        return true;
-    }
-    case 72: { /* move + rot + aim: [72, x u16, y u16, rot u16, aim] (FUN_1401d4430) */
+    case 71: case 72: { /* run / walk + rot + aim: [71|72, x u16, y u16, rot u16, aim] (FUN_1401d3fb0 / FUN_1401d4430:
+                         * both read opcode + 3 shorts + 1 byte and need > 7 bytes left; proxy: "47 10 04 6b 05 c1 d6 87").
+                         * 71 used to read only x, y, aim, so 2 bytes were parsed as opcodes (e.g. 57 flashlight, 253 leave) */
         if (rd_left(r) < 7) return false;
         int x = rd_short(r), y = rd_short(r), rot = rd_short(r), aim = rd_byte(r);
         if (pl && pl->alive) {
-            cs2d_sv_validate_move(sv, c->player, (float)x, (float)y, 10);
+            cs2d_sv_validate_move(sv, c->player, (float)x, (float)y, op == 71 ? 10 : 11);
             pl->rot = (float)rot / 182.04445f;
             pl->aim = (float)aim * 2.0f;
             pl->rot_flag = 1;
@@ -1921,8 +1914,34 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         return true;
     }
     default:
+        /* Opcodes without a port yet (e.g. 34, 43, 53, 230). The original runs a handler per opcode and drops the
+         * rest of the datagram when it returns > 0 (FUN_1401e3cf0); [40] is one of those drops: 0x1401cfba0 returns
+         * 3 or 4 without reading anything on a dedicated. Report them on stderr (not the game console) so longer
+         * capture_server.sh sessions show which handlers are still missing. */
+        fprintf(stderr, "[sv] unhandled client opcode %d (%d bytes left dropped)\n", op, rd_left(r));
         return false;
     }
+}
+
+/* The messages of one datagram after its header and control triples */
+static void sv_recv_messages(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
+{
+    while (r->p < r->n) {
+        int op = rd_byte(r);
+        if (op == 252) {
+            sv_recv_join(sv, c, r);
+        } else if (!sv_recv_game(sv, c, r, op)) {
+            break;
+        }
+    }
+}
+
+/* Test entry: feeds a payload (no Tudp header) to the message parser; returns the bytes left unread */
+int cs2d_sv_recv_payload(cs2d_server_t *sv, cs2d_sv_conn_t *c, const uint8_t *buf, int n)
+{
+    sv_rd_t r = { buf, n, 0 };
+    sv_recv_messages(sv, c, &r);
+    return n - r.p;
 }
 
 static void sv_handle_datagram(cs2d_server_t *sv, const struct sockaddr_in *from, const uint8_t *buf, int n)
@@ -1972,14 +1991,7 @@ static void sv_handle_datagram(cs2d_server_t *sv, const struct sockaddr_in *from
         if (c->seen[seq >> 3] & (1u << (seq & 7))) return;
         c->seen[seq >> 3] |= (uint8_t)(1u << (seq & 7));
     }
-    while (r.p < n) {
-        int op = rd_byte(&r);
-        if (op == 252) {
-            sv_recv_join(sv, c, &r);
-        } else if (!sv_recv_game(sv, c, &r, op)) {
-            break;
-        }
-    }
+    sv_recv_messages(sv, c, &r);
 }
 
 /* ------------------------------------------------------------------------------------------------ */

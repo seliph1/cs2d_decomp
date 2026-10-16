@@ -6206,6 +6206,46 @@ static bool test_server_phase2_items_and_chat(void)
     return true;
 }
 
+/* Client movement messages [71|72, x, y, rot, aim] are 7 bytes after the opcode (FUN_1401d3fb0 / FUN_1401d4430,
+ * proxy_srv_dc2.log "47 10 04 6b 05 c1 d6 87"). When [71] was read as 5 bytes, the rest was parsed as opcodes
+ * (57 flashlight echo, 253 leave) */
+static bool test_server_move_aim_messages(void)
+{
+    printf("\n=== Testing Dedicated Server client movement messages [71] / [72] ===\n");
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    cs2d_sv_player_t *pl = &sv.players[1];
+    pl->used = true; pl->joined = true; pl->team = 1; pl->alive = true; pl->health = 100;
+    pl->x = pl->last_valid_x = 1040.0f;
+    pl->y = pl->last_valid_y = 1384.0f;
+    pl->last_move_ms = cs2d_sv_now();
+    pl->conn = 0;
+
+    /* [71] followed by [57, 1]-lookalike bytes and a [253]: must be consumed by [71], not run as messages */
+    static const uint8_t m71[] = { 71, 0x10, 0x04, 0x6b, 0x05, 57, 253, 0x87 };
+    int left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m71, (int)sizeof(m71));
+    if (left != 0) TEST_FAIL("[71] length", "did not consume the 7 payload bytes");
+    if (!sv.conns[0].active || !sv.players[1].used) TEST_FAIL("[71] length", "leftover bytes were parsed as [253] leave");
+    if (sv.conns[0].out_open && sv.conns[0].out.pos > 0 && sv.conns[0].out.buf[0] == 57)
+        TEST_FAIL("[71] length", "leftover bytes were parsed as a [57] flashlight");
+    if (pl->x != 1040.0f || pl->y != 1387.0f) TEST_FAIL("[71] position", "x/y not applied");
+    if (pl->aim != (float)0x87 * 2.0f || pl->rot_flag != 1) TEST_FAIL("[71] aim", "rot/aim not applied");
+    if (pl->move_flag != 1) TEST_FAIL("[71] run", "move_flag should be 1 (run)");
+
+    static const uint8_t m72[] = { 72, 0x12, 0x04, 0x6b, 0x05, 0x00, 0x10, 0x20 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m72, (int)sizeof(m72));
+    if (left != 0) TEST_FAIL("[72] length", "did not consume the 7 payload bytes");
+    if (pl->move_flag != 2) TEST_FAIL("[72] walk", "move_flag should be 2 (walk)");
+
+    TEST_PASS("[71] / [72] consume x, y, rot, aim (7 bytes); [71] runs, [72] walks");
+    free(sv.conns[0].pending);
+    return true;
+}
+
 static bool test_server_phase2_respawn_and_speeder(void)
 {
     printf("\n=== Testing Dedicated Server Phase 2: Team Suicide, Respawn Modes & Anti-Speeder ===\n");
@@ -7229,7 +7269,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 69;
+    int total = 70;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -7294,6 +7334,7 @@ int main(void)
     if (test_random_and_dropwep()) passed++;
     if (test_server_join()) passed++;
     if (test_server_phase2_items_and_chat()) passed++;
+    if (test_server_move_aim_messages()) passed++;
     if (test_server_phase2_respawn_and_speeder()) passed++;
     if (test_server_phase3_rcon_and_commands()) passed++;
     if (test_server_phase4_lua()) passed++;

@@ -279,6 +279,7 @@ void cs2d_server_stop(cs2d_server_t *sv);
 cs2d_pkt_t     *cs2d_sv_packet(cs2d_server_t *sv, cs2d_sv_conn_t *c, bool reliable, bool fresh);
 cs2d_sv_conn_t *cs2d_sv_conn_of_player(cs2d_server_t *sv, int id);
 uint32_t        cs2d_sv_now(void);
+int             cs2d_sv_recv_payload(cs2d_server_t *sv, cs2d_sv_conn_t *c, const uint8_t *buf, int n); /* test entry: bytes left unread */
 
 /* cs2d_sv_game.c: team, spawn, movement relay, rounds, playerdata, admin actions (phase 2 & 3) */
 void cs2d_sv_team(cs2d_server_t *sv, int id, int team, int look);          /* FUN_1401624c0 (force = false) */

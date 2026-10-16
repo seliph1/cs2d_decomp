@@ -10,6 +10,13 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-16 — Claude — dedicated server: client [71] read as 5 bytes (phantom flashlight [57] and silent disconnects)
+- Symptom: original client on `cs2d_server.exe` heard the flashlight sound while moving/shooting, then lost the connection.
+- Cause: client `[71]` is `x u16, y u16, rot u16, aim u8` (7 bytes, same as `[72]`; ded `FUN_1401d3fb0` / `FUN_1401d4430` read opcode + 3 shorts + 1 byte, need > 7 left; proxy `47 10 04 6b 05 c1 d6 87`). We read only 5, so 2 bytes ran as opcodes (57 flashlight echo, 253 leave without telling the client).
+- Fix: `case 71: case 72` in `sv_recv_game` (71 = run, 72 = walk); `cs2d_sv_recv_payload` test entry; `test_server_move_aim_messages` (70/70).
+- Left: unknown client opcodes still `break` the datagram silently (e.g. `[40]`); probe longer sessions with `capture_server.sh`.
+- Follow-up 2026-10-16 (Claude): `[40]` on a dedicated is already faithful: handler `0x1401cfba0` returns 3 (`DAT_1407dfe48` set) or 4 without reading, so the original also drops the rest of the datagram. The `default` branch of `sv_recv_game` now logs `[sv] unhandled client opcode N` on stderr. Old proxy logs (C>S first opcode) show unported ones: 34 (`22 07 1f 00 53 00 00 e8 03`), 43 vote (`2b 01 01 00`), 53, 230 leaderboard (`e6 00`); handlers in the table in `knowledge/dedicated-server.md`. 70/70 tests. A new original-client capture was not run (it takes keyboard and mouse for ~90 s).
+
 ## 2026-10-16 — Antigravity — dedicated server: frame pacing, timer resolution & accurate tick/FPS reporting
 - Fixed low/skewed tickrate and connection stability on dedicated server (`main_dedicated.c`, `cs2d_server.c`, `build.bat`):
   - Enabled Windows 1ms timer resolution via `timeBeginPeriod(1)` on startup (and `timeEndPeriod(1)` on exit), linking `-lwinmm`.
@@ -85,21 +92,4 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - Implemented Console Log Hook (`hook "log"`): wired `cs2d_server_print` to `cs2d_sv_lua_log` with recursion protection.
 - Verified: `build.bat` compiles cleanly (`test_cs2d.exe`, `cs2d_client.exe`, `cs2d_server.exe`), `test_cs2d.exe` **68 / 68** tests pass (`test_server_phase6_lua`). `cs2d_server.exe -offline` starts and loads maps seamlessly.
 - Left: Server protocol end-to-end regression validation against live game scenarios.
-
-## 2026-10-15 — Antigravity — dedicated server phase 5: bomb system [30]/[26], hostages [29], bots, bans, projectiles [27]/[41], flashlight [57] & map change [239]
-- Implemented C4 Bomb plant, abort, defuse and detonation (`FUN_14016a2d0`, `FUN_14016a700`, `FUN_14016ab00`):
-  - Plant: `[30,1]` start countdown (`mp_c4timer`), `[30,2]` abort, `[30,3]` plant complete with ground bomb placement and broadcast.
-  - Defuse: `[26,3]` (Use) start, `[30,4]` abort, `[30,5]` defuse complete with reward ($3250 CT, +3 score) and round end mode 21.
-  - Explosion: `[30,6]` at timer 0; deals 500 splash damage over 350px radius attenuated linearly, round end mode 20, $3250 T reward.
-- Implemented Hostage system (`FUN_140167200`, `FUN_1401676f0`, `[29]`):
-  - Loaded from `Info_Hostage` map entities, following/releasing CT player on Use (`[26]`), stepping towards rescuer.
-  - Rescue detection at `Info_RescuePoint` entities (type 8): +2 rescuer score, $1000 CT team reward, broadcast `[29,5,h_id]`.
-  - Damage & death: broadcasts `[29,3]` and `[29,4]`.
-- Implemented Bot management (`bot_add`, `bot_kick`, `bot_kill`): slot allocation with ping `0xfffe`, conn `-1`, `[248]` join broadcast.
-- Implemented Ban system (`banip`, `banusgn`, `bansteam`, `unban`, `listbans`): join-time check rejecting with status 4 and custom reason string.
-- Implemented Map change (`cs2d_sv_change_map`, `[239,1]`): dynamic heap map loading (fixing stack overflow from 14MB `cs2d_map_t`), SHA256 checksum calculation, hostage re-initialization, round restart.
-- Connected snapshot serialization for Section 2 (hostages) and Section 3 (ground items).
-- Implemented Opcode 27 (Grenade consumption & projectile relay), Opcode 41 (Kill projectile), Opcode 57 (Flashlight).
-- Verified: `build.bat` compiles all 3 targets cleanly, `test_cs2d.exe` **67 / 67** passing `test_server_phase5_bomb_hostages_bots`.
-- Left: Phase 6 (`C:\C4` scripts end-to-end testing).
 

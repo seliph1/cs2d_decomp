@@ -1,5 +1,22 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-15 — Antigravity — dedicated server phase 5: bomb system [30]/[26], hostages [29], bots, bans, projectiles [27]/[41], flashlight [57] & map change [239]
+- Implemented C4 Bomb plant, abort, defuse and detonation (`FUN_14016a2d0`, `FUN_14016a700`, `FUN_14016ab00`):
+  - Plant: `[30,1]` start countdown (`mp_c4timer`), `[30,2]` abort, `[30,3]` plant complete with ground bomb placement and broadcast.
+  - Defuse: `[26,3]` (Use) start, `[30,4]` abort, `[30,5]` defuse complete with reward ($3250 CT, +3 score) and round end mode 21.
+  - Explosion: `[30,6]` at timer 0; deals 500 splash damage over 350px radius attenuated linearly, round end mode 20, $3250 T reward.
+- Implemented Hostage system (`FUN_140167200`, `FUN_1401676f0`, `[29]`):
+  - Loaded from `Info_Hostage` map entities, following/releasing CT player on Use (`[26]`), stepping towards rescuer.
+  - Rescue detection at `Info_RescuePoint` entities (type 8): +2 rescuer score, $1000 CT team reward, broadcast `[29,5,h_id]`.
+  - Damage & death: broadcasts `[29,3]` and `[29,4]`.
+- Implemented Bot management (`bot_add`, `bot_kick`, `bot_kill`): slot allocation with ping `0xfffe`, conn `-1`, `[248]` join broadcast.
+- Implemented Ban system (`banip`, `banusgn`, `bansteam`, `unban`, `listbans`): join-time check rejecting with status 4 and custom reason string.
+- Implemented Map change (`cs2d_sv_change_map`, `[239,1]`): dynamic heap map loading (fixing stack overflow from 14MB `cs2d_map_t`), SHA256 checksum calculation, hostage re-initialization, round restart.
+- Connected snapshot serialization for Section 2 (hostages) and Section 3 (ground items).
+- Implemented Opcode 27 (Grenade consumption & projectile relay), Opcode 41 (Kill projectile), Opcode 57 (Flashlight).
+- Verified: `build.bat` compiles all 3 targets cleanly, `test_cs2d.exe` **67 / 67** passing `test_server_phase5_bomb_hostages_bots`.
+- Left: Phase 6 (`C:\C4` scripts end-to-end testing).
+
 ## 2026-10-15 — Antigravity — dedicated server phase 4: Lua 5.1.4 integration, addhook priorities, parse, player, image, timers, hudtxt, menus
 - Vendored official PUC Lua 5.1.4 into `third_party/lua51/` (`lua_all.c` unity build with `-Ithird_party/lua51/src` in `build.bat`).
 - Implemented Lua server subsystem (`include/cs2d_sv_lua.h`, `src/cs2d_sv_lua.c`):
