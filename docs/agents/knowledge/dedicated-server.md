@@ -230,3 +230,37 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   - `menu(id, text)`: sends opcode `[235, title (wlstr), page u8, items (wlstr)]` to target player.
   - Client response `[235, pid, slen, UTF-16LE title, button u8]`: invokes Lua hook `"menu"` with `(id, title, button)`.
 
+## Phase 5: Bomb system, hostages, bots, bans & map change
+
+- **Bomb Defuse & Explosion (`[30]`, `[26]` — `FUN_14016a2d0`, `FUN_14016a700`, `FUN_14016ab00`):**
+  - Plant: Terrorist holding C4 initiates plant via `[30, 1]`. Server starts countdown (`mp_c4timer` / 35s default).
+    Plant abort sends `[30, 2]`. Plant completion sends reliable `[30, 3, tx, ty, id]` and equips bomb on ground.
+  - Defuse: Counter-Terrorist initiates defuse via `[26, 3]` (Use). Defuse abort sends `[30, 4]`.
+    Completion sends reliable `[30, 5, id]`, awards CT team $3250, defuser +3 score, and calls `cs2d_sv_round_end(sv, 21)` (Bomb Defused).
+  - Explosion: when timer reaches 0, bomb detonates via `[30, 6, tx, ty]`. Deals 500 splash damage over a 350px radius
+    attenuated linearly (`dmg = 500 * (1 - dist / 350)`), calls `cs2d_sv_round_end(sv, 20)` (Target Bombed), and awards T team $3250.
+- **Hostages (`[29]` — `FUN_140167200`, `FUN_1401676f0`):**
+  - Spawning: initialized from map entities (`Info_Hostage`, type 4).
+  - Use (`[26]` / `[29, 1/2]`): CT pressing Use toggles follow mode (`[29, 1, h_id, ct_id]`) or release (`[29, 2, h_id]`).
+  - Movement & Rescue: hostages step towards following player. When reaching an `Info_RescuePoint` entity (type 8),
+    hostage is rescued: awards rescuer +2 score, CT team $1000 each, and broadcasts reliable `[29, 5, h_id]`.
+  - Damage & Death (`[29, 3/4]`): hostages take damage; dying plays sound and broadcasts reliable `[29, 4, h_id]`.
+- **Projectiles & Flashlight (`[27]`, `[41]`, `[57]`):**
+  - Grenades / Projectiles (`[27, id, type, x, y, rot, speed]`): server consumes one grenade from player's inventory
+    and relays reliable `[27]` to all other joined players.
+  - Kill projectile (`[41, id]`): relayed to clients to clean up active projectiles.
+  - Flashlight (`[57, id, on/off]`): toggles player flashlight state and relays to other joined players.
+- **Bot Management (`bot_add`, `bot_kick`, `bot_kill`):**
+  - `bot_add [team] [look] [name]`: allocates a player slot with `bot = true`, ping `0xfffe`, and conn `-1`.
+    Broadcasts join announcement `[248]` and spawns the bot.
+  - `bot_kick <name>`: frees the bot slot and sends leave notification `[250]`.
+  - `bot_kill <name>`: kills the bot with `cs2d_sv_kill(sv, id, 0, 0, 0)`.
+- **Ban System (`banip`, `banusgn`, `bansteam`, `unban`, `listbans`):**
+  - Stores up to `CS2D_SV_MAX_BANS` records with IP, U.S.G.N. ID, Steam ID, and reason.
+  - On client connection (`FUN_1401dc530`), checks bans with `cs2d_sv_is_banned`. If banned, server rejects join with
+    status `4` and the custom ban reason string.
+- **Map Change (`cs2d_sv_change_map`, `[239, 1]` — `FUN_1401104f0`):**
+  - Dynamically loads new map from `maps/<name>.map` on the heap (avoiding 14 MB stack allocation from `cs2d_map_t`).
+  - Broadcasts reliable `[239, 1]` to notify all clients to reload the map.
+  - Frees old map resources, recalculates SHA256 checksum, re-initializes hostages, resets team scores, and triggers `cs2d_sv_round_start(sv, 0)`.
+

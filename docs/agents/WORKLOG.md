@@ -10,6 +10,23 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-15 — Antigravity — dedicated server phase 5: bomb system [30]/[26], hostages [29], bots, bans, projectiles [27]/[41], flashlight [57] & map change [239]
+- Implemented C4 Bomb plant, abort, defuse and detonation (`FUN_14016a2d0`, `FUN_14016a700`, `FUN_14016ab00`):
+  - Plant: `[30,1]` start countdown (`mp_c4timer`), `[30,2]` abort, `[30,3]` plant complete with ground bomb placement and broadcast.
+  - Defuse: `[26,3]` (Use) start, `[30,4]` abort, `[30,5]` defuse complete with reward ($3250 CT, +3 score) and round end mode 21.
+  - Explosion: `[30,6]` at timer 0; deals 500 splash damage over 350px radius attenuated linearly, round end mode 20, $3250 T reward.
+- Implemented Hostage system (`FUN_140167200`, `FUN_1401676f0`, `[29]`):
+  - Loaded from `Info_Hostage` map entities, following/releasing CT player on Use (`[26]`), stepping towards rescuer.
+  - Rescue detection at `Info_RescuePoint` entities (type 8): +2 rescuer score, $1000 CT team reward, broadcast `[29,5,h_id]`.
+  - Damage & death: broadcasts `[29,3]` and `[29,4]`.
+- Implemented Bot management (`bot_add`, `bot_kick`, `bot_kill`): slot allocation with ping `0xfffe`, conn `-1`, `[248]` join broadcast.
+- Implemented Ban system (`banip`, `banusgn`, `bansteam`, `unban`, `listbans`): join-time check rejecting with status 4 and custom reason string.
+- Implemented Map change (`cs2d_sv_change_map`, `[239,1]`): dynamic heap map loading (fixing stack overflow from 14MB `cs2d_map_t`), SHA256 checksum calculation, hostage re-initialization, round restart.
+- Connected snapshot serialization for Section 2 (hostages) and Section 3 (ground items).
+- Implemented Opcode 27 (Grenade consumption & projectile relay), Opcode 41 (Kill projectile), Opcode 57 (Flashlight).
+- Verified: `build.bat` compiles all 3 targets cleanly, `test_cs2d.exe` **67 / 67** passing `test_server_phase5_bomb_hostages_bots`.
+- Left: Phase 6 (`C:\C4` scripts end-to-end testing).
+
 ## 2026-10-15 — Antigravity — dedicated server phase 4: Lua 5.1.4 integration, addhook priorities, parse, player, image, timers, hudtxt, menus
 - Vendored official PUC Lua 5.1.4 into `third_party/lua51/` (`lua_all.c` unity build with `-Ithird_party/lua51/src` in `build.bat`).
 - Implemented Lua server subsystem (`include/cs2d_sv_lua.h`, `src/cs2d_sv_lua.c`):
@@ -54,19 +71,3 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - Verified: `build.bat` clean, `test_cs2d.exe` **63 / 63** passing comprehensive drop, pickup, fadeout, reload, chat, and spectator test.
 - Left: next Phase 2 items: death and respawn timers per mode (`sv_gamemode`, `mp_respawndelay`), team change suicide (`FUN_1401647d0`), position validation & anti-speeder (`FUN_1401ca500`).
 
-## 2026-10-15 — Antigravity — dedicated server phase 2 (part 3): damage [17], kill [19], buy [23]
-- Implemented damage calculation and absorption (`cs2d_sv_damage`, `FUN_1401658c0`) deducting kevlar (~35%) and broadcasting reliable `[17, victim, attacker, hp, arm]`.
-- Implemented kill logic (`cs2d_sv_kill`, `FUN_1401647d0`): sets `alive = false`, updates victim deaths, killer scores (+1, +$300 on enemy kill, friendly fire / suicide penalties), assist tracking, and broadcasts `[19, victim, killer, assist, weapon, x, y]`.
-- Implemented buy handler (`cs2d_sv_buy`, `FUN_1401cd710`): price and money verification, money deduction, inventory addition (`sv_give`), special items / equipment handling (defuse kit, kevlar, helmet, nightvision, gas mask), and response `[23, id, type, money u16, 0]`. Broadcasts `[9]` weapon switch on weapon purchases.
-- Integrated opcode handlers for `17` (hit report), `19` (suicide / kill), and `23` (buy request) in `sv_recv_game` in `src/cs2d_server.c`.
-- Verified: `build.bat` compiled all 3 binaries, `test_cs2d.exe` **62 / 62** passing all damage, kill, score and buy assertions.
-- Left: next Phase 2 items: drop / collect `[24]`/`[25]`, reload `[16]`, chat `[240]`, spectate `[67]`/`[32]`.
-
-## 2026-10-15 — Antigravity — dedicated server phase 2 (part 2): rounds, leave, weapon selection [9], fire [7]/[8]
-- Implemented round end (`cs2d_sv_round_end`, `FUN_14015c840`), round start (`cs2d_sv_round_start`, `FUN_1402520b0` / `FUN_140123530`), and per-frame round progression (`cs2d_sv_step_round`, `FUN_14015ce30`).
-- Added "Game commencing" trigger in `cs2d_sv_team` (`FUN_1401624c0` LAB_14015cff0: mode 4, 3000 ms delay).
-- Broadcasts opcode 226 mode 1 (`[226, 1, winner, mvp, reason_lstr, mode_byte]`) on round end, and opcode 22 (`[22, reason, count, ...]` + inventory) on round start.
-- Handled opcode 253 leave reason and optional reason string (`FUN_1401e3790`).
-- Implemented weapon selection `[9]` (`cs2d_sv_select_weapon`, `FUN_140158060`), primary fire relay `[7]` (`cs2d_sv_fire`, `FUN_140191a70`), and secondary attack relay `[8]` (`cs2d_sv_attack2`, `FUN_1401fd590`).
-- Verified: `build.bat` clean, `test_cs2d.exe` **62 / 62** (passed dedicated server round end / start tests and combat relay test).
-- Left: next Phase 2 items: damage / kill `[17]`/`[19]`, buy `[23]`, drop / collect `[24]`/`[25]`, reload `[16]`, chat `[240]`.

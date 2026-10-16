@@ -9,6 +9,7 @@
  */
 #include "cs2d_server.h"
 #include "cs2d_weapons.h"
+#include "cs2d_network.h"
 #include "cs2d_sv_lua.h"
 
 #include <stdio.h>
@@ -523,6 +524,24 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
     sv->round_start_ms = cs2d_sv_now();
     cs2d_sv_lua_hook_startround(sv, reason);
 
+    /* Reset bomb state (Phase 5) */
+    sv->bomb_planted = false;
+    sv->bomb_item_id = 0;
+    sv->bomb_explode_time = 0;
+    sv->bomb_planter = 0;
+    sv->defuser_id = 0;
+    sv->defuse_start_ms = 0;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        sv->players[i].is_planting = false;
+        sv->players[i].is_defusing = false;
+    }
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (sv->items[i].active && sv->items[i].type == CS2D_WEP_PLANTEDBOMB) {
+            sv->items[i].active = false;
+        }
+    }
+    cs2d_sv_init_hostages(sv);
+
     /* Update team scores according to round end reason (FUN_1402520b0 / cs2d_game_apply_round_reason) */
     uint64_t bit = (reason >= 0 && reason <= 61) ? (1ULL << reason) : 0;
     if (bit & 0x1004010040101000ULL) {
@@ -565,6 +584,30 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
             int melee = (pl->team == 1) ? m->melee_t : m->melee_ct;
             if (!sv_has_item(pl, melee)) sv_give(pl, melee);
             sv_best_weapon(sv, pl);
+        }
+    }
+
+    /* If map has Info_BombSpot, give bomb to a random alive T in standard mode */
+    bool has_bombspot = false;
+    for (uint32_t e = 0; e < sv->map.entity_count; e++) {
+        if (sv->map.entities[e].type == CS2D_ENT_INFO_BOMBSPOT) {
+            has_bombspot = true;
+            break;
+        }
+    }
+    if (has_bombspot && sv->set.sv_gamemode == 0) {
+        int t_ids[CS2D_SV_MAX_PLAYERS];
+        int t_cnt = 0;
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            if (sv->players[i].used && sv->players[i].team == 1 && sv->players[i].alive) {
+                t_ids[t_cnt++] = i;
+            }
+        }
+        if (t_cnt > 0) {
+            int pick = t_ids[cs2d_sv_rand(0, t_cnt - 1)];
+            cs2d_sv_player_t *tpl = &sv->players[pick];
+            if (!sv_has_item(tpl, CS2D_WEP_BOMB)) sv_give(tpl, CS2D_WEP_BOMB);
+            sv_best_weapon(sv, tpl);
         }
     }
 
@@ -630,13 +673,16 @@ void cs2d_sv_step_round(cs2d_server_t *sv)
             if (t_alive == 0 && ct_alive == 0) {
                 cs2d_sv_round_end(sv, 3, 3000); /* Round draw */
             } else if (t_alive == 0) {
-                cs2d_sv_round_end(sv, 2, 5000); /* CTs win */
+                if (!sv->bomb_planted) {
+                    cs2d_sv_round_end(sv, 2, 5000); /* CTs win */
+                }
             } else if (ct_alive == 0) {
                 cs2d_sv_round_end(sv, 1, 5000); /* Terrorists win */
             }
         }
     }
 }
+
 
 /* FUN_140158060: player selects/switches weapon -> [9, player, weapon, mode] reliable to others */
 void cs2d_sv_select_weapon(cs2d_server_t *sv, int id, int weapon, int mode)
@@ -1491,5 +1537,774 @@ void cs2d_sv_slap(cs2d_server_t *sv, int id, bool death)
     } else {
         cs2d_sv_kill(sv, id, 0, 0, 255);
     }
+}
+
+/* ========================================================================= */
+/* Phase 5: Bomb System                                                      */
+/* ========================================================================= */
+
+/* FUN_1401588b0: [30, 1] plant start */
+void cs2d_sv_plant_start(cs2d_server_t *sv, int id)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team != 1 || pl->weapon != CS2D_WEP_BOMB) return;
+    if (sv->bomb_planted || pl->is_planting) return;
+
+    /* Check if in bomb spot (CS2D_ENT_INFO_BOMBSPOT) */
+    int tx = (int)pl->x / 32, ty = (int)pl->y / 32;
+    bool in_spot = false;
+    for (uint32_t e = 0; e < sv->map.entity_count; e++) {
+        const cs2d_entity_t *ent = &sv->map.entities[e];
+        if (ent->type == CS2D_ENT_INFO_BOMBSPOT) {
+            if (abs((int)ent->x - tx) <= 3 && abs((int)ent->y - ty) <= 3) {
+                in_spot = true;
+                break;
+            }
+        }
+    }
+    if (!in_spot) return;
+
+    pl->is_planting = true;
+    pl->plant_start_ms = cs2d_sv_now();
+
+    uint8_t pkt[3] = { 30, (uint8_t)id, 1 };
+    sv_broadcast_joined(sv, pkt, 3);
+}
+
+/* FUN_1401588b0: [30, 2] plant abort */
+void cs2d_sv_plant_abort(cs2d_server_t *sv, int id)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->is_planting) return;
+
+    pl->is_planting = false;
+    uint8_t pkt[3] = { 30, (uint8_t)id, 2 };
+    sv_broadcast_joined(sv, pkt, 3);
+}
+
+/* FUN_1401588b0: [30, 3] plant complete */
+void cs2d_sv_plant_complete(cs2d_server_t *sv, int id)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || !pl->is_planting) return;
+
+    pl->is_planting = false;
+
+    /* Strip bomb weapon */
+    for (int i = 0; i < pl->item_count; i++) {
+        if (pl->items[i] == CS2D_WEP_BOMB) {
+            memmove(&pl->items[i], &pl->items[i + 1], (size_t)(pl->item_count - 1 - i));
+            pl->item_count--;
+            break;
+        }
+    }
+    sv_best_weapon(sv, pl);
+    uint8_t sel[4] = { 9, (uint8_t)id, (uint8_t)pl->weapon, 0 };
+    sv_broadcast_joined(sv, sel, 4);
+
+    /* Allocate ground item for planted bomb */
+    int slot = -1;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (!sv->items[i].active) { slot = i; break; }
+    }
+    uint16_t item_id = (uint16_t)++sv->next_item_id;
+    uint16_t tx = (uint16_t)((int)pl->x / 32);
+    uint16_t ty = (uint16_t)((int)pl->y / 32);
+    if (slot >= 0) {
+        cs2d_sv_item_t *it = &sv->items[slot];
+        it->active = true;
+        it->id = item_id;
+        it->type = CS2D_WEP_PLANTEDBOMB;
+        it->tile_x = tx;
+        it->tile_y = ty;
+        it->clip = 0;
+        it->reserve = 0;
+        it->dropped = false;
+        it->drop_time_ms = 0;
+    }
+
+    uint8_t c4timer = (sv->set.mp_c4timer > 0) ? (uint8_t)sv->set.mp_c4timer : 35;
+    uint32_t now = cs2d_sv_now();
+    sv->bomb_planted = true;
+    sv->bomb_item_id = item_id;
+    sv->bomb_tx = tx;
+    sv->bomb_ty = ty;
+    sv->bomb_plant_time = now;
+    sv->bomb_explode_time = now + (uint32_t)c4timer * 1000u;
+    sv->bomb_planter = id;
+
+    pl->score += 3;
+    pl->money += 300;
+    if (pl->money > 16000) pl->money = 16000;
+
+    /* Broadcast [30, id, 3, tx u16, ty u16, item_id u16, c4timer u8] (10 bytes) */
+    uint8_t pkt[10];
+    pkt[0] = 30;
+    pkt[1] = (uint8_t)id;
+    pkt[2] = 3;
+    memcpy(&pkt[3], &tx, 2);
+    memcpy(&pkt[5], &ty, 2);
+    memcpy(&pkt[7], &item_id, 2);
+    pkt[9] = c4timer;
+    sv_broadcast_joined(sv, pkt, 10);
+    cs2d_server_print("Bomb has been planted by %s at %d,%d", pl->name, tx, ty);
+}
+
+/* FUN_140138a40: [26, 3] defuse start */
+void cs2d_sv_defuse_start(cs2d_server_t *sv, int id, uint16_t tx, uint16_t ty)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team != 2 || !sv->bomb_planted) return;
+    if (pl->is_defusing) return;
+
+    /* Verify proximity to planted bomb */
+    float bx = sv->bomb_tx * 32.0f + 16.0f;
+    float by = sv->bomb_ty * 32.0f + 16.0f;
+    float dx = pl->x - bx, dy = pl->y - by;
+    if (dx * dx + dy * dy > 64.0f * 64.0f) return;
+
+    bool has_kit = sv_has_item(pl, CS2D_WEP_DEFUSEKIT) || ((pl->special & 1) != 0);
+    pl->is_defusing = true;
+    sv->defuser_id = id;
+    sv->defuse_start_ms = cs2d_sv_now();
+    sv->defuse_duration_ms = has_kit ? 5000u : 10000u;
+
+    /* Broadcast [26, id, 3, data i32, x u16, y u16] (11 bytes) */
+    uint8_t pkt[11];
+    pkt[0] = 26;
+    pkt[1] = (uint8_t)id;
+    pkt[2] = 3;
+    int32_t data = has_kit ? 1 : 0;
+    memcpy(&pkt[3], &data, 4);
+    memcpy(&pkt[7], &tx, 2);
+    memcpy(&pkt[9], &ty, 2);
+    sv_broadcast_joined(sv, pkt, 11);
+}
+
+/* FUN_140169830: [30, 4] defuse abort */
+void cs2d_sv_defuse_abort(cs2d_server_t *sv, int id)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->is_defusing) return;
+
+    pl->is_defusing = false;
+    if (sv->defuser_id == id) sv->defuser_id = 0;
+
+    uint8_t pkt[3] = { 30, (uint8_t)id, 4 };
+    sv_broadcast_joined(sv, pkt, 3);
+}
+
+/* FUN_140169830: [30, 5] defuse complete */
+void cs2d_sv_defuse_complete(cs2d_server_t *sv, int id)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || !pl->is_defusing) return;
+
+    pl->is_defusing = false;
+    sv->defuser_id = 0;
+    sv->bomb_planted = false;
+
+    /* Remove ground item */
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (sv->items[i].active && sv->items[i].id == sv->bomb_item_id) {
+            sv->items[i].active = false;
+            break;
+        }
+    }
+
+    pl->score += 3;
+    pl->money += 300;
+    if (pl->money > 16000) pl->money = 16000;
+
+    uint8_t pkt[3] = { 30, (uint8_t)id, 5 };
+    sv_broadcast_joined(sv, pkt, 3);
+    cs2d_server_print("Bomb has been defused by %s", pl->name);
+
+    /* CT victory: mode 21 = Bomb defused, CT win */
+    cs2d_sv_round_end(sv, 21, 5000);
+}
+
+/* FUN_140169830: [30, 6] bomb explode */
+void cs2d_sv_bomb_explode(cs2d_server_t *sv)
+{
+    sv->bomb_planted = false;
+    sv->defuser_id = 0;
+
+    /* Remove ground item */
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (sv->items[i].active && sv->items[i].id == sv->bomb_item_id) {
+            sv->items[i].active = false;
+            break;
+        }
+    }
+
+    uint8_t pkt[3] = { 30, 0, 6 };
+    sv_broadcast_joined(sv, pkt, 3);
+    cs2d_server_print("Bomb exploded!");
+
+    /* Damage players in explosion radius (350 px) */
+    float bx = sv->bomb_tx * 32.0f + 16.0f;
+    float by = sv->bomb_ty * 32.0f + 16.0f;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_player_t *pl = &sv->players[i];
+        if (!pl->used || !pl->alive) continue;
+        float dx = pl->x - bx, dy = pl->y - by;
+        float dist = sqrtf(dx * dx + dy * dy);
+        if (dist < 350.0f) {
+            int dmg = (int)(500.0f * (1.0f - dist / 350.0f));
+            if (dmg > 0) cs2d_sv_damage(sv, i, sv->bomb_planter, dmg, CS2D_WEP_PLANTEDBOMB);
+        }
+    }
+
+    /* T victory: mode 20 = Target bombed, T win */
+    cs2d_sv_round_end(sv, 20, 5000);
+}
+
+void cs2d_sv_step_bomb(cs2d_server_t *sv)
+{
+    uint32_t now = cs2d_sv_now();
+    /* 1. Planting check */
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_player_t *pl = &sv->players[i];
+        if (pl->used && pl->is_planting) {
+            if (!pl->alive || pl->weapon != CS2D_WEP_BOMB) {
+                cs2d_sv_plant_abort(sv, i);
+            } else if (now - pl->plant_start_ms >= 3000u) {
+                cs2d_sv_plant_complete(sv, i);
+            }
+        }
+    }
+
+    /* 2. Defusing check */
+    if (sv->bomb_planted && sv->defuser_id > 0) {
+        int did = sv->defuser_id;
+        cs2d_sv_player_t *dpl = &sv->players[did];
+        if (!dpl->used || !dpl->alive || !dpl->is_defusing) {
+            sv->defuser_id = 0;
+        } else {
+            float bx = sv->bomb_tx * 32.0f + 16.0f;
+            float by = sv->bomb_ty * 32.0f + 16.0f;
+            float dx = dpl->x - bx, dy = dpl->y - by;
+            if (dx * dx + dy * dy > 70.0f * 70.0f) {
+                cs2d_sv_defuse_abort(sv, did);
+            } else if (now - sv->defuse_start_ms >= sv->defuse_duration_ms) {
+                cs2d_sv_defuse_complete(sv, did);
+            }
+        }
+    }
+
+    /* 3. Bomb explode countdown */
+    if (sv->bomb_planted && sv->round_end == 0 && now >= sv->bomb_explode_time) {
+        cs2d_sv_bomb_explode(sv);
+    }
+}
+
+/* ========================================================================= */
+/* Phase 5: Opcode 26 (Use)                                                  */
+/* ========================================================================= */
+
+/* FUN_140138a40: [26, mode, data i32, x u16, y u16] */
+void cs2d_sv_use(cs2d_server_t *sv, int id, int mode, int32_t data, uint16_t x, uint16_t y)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive) return;
+
+    if (mode == 1 || mode == 2) {
+        cs2d_sv_hostage_use(sv, id, (int)data, mode);
+    } else if (mode == 3) {
+        cs2d_sv_defuse_start(sv, id, x, y);
+    } else if (mode == 100) {
+        float tx_px = (float)x * 32.0f + 16.0f;
+        float ty_px = (float)y * 32.0f + 16.0f;
+        float dx = pl->x - tx_px, dy = pl->y - ty_px;
+        if (dx * dx + dy * dy <= 45.0f * 45.0f) {
+            uint8_t pkt[11];
+            pkt[0] = 26;
+            pkt[1] = (uint8_t)id;
+            pkt[2] = 100;
+            memcpy(&pkt[3], &data, 4);
+            memcpy(&pkt[7], &x, 2);
+            memcpy(&pkt[9], &y, 2);
+            sv_broadcast_joined(sv, pkt, 11);
+        }
+    }
+}
+
+/* ========================================================================= */
+/* Phase 5: Hostages                                                         */
+/* ========================================================================= */
+
+void cs2d_sv_init_hostages(cs2d_server_t *sv)
+{
+    sv->hostage_count = 0;
+    memset(sv->hostages, 0, sizeof(sv->hostages));
+    if (!sv->map_loaded) return;
+
+    int id = 1;
+    for (uint32_t i = 0; i < sv->map.entity_count && sv->hostage_count < CS2D_SV_MAX_HOSTAGES; i++) {
+        const cs2d_entity_t *e = &sv->map.entities[i];
+        if (e->type != CS2D_ENT_INFO_HOSTAGE) continue;
+        cs2d_sv_hostage_t *h = &sv->hostages[sv->hostage_count++];
+        h->id = id++;
+        h->x = (float)(e->x * 32 + 16);
+        h->y = (float)(e->y * 32 + 16);
+        h->rot = (float)e->int_settings[0];
+        h->health = 100;
+        h->look = e->int_settings[1] > 7 ? 7 : (e->int_settings[1] < 0 ? 0 : e->int_settings[1]);
+        h->follow = 0;
+        h->target_tx = (uint16_t)e->x;
+        h->target_ty = (uint16_t)e->y;
+    }
+}
+
+void cs2d_sv_hostage_use(cs2d_server_t *sv, int id, int hostage_id, int mode)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team != 2) return;
+
+    cs2d_sv_hostage_t *h = NULL;
+    for (int i = 0; i < sv->hostage_count; i++) {
+        if (sv->hostages[i].id == hostage_id) { h = &sv->hostages[i]; break; }
+    }
+    if (!h || h->health <= 0) return;
+
+    float dx = pl->x - h->x, dy = pl->y - h->y;
+    if (dx * dx + dy * dy > 64.0f * 64.0f) return;
+
+    if (mode == 1) {
+        bool first = !h->used;
+        h->used = true;
+        h->follow = (uint8_t)id;
+        if (first) {
+            pl->money += 150;
+            if (pl->money > 16000) pl->money = 16000;
+        }
+        uint8_t pkt[11];
+        pkt[0] = 26; pkt[1] = (uint8_t)id; pkt[2] = 1;
+        int32_t hid = hostage_id;
+        memcpy(&pkt[3], &hid, 4);
+        uint16_t ux = first ? 0 : 1;
+        uint16_t uy = 0;
+        memcpy(&pkt[7], &ux, 2); memcpy(&pkt[9], &uy, 2);
+        sv_broadcast_joined(sv, pkt, 11);
+    } else if (mode == 2) {
+        h->follow = 0;
+        uint8_t pkt[11];
+        pkt[0] = 26; pkt[1] = (uint8_t)id; pkt[2] = 2;
+        int32_t hid = hostage_id;
+        memcpy(&pkt[3], &hid, 4);
+        uint16_t ux = 1, uy = 0;
+        memcpy(&pkt[7], &ux, 2); memcpy(&pkt[9], &uy, 2);
+        sv_broadcast_joined(sv, pkt, 11);
+    }
+}
+
+void cs2d_sv_damage_hostage(cs2d_server_t *sv, int hostage_id, int attacker_id, int dmg)
+{
+    cs2d_sv_hostage_t *h = NULL;
+    for (int i = 0; i < sv->hostage_count; i++) {
+        if (sv->hostages[i].id == hostage_id) { h = &sv->hostages[i]; break; }
+    }
+    if (!h || h->health <= 0) return;
+
+    cs2d_sv_player_t *atk = (attacker_id >= 1 && attacker_id <= CS2D_SV_MAX_PLAYERS)
+                            ? &sv->players[attacker_id] : NULL;
+
+    if (h->health > dmg) {
+        h->health -= dmg;
+        if (atk) {
+            atk->money -= 150;
+            if (atk->money < 0) atk->money = 0;
+        }
+        /* [29, hostage_id, 3, health u16, attacker u16] */
+        uint8_t pkt[7];
+        pkt[0] = 29; pkt[1] = (uint8_t)hostage_id; pkt[2] = 3;
+        uint16_t hp = (uint16_t)h->health;
+        uint16_t att = (uint16_t)attacker_id;
+        memcpy(&pkt[3], &hp, 2); memcpy(&pkt[5], &att, 2);
+        sv_broadcast_joined(sv, pkt, 7);
+    } else {
+        h->health = 0;
+        h->follow = 0;
+        if (atk) {
+            atk->money -= 1500;
+            if (atk->money < 0) atk->money = 0;
+            atk->score -= 1;
+        }
+        /* [29, hostage_id, 4, 0, killer u16] */
+        uint8_t pkt[7];
+        pkt[0] = 29; pkt[1] = (uint8_t)hostage_id; pkt[2] = 4;
+        uint16_t zero = 0;
+        uint16_t att = (uint16_t)attacker_id;
+        memcpy(&pkt[3], &zero, 2); memcpy(&pkt[5], &att, 2);
+        sv_broadcast_joined(sv, pkt, 7);
+    }
+}
+
+void cs2d_sv_step_hostages(cs2d_server_t *sv)
+{
+    for (int i = 0; i < sv->hostage_count; i++) {
+        cs2d_sv_hostage_t *h = &sv->hostages[i];
+        if (h->health <= 0) continue;
+        if (h->follow > 0) {
+            cs2d_sv_player_t *pl = &sv->players[h->follow];
+            if (!pl->used || !pl->alive || pl->team != 2) {
+                h->follow = 0;
+                continue;
+            }
+            float dx = pl->x - h->x, dy = pl->y - h->y;
+            float dist = sqrtf(dx * dx + dy * dy);
+            if (dist > 48.0f) {
+                int target_tx = (int)pl->x / 32;
+                int target_ty = (int)pl->y / 32;
+                if (target_tx != (int)h->target_tx || target_ty != (int)h->target_ty) {
+                    h->target_tx = (uint16_t)target_tx;
+                    h->target_ty = (uint16_t)target_ty;
+                    uint8_t pkt[7];
+                    pkt[0] = 29; pkt[1] = (uint8_t)h->id; pkt[2] = 0;
+                    uint16_t utx = (uint16_t)target_tx, uty = (uint16_t)target_ty;
+                    memcpy(&pkt[3], &utx, 2); memcpy(&pkt[5], &uty, 2);
+                    sv_broadcast_joined(sv, pkt, 7);
+                }
+                float spd = 2.5f;
+                h->x += (dx / dist) * spd;
+                h->y += (dy / dist) * spd;
+            }
+
+            /* Rescue point check */
+            int htx = (int)h->x / 32, hty = (int)h->y / 32;
+            bool rescued = false;
+            for (uint32_t e = 0; e < sv->map.entity_count; e++) {
+                if (sv->map.entities[e].type == CS2D_ENT_INFO_RESCUEPOINT) {
+                    if (abs((int)sv->map.entities[e].x - htx) <= 2 &&
+                        abs((int)sv->map.entities[e].y - hty) <= 2) {
+                        rescued = true;
+                        break;
+                    }
+                }
+            }
+            if (rescued) {
+                h->health = 0;
+                h->follow = 0;
+                uint8_t pkt[7];
+                pkt[0] = 29; pkt[1] = (uint8_t)h->id; pkt[2] = 2;
+                uint16_t zero = 0, rescuer = (uint16_t)h->follow;
+                memcpy(&pkt[3], &zero, 2); memcpy(&pkt[5], &rescuer, 2);
+                sv_broadcast_joined(sv, pkt, 7);
+
+                pl->score += 2;
+                for (int q = 1; q <= CS2D_SV_MAX_PLAYERS; q++) {
+                    if (sv->players[q].used && sv->players[q].team == 2) {
+                        sv->players[q].money += 1000;
+                        if (sv->players[q].money > 16000) sv->players[q].money = 16000;
+                    }
+                }
+
+                int rem = 0;
+                for (int k = 0; k < sv->hostage_count; k++) {
+                    if (sv->hostages[k].health > 0) rem++;
+                }
+                if (rem == 0) {
+                    cs2d_sv_round_end(sv, 21, 5000);
+                }
+            }
+        }
+    }
+}
+
+/* ========================================================================= */
+/* Phase 5: Projectiles & Flashlight                                         */
+/* ========================================================================= */
+
+/* FUN_1401d4910: [27, player u8, type u8, x u16, y u16, dir u16, flydist u16] (11 bytes) */
+void cs2d_sv_projectile(cs2d_server_t *sv, int id, int type, uint16_t x, uint16_t y, uint16_t dir, uint16_t flydist)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive) return;
+
+    /* Grenade types: 51..54, 72..73, 75..77 */
+    if (type == 51 || type == 52 || type == 53 || type == 54 ||
+        type == 72 || type == 73 || type == 75 || type == 76 || type == 77) {
+        for (int i = 0; i < pl->item_count; i++) {
+            if (pl->items[i] == type) {
+                memmove(&pl->items[i], &pl->items[i + 1], (size_t)(pl->item_count - 1 - i));
+                pl->item_count--;
+                break;
+            }
+        }
+        sv_best_weapon(sv, pl);
+    }
+
+    uint8_t pkt[11];
+    pkt[0] = 27;
+    pkt[1] = (uint8_t)id;
+    pkt[2] = (uint8_t)type;
+    memcpy(&pkt[3], &x, 2);
+    memcpy(&pkt[5], &y, 2);
+    memcpy(&pkt[7], &dir, 2);
+    memcpy(&pkt[9], &flydist, 2);
+    sv_broadcast_joined(sv, pkt, 11);
+}
+
+/* FUN_1401cfd00: [41, proj_id u16, id u8] (4 bytes) */
+void cs2d_sv_kill_projectile(cs2d_server_t *sv, int id, int proj_id)
+{
+    uint8_t pkt[4];
+    pkt[0] = 41;
+    uint16_t pid = (uint16_t)proj_id;
+    memcpy(&pkt[1], &pid, 2);
+    pkt[3] = (uint8_t)id;
+    sv_broadcast_joined(sv, pkt, 4);
+}
+
+/* FUN_1401d28b0: [57, player u8, state u8] (3 bytes) */
+void cs2d_sv_flashlight(cs2d_server_t *sv, int id, int state)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used) return;
+
+    uint8_t pkt[3] = { 57, (uint8_t)id, (uint8_t)state };
+    sv_broadcast_joined(sv, pkt, 3);
+}
+
+/* ========================================================================= */
+/* Phase 5: Bot Management ("Present only, no AI")                            */
+/* ========================================================================= */
+
+int cs2d_sv_bot_add(cs2d_server_t *sv, int team, int look, const char *name)
+{
+    int slot = 0;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (!sv->players[i].used) { slot = i; break; }
+    }
+    if (slot == 0) return 0;
+
+    cs2d_sv_player_t *pl = &sv->players[slot];
+    memset(pl, 0, sizeof(*pl));
+    pl->used = true;
+    pl->bot = true;
+    pl->conn = -1;
+    pl->ping = 0xfffe;
+    pl->joined = true;
+    pl->maxhealth = 100;
+    pl->os = 1;
+
+    if (name && name[0]) {
+        cs2d_sv_sanitize_name(sv, name, pl->name, sizeof(pl->name));
+    } else {
+        snprintf(pl->name, sizeof(pl->name), "Bot %d", slot);
+    }
+
+    int t = (team >= 1 && team <= 2) ? team
+            : (cs2d_sv_count_team(sv, 1) <= cs2d_sv_count_team(sv, 2) ? 1 : 2);
+    pl->team = t;
+    pl->look = (look >= 0 && look <= 3) ? look : cs2d_sv_rand(0, 3);
+
+    /* Broadcast [248] join notice */
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_conn_t *oc = cs2d_sv_conn_of_player(sv, i);
+        if (!oc || !sv->players[i].joined) continue;
+        cs2d_pkt_t *p248 = cs2d_sv_packet(sv, oc, true, false);
+        cs2d_pkt_w_byte(p248, 248);
+        cs2d_pkt_w_byte(p248, (uint8_t)slot);
+        cs2d_pkt_w_str(p248, pl->name);
+        cs2d_pkt_w_str(p248, "");
+        cs2d_pkt_w_int(p248, 0);
+        cs2d_pkt_w_lstr(p248, "");
+        cs2d_pkt_w_long(p248, 0);
+        cs2d_pkt_w_lstr(p248, "");
+        cs2d_pkt_w_byte(p248, 1);
+    }
+
+    /* Spawn if round running */
+    if (sv->round_end == 0 && pl->team >= 1) {
+        cs2d_sv_spawn(sv, slot);
+    }
+    cs2d_server_print("%s joined the game (bot)", pl->name);
+    return slot;
+}
+
+void cs2d_sv_bot_kick(cs2d_server_t *sv, const char *name_or_id)
+{
+    int target = 0;
+    if (name_or_id && name_or_id[0]) {
+        int id = atoi(name_or_id);
+        if (id >= 1 && id <= CS2D_SV_MAX_PLAYERS && sv->players[id].used && sv->players[id].bot) {
+            target = id;
+        } else {
+            for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+                if (sv->players[i].used && sv->players[i].bot &&
+                    _stricmp(sv->players[i].name, name_or_id) == 0) {
+                    target = i;
+                    break;
+                }
+            }
+        }
+    } else {
+        /* Kick last added bot */
+        for (int i = CS2D_SV_MAX_PLAYERS; i >= 1; i--) {
+            if (sv->players[i].used && sv->players[i].bot) { target = i; break; }
+        }
+    }
+    if (target > 0) {
+        cs2d_sv_kick(sv, target, "Bot removed");
+    }
+}
+
+void cs2d_sv_bot_kill(cs2d_server_t *sv, const char *name_or_id)
+{
+    int target = 0;
+    if (name_or_id && name_or_id[0]) {
+        int id = atoi(name_or_id);
+        if (id >= 1 && id <= CS2D_SV_MAX_PLAYERS && sv->players[id].used && sv->players[id].bot) {
+            target = id;
+        } else {
+            for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+                if (sv->players[i].used && sv->players[i].bot &&
+                    _stricmp(sv->players[i].name, name_or_id) == 0) {
+                    target = i;
+                    break;
+                }
+            }
+        }
+    } else {
+        for (int i = CS2D_SV_MAX_PLAYERS; i >= 1; i--) {
+            if (sv->players[i].used && sv->players[i].bot && sv->players[i].alive) {
+                target = i; break;
+            }
+        }
+    }
+    if (target > 0 && sv->players[target].alive) {
+        cs2d_sv_kill(sv, target, 0, 0, 255);
+    }
+}
+
+/* ========================================================================= */
+/* Phase 5: Bans & Ban List                                                  */
+/* ========================================================================= */
+
+bool cs2d_sv_is_banned(const cs2d_server_t *sv, const char *ip, int32_t usgn, int64_t steam_id,
+                       char *out_reason, size_t reason_size)
+{
+    if (!sv) return false;
+    for (int i = 0; i < sv->ban_count; i++) {
+        const cs2d_sv_ban_t *b = &sv->bans[i];
+        if (!b->active) continue;
+        bool match = false;
+        if (ip && b->ip[0] && strcmp(b->ip, ip) == 0) match = true;
+        if (usgn != 0 && b->usgn == usgn) match = true;
+        if (steam_id != 0 && b->steam_id == steam_id) match = true;
+        if (match) {
+            if (out_reason && reason_size > 0) {
+                snprintf(out_reason, reason_size, "%s", b->reason[0] ? b->reason : "Banned");
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+void cs2d_sv_ban_ip(cs2d_server_t *sv, const char *ip, const char *reason)
+{
+    if (!sv || !ip || !ip[0] || sv->ban_count >= CS2D_SV_MAX_BANS) return;
+    cs2d_sv_ban_t *b = &sv->bans[sv->ban_count++];
+    memset(b, 0, sizeof(*b));
+    b->active = true;
+    snprintf(b->ip, sizeof(b->ip), "%s", ip);
+    snprintf(b->reason, sizeof(b->reason), "%s", (reason && reason[0]) ? reason : "Banned by administrator");
+    cs2d_server_print("Banned IP: %s (%s)", b->ip, b->reason);
+}
+
+void cs2d_sv_ban_usgn(cs2d_server_t *sv, int32_t usgn, const char *reason)
+{
+    if (!sv || usgn <= 0 || sv->ban_count >= CS2D_SV_MAX_BANS) return;
+    cs2d_sv_ban_t *b = &sv->bans[sv->ban_count++];
+    memset(b, 0, sizeof(*b));
+    b->active = true;
+    b->usgn = usgn;
+    snprintf(b->reason, sizeof(b->reason), "%s", (reason && reason[0]) ? reason : "Banned by administrator");
+    cs2d_server_print("Banned U.S.G.N.: #%d (%s)", b->usgn, b->reason);
+}
+
+void cs2d_sv_ban_steam(cs2d_server_t *sv, int64_t steam_id, const char *reason)
+{
+    if (!sv || steam_id <= 0 || sv->ban_count >= CS2D_SV_MAX_BANS) return;
+    cs2d_sv_ban_t *b = &sv->bans[sv->ban_count++];
+    memset(b, 0, sizeof(*b));
+    b->active = true;
+    b->steam_id = steam_id;
+    snprintf(b->reason, sizeof(b->reason), "%s", (reason && reason[0]) ? reason : "Banned by administrator");
+    cs2d_server_print("Banned Steam ID: %lld (%s)", (long long)b->steam_id, b->reason);
+}
+
+void cs2d_sv_unban(cs2d_server_t *sv, const char *target)
+{
+    if (!sv || !target || !target[0]) return;
+    int32_t usgn = atoi(target);
+    for (int i = 0; i < sv->ban_count; i++) {
+        cs2d_sv_ban_t *b = &sv->bans[i];
+        if (!b->active) continue;
+        bool match = false;
+        if (strcmp(b->ip, target) == 0) match = true;
+        if (usgn > 0 && b->usgn == usgn) match = true;
+        if (match) {
+            cs2d_server_print("Unbanned: %s", target);
+            memmove(&sv->bans[i], &sv->bans[i + 1], (size_t)(sv->ban_count - 1 - i) * sizeof(cs2d_sv_ban_t));
+            sv->ban_count--;
+            return;
+        }
+    }
+    cs2d_server_print("Ban target '%s' not found", target);
+}
+
+/* ========================================================================= */
+/* Phase 5: Map Change                                                       */
+/* ========================================================================= */
+
+/* FUN_1401104f0: [239, 1] broadcast and map change */
+bool cs2d_sv_change_map(cs2d_server_t *sv, const char *mapname)
+{
+    if (!sv || !mapname || !mapname[0]) return false;
+
+    char path[256];
+    snprintf(path, sizeof(path), "maps/%s.map", mapname);
+    cs2d_map_t *new_map = (cs2d_map_t *)calloc(1, sizeof(cs2d_map_t));
+    if (!new_map) return false;
+    if (!cs2d_map_load_file(new_map, path)) {
+        cs2d_server_print("Failed to load map '%s'", path);
+        free(new_map);
+        return false;
+    }
+
+    /* Broadcast [239, 1] to all joined players */
+    uint8_t pkt[2] = { 239, 1 };
+    sv_broadcast_joined(sv, pkt, 2);
+
+    cs2d_map_free(&sv->map);
+    sv->map = *new_map;
+    free(new_map);
+    sv->map_loaded = true;
+    snprintf(sv->set.sv_map, sizeof(sv->set.sv_map), "%s", mapname);
+
+    /* Recalculate SHA */
+    cs2d_net_sha256_file(path, sv->map_sha);
+
+    cs2d_sv_init_hostages(sv);
+    sv->score_t = sv->score_ct = 0;
+
+    cs2d_sv_round_start(sv, 0);
+
+    cs2d_server_print("Map changed to '%s'", mapname);
+    return true;
 }
 

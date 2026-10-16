@@ -254,7 +254,7 @@ sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT 
   native hooks wired (`join`, `leave`, `team`, `spawn`, `select`, `attack`, `attack2`, `hit`, `kill`, `die`, `buy`, `drop`, `collect`, `reload`, `say`, `sayteam`, `name`, `endround`, `startround`, `menu`, `serveraction`);
   `player(id, prop)` (40+ properties & tables), `playerweapons`, `playerammo`; `parse` with HUD text opcode `[234]` and tween `[54]`; dynamic images (`image`, `freeimage`, manipulation & tweens);
   timers (`timer`, `freetimer`); menu sending and response `[235]`. Locked in `test_server_phase4_lua` (66/66 tests pass).
-- **Phase 5:** construction, hostages, bomb, entities / triggers, items, projectiles, bots (present only).
+- **Phase 5 (done 2026-10-15):** bomb plant [30,1..3], defuse [26,3] / [30,4..5], explode [30,6] with 350px blast damage radius, round end modes 20 & 21; hostages ([29,1..5], use [26] follow/release, rescue rewards at Info_RescuePoint, damage & death); projectiles [27] (grenades consumed & relayed) and [41] (kill projectile); flashlight [57]; bot management (`bot_add`, `bot_kick`, `bot_kill` with ping 0xfffe and conn -1); ban management (`banip`, `banusgn`, `bansteam`, `unban`, `listbans`, join check status 4 refusal with reason); map change `cs2d_sv_change_map` (`[239,1]`, dynamic heap loading, SHA256, hostages re-init); snapshot sections 2 (hostages) and 3 (ground items) serialization. Locked in `test_server_phase5_bomb_hostages_bots` (67/67 tests pass).
 - **Phase 6:** `C:\C4` scripts end to end (with `-offline`).
 
 ## GL 1.x / GDI+ removal (done 2026-10-12..2026-10-15, independent of the Wasm port)

@@ -6465,7 +6465,7 @@ static bool test_server_phase4_lua(void)
 {
     printf("\n=== Testing Dedicated Server Phase 4: Lua Subsystem ===\n");
 
-    cs2d_server_t sv;
+    static cs2d_server_t sv;
     memset(&sv, 0, sizeof(sv));
     sv.sock = INVALID_SOCKET;
     cs2d_sv_settings_default(&sv.set);
@@ -6504,14 +6504,11 @@ static bool test_server_phase4_lua(void)
     }
 
     /* Initialize Lua subsystem */
-    printf("DEBUG: calling cs2d_sv_lua_init\n"); fflush(stdout);
     cs2d_sv_lua_init(&sv);
-    printf("DEBUG: cs2d_sv_lua_init returned\n"); fflush(stdout);
     if (!sv.lua) TEST_FAIL("Lua Init", "sv.lua is NULL after cs2d_sv_lua_init");
 
     /* 1. Test player(id, prop) and player table queries */
-    printf("DEBUG: step 1 player()\n"); fflush(stdout);
-    int rc = cs2d_sv_lua_dostring(&sv,
+    bool rc = cs2d_sv_lua_dostring(&sv,
         "hp = player(1, 'health')\n"
         "money = player(1, 'money')\n"
         "name = player(1, 'name')\n"
@@ -6521,7 +6518,7 @@ static bool test_server_phase4_lua(void)
         "t1 = player(0, 'team1')\n"
         "t2 = player(0, 'team2')\n"
     );
-    if (rc != 0) TEST_FAIL("Lua dostring", "failed executing player() query snippet");
+    if (!rc) TEST_FAIL("Lua dostring", "failed executing player() query snippet");
 
     /* Verify globals set in Lua */
     rc = cs2d_sv_lua_dostring(&sv,
@@ -6533,7 +6530,7 @@ static bool test_server_phase4_lua(void)
         "assert(#t1 == 1 and t1[1] == 1, 'team1 mismatch')\n"
         "assert(#t2 == 1 and t2[1] == 2, 'team2 mismatch')\n"
     );
-    if (rc != 0) TEST_FAIL("player() assertions", "player() properties did not match expected values");
+    if (!rc) TEST_FAIL("player() assertions", "player() properties did not match expected values");
 
     /* Test playerweapons and playerammo */
     rc = cs2d_sv_lua_dostring(&sv,
@@ -6542,7 +6539,7 @@ static bool test_server_phase4_lua(void)
         "clip = playerammo(1, 30)\n"
         "assert(clip == 30, 'playerammo mismatch')\n"
     );
-    if (rc != 0) TEST_FAIL("playerweapons/ammo", "playerweapons or playerammo assertion failed");
+    if (!rc) TEST_FAIL("playerweapons/ammo", "playerweapons or playerammo assertion failed");
 
     /* 2. Test addhook with priority and return value cancellation */
     rc = cs2d_sv_lua_dostring(&sv,
@@ -6559,7 +6556,7 @@ static bool test_server_phase4_lua(void)
         "addhook('team', 'hook_low', 0)\n"
         "addhook('team', 'hook_high', 10)\n"
     );
-    if (rc != 0) TEST_FAIL("addhook setup", "failed registering team hooks");
+    if (!rc) TEST_FAIL("addhook setup", "failed registering team hooks");
 
     int hook_ret = cs2d_sv_lua_hook_team(&sv, 1, 2, 0);
     if (hook_ret != 1) TEST_FAIL("addhook return", "hook_high with return 1 did not cancel (returned != 1)");
@@ -6568,7 +6565,7 @@ static bool test_server_phase4_lua(void)
         "assert(team_hook1_ran and team_hook2_ran, 'both priority hooks should have run')\n"
         "freehook('team', 'hook_high')\n"
     );
-    if (rc != 0) TEST_FAIL("freehook", "freehook failed or assertions failed");
+    if (!rc) TEST_FAIL("freehook", "freehook failed or assertions failed");
 
     hook_ret = cs2d_sv_lua_hook_team(&sv, 1, 2, 0);
     if (hook_ret != 0) TEST_FAIL("freehook verify", "after freehook, return value should be 0");
@@ -6578,7 +6575,7 @@ static bool test_server_phase4_lua(void)
         "parse('setmoney 1 8888')\n"
         "parse('sethealth 1 85')\n"
     );
-    if (rc != 0) TEST_FAIL("parse execution", "parse dostring failed");
+    if (!rc) TEST_FAIL("parse execution", "parse dostring failed");
     if (sv.players[1].money != 8888 || sv.players[1].health != 85) {
         TEST_FAIL("parse commands", "parse did not correctly update player money/health");
     }
@@ -6587,7 +6584,7 @@ static bool test_server_phase4_lua(void)
     sv.conns[0].out.pos = 0;
     sv.conns[0].out_open = false;
     rc = cs2d_sv_lua_dostring(&sv, "parse('hudtxt 5 \"Objective: Defend\" 320 200 1')\n");
-    if (rc != 0) TEST_FAIL("parse hudtxt", "parse hudtxt failed");
+    if (!rc) TEST_FAIL("parse hudtxt", "parse hudtxt failed");
     if (sv.conns[0].out.pos < 6 || sv.conns[0].out.buf[0] != 234 || sv.conns[0].out.buf[1] != 5) {
         TEST_FAIL("parse hudtxt packet", "expected [234, 5, ...] HUD text broadcast packet");
     }
@@ -6604,7 +6601,7 @@ static bool test_server_phase4_lua(void)
         "imageblend(img, 1)\n"
         "freeimage(img)\n"
     );
-    if (rc != 0) TEST_FAIL("image functions", "image creation / manipulation / freeimage failed");
+    if (!rc) TEST_FAIL("image functions", "image creation / manipulation / freeimage failed");
     if (sv.conns[0].out.pos == 0) {
         TEST_FAIL("image packet", "image manipulation should broadcast opcode [51] packets");
     }
@@ -6619,19 +6616,19 @@ static bool test_server_phase4_lua(void)
         "end\n"
         "timer(10, 'on_timeout', '123', 2)\n"
     );
-    if (rc != 0) TEST_FAIL("timer setup", "timer registration failed");
+    if (!rc) TEST_FAIL("timer setup", "timer registration failed");
 
     /* Step server Lua frame after 15 ms -> iteration 1 */
     SDL_Delay(15);
     cs2d_sv_lua_frame(&sv);
     rc = cs2d_sv_lua_dostring(&sv, "assert(timer_runs == 1 and timer_param == 123, 'timer 1st run failed')\n");
-    if (rc != 0) TEST_FAIL("timer 1st step", "timer 1st execution assertion failed");
+    if (!rc) TEST_FAIL("timer 1st step", "timer 1st execution assertion failed");
 
     /* Step again after 15 ms -> iteration 2 (timer then auto-frees) */
     SDL_Delay(15);
     cs2d_sv_lua_frame(&sv);
     rc = cs2d_sv_lua_dostring(&sv, "assert(timer_runs == 2, 'timer 2nd run failed')\n");
-    if (rc != 0) TEST_FAIL("timer 2nd step", "timer 2nd execution assertion failed");
+    if (!rc) TEST_FAIL("timer 2nd step", "timer 2nd execution assertion failed");
 
     /* 6. Test menu() send and hook */
     sv.conns[0].out.pos = 0;
@@ -6644,7 +6641,7 @@ static bool test_server_phase4_lua(void)
         "addhook('menu', 'on_menu_select')\n"
         "menu(1, 'Vote Map,de_dust2,cs_assault')\n"
     );
-    if (rc != 0) TEST_FAIL("menu setup", "menu call failed");
+    if (!rc) TEST_FAIL("menu setup", "menu call failed");
     if (sv.conns[0].out.pos < 3 || sv.conns[0].out.buf[0] != 235) {
         TEST_FAIL("menu packet", "expected opcode [235] menu packet sent to player 1");
     }
@@ -6652,7 +6649,7 @@ static bool test_server_phase4_lua(void)
     /* Simulate client selecting button 2 */
     cs2d_sv_lua_hook_menu(&sv, 1, "Vote Map", 2);
     rc = cs2d_sv_lua_dostring(&sv, "assert(menu_sel == 2, 'menu button response assertion failed')\n");
-    if (rc != 0) TEST_FAIL("menu response", "hook menu did not record button selection");
+    if (!rc) TEST_FAIL("menu response", "hook menu did not record button selection");
 
     /* Clean up */
     cs2d_sv_lua_close(&sv);
@@ -6665,6 +6662,206 @@ static bool test_server_phase4_lua(void)
     return true;
 }
 
+/* ========================================================================= */
+/* Phase 5 Test: Bomb, Hostages, Use, Projectiles, Bots, Bans & Map Change   */
+/* ========================================================================= */
+static bool test_server_phase5_bomb_hostages_bots(void)
+{
+    printf("\n=== Testing Dedicated Server Phase 5: Bomb, Hostages, Bots & Bans ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.map_loaded = true;
+    sv.map.width = 30;
+    sv.map.height = 30;
+    sv.map.entity_count = 3;
+    sv.map.entities[0].type = CS2D_ENT_INFO_BOMBSPOT;
+    sv.map.entities[0].x = 10;
+    sv.map.entities[0].y = 10;
+    sv.map.entities[1].type = CS2D_ENT_INFO_HOSTAGE;
+    sv.map.entities[1].x = 5;
+    sv.map.entities[1].y = 5;
+    sv.map.entities[1].int_settings[0] = 90;
+    sv.map.entities[1].int_settings[1] = 1;
+    sv.map.entities[2].type = CS2D_ENT_INFO_RESCUEPOINT;
+    sv.map.entities[2].x = 2;
+    sv.map.entities[2].y = 2;
+
+    for (int i = 0; i < 4; i++) {
+        sv.conns[i].active = true;
+        sv.conns[i].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+        sv.conns[i].player = i + 1;
+        sv.players[i + 1].used = true;
+        sv.players[i + 1].joined = true;
+        sv.players[i + 1].alive = true;
+        sv.players[i + 1].conn = i;
+        sv.players[i + 1].maxhealth = 100;
+        sv.players[i + 1].health = 100;
+    }
+    snprintf(sv.players[1].name, sizeof(sv.players[1].name), "Terrorist");
+    snprintf(sv.players[2].name, sizeof(sv.players[2].name), "CounterTerrorist");
+    snprintf(sv.players[3].name, sizeof(sv.players[3].name), "RescueCT");
+
+    /* Player 1 (T) at (10, 10) holding Bomb (55) */
+    sv.players[1].team = 1;
+    sv.players[1].x = 10.0f * 32.0f + 16.0f;
+    sv.players[1].y = 10.0f * 32.0f + 16.0f;
+    sv.players[1].item_count = 2;
+    sv.players[1].items[0] = CS2D_WEP_KNIFE;
+    sv.players[1].items[1] = CS2D_WEP_BOMB;
+    sv.players[1].weapon = CS2D_WEP_BOMB;
+
+    /* Player 2 (CT) at (10, 10) holding Knife (50) + Defuse kit */
+    sv.players[2].team = 2;
+    sv.players[2].x = 10.0f * 32.0f + 16.0f;
+    sv.players[2].y = 10.0f * 32.0f + 16.0f;
+    sv.players[2].item_count = 2;
+    sv.players[2].items[0] = CS2D_WEP_KNIFE;
+    sv.players[2].items[1] = CS2D_WEP_DEFUSEKIT;
+    sv.players[2].weapon = CS2D_WEP_KNIFE;
+    sv.players[2].special = 1; /* Defuse kit bit */
+
+    /* Player 3 (CT) at (5, 5) */
+    sv.players[3].team = 2;
+    sv.players[3].x = 5.0f * 32.0f + 16.0f;
+    sv.players[3].y = 5.0f * 32.0f + 16.0f;
+    sv.players[3].weapon = CS2D_WEP_KNIFE;
+
+    /* 1. Test Bomb Planting */
+    cs2d_sv_plant_start(&sv, 1);
+    if (!sv.players[1].is_planting) TEST_FAIL("Plant Start", "Player 1 should be planting");
+
+    cs2d_sv_plant_abort(&sv, 1);
+    if (sv.players[1].is_planting) TEST_FAIL("Plant Abort", "Planting was not aborted");
+
+    cs2d_sv_plant_start(&sv, 1);
+    sv.players[1].plant_start_ms -= 3000; /* Simulate 3s elapsed */
+    cs2d_sv_step_bomb(&sv);
+    if (sv.players[1].is_planting) TEST_FAIL("Plant Complete", "Player 1 should no longer be planting");
+    if (!sv.bomb_planted) TEST_FAIL("Bomb Planted", "sv.bomb_planted should be true");
+    if (sv.bomb_tx != 10 || sv.bomb_ty != 10) TEST_FAIL("Bomb Coordinates", "Bomb tile coordinates mismatch");
+
+    /* 2. Test Bomb Defusing */
+    cs2d_sv_defuse_start(&sv, 2, 10, 10);
+    if (!sv.players[2].is_defusing) TEST_FAIL("Defuse Start", "Player 2 should be defusing");
+    if (sv.defuser_id != 2) TEST_FAIL("Defuser ID", "sv.defuser_id should be 2");
+    if (sv.defuse_duration_ms != 5000) TEST_FAIL("Defuse Kit Duration", "Defuse kit should take 5000ms");
+
+    sv.defuse_start_ms -= 5000; /* Simulate 5s elapsed */
+    cs2d_sv_step_bomb(&sv);
+    if (sv.bomb_planted) TEST_FAIL("Bomb Defused", "sv.bomb_planted should be false after defuse");
+    if (sv.players[2].is_defusing) TEST_FAIL("Defuse Finished", "Player 2 should no longer be defusing");
+    if (sv.round_end != 21) TEST_FAIL("Round End Defused", "Round end mode should be 21 (CT victory)");
+
+    /* 3. Test Bomb Explosion */
+    sv.round_end = 0;
+    sv.bomb_planted = true;
+    sv.bomb_tx = 10;
+    sv.bomb_ty = 10;
+    sv.bomb_planter = 1;
+    sv.bomb_explode_time = cs2d_sv_now() - 100;
+    sv.players[1].health = 100;
+    sv.players[1].alive = true;
+    cs2d_sv_step_bomb(&sv);
+    if (sv.bomb_planted) TEST_FAIL("Bomb Explode", "sv.bomb_planted should be false after explosion");
+    if (sv.round_end != 20) TEST_FAIL("Round End Explode", "Round end mode should be 20 (T victory)");
+    if (sv.players[1].health >= 100) TEST_FAIL("Blast Damage", "Blast should damage planter close to center");
+
+    /* 4. Test Hostages */
+    cs2d_sv_init_hostages(&sv);
+    if (sv.hostage_count != 1) TEST_FAIL("Hostage Init", "Expected 1 hostage from map entity");
+    if (sv.hostages[0].id != 1 || sv.hostages[0].health != 100) {
+        TEST_FAIL("Hostage State", "Hostage initial state invalid");
+    }
+
+    sv.players[3].alive = true;
+    sv.players[3].health = 100;
+
+    /* Hostage Follow via Opcode 26 mode 1 */
+    int money_before = sv.players[3].money;
+    cs2d_sv_use(&sv, 3, 1, 1, 5, 5);
+    if (sv.hostages[0].follow != 3) TEST_FAIL("Hostage Follow", "Hostage should follow player 3");
+    if (sv.players[3].money != money_before + 150) TEST_FAIL("Hostage Bonus", "First interaction should award $150");
+
+    /* Hostage Damage */
+    cs2d_sv_damage_hostage(&sv, 1, 1, 20);
+    if (sv.hostages[0].health != 80) TEST_FAIL("Hostage Damage", "Hostage health should be 80 after 20 dmg");
+
+    /* Hostage Rescue */
+    sv.round_end = 0;
+    sv.players[3].x = 2.0f * 32.0f + 16.0f;
+    sv.players[3].y = 2.0f * 32.0f + 16.0f;
+    sv.hostages[0].x = 2.0f * 32.0f + 16.0f;
+    sv.hostages[0].y = 2.0f * 32.0f + 16.0f;
+    cs2d_sv_step_hostages(&sv);
+    if (sv.hostages[0].health != 0) TEST_FAIL("Hostage Rescued", "Hostage should be rescued (health 0)");
+    if (sv.round_end != 21) TEST_FAIL("Hostage Win", "All hostages rescued should trigger CT victory (mode 21)");
+
+    /* 5. Test Projectile, Flashlight and Kill Projectile */
+    sv.players[1].alive = true;
+    sv.players[1].health = 100;
+    sv.players[1].item_count = 1;
+    sv.players[1].items[0] = 51; /* HE Grenade */
+    cs2d_sv_projectile(&sv, 1, 51, 100, 100, 45, 200);
+    if (sv.players[1].item_count != 0) TEST_FAIL("Grenade Consumed", "Throwing grenade should decrement inventory");
+    cs2d_sv_kill_projectile(&sv, 1, 42);
+    cs2d_sv_flashlight(&sv, 1, 1);
+
+    /* 6. Test Bots */
+    int bot_id = cs2d_sv_bot_add(&sv, 1, 0, "Bot_Alpha");
+    if (bot_id <= 0 || !sv.players[bot_id].bot || sv.players[bot_id].ping != 0xfffe) {
+        TEST_FAIL("Bot Add", "Bot was not created correctly");
+    }
+    if (sv.players[bot_id].conn != -1) TEST_FAIL("Bot Conn", "Bot connection index should be -1");
+
+    cs2d_sv_bot_kill(&sv, "Bot_Alpha");
+    if (sv.players[bot_id].alive) TEST_FAIL("Bot Kill", "Bot should be dead after bot_kill");
+
+    cs2d_sv_bot_kick(&sv, "Bot_Alpha");
+    if (sv.players[bot_id].used) TEST_FAIL("Bot Kick", "Bot slot should be freed after bot_kick");
+
+    /* 7. Test Bans */
+    cs2d_sv_exec(&sv, "banip 192.168.1.50 Wallhacker");
+    cs2d_sv_exec(&sv, "banusgn 98765 Troller");
+    cs2d_sv_exec(&sv, "bansteam 76561198012345678 Aimbot");
+
+    char ban_reason[64] = "";
+    if (!cs2d_sv_is_banned(&sv, "192.168.1.50", 0, 0, ban_reason, sizeof(ban_reason)) ||
+        strcmp(ban_reason, "Wallhacker") != 0) {
+        TEST_FAIL("Ban IP", "IP ban check failed or reason mismatch");
+    }
+    if (!cs2d_sv_is_banned(&sv, "10.0.0.1", 98765, 0, ban_reason, sizeof(ban_reason)) ||
+        strcmp(ban_reason, "Troller") != 0) {
+        TEST_FAIL("Ban USGN", "USGN ban check failed or reason mismatch");
+    }
+    if (!cs2d_sv_is_banned(&sv, "10.0.0.1", 0, 76561198012345678LL, ban_reason, sizeof(ban_reason)) ||
+        strcmp(ban_reason, "Aimbot") != 0) {
+        TEST_FAIL("Ban Steam", "Steam ban check failed or reason mismatch");
+    }
+    if (cs2d_sv_is_banned(&sv, "10.0.0.1", 11111, 22222, NULL, 0)) {
+        TEST_FAIL("Ban Check Negative", "Unbanned player should not be detected as banned");
+    }
+
+    cs2d_sv_exec(&sv, "unban 192.168.1.50");
+    if (cs2d_sv_is_banned(&sv, "192.168.1.50", 0, 0, NULL, 0)) {
+        TEST_FAIL("Unban", "IP should not be banned after unban command");
+    }
+
+    /* 8. Test Map Change */
+    bool map_rc = cs2d_sv_change_map(&sv, "de_dust2");
+    if (!map_rc || strcmp(sv.set.sv_map, "de_dust2") != 0 || !sv.map_loaded || strlen(sv.map_sha) != 64) {
+        TEST_FAIL("Map Change", "cs2d_sv_change_map failed to load de_dust2");
+    }
+
+    /* Clean up */
+    for (int i = 0; i < 4; i++) free(sv.conns[i].pending);
+    cs2d_map_free(&sv.map);
+
+    TEST_PASS("Dedicated server Phase 5: Bomb system, hostages, use [26], projectiles [27]/[41], bots, bans & map change [239]");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -6673,7 +6870,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 66;
+    int total = 67;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -6741,6 +6938,7 @@ int main(void)
     if (test_server_phase2_respawn_and_speeder()) passed++;
     if (test_server_phase3_rcon_and_commands()) passed++;
     if (test_server_phase4_lua()) passed++;
+    if (test_server_phase5_bomb_hostages_bots()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

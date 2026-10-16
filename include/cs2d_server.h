@@ -105,6 +105,33 @@ typedef struct {
     uint32_t drop_time_ms;
 } cs2d_sv_item_t;
 
+#define CS2D_SV_MAX_HOSTAGES 32
+#define CS2D_SV_MAX_BANS     64
+
+/* A hostage entity on the dedicated server (Thostage) */
+typedef struct {
+    bool     active;
+    uint8_t  id;           /* 1..N */
+    float    x, y;
+    float    rot;
+    int      health;
+    int      look;
+    int      follow;       /* 0 = stay, >0 = CT player id */
+    uint16_t target_tx;
+    uint16_t target_ty;
+    bool     rescued;
+    bool     used;         /* first use gives +$150 bonus */
+} cs2d_sv_hostage_t;
+
+/* A ban entry on the dedicated server */
+typedef struct {
+    bool    active;
+    char    ip[32];
+    int32_t usgn;
+    int64_t steam_id;
+    char    reason[64];
+} cs2d_sv_ban_t;
+
 /* Tpl fields the join snapshot and the ping list read (FUN_1401dc530, 0x1401e505d) */
 typedef struct {
     bool     used;
@@ -146,6 +173,10 @@ typedef struct {
     char     pending_name[64];/* +0x2a8: deferred name change while dead (applied on spawn) */
     bool     rcon_auth;       /* +0xf0: authenticated via [236] / [241] */
     int      special;         /* vtable +0x200: the special byte */
+    /* Bomb planting / defusing (Phase 5) */
+    bool     is_planting;
+    uint32_t plant_start_ms;
+    bool     is_defusing;
     float    last_valid_x, last_valid_y;
     uint32_t last_move_ms;
     uint32_t death_ms;
@@ -188,6 +219,22 @@ typedef struct {
     int                round_end_delay; /* DAT_1407dfe70 (ms) */
     uint32_t           round_end_ms;
     void              *lua;             /* cs2d_sv_lua_t (phase 4) */
+    /* Hostages (Phase 5) */
+    cs2d_sv_hostage_t  hostages[CS2D_SV_MAX_HOSTAGES];
+    int                hostage_count;
+    /* Bomb state (Phase 5) */
+    bool               bomb_planted;
+    uint16_t           bomb_item_id;
+    uint16_t           bomb_tx, bomb_ty;
+    uint32_t           bomb_plant_time;
+    uint32_t           bomb_explode_time;
+    int                bomb_planter;
+    int                defuser_id;
+    uint32_t           defuse_start_ms;
+    uint32_t           defuse_duration_ms;
+    /* Ban list (Phase 5) */
+    cs2d_sv_ban_t      bans[CS2D_SV_MAX_BANS];
+    int                ban_count;
 } cs2d_server_t;
 
 void cs2d_sv_settings_default(cs2d_sv_settings_t *s);
@@ -236,6 +283,38 @@ void cs2d_sv_set_pos(cs2d_server_t *sv, int id, float x, float y);              
 void cs2d_sv_set_teamscores(cs2d_server_t *sv, int score_t, int score_ct);                     /* FUN_140051ac0: [64] */
 void cs2d_sv_msg(cs2d_server_t *sv, const char *text, int target_id);                          /* FUN_140153900: [240,0,1] */
 void cs2d_sv_slap(cs2d_server_t *sv, int id, bool death);                                      /* FUN_140167e40 */
+
+/* Phase 5: Bomb, Hostages, Use, Projectiles, Flashlight, Bots, Bans, Map Change */
+void cs2d_sv_plant_start(cs2d_server_t *sv, int id);                          /* FUN_1401588b0: [30, 1] */
+void cs2d_sv_plant_abort(cs2d_server_t *sv, int id);                          /* FUN_1401588b0: [30, 2] */
+void cs2d_sv_plant_complete(cs2d_server_t *sv, int id);                       /* FUN_1401588b0: [30, 3] */
+void cs2d_sv_defuse_start(cs2d_server_t *sv, int id, uint16_t tx, uint16_t ty); /* FUN_140138a40: [26, 3] */
+void cs2d_sv_defuse_abort(cs2d_server_t *sv, int id);                         /* FUN_140169830: [30, 4] */
+void cs2d_sv_defuse_complete(cs2d_server_t *sv, int id);                      /* FUN_140169830: [30, 5] */
+void cs2d_sv_bomb_explode(cs2d_server_t *sv);                                 /* FUN_140169830: [30, 6] */
+void cs2d_sv_step_bomb(cs2d_server_t *sv);
+void cs2d_sv_use(cs2d_server_t *sv, int id, int mode, int32_t data, uint16_t x, uint16_t y); /* FUN_140138a40: [26] */
+
+void cs2d_sv_init_hostages(cs2d_server_t *sv);
+void cs2d_sv_step_hostages(cs2d_server_t *sv);
+void cs2d_sv_damage_hostage(cs2d_server_t *sv, int hostage_id, int attacker_id, int dmg);
+void cs2d_sv_hostage_use(cs2d_server_t *sv, int id, int hostage_id, int mode);
+
+void cs2d_sv_projectile(cs2d_server_t *sv, int id, int type, uint16_t x, uint16_t y, uint16_t dir, uint16_t flydist); /* FUN_1401d4910: [27] */
+void cs2d_sv_kill_projectile(cs2d_server_t *sv, int id, int proj_id);         /* FUN_1401cfd00: [41] */
+void cs2d_sv_flashlight(cs2d_server_t *sv, int id, int state);                /* FUN_1401d28b0: [57] */
+
+int  cs2d_sv_bot_add(cs2d_server_t *sv, int team, int look, const char *name);
+void cs2d_sv_bot_kick(cs2d_server_t *sv, const char *name_or_id);
+void cs2d_sv_bot_kill(cs2d_server_t *sv, const char *name_or_id);
+
+bool cs2d_sv_is_banned(const cs2d_server_t *sv, const char *ip, int32_t usgn, int64_t steam_id, char *out_reason, size_t reason_size);
+void cs2d_sv_ban_ip(cs2d_server_t *sv, const char *ip, const char *reason);
+void cs2d_sv_ban_usgn(cs2d_server_t *sv, int32_t usgn, const char *reason);
+void cs2d_sv_ban_steam(cs2d_server_t *sv, int64_t steam_id, const char *reason);
+void cs2d_sv_unban(cs2d_server_t *sv, const char *target);
+
+bool cs2d_sv_change_map(cs2d_server_t *sv, const char *mapname);               /* FUN_1401104f0: [239] */
 
 /* cs2d_server.c: kick, RCON ([236]/[241]/[242]), server command parser (FUN_140140a00) */
 void cs2d_sv_kick(cs2d_server_t *sv, int id, const char *reason);                              /* FUN_1401502a0: [253] */

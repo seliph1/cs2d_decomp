@@ -529,9 +529,68 @@ static void sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
         k++;
         cs2d_sv_write_player_record(&c->out, i, &sv->players[i]);
     }
-    /* Sections 1..6 terminators (hostages, items, entity states, dynamic objects, ground projectiles are
-     * not ported yet: their lists are empty) */
-    for (int sec = 1; sec <= 6; sec++) {
+    /* Section 1 terminator */
+    p = sv_packet(sv, c, true, true);
+    cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 1); cs2d_pkt_w_byte(p, 0);
+
+    /* Section 2: hostages, 50 per message */
+    int living_hostages = 0;
+    for (int i = 0; i < sv->hostage_count; i++) {
+        if (sv->hostages[i].health > 0) living_hostages++;
+    }
+    if (living_hostages > 0) {
+        int hk = 0;
+        for (int i = 0; i < sv->hostage_count; i++) {
+            const cs2d_sv_hostage_t *h = &sv->hostages[i];
+            if (h->health <= 0) continue;
+            if ((hk % 50) == 0) {
+                p = sv_packet(sv, c, true, true);
+                int rem = living_hostages - hk;
+                cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 2);
+                cs2d_pkt_w_byte(p, (uint8_t)(rem > 50 ? 50 : rem));
+            }
+            hk++;
+            cs2d_pkt_w_byte(&c->out, (uint8_t)h->id);
+            cs2d_pkt_w_byte(&c->out, (uint8_t)h->health);
+            cs2d_pkt_w_byte(&c->out, (uint8_t)h->look);
+            cs2d_pkt_w_byte(&c->out, (uint8_t)h->follow);
+            cs2d_pkt_w_short(&c->out, (uint16_t)(int)h->x);
+            cs2d_pkt_w_short(&c->out, (uint16_t)(int)h->y);
+        }
+    }
+    p = sv_packet(sv, c, true, true);
+    cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 2); cs2d_pkt_w_byte(p, 0);
+
+    /* Section 3: ground items, 60 per message */
+    int active_items = 0;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (sv->items[i].active) active_items++;
+    }
+    if (active_items > 0) {
+        int ik = 0;
+        for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+            const cs2d_sv_item_t *it = &sv->items[i];
+            if (!it->active) continue;
+            if ((ik % 60) == 0) {
+                p = sv_packet(sv, c, true, true);
+                int rem = active_items - ik;
+                cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 3);
+                cs2d_pkt_w_byte(p, (uint8_t)(rem > 60 ? 60 : rem));
+            }
+            ik++;
+            cs2d_pkt_w_short(&c->out, (uint16_t)it->id);
+            cs2d_pkt_w_byte(&c->out, (uint8_t)it->type);
+            cs2d_pkt_w_short(&c->out, (uint16_t)it->tile_x);
+            cs2d_pkt_w_short(&c->out, (uint16_t)it->tile_y);
+            cs2d_pkt_w_short(&c->out, (uint16_t)it->clip);
+            cs2d_pkt_w_short(&c->out, (uint16_t)it->reserve);
+        }
+    }
+    p = sv_packet(sv, c, true, true);
+    cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 3); cs2d_pkt_w_byte(p, 0);
+
+    /* Sections 4..6 terminators (entity states, dynamic objects, ground projectiles) */
+    for (int sec = 4; sec <= 6; sec++) {
         p = sv_packet(sv, c, true, true);
         cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, (uint8_t)sec); cs2d_pkt_w_byte(p, 0);
     }
@@ -722,6 +781,18 @@ static void sv_recv_join1(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
         } else if (usgn == 0 && sv->set.sv_usgnonly == 1) {
             sv_join_fail_log(c, name, "can't join (no registered U.S.G.N. user)");
             status = 2;
+        } else {
+            char ban_reason[64] = "";
+            char ip_str[32];
+            snprintf(ip_str, sizeof(ip_str), "%s", inet_ntoa(c->addr.sin_addr));
+            if (cs2d_sv_is_banned(sv, ip_str, usgn, steam_id, ban_reason, sizeof(ban_reason))) {
+                sv_join_fail_log(c, name, "can't join (banned)");
+                status = 4;
+                cs2d_pkt_w_byte(&c->out, 4);
+                cs2d_pkt_w_lstr(&c->out, ban_reason);
+                sv_flush(sv, c);
+                return;
+            }
         }
     }
     if (status != 0) {
@@ -1305,6 +1376,73 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
         }
         return true;
     }
+    if (_stricmp(cmd, "bot_add") == 0) {
+        int team = sv_next_arg(&cur, a1, sizeof(a1)) ? atoi(a1) : 0;
+        int look = sv_next_arg(&cur, a2, sizeof(a2)) ? atoi(a2) : 0;
+        sv_rest_arg(cur, a3, sizeof(a3));
+        cs2d_sv_bot_add(sv, team, look, a3);
+        return true;
+    }
+    if (_stricmp(cmd, "bot_add_t") == 0) {
+        int look = sv_next_arg(&cur, a1, sizeof(a1)) ? atoi(a1) : 0;
+        sv_rest_arg(cur, a2, sizeof(a2));
+        cs2d_sv_bot_add(sv, 1, look, a2);
+        return true;
+    }
+    if (_stricmp(cmd, "bot_add_ct") == 0) {
+        int look = sv_next_arg(&cur, a1, sizeof(a1)) ? atoi(a1) : 0;
+        sv_rest_arg(cur, a2, sizeof(a2));
+        cs2d_sv_bot_add(sv, 2, look, a2);
+        return true;
+    }
+    if (_stricmp(cmd, "bot_kick") == 0) {
+        sv_rest_arg(cur, a1, sizeof(a1));
+        cs2d_sv_bot_kick(sv, a1);
+        return true;
+    }
+    if (_stricmp(cmd, "bot_kill") == 0) {
+        sv_rest_arg(cur, a1, sizeof(a1));
+        cs2d_sv_bot_kill(sv, a1);
+        return true;
+    }
+    if (_stricmp(cmd, "banip") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_rest_arg(cur, a2, sizeof(a2));
+        cs2d_sv_ban_ip(sv, a1, a2);
+        return true;
+    }
+    if (_stricmp(cmd, "banusgn") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_rest_arg(cur, a2, sizeof(a2));
+        cs2d_sv_ban_usgn(sv, atoi(a1), a2);
+        return true;
+    }
+    if (_stricmp(cmd, "bansteam") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_rest_arg(cur, a2, sizeof(a2));
+        cs2d_sv_ban_steam(sv, _strtoi64(a1, NULL, 10), a2);
+        return true;
+    }
+    if (_stricmp(cmd, "unban") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        cs2d_sv_unban(sv, a1);
+        return true;
+    }
+    if (_stricmp(cmd, "listbans") == 0) {
+        for (int i = 0; i < sv->ban_count; i++) {
+            const cs2d_sv_ban_t *b = &sv->bans[i];
+            if (!b->active) continue;
+            if (b->ip[0]) cs2d_server_print("#%d IP %s (%s)", i + 1, b->ip, b->reason);
+            else if (b->usgn > 0) cs2d_server_print("#%d USGN #%d (%s)", i + 1, b->usgn, b->reason);
+            else if (b->steam_id > 0) cs2d_server_print("#%d Steam %lld (%s)", i + 1, (long long)b->steam_id, b->reason);
+        }
+        return true;
+    }
+    if (_stricmp(cmd, "map") == 0 || _stricmp(cmd, "changemap") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        cs2d_sv_change_map(sv, a1);
+        return true;
+    }
 
     /* Fall back to server settings cvars (sv_*, mp_*, etc.) */
     sv_rest_arg(cur, a1, sizeof(a1));
@@ -1430,6 +1568,44 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         if (rd_left(r) < 1) return false;
         int mode = rd_byte(r);
         if (pl) cs2d_sv_reload(sv, c->player, mode);
+        return true;
+    }
+    case 26: { /* use: [26, mode u8, data i32, x u16, y u16] (FUN_1401cde00) */
+        if (rd_left(r) < 9) return false;
+        int mode = rd_byte(r);
+        int32_t data = (int32_t)rd_int(r);
+        int x = rd_short(r), y = rd_short(r);
+        if (pl) cs2d_sv_use(sv, c->player, mode, data, (uint16_t)x, (uint16_t)y);
+        return true;
+    }
+    case 27: { /* projectile: [27, type u8, x u16, y u16, dir u16, flydist u16] (FUN_1401ce010) */
+        if (rd_left(r) < 9) return false;
+        int type = rd_byte(r);
+        int x = rd_short(r), y = rd_short(r);
+        int dir = rd_short(r), flydist = rd_short(r);
+        if (pl) cs2d_sv_projectile(sv, c->player, type, (uint16_t)x, (uint16_t)y, (uint16_t)dir, (uint16_t)flydist);
+        return true;
+    }
+    case 30: { /* process/bomb: [30, mode u8] (FUN_1401ce7c0) */
+        if (rd_left(r) < 1) return false;
+        int mode = rd_byte(r);
+        if (pl) {
+            if (mode == 1) cs2d_sv_plant_start(sv, c->player);
+            else if (mode == 2) cs2d_sv_plant_abort(sv, c->player);
+            else if (mode == 4) cs2d_sv_defuse_abort(sv, c->player);
+        }
+        return true;
+    }
+    case 41: { /* kill projectile: [41, proj_id u16] (FUN_1401cfd00) */
+        if (rd_left(r) < 2) return false;
+        int proj_id = rd_short(r);
+        if (pl) cs2d_sv_kill_projectile(sv, c->player, proj_id);
+        return true;
+    }
+    case 57: { /* flashlight: [57, state u8] (FUN_1401d28b0) */
+        if (rd_left(r) < 1) return false;
+        int state = rd_byte(r);
+        if (pl) cs2d_sv_flashlight(sv, c->player, state);
         return true;
     }
     case 235: { /* luamenu reply: [235, pid u8, slen u16, slen*2 bytes title UTF-16LE, button u8] */
@@ -1699,6 +1875,7 @@ bool cs2d_server_start(cs2d_server_t *sv, const char *map, int port, bool offlin
     sv->next_item_id = 1;
     memset(sv->items, 0, sizeof(sv->items));
 
+    cs2d_sv_init_hostages(sv);
     sv_load_serverinfo(sv);
     sv_load_maplist(sv);
     cs2d_sv_lua_init(sv);
@@ -1737,6 +1914,8 @@ void cs2d_server_frame(cs2d_server_t *sv)
 
     cs2d_sv_relay_movement(sv);
     cs2d_sv_step_round(sv);
+    cs2d_sv_step_bomb(sv);
+    cs2d_sv_step_hostages(sv);
     cs2d_sv_step_items(sv);
     cs2d_sv_step_respawns(sv);
     cs2d_sv_lua_frame(sv);
