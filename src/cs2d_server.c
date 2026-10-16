@@ -1988,7 +1988,6 @@ static void sv_handle_datagram(cs2d_server_t *sv, const struct sockaddr_in *from
 
 static void sv_second(cs2d_server_t *sv)
 {
-    sv->fps = sv->frames;
     sv->frames = 0;
     sv->bytes_in_sec = sv->bytes_in_acc * 8;
     sv->bytes_out_sec = sv->bytes_out_acc * 8;
@@ -2165,12 +2164,15 @@ void cs2d_server_frame(cs2d_server_t *sv)
     cs2d_sv_step_bomb(sv);
     cs2d_sv_step_hostages(sv);
     cs2d_sv_step_items(sv);
+    cs2d_sv_step_reloads(sv);
     cs2d_sv_step_respawns(sv);
     cs2d_sv_lua_frame(sv);
 
     sv->frames++;
     if (now - sv->second_ms >= 1000) {
-        sv->second_ms += 1000;
+        uint32_t elapsed = now - sv->second_ms;
+        sv->fps = (uint32_t)(((uint64_t)sv->frames * 1000) / elapsed);
+        sv->second_ms = now;
         sv_second(sv);
     }
 }

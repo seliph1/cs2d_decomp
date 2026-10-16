@@ -348,7 +348,7 @@ static int l_player(lua_State *L)
     if (strcmp(prop, "gasmask") == 0) { lua_pushboolean(L, 0); return 1; }
     if (strcmp(prop, "bomb") == 0) { lua_pushboolean(L, 0); return 1; }
     if (strcmp(prop, "flag") == 0) { lua_pushboolean(L, 0); return 1; }
-    if (strcmp(prop, "reloading") == 0) { lua_pushboolean(L, 0); return 1; }
+    if (strcmp(prop, "reloading") == 0) { lua_pushboolean(L, pl->is_reloading ? 1 : 0); return 1; }
     if (strcmp(prop, "process") == 0) { lua_pushinteger(L, 0); return 1; }
     if (strcmp(prop, "speedmod") == 0) { lua_pushinteger(L, pl->speedmod); return 1; }
     if (strcmp(prop, "maxhealth") == 0) { lua_pushinteger(L, pl->maxhealth); return 1; }

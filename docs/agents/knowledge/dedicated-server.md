@@ -52,6 +52,8 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   `[229, MilliSecs - DAT_1407e0184]` (`DAT_1405a64e4` > 0) or `[249, …]`; every 3rd second the joined players
   (`+0xf4`) get `[247, n, DAT_1407dfe28, DAT_1407dfe34/8 u16, DAT_1407dfe30/8 u16, n × {id, ping}]` over the players
   in a team (`+0x230` > 0); ping 0xffff for the host, 0xfffe for a bot (`+0x198`), else min(`+0xd0`, 30000).
+  `DAT_1407dfe28` (server ticks / FPS) is calculated from real elapsed time `(frames * 1000) / elapsed` to avoid drift.
+  On Windows, `timeBeginPeriod(1)` and `QueryPerformanceCounter` high-resolution sleep/spin-wait pace the loop to `g_sv.set.ticks` (default 50 ticks/s).
 
 ## Phase 2: dispatch, team, spawn, movement relay
 
@@ -104,14 +106,19 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
     slot, clears bomb/kit carried flags, and broadcasts reliable `[24, pid, type, clip, reserve, sub, item_id, tx, ty, held_weapon]` (15 bytes).
   - Collect: **client never sends [25]** (dedicated dispatch case 18 rejects it with code 3). Server is authoritative
     and checks living players in contact with ground items on the same tile every frame (`cs2d_sv_step_items`).
+    A player who dropped an item cannot re-collect it on the same tile until moving away to another tile (`dropped_by == pid && drop_tx == ptx && drop_ty == pty`).
     Validates slot rules (cannot carry multiple primary or secondary weapons, bomb only for T, defuse kit only for CT,
     kevlar only if armor < 100). On pickup: adds item to inventory preserving dropped clip and reserve, removes ground item,
     and broadcasts reliable `[25, pid, item_id, type, clip, reserve, 0]` (10 bytes).
   - Fadeout `[40]` (`0x140a14d94`): dropped items age 1 s per second; after 15 s server removes ground item and broadcasts
     reliable `[40, item_id u16]` (3 bytes).
-- **Reload `[16]` (`FUN_14018b1c0`, `0x1401cc750`):** client sends `[16, mode]`. In mode 2 (clip refilled), server
-  transfers ammunition from player reserve to clip (`needed = clip_size - clip`), clamped to available reserve, and broadcasts
-  `[16, pid, mode]` to all players.
+- **Reload `[16]` (`FUN_14018b1c0`, `0x1401cc750`, `FUN_140194650`):**
+  - Mode 1 / 100 (start reload): client requests reload. Server validates player is not already reloading, planting or defusing, clip is not full, and player has reserve ammo (or `mp_infammo != 0`). Sets `is_reloading = true`, calculates reload timer expiry `now + reload_ticks * 5` ms, and broadcasts `[16, pid, mode]`.
+  - Server tick (`cs2d_sv_step_reloads`, `FUN_140194650`): server ticks active reloads against `reload_end_ms`. When timer expires, clip weapons automatically invoke mode 2, and shell weapons (M3 / XM1014) invoke mode 4.
+  - Mode 2 (clip refilled): server validates `is_reloading`, refills clip from reserve clamped to `needed = clip_size - clip` (or full clip on `mp_infammo`), clears `is_reloading`, and broadcasts `[16, pid, 2]`. If player was not reloading, converts to mode 3 (abort).
+  - Mode 4 (shell reload): server transfers 1 shell from reserve to clip, resets timer for next shell (`now + reload_ticks * 5` ms), and if clip is full or reserve is empty, clears `is_reloading`. Broadcasts `[16, pid, 4]`.
+  - Mode 101 (`0x65`): client shell compensation; adds 1 shell, completes reload if full or out of reserve, without broadcast (`LAB_140214c10`).
+  - Mode 3 (abort): cancels reload (`is_reloading = false`). Aborts automatically on weapon switch (`cs2d_sv_select_weapon`) or death (`cs2d_sv_kill`).
 - **Chat `[240]` (`FUN_140153900`, `0x1401bd120`):** client sends `[240, mode, len, UTF-16LE]`. Mode 1 = all, Mode 2 = team.
   Server verifies alive status vs `mp_deadchat` (dead players cannot chat to living players unless `mp_deadchat 1`),
   logs to console (`cs2d_server_print`), and broadcasts reliable `[240, pid, mode, len, UTF-16LE]` to eligible recipients.

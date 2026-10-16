@@ -121,6 +121,9 @@ typedef struct {
     uint16_t tile_y;
     bool     dropped;     /* created by a drop ([24]), fades after 15s ([40]) */
     uint32_t drop_time_ms;
+    int      dropped_by;   /* player id who dropped the item; cannot re-pickup on the same tile until moving away */
+    uint16_t drop_tx;
+    uint16_t drop_ty;
 } cs2d_sv_item_t;
 
 #define CS2D_SV_MAX_HOSTAGES 32
@@ -179,6 +182,8 @@ typedef struct {
     int      weapon;          /* +0x2e0 held weapon type (0 = none) */
     int16_t  clip[CS2D_MAX_WEAPONS];
     int16_t  reserve[CS2D_MAX_WEAPONS];
+    bool     is_reloading;    /* +0x320: reload state */
+    uint32_t reload_end_ms;   /* +0x328: reload timer expiry timestamp */
     int      spectating_player; /* +0x238: 0 = free look, > 0 = player id */
     int      move_flag;       /* +0xfc: 1 ran, 2 walked since the last relay (FUN_1401a68e0) */
     int      rot_flag;        /* +0x118: 1 turned since the last relay */
@@ -299,6 +304,7 @@ void cs2d_sv_chat(cs2d_server_t *sv, int id, int mode, int char_len, const uint1
 void cs2d_sv_spec_target(cs2d_server_t *sv, int id, int target_pid);                           /* 0x140108260: [67] */
 void cs2d_sv_spec_pos(cs2d_server_t *sv, int id, int sx, int sy);                             /* FUN_1401ced00: [32] */
 void cs2d_sv_step_items(cs2d_server_t *sv);                                                   /* check item pickups and 15s drop fadeout [40] */
+void cs2d_sv_step_reloads(cs2d_server_t *sv);                                                 /* FUN_140194650: tick reload timers */
 bool cs2d_sv_validate_move(cs2d_server_t *sv, int id, float new_x, float new_y, int op);       /* FUN_1401c99a0 / FUN_1401ca500 */
 void cs2d_sv_step_respawns(cs2d_server_t *sv);                                                 /* FUN_14017cbb0 */
 void cs2d_sv_request_respawn(cs2d_server_t *sv, int id);                                       /* FUN_1401cf8d0: [39] */

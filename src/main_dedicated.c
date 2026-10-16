@@ -12,6 +12,14 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <mmsystem.h>
+#endif
+
 static cs2d_server_t g_sv;
 
 int main(int argc, char **argv)
@@ -58,15 +66,54 @@ int main(int argc, char **argv)
         cs2d_sv_lua_dofile(&g_sv, lua_script);
     }
 
+#ifdef _WIN32
+    timeBeginPeriod(1);
+    LARGE_INTEGER qpf;
+    QueryPerformanceFrequency(&qpf);
+    double inv_freq = 1.0 / (double)qpf.QuadPart;
+    LARGE_INTEGER next_tick;
+    QueryPerformanceCounter(&next_tick);
+#endif
+
+    /* The dedicated server runs at 60~63 ticks (BlitzMax standard 60 FPS) */
+    int target_ticks = 60;
+    double frame_interval_sec = 1.0 / (double)target_ticks;
+
     for (;;) {
         cs2d_server_frame(&g_sv);
+
 #ifdef _WIN32
-        Sleep(1);
+        /* Advance next tick target */
+        next_tick.QuadPart += (LONGLONG)(frame_interval_sec * (double)qpf.QuadPart);
+
+        LARGE_INTEGER cur;
+        QueryPerformanceCounter(&cur);
+        double remaining = (double)(next_tick.QuadPart - cur.QuadPart) * inv_freq;
+
+        if (remaining > 0.002) {
+            DWORD sleep_ms = (DWORD)((remaining - 0.001) * 1000.0);
+            if (sleep_ms > 0) Sleep(sleep_ms);
+        }
+        /* Spin-wait remainder for sub-millisecond precision */
+        while (1) {
+            QueryPerformanceCounter(&cur);
+            if (cur.QuadPart >= next_tick.QuadPart) break;
+        }
+
+        /* If lagging behind by more than 2 frames, resync to avoid spiral of death */
+        if (cur.QuadPart - next_tick.QuadPart > (LONGLONG)(2.0 * frame_interval_sec * (double)qpf.QuadPart)) {
+            next_tick = cur;
+        }
 #else
-        struct timespec ts = { 0, 1000000 };
+        struct timespec ts = { 0, (long)(frame_interval_sec * 1e9) };
         nanosleep(&ts, NULL);
 #endif
     }
+
+#ifdef _WIN32
+    timeEndPeriod(1);
+#endif
+
     cs2d_server_stop(&g_sv);
     return 0;
 }

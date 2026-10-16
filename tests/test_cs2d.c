@@ -6005,7 +6005,23 @@ static bool test_server_join(void)
     if (sv.round_end != 2 || sv.round_end_delay != 5000) TEST_FAIL("round_end", "pending mode / delay not set");
     cs2d_sv_round_start(&sv, 2);
     if (sv.round_end != 0 || sv.score_ct != 1) TEST_FAIL("round_start", "scores not updated or round_end not cleared");
-    TEST_PASS("Dedicated server rounds: round_end 2 (CT win), score increment, round_start respawn");
+
+    /* Single player death in standard mode: round should end (draw / reason 3) */
+    sv.players[1].alive = false;
+    cs2d_sv_step_round(&sv);
+    if (sv.round_end != 3) TEST_FAIL("round_end single player", "round did not end when sole player died");
+    cs2d_sv_round_start(&sv, 3);
+    sv.players[1].alive = true;
+
+    /* Round time expiration check in standard mode */
+    sv.set.mp_roundtime = 2; /* 2 minutes */
+    sv.round_start_ms = cs2d_sv_now() - 121000; /* 121s elapsed */
+    cs2d_sv_step_round(&sv);
+    if (sv.round_end != 22) TEST_FAIL("round_end time out", "round did not end with CT win (reason 22) on timeout");
+    cs2d_sv_round_start(&sv, 22);
+    sv.set.mp_roundtime = 5;
+
+    TEST_PASS("Dedicated server rounds: round_end 2 (CT win), single player death round end, round timer expiration, round_start respawn");
 
     /* Weapon selection [9] & firing [7]/[8] */
     cs2d_sv_select_weapon(&sv, 1, 50, 0); /* select knife */
@@ -6095,6 +6111,11 @@ static bool test_server_phase2_items_and_chat(void)
     cs2d_sv_drop(&sv, 1, 50, 0, 0, 0);
     if (sv.items[1].active) TEST_FAIL("Drop knife", "knife was incorrectly dropped");
 
+    /* Verify player 1 cannot immediately re-collect the dropped weapon while staying on the drop tile */
+    cs2d_sv_step_items(&sv);
+    if (!sv.items[0].active || sv.players[1].weapon == 32)
+        TEST_FAIL("Drop immediate re-pickup", "player immediately collected their own dropped weapon on same tile");
+
     /* 2. Collect test [25]: player 1 moves away, player 2 walks to tile (10, 10) and picks up M4A1 */
     sv.players[1].x = 0.0f;
     sv.players[1].y = 0.0f;
@@ -6106,10 +6127,52 @@ static bool test_server_phase2_items_and_chat(void)
         TEST_FAIL("Collect", "player 2 did not receive collected weapon & ammo");
 
     /* 3. Reload test [16]: player 2 reloads M4A1 */
-    /* Currently clip=25, reserve=60. Max clip=30. Mode 2 finishes reload. */
-    cs2d_sv_reload(&sv, 2, 2);
-    if (sv.players[2].clip[32] != 30 || sv.players[2].reserve[32] != 55)
-        TEST_FAIL("Reload", "clip not refilled from reserve properly (needed=5, clip=30, res=55)");
+    /* Currently clip=25, reserve=60. Max clip=30. */
+    /* 3a. Start reload (mode 1) */
+    cs2d_sv_reload(&sv, 2, 1);
+    if (!sv.players[2].is_reloading || sv.players[2].reload_end_ms == 0)
+        TEST_FAIL("Reload", "player 2 did not enter reloading state on mode 1");
+
+    /* 3b. Step reloads before timer expiry -> should still be reloading */
+    cs2d_sv_step_reloads(&sv);
+    if (!sv.players[2].is_reloading || sv.players[2].clip[32] != 25)
+        TEST_FAIL("Reload", "reload finished prematurely before timer");
+
+    /* 3c. Advance timer and step -> should automatically finish reload (mode 2) */
+    sv.players[2].reload_end_ms = cs2d_sv_now() - 10;
+    cs2d_sv_step_reloads(&sv);
+    if (sv.players[2].is_reloading || sv.players[2].clip[32] != 30 || sv.players[2].reserve[32] != 55)
+        TEST_FAIL("Reload", "clip not refilled from reserve properly via timer (needed=5, clip=30, res=55)");
+
+    /* 3d. Shell-by-shell reload test: equip M3 (id 10, clip_size 8) */
+    sv.players[2].items[sv.players[2].item_count++] = 10;
+    sv.players[2].weapon = 10;
+    sv.players[2].clip[10] = 6;
+    sv.players[2].reserve[10] = 10;
+    cs2d_sv_reload(&sv, 2, 1);
+    if (!sv.players[2].is_reloading) TEST_FAIL("Reload shell", "did not start shell reload");
+    sv.players[2].reload_end_ms = cs2d_sv_now() - 10;
+    cs2d_sv_step_reloads(&sv); /* loads 1 shell -> clip 7, res 9, still reloading */
+    if (!sv.players[2].is_reloading || sv.players[2].clip[10] != 7 || sv.players[2].reserve[10] != 9)
+        TEST_FAIL("Reload shell", "first shell step failed");
+    sv.players[2].reload_end_ms = cs2d_sv_now() - 10;
+    cs2d_sv_step_reloads(&sv); /* loads 2nd shell -> clip 8 (full), reload finishes */
+    if (sv.players[2].is_reloading || sv.players[2].clip[10] != 8 || sv.players[2].reserve[10] != 8)
+        TEST_FAIL("Reload shell", "second shell did not finish reload");
+
+    /* 3e. Verify firing reduces clip on server and allows reloading without drop/pickup */
+    sv.players[2].weapon = 10; /* M3 */
+    cs2d_sv_fire(&sv, 2, 100);
+    cs2d_sv_fire(&sv, 2, 101);
+    if (sv.players[2].clip[10] != 6) TEST_FAIL("Fire ammo deduction", "clip was not deducted after firing 2 shots");
+    cs2d_sv_reload(&sv, 2, 1);
+    if (!sv.players[2].is_reloading) TEST_FAIL("Reload after fire", "failed to enter reload after firing without drop/pickup");
+    sv.players[2].reload_end_ms = cs2d_sv_now() - 10;
+    cs2d_sv_step_reloads(&sv);
+    sv.players[2].reload_end_ms = cs2d_sv_now() - 10;
+    cs2d_sv_step_reloads(&sv);
+    if (sv.players[2].is_reloading || sv.players[2].clip[10] != 8)
+        TEST_FAIL("Reload after fire finish", "reload did not finish refilling clip");
 
     /* 4. Chat test [240]: say and team say */
     uint16_t msg_hello[] = { 'H', 'e', 'l', 'l', 'o' };

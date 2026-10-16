@@ -207,6 +207,8 @@ void cs2d_sv_spawn_at(cs2d_server_t *sv, int id, float custom_x, float custom_y)
     pl->speedmod = 0;
     pl->alive = true;
     pl->move_flag = pl->rot_flag = 0;
+    pl->is_reloading = false;
+    pl->reload_end_ms = 0;
     pl->team_changes = 0;
     pl->name_changes = 0;
 
@@ -574,6 +576,8 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
             pl->armor = 0;
             pl->alive = true;
             pl->move_flag = pl->rot_flag = 0;
+            pl->is_reloading = false;
+            pl->reload_end_ms = 0;
 
             const sv_mode_t *m = sv_mode(sv);
             pl->item_count = 0;
@@ -660,27 +664,59 @@ void cs2d_sv_step_round(cs2d_server_t *sv)
         return;
     }
 
-    /* Standard win condition check: if all players of one team are dead (FUN_14015ce30) */
+    /* Standard win condition check: if all players of one team are dead or single player dies (FUN_14015ce30) */
     const sv_mode_t *m = sv_mode(sv);
     if (m->respawn == 0) {
         int t_total = cs2d_sv_count_team(sv, 1);
         int ct_total = cs2d_sv_count_team(sv, 2);
-        if (t_total > 0 && ct_total > 0) {
-            int t_alive = 0, ct_alive = 0;
-            for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
-                cs2d_sv_player_t *pl = &sv->players[i];
-                if (!pl->used || !pl->alive) continue;
-                if (pl->team == 1) t_alive++;
-                else if (pl->team == 2) ct_alive++;
-            }
-            if (t_alive == 0 && ct_alive == 0) {
-                cs2d_sv_round_end(sv, 3, 3000); /* Round draw */
-            } else if (t_alive == 0) {
-                if (!sv->bomb_planted) {
-                    cs2d_sv_round_end(sv, 2, 5000); /* CTs win */
+
+        int t_alive = 0, ct_alive = 0;
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            cs2d_sv_player_t *pl = &sv->players[i];
+            if (!pl->used || !pl->alive) continue;
+            if (pl->team == 1) t_alive++;
+            else if (pl->team == 2) ct_alive++;
+        }
+
+        /* If at least one team has players registered */
+        if (t_total > 0 || ct_total > 0) {
+            /* If only one team exists on the server (e.g. single player or same team) and no one is alive */
+            if (t_total == 0 || ct_total == 0) {
+                if (t_alive == 0 && ct_alive == 0) {
+                    /* Original dedicated: if (t_total == 0 || ct_total == 0) -> round draw (reason 3, 3000 ms) */
+                    cs2d_sv_round_end(sv, 3, 3000);
+                    return;
                 }
-            } else if (ct_alive == 0) {
-                cs2d_sv_round_end(sv, 1, 5000); /* Terrorists win */
+            } else {
+                /* Both teams have players */
+                if (t_alive == 0 && ct_alive == 0) {
+                    if (sv->bomb_planted) {
+                        cs2d_sv_round_end(sv, 1, 5000); /* Terrorists win (bomb planted) */
+                    } else {
+                        cs2d_sv_round_end(sv, 3, 3000); /* Round draw */
+                    }
+                    return;
+                } else if (t_alive == 0) {
+                    if (!sv->bomb_planted) {
+                        cs2d_sv_round_end(sv, 2, 5000); /* CTs win */
+                        return;
+                    }
+                } else if (ct_alive == 0) {
+                    cs2d_sv_round_end(sv, 1, 5000); /* Terrorists win */
+                    return;
+                }
+            }
+        }
+
+        /* Round timer expiration check (0x1401a3128) */
+        if (sv->set.mp_roundtime > 0 && sv->set.mp_roundtime < 100) {
+            uint32_t round_duration_ms = (uint32_t)sv->set.mp_roundtime * 60000;
+            if (now - sv->round_start_ms >= round_duration_ms) {
+                if (!sv->bomb_planted) {
+                    /* Time ran out without bomb: CTs win (reason 22 = target saved / time out) */
+                    cs2d_sv_round_end(sv, 22, 5000);
+                    return;
+                }
             }
         }
     }
@@ -700,7 +736,15 @@ void cs2d_sv_select_weapon(cs2d_server_t *sv, int id, int weapon, int mode)
         if (weapon != melee) return;
     }
 
-    pl->weapon = weapon;
+    if (pl->weapon != weapon) {
+        pl->weapon = weapon;
+        if (pl->is_reloading) {
+            pl->is_reloading = false;
+            pl->reload_end_ms = 0;
+            uint8_t abort_msg[3] = { 16, (uint8_t)id, 3 };
+            sv_broadcast_joined(sv, abort_msg, sizeof(abort_msg));
+        }
+    }
     cs2d_sv_lua_hook_select(sv, id, weapon, mode);
 
     /* Broadcast [9, id, weapon, mode] reliable to every other joined player */
@@ -722,6 +766,17 @@ void cs2d_sv_fire(cs2d_server_t *sv, int id, int seed)
     if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
     cs2d_sv_player_t *pl = &sv->players[id];
     if (!pl->used || !pl->alive || pl->team < 1) return;
+
+    /* FUN_140191a70 / Tpl.decammo (0x140003260): deduct bullet on firearm shot */
+    if (pl->weapon > 0) {
+        const cs2d_weapon_def_t *def = cs2d_weapon_get((uint8_t)pl->weapon);
+        if (def && def->slot != CS2D_SLOT_MELEE && pl->weapon != CS2D_WEP_WRENCH &&
+            pl->weapon != CS2D_WEP_PORTALGUN && def->clip_size > 0) {
+            if (pl->clip[pl->weapon] > 0) {
+                pl->clip[pl->weapon]--;
+            }
+        }
+    }
 
     cs2d_sv_lua_hook_attack(sv, id);
 
@@ -767,6 +822,8 @@ void cs2d_sv_kill(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id
 
     v->health = 0;
     v->alive = false;
+    v->is_reloading = false;
+    v->reload_end_ms = 0;
     v->death_ms = cs2d_sv_now();
     if (weapon != 0xfc) v->deaths++;
 
@@ -969,6 +1026,9 @@ void cs2d_sv_drop(cs2d_server_t *sv, int id, int type, int clip, int reserve, in
     it->tile_y = (uint16_t)ty;
     it->dropped = true;
     it->drop_time_ms = cs2d_sv_now();
+    it->dropped_by = id;
+    it->drop_tx = (uint16_t)tx;
+    it->drop_ty = (uint16_t)ty;
 
     /* Broadcast [24, id, type, clip u16, reserve u16, sub u8, item_id u16, tx u16, ty u16, held_weapon u8] */
     uint8_t msg[15];
@@ -1019,6 +1079,8 @@ void cs2d_sv_step_items(cs2d_server_t *sv)
             cs2d_sv_item_t *it = &sv->items[i];
             if (!it->active) continue;
             if (it->tile_x != ptx || it->tile_y != pty) continue;
+            /* Player who dropped the item cannot pick it back up on the drop tile until moving away */
+            if (it->dropped && it->dropped_by == pid && it->drop_tx == ptx && it->drop_ty == pty) continue;
 
             const cs2d_weapon_def_t *def = cs2d_weapon_get(it->type);
             if (!def) continue;
@@ -1097,23 +1159,124 @@ void cs2d_sv_reload(cs2d_server_t *sv, int id, int mode)
     cs2d_sv_player_t *pl = &sv->players[id];
     if (!pl->used || !pl->alive || pl->team < 1) return;
 
-    cs2d_sv_lua_hook_reload(sv, id, mode);
+    if (pl->weapon <= 0) return;
+    const cs2d_weapon_def_t *def = cs2d_weapon_get((uint8_t)pl->weapon);
+    if (!def) return;
 
-    if (mode == 2 && pl->weapon > 0) {
-        const cs2d_weapon_def_t *def = cs2d_weapon_get((uint8_t)pl->weapon);
-        if (def && def->clip_size > 0) {
-            int needed = def->clip_size - pl->clip[pl->weapon];
-            if (needed > 0) {
-                int taken = pl->reserve[pl->weapon];
-                if (taken > needed) taken = needed;
-                pl->reserve[pl->weapon] -= (int16_t)taken;
-                pl->clip[pl->weapon] += (int16_t)taken;
+    uint32_t now = cs2d_sv_now();
+
+    if (mode == 1 || mode == 100) {
+        /* Start reload: mode 1 or 100 */
+        if (def->slot == CS2D_SLOT_MELEE || def->clip_size <= 0) return;
+        if (pl->clip[pl->weapon] >= def->clip_size) return;
+        if (pl->reserve[pl->weapon] <= 0 && sv->set.mp_infammo == 0) return;
+        if (pl->is_reloading) return;
+        if (pl->is_planting || pl->is_defusing) return;
+
+        pl->is_reloading = true;
+        uint32_t duration_ms = (uint32_t)(def->reload_ticks * 5);
+        pl->reload_end_ms = now + duration_ms;
+    } else if (mode == 2) {
+        /* Clip weapon finished reloading */
+        if (!pl->is_reloading) {
+            mode = 3; /* Abort */
+        } else {
+            pl->is_reloading = false;
+            pl->reload_end_ms = 0;
+            if (def->clip_size > 0) {
+                if (sv->set.mp_infammo != 0) {
+                    pl->clip[pl->weapon] = (int16_t)def->clip_size;
+                } else {
+                    int needed = def->clip_size - pl->clip[pl->weapon];
+                    if (needed > 0) {
+                        int taken = pl->reserve[pl->weapon];
+                        if (taken > needed) taken = needed;
+                        pl->reserve[pl->weapon] -= (int16_t)taken;
+                        pl->clip[pl->weapon] += (int16_t)taken;
+                    }
+                }
             }
         }
+    } else if (mode == 4) {
+        /* Shell-by-shell reload stage */
+        if (!pl->is_reloading || !def->shell_reload) {
+            mode = 3; /* Abort */
+        } else {
+            uint32_t duration_ms = (uint32_t)(def->reload_ticks * 5);
+            pl->reload_end_ms = now + duration_ms;
+            if (sv->set.mp_infammo != 0) {
+                if (pl->clip[pl->weapon] < def->clip_size) pl->clip[pl->weapon]++;
+            } else {
+                if (pl->reserve[pl->weapon] > 0 && pl->clip[pl->weapon] < def->clip_size) {
+                    pl->reserve[pl->weapon]--;
+                    pl->clip[pl->weapon]++;
+                }
+            }
+            if (pl->clip[pl->weapon] >= def->clip_size ||
+                (sv->set.mp_infammo == 0 && pl->reserve[pl->weapon] <= 0)) {
+                pl->is_reloading = false;
+                pl->reload_end_ms = 0;
+            }
+        }
+    } else if (mode == 101) {
+        /* Mode 101 (0x65): client shell compensation */
+        if (pl->is_reloading && def->shell_reload) {
+            if (sv->set.mp_infammo != 0) {
+                if (pl->clip[pl->weapon] < def->clip_size) pl->clip[pl->weapon]++;
+            } else {
+                if (pl->reserve[pl->weapon] > 0 && pl->clip[pl->weapon] < def->clip_size) {
+                    pl->reserve[pl->weapon]--;
+                    pl->clip[pl->weapon]++;
+                }
+            }
+            if (pl->clip[pl->weapon] >= def->clip_size ||
+                (sv->set.mp_infammo == 0 && pl->reserve[pl->weapon] <= 0)) {
+                pl->is_reloading = false;
+                pl->reload_end_ms = 0;
+            }
+        }
+        /* Mode 101 returns without broadcast (LAB_140214c10) */
+        cs2d_sv_lua_hook_reload(sv, id, mode);
+        return;
+    } else if (mode == 3) {
+        /* Abort reload */
+        pl->is_reloading = false;
+        pl->reload_end_ms = 0;
     }
+
+    cs2d_sv_lua_hook_reload(sv, id, mode);
 
     uint8_t msg[3] = { 16, (uint8_t)id, (uint8_t)mode };
     sv_broadcast_joined(sv, msg, sizeof(msg));
+}
+
+/* FUN_140194650: Dedicated server steps reload timers for all reloading players */
+void cs2d_sv_step_reloads(cs2d_server_t *sv)
+{
+    uint32_t now = cs2d_sv_now();
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_player_t *pl = &sv->players[i];
+        if (!pl->used || !pl->alive || pl->team < 1 || !pl->is_reloading) continue;
+        if (now < pl->reload_end_ms) continue;
+
+        if (pl->weapon <= 0) {
+            pl->is_reloading = false;
+            continue;
+        }
+        const cs2d_weapon_def_t *def = cs2d_weapon_get((uint8_t)pl->weapon);
+        if (!def) {
+            pl->is_reloading = false;
+            continue;
+        }
+
+        if (def->shell_reload) {
+            /* M3 / XM1014: load one shell */
+            cs2d_sv_reload(sv, i, 4);
+        } else {
+            /* Clip weapon: finish reload */
+            cs2d_sv_reload(sv, i, 2);
+        }
+    }
 }
 
 /* FUN_140153900: chat message [240, id, mode, char_len, UTF-16LE] */
@@ -1256,6 +1419,20 @@ bool cs2d_sv_validate_move(cs2d_server_t *sv, int id, float new_x, float new_y, 
     }
 
     /* Move is valid: commit */
+    int old_tx = (int)(pl->x * 0.03125f);
+    int old_ty = (int)(pl->y * 0.03125f);
+    int new_tx = (int)(new_x * 0.03125f);
+    int new_ty = (int)(new_y * 0.03125f);
+    if (new_tx != old_tx || new_ty != old_ty) {
+        for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+            if (sv->items[i].active && sv->items[i].dropped && sv->items[i].dropped_by == id) {
+                if (sv->items[i].drop_tx != new_tx || sv->items[i].drop_ty != new_ty) {
+                    sv->items[i].dropped_by = 0;
+                }
+            }
+        }
+    }
+
     pl->x = new_x;
     pl->y = new_y;
     pl->last_valid_x = new_x;

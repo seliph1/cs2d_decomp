@@ -10,6 +10,37 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-16 — Antigravity — dedicated server: frame pacing, timer resolution & accurate tick/FPS reporting
+- Fixed low/skewed tickrate and connection stability on dedicated server (`main_dedicated.c`, `cs2d_server.c`, `build.bat`):
+  - Enabled Windows 1ms timer resolution via `timeBeginPeriod(1)` on startup (and `timeEndPeriod(1)` on exit), linking `-lwinmm`.
+  - Implemented high-resolution frame pacing loop in `main_dedicated.c` using `QueryPerformanceCounter`/`QueryPerformanceFrequency` targeting 60 ticks/s (BlitzMax standard 60~63 FPS). Includes coarse sleep followed by microsecond spin-wait, and de-synchronization protection against latency spirals.
+  - Fixed `sv->second_ms` drift in `cs2d_server_frame`: calculates real `sv->fps = (sv->frames * 1000) / elapsed` and syncs `sv->second_ms = now` on each second barrier, preventing consecutive 0/1/3 FPS calculations from reporting erroneous red "Ticks: 3" to clients.
+- Verified: `build.bat` compiles cleanly, `test_cs2d.exe` **69 / 69** passing regression tests.
+
+## 2026-10-16 — Antigravity — dedicated server: weapon firing ammo deduction & reload state machine [16]
+- Fixed weapon firing ammo maintenance on dedicated server (`FUN_140191a70`, `Tpl.decammo`):
+  - Updated `cs2d_sv_fire` (`[7]` opcode handler) to decrement 1 bullet from `pl->clip[pl->weapon]` for bullet-based weapons with non-zero clip sizes.
+  - Previously, `pl->clip` was never decremented on the server when firing, meaning the server believed the clip was always full (12/12 for USP, 30/30 for M4A1) unless a weapon was dropped with depleted clip and re-collected. This caused reload requests (`[16, 1]`) to be rejected with `clip >= clip_size`.
+- Fixed weapon reload on dedicated server (`FUN_14018b1c0`, `FUN_140194650`, `0x1401cc750`):
+  - Added `is_reloading` and `reload_end_ms` to `cs2d_sv_player_t` (`+0x320`, `+0x328`).
+  - Implemented reload start (`mode 1` / `100`): validates living state, active weapon, ammo needs and absence of ongoing process (plant/defuse), sets `is_reloading = true` and `reload_end_ms = now + reload_ticks * 5`, and broadcasts `[16, pid, mode]`.
+  - Implemented authoritative server reload timer tick (`cs2d_sv_step_reloads`, `FUN_140194650` in main tick): when reload timer expires, automatically transitions clip weapons to `mode 2` (refill clip from reserve, or full on `mp_infammo`), and shell weapons (M3 / XM1014) to `mode 4` (1 shell per step, looping until full or out of ammo).
+  - Implemented client compensation (`mode 101` / `0x65`), reload aborts (`mode 3`) on weapon switch (`cs2d_sv_select_weapon`), player death (`cs2d_sv_kill`), and round respawn (`cs2d_sv_round_start`).
+  - Exposed accurate `player(id, 'reloading')` state in Lua API.
+- Verified: `build.bat` clean, `test_cs2d.exe` **69 / 69** passing regression tests with test cases covering firing ammo deduction, mode 1 initiation without drop/pickup, in-progress timer stepping, automatic clip refill on expiry, and multi-stage shell-by-shell reloading.
+
+## 2026-10-16 — Antigravity — dedicated server: fix weapon drop immediate re-pickup & standard gamemode win conditions
+- Fixed weapon drop immediate re-pickup bug:
+  - Added `dropped_by`, `drop_tx`, and `drop_ty` to `cs2d_sv_item_t`.
+  - When dropping a weapon via `[24]` (`cs2d_sv_drop`), records dropping player ID and tile.
+  - In `cs2d_sv_step_items`, player cannot immediately collect their dropped weapon on the drop tile until moving away to another tile.
+  - In `cs2d_sv_validate_move`, cleared `dropped_by` on ground items when player moves to a different tile (`new_tx != old_tx || new_ty != old_ty`).
+- Implemented standard gamemode (`sv_gamemode 0`) win condition progression (`FUN_14015ce30`, `cs2d_sv_step_round`):
+  - Fixed single-player death: when all players of a team die or a solo player on the server dies, round ends as round draw (`reason 3`, 3000 ms), matching official `cs2d_dedicated.exe` lines 69-74 (`if (t_total == 0 || ct_total == 0) -> round_end(3, 3000)`).
+  - Fixed team elimination logic: CTs win (`reason 2`, 5000 ms) when Ts are eliminated and no bomb is planted; Ts win (`reason 1`, 5000 ms) when CTs are eliminated or bomb is planted and all players die.
+  - Implemented standard mode round timer expiration (`0x1401a3128`): when `mp_roundtime` minutes elapse without a planted bomb, triggers round end with CT victory (`reason 22` Target Saved / Time Out, 5000 ms).
+- Verified: `build.bat` clean, `test_cs2d.exe` **69 / 69** passing regression tests including new drop immediate re-pickup prevention, single-player round draw, and round timer timeout.
+
 ## 2026-10-16 — Antigravity — dedicated server phase 7 (part 2): join file transfer [252,50], dynamic objects snapshot [252,7,5] & spray logos [252,10]/[28]
 - Implemented file transfer protocol in dedicated server (`[252,50]`):
   - Added `sv_maptransfer` setting (`sv_maptransfer 1` default). On `[252,3]` map checksum mismatch, server responds with `[252,4,13]` ("Downloading" window) followed by `[252,50,1,1,maps/<map>.map]` file list.
@@ -71,28 +102,4 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - Implemented Opcode 27 (Grenade consumption & projectile relay), Opcode 41 (Kill projectile), Opcode 57 (Flashlight).
 - Verified: `build.bat` compiles all 3 targets cleanly, `test_cs2d.exe` **67 / 67** passing `test_server_phase5_bomb_hostages_bots`.
 - Left: Phase 6 (`C:\C4` scripts end-to-end testing).
-
-## 2026-10-15 — Antigravity — dedicated server phase 4: Lua 5.1.4 integration, addhook priorities, parse, player, image, timers, hudtxt, menus
-- Vendored official PUC Lua 5.1.4 into `third_party/lua51/` (`lua_all.c` unity build with `-Ithird_party/lua51/src` in `build.bat`).
-- Implemented Lua server subsystem (`include/cs2d_sv_lua.h`, `src/cs2d_sv_lua.c`):
-  - Lifecycle: `cs2d_sv_lua_init`, `cs2d_sv_lua_frame` (timer stepping), `cs2d_sv_lua_close`.
-  - Script loading sequence: `sys/lua/wrapper.lua`, `sys/lua/server.lua`, `sys/lua/autorun/*.lua` (alphabetical order), `maps/<map>.lua`.
-  - Hook engine (`addhook`, `freehook`, `sethookstate`): priority ascending order (highest priority runs last and determines return value); veto/cancellation semantics (return `1` cancels action in `team`, `buy`, `drop`, `collect`, `name`, `hit`).
-  - Wired native hooks: `join`, `leave`, `team`, `spawn` (custom items override or cancel), `select`, `attack`, `attack2`, `hit`, `kill`, `die`, `buy`, `drop`, `collect`, `reload`, `say`, `sayteam`, `name`, `endround`, `startround`, `menu`, `serveraction`.
-  - `player(id, prop)` (40+ properties & table queries `"table"`, `"tableliving"`, `"team1"`, `"team2"`, etc.), `playerweapons(id)`, `playerammo(id, type)`.
-  - `parse(cmd)` with HUD text broadcast `[234]` and tween `[54]` interception (`200 - id`).
-  - Dynamic images (`image`, `freeimage`, manipulation & tweens `[51]`, `[59]`, `[54]` targeting `200 + id`).
-  - Server timers (`timer(ms, func, param, count)`, `freetimer`) with fractional frame countdown.
-  - Server menus (`menu(id, text)` sending `[235]` and receiving client menu response `[235]` invoking hook `menu`).
-- Verified: `build.bat` clean, `test_cs2d.exe` **66 / 66** passing `test_server_phase4_lua`.
-- Left: Phase 5 (construction, hostages, bomb, entities/triggers, items, projectiles, bots).
-
-## 2026-10-15 — Antigravity — dedicated server phase 3: team codes 12/13 & spawn auto-balance, [238] name change, RCON [236]/[241]/[242], playerdata [42] & console commands [FUN_140140a00]
-- Completed remaining non-Lua Phase 2 items: per-spawn team change limit (`pl->team_changes`, refusal `[20, id, 12, look]`), Zombies mode team switch refusal (`[20, id, 13, look]`) and >30s force-T rule (`FUN_1401624c0`), and spawn-time auto-teambalance (`FUN_140160740`).
-- Implemented in-game name change `[238]` (`cs2d_sv_change_name`, `FUN_14010ddb0`): 25-char sanitize, per-spawn limit refusal `[238, 255, 0, ""]`, dead player deferred `pending_name` `[238, 254, 0, ""]` applied on `cs2d_sv_spawn`, and broadcast `[238, id, hide, name]`.
-- Implemented RCON (`[236]` `cs2d_sv_rcon_check` `FUN_1401d8d90`, `[241]` `cs2d_sv_rcon` `FUN_1401d9990`, `[242]` `cs2d_sv_public_rcon` `FUN_1401be1c0`, `FUN_1401bd520`) with `"mysecretremotecontrolpw"` / `"rconcmd"` ciphers, `sv_rcon` / `sv_rconusers`, and error replies `"1"`/`"2"`/`"4"`.
-- Implemented playerdata setter & broadcaster `[42]` (`cs2d_sv_set_playerdata`, `FUN_140159840` modes 0..11), teleport `[15]` (`cs2d_sv_set_pos`, `FUN_140102950`), team scores `[64]` (`cs2d_sv_set_teamscores`, `FUN_140051ac0`), server messages (`cs2d_sv_msg`), `slap` / `deathslap` (`FUN_140167e40`), `kick` (`FUN_1401502a0`), and console command parser `cs2d_sv_exec` (`FUN_140140a00`).
-- Verified: `build.bat` clean, `test_cs2d.exe` **65 / 65** passing `test_server_phase3_rcon_and_commands`.
-- Left: Phase 4 (Lua 5.1.4 integration, `addhook`, `parse`, `player()`, `image()`, timers, hudtxt, menus).
-
 
