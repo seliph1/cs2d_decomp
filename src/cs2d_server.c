@@ -78,6 +78,7 @@ void cs2d_sv_settings_default(cs2d_sv_settings_t *s)
     s->sv_specmode        = 1;
     s->sv_offscreendamage = 1;
     s->sv_spraytransfer   = 1;
+    s->sv_maptransfer     = 1;
     s->sv_antiaccel       = 1;   /* the capture pings with [229] */
     s->sv_daylighttime    = -1;
     s->sv_maxclientsperip = 5;   /* DAT_1405a6514 initial value */
@@ -125,7 +126,7 @@ void cs2d_sv_settings_set(cs2d_sv_settings_t *s, const char *key, const char *va
     SV_INT(sv_voicechat) SV_INT(sv_offscreendamage) SV_INT(sv_maxclientsperip) SV_INT(sv_antiaccel)
     SV_INT(mp_roundtime) SV_INT(mp_freezetime) SV_INT(mp_c4timer) SV_INT(mp_respawndelay) SV_INT(mp_deadchat)
     SV_INT(mp_infammo) SV_INT(mp_flashlight) SV_INT(mp_hovertext) SV_INT(mp_recoil) SV_INT(mp_hudscale)
-    SV_INT(sv_spraytransfer) SV_INT(mp_startmoney) SV_INT(mp_postspawn) SV_INT(mp_autoteambalance)
+    SV_INT(sv_spraytransfer) SV_INT(sv_maptransfer) SV_INT(mp_startmoney) SV_INT(mp_postspawn) SV_INT(mp_autoteambalance)
     SV_INT(lagcompensation) SV_INT(ticks) SV_INT(leaderboard) SV_INT(physics)
     SV_INT(mp_luamap) SV_INT(mp_randomspawn) SV_INT(mp_curtailedexplosions) SV_INT(mp_zombiespeedmod) SV_INT(mp_kevlar)
 #undef SV_INT
@@ -642,11 +643,47 @@ static void sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
     p = sv_packet(sv, c, true, true);
     cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 3); cs2d_pkt_w_byte(p, 0);
 
-    /* Sections 4..6 terminators (entity states, dynamic objects, ground projectiles) */
-    for (int sec = 4; sec <= 6; sec++) {
-        p = sv_packet(sv, c, true, true);
-        cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, (uint8_t)sec); cs2d_pkt_w_byte(p, 0);
+    /* Section 4 terminator (entity states) */
+    p = sv_packet(sv, c, true, true);
+    cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 4); cs2d_pkt_w_byte(p, 0);
+
+    /* Section 5: dynamic objects (Tdo), 60 per message */
+    int active_objs = 0;
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        if (sv->dynobj.objs[i].active && sv->dynobj.objs[i].typ != CS2D_DO_IMAGE) active_objs++;
     }
+    if (active_objs > 0) {
+        int ok = 0;
+        for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+            const cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+            if (!o->active || o->typ == CS2D_DO_IMAGE) continue;
+            if ((ok % 60) == 0) {
+                p = sv_packet(sv, c, true, true);
+                int rem = active_objs - ok;
+                cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 5);
+                cs2d_pkt_w_byte(p, (uint8_t)(rem > 60 ? 60 : rem));
+            }
+            ok++;
+            cs2d_pkt_w_short(&c->out, (uint16_t)o->id);
+            cs2d_pkt_w_byte(&c->out, (uint8_t)o->typ);
+            cs2d_pkt_w_byte(&c->out, (uint8_t)o->health);
+            cs2d_pkt_w_byte(&c->out, (uint8_t)o->mode);
+            cs2d_pkt_w_short(&c->out, (uint16_t)(int)(o->x + 0x8000));
+            cs2d_pkt_w_short(&c->out, (uint16_t)(int)(o->y + 0x8000));
+            cs2d_pkt_w_byte(&c->out, (uint8_t)o->player);
+            cs2d_pkt_w_byte(&c->out, (uint8_t)o->team);
+            float rot = o->rot;
+            uint8_t rot_bytes[4];
+            memcpy(rot_bytes, &rot, 4);
+            for (int b = 0; b < 4; b++) cs2d_pkt_w_byte(&c->out, rot_bytes[b]);
+        }
+    }
+    p = sv_packet(sv, c, true, true);
+    cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 5); cs2d_pkt_w_byte(p, 0);
+
+    /* Section 6 terminator (ground projectiles) */
+    p = sv_packet(sv, c, true, true);
+    cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 6); cs2d_pkt_w_byte(p, 0);
 
     /* Section 10: resource paths (DAT_1407df6f0), 15 per message (lVar38 * -0x11111111 < 0x11111112 is
      * "index % 15 == 0") */
@@ -733,11 +770,21 @@ static void sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
     cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 200);
     cs2d_pkt_w_str(p, "ACK");
 
-    /* sv_spraytransfer: [28,0,1] appended, then FUN_14002e9e0 per other connected player (their sprays,
-     * not ported yet) */
+    /* sv_spraytransfer: [28,0,1] appended, then FUN_14002e9e0 per other connected player (their sprays) */
     if (sv->set.sv_spraytransfer == 1) {
         p = sv_packet(sv, c, true, false);
         cs2d_pkt_w_byte(p, 28); cs2d_pkt_w_byte(p, 0); cs2d_pkt_w_byte(p, 1);
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            if (i == c->player || !sv->players[i].joined || sv->players[i].spray_logo_len <= 0) continue;
+            p = sv_packet(sv, c, true, false);
+            cs2d_pkt_w_byte(p, 28);
+            cs2d_pkt_w_byte(p, (uint8_t)i);
+            cs2d_pkt_w_byte(p, 2);
+            cs2d_pkt_w_short(p, (uint16_t)sv->players[i].spray_logo_len);
+            for (int b = 0; b < sv->players[i].spray_logo_len; b++) {
+                cs2d_pkt_w_byte(p, sv->players[i].spray_logo[b]);
+            }
+        }
     }
 
     /* Server info: [240,0,50,"1"], one [240,0,51,line] per line of sys/serverinfo.txt, [240,0,50,"2"].
@@ -939,9 +986,33 @@ static void sv_recv_join3(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
         return;
     }
     if (strcmp(sha, sv->map_sha) != 0) {
-        /* The map transfer ([252,4,13] + [252,50]) is not ported yet: the client has to have the map */
-        sv_join_fail_log(c, pl ? pl->name : "?", sha[0] ? "can't join (map differs)" : "can't join (map missing)");
-        cs2d_pkt_w_byte(&c->out, (uint8_t)(sha[0] ? 11 : 12));
+        if (!sv->set.sv_maptransfer) {
+            sv_join_fail_log(c, pl ? pl->name : "?", sha[0] ? "can't join (map differs)" : "can't join (map missing)");
+            cs2d_pkt_w_byte(&c->out, (uint8_t)(sha[0] ? 11 : 12));
+            sv_flush(sv, c);
+            return;
+        }
+
+        /* sv_maptransfer enabled: send status 13 ("Downloading" window) followed by [252,50,1,...] file list */
+        cs2d_pkt_w_byte(&c->out, 13);
+        sv_flush(sv, c);
+
+        /* Send [252,50,1, n u16, n x str] file list with current map */
+        char map_file[128];
+        snprintf(map_file, sizeof(map_file), "maps/%s.map", sv->set.sv_map);
+        p = sv_packet(sv, c, true, false);
+        cs2d_pkt_w_byte(p, 252);
+        cs2d_pkt_w_byte(p, 50);
+        cs2d_pkt_w_byte(p, 1);
+        cs2d_pkt_w_short(p, 1);
+        cs2d_pkt_w_str(p, map_file);
+
+        /* End list: [252,50,1, 0, 0] */
+        p = sv_packet(sv, c, true, false);
+        cs2d_pkt_w_byte(p, 252);
+        cs2d_pkt_w_byte(p, 50);
+        cs2d_pkt_w_byte(p, 1);
+        cs2d_pkt_w_short(p, 0);
         sv_flush(sv, c);
         return;
     }
@@ -992,11 +1063,122 @@ static void sv_recv_join(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
     case 1: sv_recv_join1(sv, c, r); break;
     case 3: sv_recv_join3(sv, c, r); break;
     case 5: sv_recv_join5(sv, c, r); break;
-    case 10:
-        /* Client data (spray): stored with the player, relayed once sprays are ported. The skipped part:
-         * [28,2,size u16,raw u32,zlib] */
+    case 10: {
+        /* Client data (spray): [252, 10, 28, 2, size u16, raw u32, zlib] (27+ bytes)
+         * Stored with the player, and relayed to other joined players if sv_spraytransfer == 1 */
+        if (rd_left(r) >= 4) {
+            int op28 = rd_byte(r);
+            int sub2 = rd_byte(r);
+            if (op28 == 28 && sub2 == 2 && rd_left(r) >= 2) {
+                int total_len = rd_short(r);
+                if (total_len > 0 && total_len <= (int)sizeof(sv->players[0].spray_logo) && rd_left(r) >= total_len) {
+                    if (c->player > 0 && c->player <= CS2D_SV_MAX_PLAYERS) {
+                        cs2d_sv_player_t *pl = &sv->players[c->player];
+                        pl->spray_logo_len = total_len;
+                        for (int k = 0; k < total_len; k++) pl->spray_logo[k] = (uint8_t)rd_byte(r);
+
+                        /* Relay [28, player, 2, size u16, bytes] to all other joined players */
+                        if (sv->set.sv_spraytransfer == 1) {
+                            for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+                                cs2d_sv_conn_t *oc = conn_of_player(sv, i);
+                                if (!oc || i == c->player || !sv->players[i].joined) continue;
+                                cs2d_pkt_t *p28 = sv_packet(sv, oc, true, false);
+                                cs2d_pkt_w_byte(p28, 28);
+                                cs2d_pkt_w_byte(p28, (uint8_t)c->player);
+                                cs2d_pkt_w_byte(p28, 2);
+                                cs2d_pkt_w_short(p28, (uint16_t)total_len);
+                                for (int k = 0; k < total_len; k++) cs2d_pkt_w_byte(p28, pl->spray_logo[k]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         r->p = r->n;
         break;
+    }
+    case 50: {
+        /* File transfer request: [252, 50, 2, n u16, n x str] */
+        if (rd_left(r) < 1) break;
+        int sub50 = rd_byte(r);
+        if (sub50 == 2) {
+            int count = rd_short(r);
+            if (count > 0 && count != 0xffff) {
+                for (int i = 0; i < count && rd_left(r) > 0; i++) {
+                    char req_file[128];
+                    rd_str(r, req_file, sizeof(req_file));
+                    FILE *f = fopen(req_file, "rb");
+                    if (!f) continue;
+                    fseek(f, 0, SEEK_END);
+                    long fsz = ftell(f);
+                    fseek(f, 0, SEEK_SET);
+                    if (fsz <= 0 || fsz > 16 * 1024 * 1024) { fclose(f); continue; }
+
+                    uint8_t *raw = (uint8_t *)malloc((size_t)fsz);
+                    if (!raw) { fclose(f); continue; }
+                    if (fread(raw, 1, (size_t)fsz, f) != (size_t)fsz) { free(raw); fclose(f); continue; }
+                    fclose(f);
+
+                    /* Compress with zlib */
+                    uLongf comp_cap = compressBound((uLong)fsz);
+                    uint8_t *comp = (uint8_t *)malloc((size_t)comp_cap);
+                    if (!comp) { free(raw); continue; }
+                    if (compress(comp, &comp_cap, raw, (uLong)fsz) != Z_OK) {
+                        free(raw); free(comp); continue;
+                    }
+
+                    /* Joined payload: [raw_len i32][zlib compressed data] */
+                    int total_payload = 4 + (int)comp_cap;
+                    uint8_t *payload = (uint8_t *)malloc((size_t)total_payload);
+                    if (!payload) { free(raw); free(comp); continue; }
+                    int32_t raw_i32 = (int32_t)fsz;
+                    memcpy(payload, &raw_i32, 4);
+                    memcpy(payload + 4, comp, (size_t)comp_cap);
+
+                    /* Send in chunks of up to 480 bytes */
+                    int sent_bytes = 0;
+                    bool first = true;
+                    while (sent_bytes < total_payload) {
+                        int chunk = total_payload - sent_bytes;
+                        if (chunk > 480) chunk = 480;
+                        bool last = (sent_bytes + chunk >= total_payload);
+
+                        uint8_t part_op = first ? 5 : (last ? 7 : 6);
+                        cs2d_pkt_t *p = sv_packet(sv, c, true, false);
+                        cs2d_pkt_w_byte(p, 252);
+                        cs2d_pkt_w_byte(p, 50);
+                        cs2d_pkt_w_byte(p, part_op);
+                        cs2d_pkt_w_str(p, req_file);
+                        if (first) {
+                            cs2d_pkt_w_int(p, total_payload);
+                        }
+                        cs2d_pkt_w_int(p, chunk);
+                        for (int b = 0; b < chunk; b++) cs2d_pkt_w_byte(p, payload[sent_bytes + b]);
+
+                        sent_bytes += chunk;
+                        first = false;
+                        sv_flush(sv, c);
+                    }
+
+                    free(payload);
+                    free(comp);
+                    free(raw);
+                }
+            } else if (count == 0 || count == (int)0xffff) {
+                /* Finished file requests: send [252,2] to restart the join check */
+                cs2d_pkt_t *p = sv_packet(sv, c, true, false);
+                cs2d_pkt_w_byte(p, 252);
+                cs2d_pkt_w_byte(p, 2);
+                cs2d_pkt_w_byte(p, 0);
+                cs2d_pkt_w_byte(p, (uint8_t)c->player);
+                cs2d_pkt_w_str(p, sv->set.sv_map);
+                cs2d_pkt_w_str(p, sv->secret);
+                sv_flush(sv, c);
+            }
+        }
+        r->p = r->n;
+        break;
+    }
     default:
         r->p = r->n;
         break;

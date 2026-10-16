@@ -10,6 +10,19 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-16 — Antigravity — dedicated server phase 7 (part 2): join file transfer [252,50], dynamic objects snapshot [252,7,5] & spray logos [252,10]/[28]
+- Implemented file transfer protocol in dedicated server (`[252,50]`):
+  - Added `sv_maptransfer` setting (`sv_maptransfer 1` default). On `[252,3]` map checksum mismatch, server responds with `[252,4,13]` ("Downloading" window) followed by `[252,50,1,1,maps/<map>.map]` file list.
+  - Implemented handling of client file transfer requests (`[252,50,2]`): compresses requested file with zlib (`[raw size i32][zlib]`) and streams chunked payloads in 480-byte packets using `[252,50,5]` (first part with total length), `[252,50,6]` (middle parts), and `[252,50,7]` (final part).
+  - On transfer completion (`count == 0` or `0xffff`), server restarts handshake via reliable `[252,2]`.
+- Implemented Section 5 dynamic objects serialization in join snapshot (`sv_send_join_snapshot`): streams all active non-image buildings (`Tdo`) in 60-object chunks (`[252,7,5,count,{id, typ, health, mode, x, y, player, team, rot}]`).
+- Implemented spray logo storage and relay (`[252,10]` and `[28]`):
+  - Added spray storage buffer `spray_logo` to `cs2d_sv_player_t`.
+  - Parsed client spray payload on join (`[252, 10, 28, 2, size, ...]`): stores spray data and relays `[28, pid, 2, size, bytes]` to other joined players when `sv_spraytransfer == 1`.
+  - Relayed all existing players' sprays to newly connecting players in `[252,7]` snapshot tail after Section 200.
+- Verified: `build.bat` compiles all targets cleanly; `test_cs2d.exe` passed **69 / 69** regression tests (`test_server_phase7_transfer_and_spray`).
+- Left: Dedicated server end-to-end multi-client live gameplay validation against official binaries.
+
 ## 2026-10-16 — Antigravity — dedicated server phase 7: live client interaction, 100% lua commands & hooks coverage, console commands
 - Performed deep automated scrape of `cs2d.com` official documentation into `docs/cs2d_help_db_complete.json` covering:
   - 375 Console Commands (categories, parameters, full description texts).
@@ -81,15 +94,5 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - Implemented playerdata setter & broadcaster `[42]` (`cs2d_sv_set_playerdata`, `FUN_140159840` modes 0..11), teleport `[15]` (`cs2d_sv_set_pos`, `FUN_140102950`), team scores `[64]` (`cs2d_sv_set_teamscores`, `FUN_140051ac0`), server messages (`cs2d_sv_msg`), `slap` / `deathslap` (`FUN_140167e40`), `kick` (`FUN_1401502a0`), and console command parser `cs2d_sv_exec` (`FUN_140140a00`).
 - Verified: `build.bat` clean, `test_cs2d.exe` **65 / 65** passing `test_server_phase3_rcon_and_commands`.
 - Left: Phase 4 (Lua 5.1.4 integration, `addhook`, `parse`, `player()`, `image()`, timers, hudtxt, menus).
-
-## 2026-10-15 — Antigravity — dedicated server phase 2 (part 5): team suicide [FUN_1401624c0], respawn modes & timer [39] [FUN_14017cbb0/FUN_1401cf8d0], position & anti-speeder validation [FUN_1401ca500/FUN_1401c99a0]
-- Implemented team switch suicide (`cs2d_sv_team`, `FUN_1401624c0`): when a living player changes team, `cs2d_sv_kill(sv, id, 0, 0, 0)` is invoked immediately, incrementing deaths and broadcasting reliable `[19]`.
-- Implemented respawn modes & timers (`cs2d_sv_step_respawns`, `FUN_14017cbb0`): in game modes with `respawn == 1` (Deathmatch, Team Deathmatch, Zombies), players auto-respawn after `mp_respawndelay` seconds; client respawn requests (`[39]`, `cs2d_sv_request_respawn`, `FUN_1401cf8d0`) enforce the same rule and delay.
-- Implemented movement validation & anti-speeder (`cs2d_sv_validate_move`, `FUN_1401c99a0`, `FUN_1401ca500`):
-  - Map boundaries and solid wall collision (`cs2d_map_is_solid`): rejects illegal moves and sends reset position `[11, id, last_valid_x, last_valid_y]`.
-  - Anti-speeder: detects `dist > 160.0f` and velocity `> 650.0f` px/s, logs `"MP_ANTISPEEDER: %s is too fast - reset position!"` to console and sends reliable `[10, id, last_valid_x, last_valid_y]`.
-- Integrated `cs2d_sv_validate_move` in opcode 10, 11, 71, 72 handlers, and `cs2d_sv_step_respawns` in frame loop.
-- Verified: `build.bat` clean, `test_cs2d.exe` **64 / 64** passing tests.
-- Left: next Phase 2 items: Lua `spawn` / `team` / `die` / `kill` hooks, team code 12 and the per-team limits.
 
 

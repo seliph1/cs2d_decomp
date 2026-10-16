@@ -64,6 +64,7 @@ typedef struct {
     int     leaderboard;         /* PTR_DAT_1405a6578 +4 (sent only with DAT_1405a63e8) */
     int     physics;             /* PTR_DAT_1405a6598 +4 */
     int     sv_spraytransfer;    /* PTR_DAT_1405a6690 +1: [28,0,1] + the other players' sprays at join */
+    int     sv_maptransfer;      /* Allow sending maps and related files to players */
     int     mp_startmoney;       /* PTR_DAT_1405a6628 +4 */
     int     mp_postspawn;        /* DAT_1405a64c4: seconds into a round a first team choice still spawns */
     int     mp_autoteambalance;  /* PTR_DAT_1405a65f8 +1 */
@@ -201,6 +202,9 @@ typedef struct {
     int      ping;            /* +0xd0 */
     char     ip[32];
     int      port;
+    /* Spray logo data (sub-op 10 [28,2,...] / [28] relay) */
+    uint8_t  spray_logo[1400];
+    int      spray_logo_len;
 } cs2d_sv_player_t;
 
 typedef struct {

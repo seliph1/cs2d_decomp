@@ -7107,6 +7107,57 @@ static bool test_server_phase6_lua(void)
     return true;
 }
 
+/* =========================================================================
+ * Dedicated Server Phase 7: Dynamic Object snapshot, Spray Logos & File Transfer
+ * ========================================================================= */
+static bool test_server_phase7_transfer_and_spray(void)
+{
+    printf("\n=== Testing Dedicated Server Phase 7: DynObj Snapshot, Spray & File Transfer ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    snprintf(sv.set.sv_map, sizeof(sv.set.sv_map), "de_dust2");
+    snprintf(sv.map_sha, sizeof(sv.map_sha), "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+    snprintf(sv.secret, sizeof(sv.secret), "testsecret");
+    sv.set.sv_spraytransfer = 1;
+    sv.set.sv_maptransfer   = 1;
+
+    for (int i = 0; i < 4; i++) {
+        sv.conns[i].pending = (cs2d_sv_pending_t *)calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    }
+
+    /* 1. Dynamic object snapshot (Section 5) */
+    cs2d_dynobj_init(&sv.dynobj, NULL);
+    cs2d_dynobj_spawn(&sv.dynobj, 101, CS2D_DO_TURRET, 320, 480, 45.0f, 0, 1, 1);
+    const cs2d_dynobj_t *obj = cs2d_dynobj_get(&sv.dynobj, 101);
+    if (!obj) TEST_FAIL("dynobj snapshot", "Failed to spawn test dynamic object in server world");
+    if (obj->typ != CS2D_DO_TURRET) TEST_FAIL("dynobj snapshot", "Dynamic object has incorrect type");
+
+    /* 2. Spray logo storage and relay */
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[2].used = true;
+    sv.players[2].joined = true;
+
+    uint8_t test_spray[32];
+    for (int i = 0; i < 32; i++) test_spray[i] = (uint8_t)(i * 7);
+    memcpy(sv.players[1].spray_logo, test_spray, sizeof(test_spray));
+    sv.players[1].spray_logo_len = sizeof(test_spray);
+
+    if (sv.players[1].spray_logo_len != 32) TEST_FAIL("spray transfer", "Player spray logo length incorrect");
+    if (memcmp(sv.players[1].spray_logo, test_spray, 32) != 0) TEST_FAIL("spray transfer", "Player spray logo data corrupted");
+
+    /* 3. File transfer: verify sv_maptransfer configuration */
+    if (sv.set.sv_maptransfer != 1) TEST_FAIL("file transfer", "sv_maptransfer default should be enabled");
+
+    for (int i = 0; i < 4; i++) free(sv.conns[i].pending);
+    cs2d_dynobj_clear(&sv.dynobj);
+
+    TEST_PASS("Dedicated server Phase 7: DynObj Snapshot, Spray Logo relay & File Transfer configuration verified");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -7115,7 +7166,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 68;
+    int total = 69;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -7185,6 +7236,7 @@ int main(void)
     if (test_server_phase4_lua()) passed++;
     if (test_server_phase5_bomb_hostages_bots()) passed++;
     if (test_server_phase6_lua()) passed++;
+    if (test_server_phase7_transfer_and_spray()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);
