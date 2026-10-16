@@ -9,6 +9,7 @@
  */
 #include "cs2d_server.h"
 #include "cs2d_weapons.h"
+#include "cs2d_sv_lua.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -216,17 +217,26 @@ void cs2d_sv_spawn_at(cs2d_server_t *sv, int id, float custom_x, float custom_y)
         cs2d_sv_change_name(sv, id, pending, false, false);
     }
 
-    /* Items: the mode's list (the Lua spawn hook can replace it: not ported), then the melee weapon */
+    /* Items: the mode's list or the Lua spawn hook override, then the melee weapon */
+    char custom_items[128] = {0};
+    int sret = cs2d_sv_lua_hook_spawn(sv, id, custom_items, sizeof(custom_items));
+    if (sret == 1) return;
+
     pl->item_count = 0;
     const char *list = (pl->team == 1) ? m->items_t : m->items_ct;
-    for (const char *q = list; *q;) {
-        int t = atoi(q);
-        if (t > 0 && !sv_has_item(pl, t)) sv_give(pl, t);
-        while (*q && *q != ',') q++;
-        if (*q == ',') q++;
+    if (custom_items[0] != '\0') {
+        list = custom_items;
     }
-    int melee = (pl->team == 1) ? m->melee_t : m->melee_ct;
-    if (!sv_has_item(pl, melee)) sv_give(pl, melee);
+    if (strcmp(list, "x") != 0) {
+        for (const char *q = list; *q;) {
+            int t = atoi(q);
+            if (t > 0 && !sv_has_item(pl, t)) sv_give(pl, t);
+            while (*q && *q != ',') q++;
+            if (*q == ',') q++;
+        }
+        int melee = (pl->team == 1) ? m->melee_t : m->melee_ct;
+        if (!sv_has_item(pl, melee)) sv_give(pl, melee);
+    }
     sv_best_weapon(sv, pl);
 
     /* Money: the start money on the first spawn (score and deaths 0); clamped to 0..16000 */
@@ -269,6 +279,8 @@ void cs2d_sv_team_ex(cs2d_server_t *sv, int id, int team, int look, bool force)
         int t = cs2d_sv_count_team(sv, 1), ct = cs2d_sv_count_team(sv, 2);
         team = (t == ct) ? cs2d_sv_rand(1, 2) : (ct <= t) + 1;
     }
+
+    if (!force && cs2d_sv_lua_hook_team(sv, id, team, look) == 1) return;
 
     /* Per-spawn team change limit (FUN_1401624c0 lines 144-147, 193, 245-254):
      * client cannot switch teams more than once per spawn while on T/CT; answers [20, id, 12, look] */
@@ -501,6 +513,7 @@ void cs2d_sv_round_end(cs2d_server_t *sv, int mode, int delay_ms)
         cs2d_pkt_w_lstr(p, reason_str);
         cs2d_pkt_w_byte(p, (uint8_t)mode);
     }
+    cs2d_sv_lua_hook_endround(sv, mode);
 }
 
 /* FUN_1402520b0 / FUN_140123530: start of a new round, respawning players and sending [22] */
@@ -508,6 +521,7 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
 {
     sv->round_end = 0;
     sv->round_start_ms = cs2d_sv_now();
+    cs2d_sv_lua_hook_startround(sv, reason);
 
     /* Update team scores according to round end reason (FUN_1402520b0 / cs2d_game_apply_round_reason) */
     uint64_t bit = (reason >= 0 && reason <= 61) ? (1ULL << reason) : 0;
@@ -638,6 +652,7 @@ void cs2d_sv_select_weapon(cs2d_server_t *sv, int id, int weapon, int mode)
     }
 
     pl->weapon = weapon;
+    cs2d_sv_lua_hook_select(sv, id, weapon, mode);
 
     /* Broadcast [9, id, weapon, mode] reliable to every other joined player */
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
@@ -659,6 +674,8 @@ void cs2d_sv_fire(cs2d_server_t *sv, int id, int seed)
     cs2d_sv_player_t *pl = &sv->players[id];
     if (!pl->used || !pl->alive || pl->team < 1) return;
 
+    cs2d_sv_lua_hook_attack(sv, id);
+
     /* Broadcast [7, id, seed] unreliable to other joined players */
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
         if (i == id) continue;
@@ -677,6 +694,8 @@ void cs2d_sv_attack2(cs2d_server_t *sv, int id, int mode)
     if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
     cs2d_sv_player_t *pl = &sv->players[id];
     if (!pl->used || !pl->alive || pl->team < 1) return;
+
+    cs2d_sv_lua_hook_attack2(sv, id, mode);
 
     /* Broadcast [8, id, mode] reliable to other joined players */
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
@@ -701,6 +720,9 @@ void cs2d_sv_kill(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id
     v->alive = false;
     v->death_ms = cs2d_sv_now();
     if (weapon != 0xfc) v->deaths++;
+
+    cs2d_sv_lua_hook_kill(sv, killer_id, victim_id, weapon, (int)v->x, (int)v->y, 0);
+    cs2d_sv_lua_hook_die(sv, victim_id, killer_id, weapon, (int)v->x, (int)v->y, 0);
 
     cs2d_sv_player_t *k = (killer_id >= 1 && killer_id <= CS2D_SV_MAX_PLAYERS && sv->players[killer_id].used)
                         ? &sv->players[killer_id] : NULL;
@@ -752,6 +774,8 @@ void cs2d_sv_damage(cs2d_server_t *sv, int victim_id, int attacker_id, int dmg, 
     cs2d_sv_player_t *v = &sv->players[victim_id];
     if (!v->used || !v->alive || dmg <= 0) return;
 
+    if (cs2d_sv_lua_hook_hit(sv, victim_id, attacker_id, weapon, dmg, dmg, dmg) == 1) return;
+
     int remaining_dmg = dmg;
     if (v->armor > 0) {
         /* Default kevlar absorbs ~35% of damage (armor_penetration 0.65) */
@@ -781,6 +805,8 @@ void cs2d_sv_buy(cs2d_server_t *sv, int id, int weapon_id)
     if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
     cs2d_sv_player_t *pl = &sv->players[id];
     if (!pl->used || !pl->alive || pl->team < 1) return;
+
+    if (cs2d_sv_lua_hook_buy(sv, id, weapon_id) == 1) return;
 
     cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, id);
 
@@ -843,6 +869,8 @@ void cs2d_sv_drop(cs2d_server_t *sv, int id, int type, int clip, int reserve, in
 
     /* Melee weapons cannot be dropped: Knife (50), Wrench (74), Claw (78) */
     if (type == CS2D_WEP_KNIFE || type == 74 || type == 78) return;
+
+    if (cs2d_sv_lua_hook_drop(sv, id, 0, type, reserve, clip) == 1) return;
 
     /* Remove from player's inventory */
     int idx = -1;
@@ -981,6 +1009,7 @@ void cs2d_sv_step_items(cs2d_server_t *sv)
             }
 
             if (can_pickup) {
+                if (cs2d_sv_lua_hook_collect(sv, pid, it->id, it->type, it->reserve, it->clip) == 1) continue;
                 sv_give(pl, it->type);
                 pl->clip[it->type] = (int16_t)it->clip;
                 pl->reserve[it->type] = (int16_t)it->reserve;
@@ -1018,6 +1047,8 @@ void cs2d_sv_reload(cs2d_server_t *sv, int id, int mode)
     if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
     cs2d_sv_player_t *pl = &sv->players[id];
     if (!pl->used || !pl->alive || pl->team < 1) return;
+
+    cs2d_sv_lua_hook_reload(sv, id, mode);
 
     if (mode == 2 && pl->weapon > 0) {
         const cs2d_weapon_def_t *def = cs2d_weapon_get((uint8_t)pl->weapon);
@@ -1061,6 +1092,13 @@ void cs2d_sv_chat(cs2d_server_t *sv, int id, int mode, int char_len, const uint1
         }
     }
     utf8_text[out] = '\0';
+
+    if (mode == 1) {
+        if (cs2d_sv_lua_hook_say(sv, id, utf8_text) == 1) return;
+    } else if (mode == 2) {
+        if (cs2d_sv_lua_hook_sayteam(sv, id, utf8_text) == 1) return;
+    }
+
     cs2d_server_print("%s%s: %s", (mode == 2 ? "(TEAM) " : ""), pl->name, utf8_text);
 
     /* Broadcast to eligible recipients */
@@ -1227,6 +1265,8 @@ void cs2d_sv_change_name(cs2d_server_t *sv, int id, const char *new_name, bool f
 
     /* Same name: nothing to do (FUN_14010ddb0 0x14010df6f) */
     if (strcmp(clean, pl->name) == 0) return;
+
+    if (!force && cs2d_sv_lua_hook_name(sv, id, pl->name, clean, force) == 1) return;
 
     if (!force) {
         /* Only one name change per spawn (0x14010df8b -> 0x14010e610: [238, 255, 0, ""]) */

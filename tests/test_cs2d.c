@@ -39,6 +39,7 @@
 #include "cs2d_hostage.h"
 #include "cs2d_hudmen.h"
 #include "cs2d_server.h"
+#include "cs2d_sv_lua.h"
 #include "cs2d_sound.h"
 #include "cs2d_customtile.h"
 #include "cs2d_font.h"
@@ -6457,6 +6458,213 @@ static bool test_server_phase3_rcon_and_commands(void)
     return true;
 }
 
+/* =========================================================================
+ * Dedicated Server Phase 4: Lua Subsystem (addhook, parse, player, image, timer, hudtxt, menu)
+ * ========================================================================= */
+static bool test_server_phase4_lua(void)
+{
+    printf("\n=== Testing Dedicated Server Phase 4: Lua Subsystem ===\n");
+
+    cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+    if (!cs2d_map_load_file(&sv.map, "maps/de_dust2.map")) {
+        TEST_FAIL("Map load", "failed to load maps/de_dust2.map for Phase 4 test");
+    }
+    sv.map_loaded = true;
+    sv.round_start_ms = cs2d_sv_now();
+
+    for (int i = 0; i < 2; i++) {
+        sv.conns[i].active = true;
+        sv.conns[i].player = i + 1;
+        sv.conns[i].next_seq = 2;
+        sv.conns[i].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+        cs2d_sv_player_t *pl = &sv.players[i + 1];
+        pl->used = true;
+        pl->joined = true;
+        pl->conn = i;
+        pl->team = (i == 0) ? 1 : 2;
+        pl->team_chosen = true;
+        pl->alive = true;
+        pl->health = 100;
+        pl->maxhealth = 100;
+        pl->armor = 50;
+        pl->money = 2500;
+        pl->weapon = 30; /* AK-47 */
+        pl->items[0] = 30;
+        pl->items[1] = 1;  /* USP */
+        pl->items[2] = 50; /* Knife */
+        pl->item_count = 3;
+        pl->clip[30] = 30;
+        pl->reserve[30] = 90;
+        snprintf(pl->name, sizeof(pl->name), "LuaTester%d", i + 1);
+        snprintf(pl->ip, sizeof(pl->ip), "127.0.0.%d", i + 1);
+        pl->port = 36963 + i + 1;
+    }
+
+    /* Initialize Lua subsystem */
+    printf("DEBUG: calling cs2d_sv_lua_init\n"); fflush(stdout);
+    cs2d_sv_lua_init(&sv);
+    printf("DEBUG: cs2d_sv_lua_init returned\n"); fflush(stdout);
+    if (!sv.lua) TEST_FAIL("Lua Init", "sv.lua is NULL after cs2d_sv_lua_init");
+
+    /* 1. Test player(id, prop) and player table queries */
+    printf("DEBUG: step 1 player()\n"); fflush(stdout);
+    int rc = cs2d_sv_lua_dostring(&sv,
+        "hp = player(1, 'health')\n"
+        "money = player(1, 'money')\n"
+        "name = player(1, 'name')\n"
+        "weap = player(1, 'weapontype')\n"
+        "t = player(0, 'table')\n"
+        "count = #t\n"
+        "t1 = player(0, 'team1')\n"
+        "t2 = player(0, 'team2')\n"
+    );
+    if (rc != 0) TEST_FAIL("Lua dostring", "failed executing player() query snippet");
+
+    /* Verify globals set in Lua */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(hp == 100, 'hp mismatch')\n"
+        "assert(money == 2500, 'money mismatch')\n"
+        "assert(name == 'LuaTester1', 'name mismatch')\n"
+        "assert(weap == 30, 'weapon mismatch')\n"
+        "assert(count == 2, 'table count mismatch')\n"
+        "assert(#t1 == 1 and t1[1] == 1, 'team1 mismatch')\n"
+        "assert(#t2 == 1 and t2[1] == 2, 'team2 mismatch')\n"
+    );
+    if (rc != 0) TEST_FAIL("player() assertions", "player() properties did not match expected values");
+
+    /* Test playerweapons and playerammo */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "weps = playerweapons(1)\n"
+        "assert(#weps == 3 and weps[1] == 30 and weps[2] == 1 and weps[3] == 50, 'playerweapons mismatch')\n"
+        "clip = playerammo(1, 30)\n"
+        "assert(clip == 30, 'playerammo mismatch')\n"
+    );
+    if (rc != 0) TEST_FAIL("playerweapons/ammo", "playerweapons or playerammo assertion failed");
+
+    /* 2. Test addhook with priority and return value cancellation */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "team_hook1_ran = false\n"
+        "team_hook2_ran = false\n"
+        "function hook_low(id, team, look)\n"
+        "    team_hook1_ran = true\n"
+        "    return 0\n"
+        "end\n"
+        "function hook_high(id, team, look)\n"
+        "    team_hook2_ran = true\n"
+        "    return 1\n"
+        "end\n"
+        "addhook('team', 'hook_low', 0)\n"
+        "addhook('team', 'hook_high', 10)\n"
+    );
+    if (rc != 0) TEST_FAIL("addhook setup", "failed registering team hooks");
+
+    int hook_ret = cs2d_sv_lua_hook_team(&sv, 1, 2, 0);
+    if (hook_ret != 1) TEST_FAIL("addhook return", "hook_high with return 1 did not cancel (returned != 1)");
+
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(team_hook1_ran and team_hook2_ran, 'both priority hooks should have run')\n"
+        "freehook('team', 'hook_high')\n"
+    );
+    if (rc != 0) TEST_FAIL("freehook", "freehook failed or assertions failed");
+
+    hook_ret = cs2d_sv_lua_hook_team(&sv, 1, 2, 0);
+    if (hook_ret != 0) TEST_FAIL("freehook verify", "after freehook, return value should be 0");
+
+    /* 3. Test parse() - server commands and HUD text */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "parse('setmoney 1 8888')\n"
+        "parse('sethealth 1 85')\n"
+    );
+    if (rc != 0) TEST_FAIL("parse execution", "parse dostring failed");
+    if (sv.players[1].money != 8888 || sv.players[1].health != 85) {
+        TEST_FAIL("parse commands", "parse did not correctly update player money/health");
+    }
+
+    /* Test parse hudtxt */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    rc = cs2d_sv_lua_dostring(&sv, "parse('hudtxt 5 \"Objective: Defend\" 320 200 1')\n");
+    if (rc != 0) TEST_FAIL("parse hudtxt", "parse hudtxt failed");
+    if (sv.conns[0].out.pos < 6 || sv.conns[0].out.buf[0] != 234 || sv.conns[0].out.buf[1] != 5) {
+        TEST_FAIL("parse hudtxt packet", "expected [234, 5, ...] HUD text broadcast packet");
+    }
+
+    /* 4. Test image() and image manipulation */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    rc = cs2d_sv_lua_dostring(&sv,
+        "img = image('gfx/sprites/flare1.bmp', 320, 240, 2)\n"
+        "assert(img > 0, 'image creation returned invalid id')\n"
+        "imagealpha(img, 0.75)\n"
+        "imagecolor(img, 255, 128, 64)\n"
+        "imagescale(img, 2.0, 2.0)\n"
+        "imageblend(img, 1)\n"
+        "freeimage(img)\n"
+    );
+    if (rc != 0) TEST_FAIL("image functions", "image creation / manipulation / freeimage failed");
+    if (sv.conns[0].out.pos == 0) {
+        TEST_FAIL("image packet", "image manipulation should broadcast opcode [51] packets");
+    }
+
+    /* 5. Test timer() */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "timer_runs = 0\n"
+        "timer_param = 0\n"
+        "function on_timeout(p)\n"
+        "    timer_runs = timer_runs + 1\n"
+        "    timer_param = tonumber(p) or 0\n"
+        "end\n"
+        "timer(10, 'on_timeout', '123', 2)\n"
+    );
+    if (rc != 0) TEST_FAIL("timer setup", "timer registration failed");
+
+    /* Step server Lua frame after 15 ms -> iteration 1 */
+    SDL_Delay(15);
+    cs2d_sv_lua_frame(&sv);
+    rc = cs2d_sv_lua_dostring(&sv, "assert(timer_runs == 1 and timer_param == 123, 'timer 1st run failed')\n");
+    if (rc != 0) TEST_FAIL("timer 1st step", "timer 1st execution assertion failed");
+
+    /* Step again after 15 ms -> iteration 2 (timer then auto-frees) */
+    SDL_Delay(15);
+    cs2d_sv_lua_frame(&sv);
+    rc = cs2d_sv_lua_dostring(&sv, "assert(timer_runs == 2, 'timer 2nd run failed')\n");
+    if (rc != 0) TEST_FAIL("timer 2nd step", "timer 2nd execution assertion failed");
+
+    /* 6. Test menu() send and hook */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    rc = cs2d_sv_lua_dostring(&sv,
+        "menu_sel = 0\n"
+        "function on_menu_select(id, title, button)\n"
+        "    menu_sel = button\n"
+        "end\n"
+        "addhook('menu', 'on_menu_select')\n"
+        "menu(1, 'Vote Map,de_dust2,cs_assault')\n"
+    );
+    if (rc != 0) TEST_FAIL("menu setup", "menu call failed");
+    if (sv.conns[0].out.pos < 3 || sv.conns[0].out.buf[0] != 235) {
+        TEST_FAIL("menu packet", "expected opcode [235] menu packet sent to player 1");
+    }
+
+    /* Simulate client selecting button 2 */
+    cs2d_sv_lua_hook_menu(&sv, 1, "Vote Map", 2);
+    rc = cs2d_sv_lua_dostring(&sv, "assert(menu_sel == 2, 'menu button response assertion failed')\n");
+    if (rc != 0) TEST_FAIL("menu response", "hook menu did not record button selection");
+
+    /* Clean up */
+    cs2d_sv_lua_close(&sv);
+    if (sv.lua != NULL) TEST_FAIL("Lua Close", "sv.lua not NULL after cs2d_sv_lua_close");
+
+    for (int i = 0; i < 2; i++) free(sv.conns[i].pending);
+    cs2d_map_free(&sv.map);
+
+    TEST_PASS("Dedicated server Phase 4: Lua 5.1.4, addhook priorities, parse, player/weapons/ammo, image/tweens, timers, menus");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -6465,7 +6673,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 65;
+    int total = 66;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -6532,6 +6740,7 @@ int main(void)
     if (test_server_phase2_items_and_chat()) passed++;
     if (test_server_phase2_respawn_and_speeder()) passed++;
     if (test_server_phase3_rcon_and_commands()) passed++;
+    if (test_server_phase4_lua()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

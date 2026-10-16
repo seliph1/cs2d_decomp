@@ -249,8 +249,11 @@ sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT 
   Gaps inside what is done: mp_startmoney default (800 is not verified); Lua `spawn` / `team` / `die` / `kill` hooks (Phase 4).
 
 - **Phase 3 (done 2026-10-15):** in-game name change `[238]` (`FUN_14010ddb0`, per-spawn `+0x2a4` limit 255, dead deferred `pending_name` 254 applied on spawn), RCON `[236]` (`rconcheck`), `[241]` (`rcon`), `[242]` (`public rcon`), `sv_rcon` / `sv_rconusers`, playerdata setter & broadcaster `[42]` (`FUN_140159840` modes 0..11), teleport `[15]` (`FUN_140102950`), team scores `[64]` (`FUN_140051ac0`), server messages `[240,0,1]`, `kick` (`FUN_1401502a0`), `slap` / `deathslap` (`FUN_140167e40`), and console command parser `cs2d_sv_exec` (`FUN_140140a00`: `server.cfg` cvars, `setmoney`, `sethealth`, `setmaxhealth`, `setarmor`, `setscore`, `setdeaths`, `setassists`, `setmvp`, `setrank`, `speedmod`, `equip`, `strip`, `setweapon`, `setpos`, `setname`, `setteamscores`, `sv_msg`, `sv_msg2`, `maket`, `makect`, `makespec`, `slap`, `deathslap`, `kick`, `killplayer`, `spawnplayer`, `sv_restart`, `sv_restartround`, `endround`, `listplayers`). Remaining for later phases: `[237]` live cvar change broadcast, `[239]` `changemap` / `map` command, ban list commands (`banip`/`banusgn`/`bansteam`/`unban`).
-- **Phase 4:** Lua (lua_* API, `addhook` / every hook in the original order and return semantics, timers,
-  `parse`, `player()`, `image()`, hudtxt, menus...). Compare with Lua probes on both servers.
+- **Phase 4 (done 2026-10-15):** Lua subsystem integrated with vendored PUC Lua 5.1.4 (`third_party/lua51/lua_all.c`, `src/cs2d_sv_lua.c`, `include/cs2d_sv_lua.h`).
+  Full `addhook` priority ascending execution & return value veto/cancellation semantics; auto-loads `wrapper.lua`, `server.lua`, `sys/lua/autorun/*.lua`, `maps/<map>.lua`;
+  native hooks wired (`join`, `leave`, `team`, `spawn`, `select`, `attack`, `attack2`, `hit`, `kill`, `die`, `buy`, `drop`, `collect`, `reload`, `say`, `sayteam`, `name`, `endround`, `startround`, `menu`, `serveraction`);
+  `player(id, prop)` (40+ properties & tables), `playerweapons`, `playerammo`; `parse` with HUD text opcode `[234]` and tween `[54]`; dynamic images (`image`, `freeimage`, manipulation & tweens);
+  timers (`timer`, `freetimer`); menu sending and response `[235]`. Locked in `test_server_phase4_lua` (66/66 tests pass).
 - **Phase 5:** construction, hostages, bomb, entities / triggers, items, projectiles, bots (present only).
 - **Phase 6:** `C:\C4` scripts end to end (with `-offline`).
 

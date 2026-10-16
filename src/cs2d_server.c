@@ -9,6 +9,7 @@
  */
 #include "cs2d_server.h"
 #include "cs2d_weapons.h"
+#include "cs2d_sv_lua.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -846,6 +847,7 @@ static void sv_recv_join5(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
     cs2d_sv_build_join_settings(p, &sv->set, &sv->map, sv->score_t, sv->score_ct, round_ms, sv->seed);
     sv_send_join_snapshot(sv, c);
     c->join_step = 4;
+    cs2d_sv_lua_hook_join(sv, c->player);
 }
 
 static void sv_recv_join(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
@@ -881,6 +883,7 @@ static void sv_remove_player(cs2d_server_t *sv, int id, int reason)
 {
     if (id < 1 || id > CS2D_SV_MAX_PLAYERS || !sv->players[id].used) return;
     cs2d_server_print("%s has left the game", sv->players[id].name);
+    cs2d_sv_lua_hook_leave(sv, id, "");
     sv->players[id].used = false;
     /* [253,pid,reason] to the others */
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
@@ -1429,6 +1432,23 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         if (pl) cs2d_sv_reload(sv, c->player, mode);
         return true;
     }
+    case 235: { /* luamenu reply: [235, pid u8, slen u16, slen*2 bytes title UTF-16LE, button u8] */
+        if (rd_left(r) < 4) return false;
+        int pid = rd_byte(r);
+        (void)pid;
+        int slen = rd_short(r);
+        if (slen < 0 || slen > 400 || rd_left(r) < slen * 2 + 1) return false;
+        char title[400];
+        int ti = 0;
+        for (int i = 0; i < slen; i++) {
+            uint16_t ch = (uint16_t)rd_short(r);
+            if (ti < (int)sizeof(title) - 1) title[ti++] = (char)(ch < 128 ? ch : '?');
+        }
+        title[ti] = '\0';
+        int button = rd_byte(r);
+        if (pl) cs2d_sv_lua_hook_menu(sv, c->player, title, button);
+        return true;
+    }
     case 240: { /* chat: [240, mode u8, len u16, len * 2 bytes UTF-16LE] (FUN_1401bd120) */
         if (rd_left(r) < 3) return false;
         int mode = rd_byte(r);
@@ -1436,6 +1456,11 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         if (char_len < 0 || char_len > 255 || rd_left(r) < char_len * 2) return false;
         uint16_t chars[256];
         for (int i = 0; i < char_len; i++) chars[i] = (uint16_t)rd_short(r);
+        if (mode == 4) {
+            int action = (char_len > 0 && chars[0] >= '1' && chars[0] <= '9') ? (chars[0] - '0') : 1;
+            if (pl) cs2d_sv_lua_hook_serveraction(sv, c->player, action);
+            return true;
+        }
         if (pl) cs2d_sv_chat(sv, c->player, mode, char_len, chars);
         return true;
     }
@@ -1676,6 +1701,7 @@ bool cs2d_server_start(cs2d_server_t *sv, const char *map, int port, bool offlin
 
     sv_load_serverinfo(sv);
     sv_load_maplist(sv);
+    cs2d_sv_lua_init(sv);
     cs2d_server_print("----- Server started -----");
     return true;
 }
@@ -1713,6 +1739,7 @@ void cs2d_server_frame(cs2d_server_t *sv)
     cs2d_sv_step_round(sv);
     cs2d_sv_step_items(sv);
     cs2d_sv_step_respawns(sv);
+    cs2d_sv_lua_frame(sv);
 
     sv->frames++;
     if (now - sv->second_ms >= 1000) {
@@ -1723,6 +1750,7 @@ void cs2d_server_frame(cs2d_server_t *sv)
 
 void cs2d_server_stop(cs2d_server_t *sv)
 {
+    cs2d_sv_lua_close(sv);
     if (sv->sock != INVALID_SOCKET) closesocket(sv->sock);
     sv->sock = INVALID_SOCKET;
     for (int i = 0; i < (int)(sizeof(sv->conns) / sizeof(sv->conns[0])); i++) {

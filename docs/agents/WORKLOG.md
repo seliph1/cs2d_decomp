@@ -10,6 +10,21 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-15 — Antigravity — dedicated server phase 4: Lua 5.1.4 integration, addhook priorities, parse, player, image, timers, hudtxt, menus
+- Vendored official PUC Lua 5.1.4 into `third_party/lua51/` (`lua_all.c` unity build with `-Ithird_party/lua51/src` in `build.bat`).
+- Implemented Lua server subsystem (`include/cs2d_sv_lua.h`, `src/cs2d_sv_lua.c`):
+  - Lifecycle: `cs2d_sv_lua_init`, `cs2d_sv_lua_frame` (timer stepping), `cs2d_sv_lua_close`.
+  - Script loading sequence: `sys/lua/wrapper.lua`, `sys/lua/server.lua`, `sys/lua/autorun/*.lua` (alphabetical order), `maps/<map>.lua`.
+  - Hook engine (`addhook`, `freehook`, `sethookstate`): priority ascending order (highest priority runs last and determines return value); veto/cancellation semantics (return `1` cancels action in `team`, `buy`, `drop`, `collect`, `name`, `hit`).
+  - Wired native hooks: `join`, `leave`, `team`, `spawn` (custom items override or cancel), `select`, `attack`, `attack2`, `hit`, `kill`, `die`, `buy`, `drop`, `collect`, `reload`, `say`, `sayteam`, `name`, `endround`, `startround`, `menu`, `serveraction`.
+  - `player(id, prop)` (40+ properties & table queries `"table"`, `"tableliving"`, `"team1"`, `"team2"`, etc.), `playerweapons(id)`, `playerammo(id, type)`.
+  - `parse(cmd)` with HUD text broadcast `[234]` and tween `[54]` interception (`200 - id`).
+  - Dynamic images (`image`, `freeimage`, manipulation & tweens `[51]`, `[59]`, `[54]` targeting `200 + id`).
+  - Server timers (`timer(ms, func, param, count)`, `freetimer`) with fractional frame countdown.
+  - Server menus (`menu(id, text)` sending `[235]` and receiving client menu response `[235]` invoking hook `menu`).
+- Verified: `build.bat` clean, `test_cs2d.exe` **66 / 66** passing `test_server_phase4_lua`.
+- Left: Phase 5 (construction, hostages, bomb, entities/triggers, items, projectiles, bots).
+
 ## 2026-10-15 — Antigravity — dedicated server phase 3: team codes 12/13 & spawn auto-balance, [238] name change, RCON [236]/[241]/[242], playerdata [42] & console commands [FUN_140140a00]
 - Completed remaining non-Lua Phase 2 items: per-spawn team change limit (`pl->team_changes`, refusal `[20, id, 12, look]`), Zombies mode team switch refusal (`[20, id, 13, look]`) and >30s force-T rule (`FUN_1401624c0`), and spawn-time auto-teambalance (`FUN_140160740`).
 - Implemented in-game name change `[238]` (`cs2d_sv_change_name`, `FUN_14010ddb0`): 25-char sanitize, per-spawn limit refusal `[238, 255, 0, ""]`, dead player deferred `pending_name` `[238, 254, 0, ""]` applied on `cs2d_sv_spawn`, and broadcast `[238, id, hide, name]`.

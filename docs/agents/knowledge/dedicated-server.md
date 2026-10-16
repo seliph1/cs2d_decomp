@@ -184,3 +184,49 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
     `[253, id, 16, reason (wstr)]` and closes the connection.
   - `killplayer <id>` (`0x140149ae0`), `spawnplayer <id> <x> <y>` (`0x14017c910`), `setweapon <id> <wpn>` (`0x140159700`),
     `sv_restart` / `sv_restartround [delay]` (`0x14015d2a0`), `endround [mode]` (`0x14015d3c0`), `listplayers` (`0x1401417d9`).
+
+## Phase 4: Lua 5.1.4 subsystem (addhook, parse, player, image, timer, hudtxt, menu)
+
+- **Lua Lifecycle (`src/cs2d_sv_lua.c`, `include/cs2d_sv_lua.h`):**
+  - Uses vendored PUC Lua 5.1.4 (`third_party/lua51/lua_all.c`).
+  - `cs2d_sv_lua_init`: creates state via `luaL_newstate()`, opens standard libraries (`luaL_openlibs()`), sets `_CS2DVERSION = "1.0.1.8"`,
+    stores `cs2d_server_t *` in `LUA_REGISTRYINDEX["cs2d_sv"]`, registers native functions, and executes in order:
+    1. `sys/lua/wrapper.lua` (if present)
+    2. `sys/lua/server.lua` (if present)
+    3. `sys/lua/autorun/*.lua` (alphabetical order)
+    4. `maps/<mapname>.lua` (if present)
+  - `cs2d_sv_lua_frame`: stepped every server frame, advances active timer countdowns and runs expiration callbacks.
+  - `cs2d_sv_lua_close`: closes Lua state, frees all hook nodes, and deallocates memory.
+- **Hook Engine (`addhook`, `freehook`, `sethookstate`):**
+  - Priority ordering: hooks are stored sorted by `priority` ascending. When an event fires, functions are invoked in order;
+    the highest priority runs last, and its return value is the final return value of the hook chain.
+  - Cancellation semantics: for cancellable hooks (`team`, `buy`, `drop`, `collect`, `name`, `hit`), a return value of `1` vetoes/cancels
+    the action before game state changes or network packets are sent.
+  - Supported game hooks: `join`, `leave`, `team`, `spawn` (can return string item list or 1 to cancel), `select`, `attack`, `attack2`,
+    `hit`, `kill`, `die`, `buy`, `drop`, `collect`, `reload`, `say`, `sayteam`, `name`, `endround`, `startround`, `menu`, `serveraction`.
+- **Player API (`player`, `playerweapons`, `playerammo`):**
+  - `player(id, prop)`: implements 40+ properties including `"health"`, `"armor"`, `"money"`, `"score"`, `"deaths"`, `"assists"`,
+    `"mvp"`, `"name"`, `"ip"`, `"port"`, `"ping"`, `"team"`, `"look"`, `"weapon"`, `"weapontype"`, `"x"`, `"y"`, `"rot"`,
+    `"table"`, `"tableliving"`, `"team1"`, `"team2"`, `"team1living"`, `"team2living"`, `"spectators"`.
+  - `playerweapons(id)`: returns 1-indexed Lua array of weapon IDs currently held.
+  - `playerammo(id, type)`: returns clip ammo of weapon type.
+- **Command Parser & HUD Text (`parse`):**
+  - Parses native server commands (e.g. `setmoney`, `sethealth`, `equip`, `strip`, `slap`, `kick`).
+  - Intercepts and executes Lua HUD text commands:
+    - `hudtxt <id> "<text>" <x> <y> [align]`: broadcasts reliable `[234, id, align, x+0x4000 u16, y+0x4000 u16, len, UTF-16LE]`.
+    - `hudtxtclear [id]`: id 255 clears all.
+    - `hudtxtalphafade`, `hudtxtcolorfade`, `hudtxtmove`: broadcasts opcode `[54]` targeting `200 - id`.
+- **Dynamic Images & Tweens (`image`, `tween_*`):**
+  - `image(path, x, y, mode, [target])`: assigns incremental ID, stores in `lua->images`, and broadcasts reliable `[51, 0, id u16, mode u8, target u8, x u16, y u16, path (wstr)]`.
+  - Manipulation functions: `imagealpha` (mode 2), `imagecolor` (mode 1), `imagescale` (mode 4), `imageblend` (mode 3),
+    `imagepos` (mode 5), `freeimage` (mode 6), `imagehitzone` (opcode 59).
+  - Tweens: `tween_alpha`, `tween_color`, `tween_move`, `tween_rotate`, `tween_rotateconstantly`, `tween_scale`, `tween_frame`, `tween_animate`
+    broadcasting opcode `[54]` with target `200 + id`.
+- **Server Timers (`timer`, `freetimer`):**
+  - `timer(ms, func, param, [count])`: executes `func(param)` every `ms` milliseconds. `count == 0` loops indefinitely;
+    default is `count = 1`.
+  - Decrements remaining count on each invocation and frees automatically when completed.
+- **Server Menus (`menu`, Opcode `235`):**
+  - `menu(id, text)`: sends opcode `[235, title (wlstr), page u8, items (wlstr)]` to target player.
+  - Client response `[235, pid, slen, UTF-16LE title, button u8]`: invokes Lua hook `"menu"` with `(id, title, button)`.
+

@@ -187,6 +187,7 @@ typedef struct {
     int                round_end;       /* DAT_1407dfe6c: pending round end reason, 0 = round running */
     int                round_end_delay; /* DAT_1407dfe70 (ms) */
     uint32_t           round_end_ms;
+    void              *lua;             /* cs2d_sv_lua_t (phase 4) */
 } cs2d_server_t;
 
 void cs2d_sv_settings_default(cs2d_sv_settings_t *s);
