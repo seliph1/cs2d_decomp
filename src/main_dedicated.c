@@ -5,6 +5,7 @@
  * original's start-up output (ded_ph1.log).
  */
 #include "cs2d_server.h"
+#include "cs2d_sv_lua.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,12 +17,14 @@ static cs2d_server_t g_sv;
 int main(int argc, char **argv)
 {
     const char *map = NULL;
+    const char *lua_script = NULL;
     int port = 0;
     bool offline = false;
     for (int i = 1; i < argc; i++) {
         if (_stricmp(argv[i], "-offline") == 0 || _stricmp(argv[i], "-off") == 0) offline = true;
         else if (_stricmp(argv[i], "-map") == 0 && i + 1 < argc) map = argv[++i];
         else if (_stricmp(argv[i], "-port") == 0 && i + 1 < argc) port = atoi(argv[++i]);
+        else if (_stricmp(argv[i], "-lua") == 0 && i + 1 < argc) lua_script = argv[++i];
     }
 
     static const char *months[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -50,6 +53,10 @@ int main(int argc, char **argv)
     cs2d_sv_settings_default(&g_sv.set);
     cs2d_sv_settings_load(&g_sv.set, "sys/server.cfg");
     if (!cs2d_server_start(&g_sv, map, port, offline)) return 1;
+
+    if (lua_script && lua_script[0]) {
+        cs2d_sv_lua_dofile(&g_sv, lua_script);
+    }
 
     for (;;) {
         cs2d_server_frame(&g_sv);

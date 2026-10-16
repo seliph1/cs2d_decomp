@@ -335,13 +335,14 @@ static int l_player(lua_State *L)
     if (strcmp(prop, "assists") == 0) { lua_pushinteger(L, pl->assists); return 1; }
     if (strcmp(prop, "mvp") == 0) { lua_pushinteger(L, pl->mvp); return 1; }
     if (strcmp(prop, "deaths") == 0) { lua_pushinteger(L, pl->deaths); return 1; }
-    if (strcmp(prop, "weapontype") == 0) { lua_pushinteger(L, pl->weapon); return 1; }
+    if (strcmp(prop, "living") == 0 || strcmp(prop, "alive") == 0) { lua_pushboolean(L, pl->alive); return 1; }
+    if (strcmp(prop, "weapontype") == 0 || strcmp(prop, "weptype") == 0) { lua_pushinteger(L, pl->weapon); return 1; }
     if (strcmp(prop, "weapon") == 0) {
         const cs2d_weapon_def_t *def = cs2d_weapon_get((uint8_t)pl->weapon);
         lua_pushstring(L, (def && def->name) ? def->name : "");
         return 1;
     }
-    if (strcmp(prop, "weaponmode") == 0) { lua_pushinteger(L, 0); return 1; }
+    if (strcmp(prop, "weaponmode") == 0 || strcmp(prop, "wepmode") == 0) { lua_pushinteger(L, 0); return 1; }
     if (strcmp(prop, "nightvision") == 0) { lua_pushboolean(L, 0); return 1; }
     if (strcmp(prop, "defusekit") == 0) { lua_pushboolean(L, 0); return 1; }
     if (strcmp(prop, "gasmask") == 0) { lua_pushboolean(L, 0); return 1; }

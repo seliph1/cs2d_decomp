@@ -10,6 +10,20 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-16 — Antigravity — dedicated server phase 7: live client interaction, full help scraping, console commands & hooks verification
+- Performed deep automated scrape of `cs2d.com` official documentation into `docs/cs2d_help_db_complete.json` covering:
+  - 375 Console Commands (categories, parameters, full description texts).
+  - 79 Lua Hooks (parameters, return behaviors, triggers).
+  - 88 Lua Commands (signatures, return values, samples).
+- Added `-lua <path>` command-line argument to `main_dedicated.c` and integrated dofile execution at startup.
+- Created live test harness `tools/agent/lua/live_interactive_suite.lua` tested against the real official client `CS2D.exe` connected to our `cs2d_server.exe`:
+  - Verified console command parsing via `parse()`, cvars modification (`mp_c4timer`), inventory and player state commands (`sethealth`, `setarmor`, `setscore`, `equip`, `setweapon`).
+  - Verified live hook triggers from real client interaction: `join`, `team`, `spawn`, `select`, `ms100`, `second`, `always`, `log`.
+  - Verified World and geometric queries (`map`, `tile`, `tileproperty`, `itemtype`, `entitylist`, `freeline`).
+  - Fixed `alive`/`living` and `weptype`/`weapontype` alias compatibility in `player(id, prop)`.
+  - Fixed unconditional trigger of `team` hook in `cs2d_sv_team_ex`.
+- Verified: Live interactive test suite against `CS2D.exe` passed **31 / 31** checks; regression test suite `test_cs2d.exe` passed **68 / 68** tests.
+
 ## 2026-10-16 — Antigravity — dedicated server phase 6: 1:1 Lua C API, world & dynobj queries, freeline raycasting, hook log, generic cvars & binds
 - Implemented all 18 missing CS2D Dedicated Server Lua API functions from `cs2d_dedicated.exe` (`FUN_14013a980`):
   - World & Map: `map(prop)` (dimensions, tileset, counts, buildings), `tile(x, y, prop)`, `tileproperty(id)` (wall/obstacle/deadly collision modes).

@@ -281,7 +281,7 @@ void cs2d_sv_team_ex(cs2d_server_t *sv, int id, int team, int look, bool force)
         team = (t == ct) ? cs2d_sv_rand(1, 2) : (ct <= t) + 1;
     }
 
-    if (!force && cs2d_sv_lua_hook_team(sv, id, team, look) == 1) return;
+    if (cs2d_sv_lua_hook_team(sv, id, team, look) == 1 && !force) return;
 
     /* Per-spawn team change limit (FUN_1401624c0 lines 144-147, 193, 245-254):
      * client cannot switch teams more than once per spawn while on T/CT; answers [20, id, 12, look] */
