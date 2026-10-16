@@ -392,16 +392,28 @@ void cs2d_sv_team_ex(cs2d_server_t *sv, int id, int team, int look, bool force)
         }
     }
 
-    /* "Game commencing": when both teams have at least 1 player (or DM has >= 2) and no round end is pending (FUN_1401624c0 LAB_14015cff0) */
-    if (sv->round_end == 0) {
+    /* "Game commencing" (FUN_1401624c0 LAB_14015cff0 = 0x14015cff0): in the standard mode a team change
+     * restarts the round with reason 4 and a 3000 ms delay while the player counts are no real match -
+     * nobody at all, a single player who is NOT alive, 1 vs 1, or 2 vs 0 / 0 vs 2. A lone player who is
+     * alive keeps the running round (t + ct == 1 and alive -> return, the "alive" test of the original's
+     * player vtable +0x90; the Changelog entry fixes the old "Game Commencing"-restart of 1 alive player). */
+    if (sv->round_end == 0 && sv_mode(sv)->balance == 1 && sv_mode(sv)->respawn == 0) {
         int t = cs2d_sv_count_team(sv, 1);
         int ct = cs2d_sv_count_team(sv, 2);
-        if (sv_mode(sv)->respawn == 0) {
-            /* Standard mode: if t == 1 && ct == 1 (or 2 vs 0 / 0 vs 2), trigger round end 4 with 3000 ms */
-            if ((t == 1 && ct == 1) || (t == 2 && ct == 0) || (ct == 2 && t == 0)) {
-                cs2d_sv_round_end(sv, 4, 3000);
+        int total = t + ct;
+        bool restart = false;
+        if (total == 0) {
+            restart = true;
+        } else if (total == 1) {
+            restart = true;
+            for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+                cs2d_sv_player_t *o = &sv->players[i];
+                if (o->used && o->team >= 1 && o->alive) { restart = false; break; }
             }
+        } else if ((t == 1 && ct == 1) || (t == 2 && ct == 0) || (ct == 2 && t == 0)) {
+            restart = true;
         }
+        if (restart) cs2d_sv_round_end(sv, 4, 3000);
     }
 }
 
@@ -855,8 +867,61 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
     }
 }
 
-/* Called every server tick: the freezetime phase, the pending round end delay and the standard mode
- * win conditions (FUN_14015ce30) with its time out (0x1401a3128). */
+/* FUN_14015ce30(0): the standard mode's win conditions. A team without players cannot play the round
+ * (draw, LAB_14015d0c7), nobody alive is a draw or - with the C4 already ticking - a terrorist win
+ * (LAB_14015d0a5), an empty terrorist force is a CT win (2), an empty counter-terrorist force a T win (1).
+ *
+ * The original calls this from **player events only**: the check at 0x140150859 sits in the
+ * player-state function FUN_1401502a0 (called on spawn / death / join / leave) and the team change
+ * calls it at 0x140164da3 - its per-frame tick (0x1401a2xxx) never does. Measured on
+ * cs2d_dedicated.exe 1.0.1.8 p1 (2026-10-16, tools/agent/round_timing.py +
+ * tools/agent/lua/round_probe.lua): a server with 0 or 1 players ends no round by itself; the round of
+ * a lone player ends only when he dies (`killplayer 1` -> draw 3, 3000 ms) and then keeps running.
+ * Re-checking every frame, as we did before, restarted the round of an empty or one-player server
+ * every 3 s (the round itself lasted ~20 ms, so the player never got to play). */
+void cs2d_sv_check_win(cs2d_server_t *sv)
+{
+    if (sv->round_end != 0) return;
+
+    const sv_mode_t *m = sv_mode(sv);
+    if (m->respawn != 0 || m->balance != 1) return;
+
+    int t_total = sv_count_side(sv, 1);
+    int ct_total = sv_count_side(sv, 2);
+
+    int t_alive = 0, ct_alive = 0;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_player_t *pl = &sv->players[i];
+        if (!pl->used || !pl->alive) continue;
+        if (pl->team == 1) t_alive++;
+        else if (pl->team >= 2) ct_alive++;         /* the VIP counts for the CT side */
+    }
+
+    /* A team without players cannot play the round: draw (FUN_14015ce30 LAB_14015d0c7) */
+    if (t_total == 0 || ct_total == 0) {
+        cs2d_sv_round_end(sv, 3, 3000);
+        return;
+    }
+
+    /* Elimination: the bomb already planted keeps the round alive for the terrorists */
+    if (t_alive + ct_alive == 0) {                  /* nobody alive */
+        if (sv->bomb_planted) cs2d_sv_round_end(sv, 1, 5000);
+        else                  cs2d_sv_round_end(sv, 3, 3000);
+        return;
+    }
+    if (t_alive == 0) {                             /* all terrorists dead */
+        if (!sv->bomb_planted) cs2d_sv_round_end(sv, 2, 5000);
+        return;
+    }
+    if (ct_alive == 0) {                            /* all counter-terrorists dead */
+        cs2d_sv_round_end(sv, 1, 5000);
+        return;
+    }
+}
+
+/* Called every server tick: the freezetime phase, the pending round end delay and - in the standard
+ * mode - the per-frame objectives with the mission time out (0x1401a3128). The elimination rules are
+ * not checked here; they belong to the player events (cs2d_sv_check_win). */
 void cs2d_sv_step_round(cs2d_server_t *sv)
 {
     uint32_t now = cs2d_sv_now();
@@ -870,41 +935,8 @@ void cs2d_sv_step_round(cs2d_server_t *sv)
     sv_step_phase(sv);                      /* freezetime -> playing (DAT_1407dfea0, 0x1401a326e) */
     if (sv_round_frozen(sv)) return;        /* frozen: no movement (0x1401c9a02), no objectives */
 
-    /* Standard win condition check: if all players of one team are dead or single player dies (FUN_14015ce30) */
     const sv_mode_t *m = sv_mode(sv);
     if (m->respawn == 0 && m->balance == 1) {
-        int t_total = sv_count_side(sv, 1);
-        int ct_total = sv_count_side(sv, 2);
-
-        int t_alive = 0, ct_alive = 0;
-        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
-            cs2d_sv_player_t *pl = &sv->players[i];
-            if (!pl->used || !pl->alive) continue;
-            if (pl->team == 1) t_alive++;
-            else if (pl->team >= 2) ct_alive++;         /* the VIP counts for the CT side */
-        }
-
-        /* A team without players cannot play the round: draw (FUN_14015ce30 LAB_14015d0c7) */
-        if (t_total == 0 || ct_total == 0) {
-            cs2d_sv_round_end(sv, 3, 3000);
-            return;
-        }
-
-        /* Elimination: the bomb already planted keeps the round alive for the terrorists */
-        if (t_alive + ct_alive == 0) {                  /* nobody alive */
-            if (sv->bomb_planted) cs2d_sv_round_end(sv, 1, 5000);
-            else                  cs2d_sv_round_end(sv, 3, 3000);
-            return;
-        }
-        if (t_alive == 0) {                             /* all terrorists dead */
-            if (!sv->bomb_planted) cs2d_sv_round_end(sv, 2, 5000);
-            return;
-        }
-        if (ct_alive == 0) {                            /* all counter-terrorists dead */
-            cs2d_sv_round_end(sv, 1, 5000);
-            return;
-        }
-
         /* The mission objectives (VIP escape / death, hostage rescue) are checked every tick */
         cs2d_sv_vip_check(sv);
 
@@ -1075,6 +1107,14 @@ void cs2d_sv_kill(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id
     msg[8] = (uint8_t)((y >> 8) & 0xff);
 
     sv_broadcast_joined(sv, msg, sizeof(msg));
+
+    /* The death is what calls the win check in the original: FUN_140160500 (inside the death path,
+     * `cmp [pid+0x230], 3`) and the tails at 0x1401647c4 / 0x1401840d1 both end with
+     * `if (no round end pending) return FUN_14015ce30(0)`. A V.I.P. death has its own reason (10,
+     * "assassinated") and therefore comes first (0x140160530 -> round_end(10,10,5000)).
+     * Measured: `killplayer 1` on a one-player standard server ends the round immediately. */
+    cs2d_sv_vip_check(sv);
+    cs2d_sv_check_win(sv);
 }
 
 /* FUN_1401658c0 / [17]: apply damage to victim and broadcast [17, victim, attacker, new_hp, new_arm] */
@@ -2148,6 +2188,13 @@ void cs2d_sv_bomb_explode(cs2d_server_t *sv)
     cs2d_sv_lua_hook_bombexplode(sv, sv->bomb_planter, (int)sv->bomb_tx, (int)sv->bomb_ty);
     cs2d_server_print("Bomb exploded!");
 
+    /* T victory: type 20 = Bomb detonated, T win; the planter is the MVP (r9 of 0x14016aca2).
+     * Ended BEFORE the blast damage: since the death path now runs the win check (0x1401647c4 /
+     * 0x1401840d1), the kills of the blast would otherwise decide the round first (a draw with an empty
+     * team). The original's check is gated on DAT_1407dfe6c == 0, so the pending "Bomb detonated" always
+     * wins there - this order keeps the same observable reason. */
+    cs2d_sv_round_end_ex(sv, 20, 20, 5000, sv->bomb_planter);
+
     /* Damage players in explosion radius (350 px) */
     float bx = sv->bomb_tx * 32.0f + 16.0f;
     float by = sv->bomb_ty * 32.0f + 16.0f;
@@ -2161,9 +2208,6 @@ void cs2d_sv_bomb_explode(cs2d_server_t *sv)
             if (dmg > 0) cs2d_sv_damage(sv, i, sv->bomb_planter, dmg, CS2D_WEP_PLANTEDBOMB);
         }
     }
-
-    /* T victory: type 20 = Bomb detonated, T win; the planter is the MVP (r9 of 0x14016aca2) */
-    cs2d_sv_round_end_ex(sv, 20, 20, 5000, sv->bomb_planter);
 }
 
 void cs2d_sv_step_bomb(cs2d_server_t *sv)

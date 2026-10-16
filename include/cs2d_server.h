@@ -307,6 +307,7 @@ int  cs2d_sv_rand(int lo, int hi);                                         /* FU
 void cs2d_sv_round_end(cs2d_server_t *sv, int mode, int delay_ms);         /* FUN_14015c840 */
 void cs2d_sv_round_start(cs2d_server_t *sv, int reason);                   /* FUN_1402520b0 / FUN_140123530 */
 void cs2d_sv_step_round(cs2d_server_t *sv);                                /* check round end conditions & timer */
+void cs2d_sv_check_win(cs2d_server_t *sv);                                 /* FUN_14015ce30(0): the elimination rules */
 /* Standard game mode (sv_gamemode 0): mission objectives and rounds (FUN_14015ce30, FUN_14015c840) */
 void cs2d_sv_count_missions(cs2d_server_t *sv);                            /* DAT_1407dfac0/4/8 counts */
 void cs2d_sv_round_end_ex(cs2d_server_t *sv, int type, int mode, int delay_ms, int player_id); /* FUN_14015c840 */

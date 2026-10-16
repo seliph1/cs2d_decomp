@@ -1233,6 +1233,11 @@ static void sv_remove_player(cs2d_server_t *sv, int id, int reason)
         cs2d_pkt_w_byte(p, (uint8_t)id);
         cs2d_pkt_w_byte(p, (uint8_t)reason);
     }
+    /* Removing a player is one of the events that run the win check in the original: the check at
+     * 0x14015085b sits in FUN_1401502a0, the removal function itself (it gates on DAT_1407dfe6c == 0
+     * first, like ours). Measured 2026-10-16: a client quitting a one-player standard server drew the
+     * round right away, an empty server that never had a player does not end a round at all. */
+    cs2d_sv_check_win(sv);
 }
 
 /* FUN_1401502a0: kick a player with optional reason ([253, id, 2] or [253, id, 16, reason]) */
@@ -1262,6 +1267,8 @@ void cs2d_sv_kick(cs2d_server_t *sv, int id, const char *reason)
         kicked_conn->active = false;
     }
     pl->used = false;
+    /* The kick is FUN_1401502a0 itself: the round is re-checked after the player is gone. */
+    cs2d_sv_check_win(sv);
 }
 
 /* ------------------------------------------------------------------------------------------------ */

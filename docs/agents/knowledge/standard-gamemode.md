@@ -4,8 +4,9 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 
 Source: `cs2d_dedicated.exe` (`objdump -d -M intel`, addresses below; the Ghidra dump of the same
 functions is `docs/dump/dedicated/FUN_14015c*.c`), `help/howtoplay.txt`, `sys/language/EN-English.txt`.
-Code: `src/cs2d_sv_game.c` (`cs2d_sv_round_end_ex`, `cs2d_sv_step_round`, `cs2d_sv_count_missions`,
-`cs2d_sv_assign_vip`, `cs2d_sv_vip_check`, `cs2d_sv_hostage_escaped`), test `test_standard_gamemode`.
+Code: `src/cs2d_sv_game.c` (`cs2d_sv_round_end_ex`, `cs2d_sv_check_win`, `cs2d_sv_step_round`,
+`cs2d_sv_count_missions`, `cs2d_sv_assign_vip`, `cs2d_sv_vip_check`, `cs2d_sv_hostage_escaped`),
+test `test_standard_gamemode`.
 
 ### Round end (`FUN_14015c840`)
 
@@ -64,7 +65,38 @@ Code: `src/cs2d_sv_game.c` (`cs2d_sv_round_end_ex`, `cs2d_sv_step_round`, `cs2d_
   "mission_hostages" / "mission_bombspots")` queries (string compares at `0x1400c25d8 / 2641 / 26b1`
   against `0x1405c8790` `vips`, `0x1405c87d0` `hostages`, `0x1405c8890` `bombspots`).
 
-### Round phases (`DAT_1407dfea0`)
+### When `FUN_14015ce30` runs: player events, not the tick (measured 2026-10-16)
+
+- The check has **no per-frame caller**. Its call sites are `0x14015085b` (inside `FUN_1401502a0`, the
+  player removal / kick function, gated `DAT_1407dfe48 != 0` then `DAT_1407dfe6c == 0`) and `0x140164da3`
+  (the team change inside `FUN_1401624c0`), plus tail calls that end with
+  `if (DAT_1407dfe6c == 0) return FUN_14015ce30(0)`: `0x140160526` (the death helper `FUN_140160500`,
+  `cmp [pid+0x230], 3` = the VIP), `0x1401647c4`, `0x1401840d1` (both right after a `FUN_140159840(id, 5, ..)`
+  playerdata update) and `0x14015d200 / 0x14015d220 / 0x14015d266` (inside the round-end function itself).
+  The per-frame tick (`0x1401a2xxx`) only runs the freezetime phase, the C4 step, the VIP objective and
+  the time out (`0x1401a3128`) - never the elimination rules.
+- **Measured cadence with `cs2d_dedicated.exe` 1.0.1.8 p1** (`tools/agent/round_timing.py` timestamps the
+  console, `tools/agent/lua/round_probe.lua` prints `SEC n=<players> [id team hp]` once per second):
+  - 0 players: no round end / round start for 18 s (the round just runs on).
+  - 1 player joining (spectator) and then picking CT: no round restart, and the team change does **not**
+    trigger the "Game Commencing" restart while that player is alive.
+  - that lone player killed by `parse("killplayer 1")`: `ROUND end mode=3` (draw) at once, `ROUND start
+    mode=3` 3020 ms later, then nothing more for the rest of the run (the player respawned and kept the
+    round). The 3000 ms is the draw delay, not a separate config.
+  - Our dedicated before the fix drew + restarted every ~3000 ms in all of those states (each round lasted
+    ~20 ms), which is what the user noticed; the fix moves the check to the same events.
+- Consequences for the port: `cs2d_sv_check_win` (the port of `FUN_14015ce30(0)`) is called from
+  `cs2d_sv_kill` (after `cs2d_sv_vip_check`, so a V.I.P. death keeps reason 10) and from the removal paths
+  (`sv_remove_player`, `cs2d_sv_kick`); `cs2d_sv_step_round` keeps only the freezetime, the C4/VIP
+  per-frame work and the time out. `cs2d_sv_bomb_explode` ends the round (20) *before* the blast damage,
+  because the blast kills would otherwise run the check first (`DAT_1407dfe6c == 0` gate).
+- "Game commencing" (`FUN_1401624c0` `LAB_14015cff0` = `0x14015cff0`) = `round_end(4, 4, 3000)` on a team
+  change while the standard mode has no real match: `t + ct == 0`, `t + ct == 1` and the single player is
+  **not** alive (the vtable `+0x90` "alive" test), 1 vs 1, or 2 vs 0 / 0 vs 2. The Changelog entry
+  `"Game Commencing"-restart occured with 1 player who is alive already` is the fix for the missing alive
+  test, so a lone alive player keeps playing.
+
+
 
 - 0 = freezetime, 1 = playing (the round clock and the time out), 2 = round decided (the clock runs on,
   the time out no longer ends it). Read from a round object (`vtable +0xf0`, `0x1401c55d8`).
@@ -117,5 +149,10 @@ Code: `src/cs2d_sv_game.c` (`cs2d_sv_round_end_ex`, `cs2d_sv_step_round`, `cs2d_
   round ended by time out.
 - Not verified on a proxy capture: the exact `[20, id, 3, look]` VIP announcement (our port sends it) and
   the round start sound.
+- The event-driven win check is only exercised with 0/1 players end to end (`tools/agent/round_timing.py`);
+  a two-client elimination round (one team wiped out mid-round on the original) has not been captured side
+  by side yet.
+- The offline client (`src/cs2d_game.c`) still checks its simplified win conditions every frame, so with one
+  player it ends the round on its own - its model is not the dedicated's (see OPEN_ISSUES).
 
 - Phase 2 also resets the bomb flag (`0x1401c55ec` → `PTR_DAT_1405ac770 +8 = 0`).

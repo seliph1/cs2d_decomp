@@ -1,5 +1,13 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-16 — Claude — dedicated server: client [71] read as 5 bytes (phantom flashlight [57] and silent disconnects)
+- Symptom: original client on `cs2d_server.exe` heard the flashlight sound while moving/shooting, then lost the connection.
+- Cause: client `[71]` is `x u16, y u16, rot u16, aim u8` (7 bytes, same as `[72]`; ded `FUN_1401d3fb0` / `FUN_1401d4430` read opcode + 3 shorts + 1 byte, need > 7 left; proxy `47 10 04 6b 05 c1 d6 87`). We read only 5, so 2 bytes ran as opcodes (57 flashlight echo, 253 leave without telling the client).
+- Fix: `case 71: case 72` in `sv_recv_game` (71 = run, 72 = walk); `cs2d_sv_recv_payload` test entry; `test_server_move_aim_messages` (70/70).
+- Left: unknown client opcodes still `break` the datagram silently (e.g. `[40]`); probe longer sessions with `capture_server.sh`.
+- Follow-up 2026-10-16 (Claude): `[40]` on a dedicated is already faithful: handler `0x1401cfba0` returns 3 (`DAT_1407dfe48` set) or 4 without reading, so the original also drops the rest of the datagram. The `default` branch of `sv_recv_game` now logs `[sv] unhandled client opcode N` on stderr. Old proxy logs (C>S first opcode) show unported ones: 34 (`22 07 1f 00 53 00 00 e8 03`), 43 vote (`2b 01 01 00`), 53, 230 leaderboard (`e6 00`); handlers in the table in `knowledge/dedicated-server.md`. 70/70 tests. A new original-client capture was not run (it takes keyboard and mouse for ~90 s).
+
+
 ## 2026-10-16 — Antigravity — dedicated server: frame pacing, timer resolution & accurate tick/FPS reporting
 - Fixed low/skewed tickrate and connection stability on dedicated server (`main_dedicated.c`, `cs2d_server.c`, `build.bat`):
   - Enabled Windows 1ms timer resolution via `timeBeginPeriod(1)` on startup (and `timeEndPeriod(1)` on exit), linking `-lwinmm`.

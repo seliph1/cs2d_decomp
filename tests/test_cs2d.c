@@ -6006,9 +6006,10 @@ static bool test_server_join(void)
     cs2d_sv_round_start(&sv, 2);
     if (sv.round_end != 0 || sv.score_ct != 1) TEST_FAIL("round_start", "scores not updated or round_end not cleared");
 
-    /* Single player death in standard mode: round should end (draw / reason 3) */
-    sv.players[1].alive = false;
-    cs2d_sv_step_round(&sv);
+    /* Single player death in standard mode: round should end (draw / reason 3). The check is event
+     * driven - FUN_14015ce30 is called from the death path, not every frame (measured 2026-10-16). */
+    cs2d_sv_kill(&sv, 1, 0, 0, 255);
+    if (sv.players[1].alive) TEST_FAIL("round_end single player", "the sole player did not die");
     if (sv.round_end != 3) TEST_FAIL("round_end single player", "round did not end when sole player died");
     cs2d_sv_round_start(&sv, 3);
     sv.players[1].alive = true;
@@ -7616,19 +7617,21 @@ static bool test_standard_gamemode(void)
     }
     sv.mission_hostages = 1;
 
-    /* 8. Elimination with a planted C4: nobody alive wins the round for the terrorists (FUN_14015ce30) */
+    /* 8. Elimination with a planted C4: nobody alive wins the round for the terrorists (FUN_14015ce30).
+     * The original calls this check from player events (death, removal, team change) - a lonely or empty
+     * server keeps its round - so the test drives the check itself instead of cs2d_sv_step_round. */
     sv.set.mp_roundtime = 3;
     sv.round_phase = 1;
     sv.round_clock_ms = sv.round_start_ms = cs2d_sv_now();
     for (int i = 1; i <= 4; i++) sv.players[i].alive = false;
     sv.vip_id = 0;                     /* no VIP objective in these cases */
     sv.round_end = 0; sv.bomb_planted = false;
-    cs2d_sv_step_round(&sv);
+    cs2d_sv_check_win(&sv);
     if (sv.round_end != 3) {
         TEST_FAIL("Standard elimination", "no C4 + nobody alive must be a draw (3)");
     }
     sv.round_end = 0; sv.bomb_planted = true;
-    cs2d_sv_step_round(&sv);
+    cs2d_sv_check_win(&sv);
     if (sv.round_end != 1 || sv.round_winner != 1) {
         TEST_FAIL("Standard elimination C4", "a planted C4 must win the round for the terrorists (1)");
     }
@@ -7636,15 +7639,31 @@ static bool test_standard_gamemode(void)
     sv.round_end = 0; sv.bomb_planted = true;
     sv.players[1].alive = sv.players[2].alive = false;
     sv.players[3].alive = sv.players[4].alive = true;
-    cs2d_sv_step_round(&sv);
+    cs2d_sv_check_win(&sv);
     if (sv.round_end != 0) {
         TEST_FAIL("Standard T dead C4", "the round must continue while the planted C4 ticks");
     }
     /* All terrorists dead without the C4: CT win (2) */
     sv.round_end = 0; sv.bomb_planted = false;
-    cs2d_sv_step_round(&sv);
+    cs2d_sv_check_win(&sv);
     if (sv.round_end != 2 || sv.round_winner != 2) {
         TEST_FAIL("Standard T dead", "all terrorists dead without a C4 must be a CT win (2)");
+    }
+    /* A team without players at all draws the round (LAB_14015d0c7): the one-team server case. */
+    sv.round_end = 0;
+    for (int i = 3; i <= 4; i++) { sv.players[i].used = true; sv.players[i].team = 2; sv.players[i].alive = true; }
+    for (int i = 1; i <= 2; i++) { sv.players[i].team = 0; sv.players[i].alive = false; }
+    cs2d_sv_check_win(&sv);
+    if (sv.round_end != 3) {
+        TEST_FAIL("Standard one team", "a team without players must draw the round (3)");
+    }
+    /* ... but a lone alive player must NOT lose his round to it: the check is not run per frame. */
+    sv.round_end = 0;
+    for (int i = 1; i <= 4; i++) { sv.players[i].used = false; sv.players[i].team = 0; sv.players[i].alive = false; }
+    sv.players[3].used = true; sv.players[3].team = 2; sv.players[3].alive = true;
+    cs2d_sv_step_round(&sv);
+    if (sv.round_end != 0) {
+        TEST_FAIL("Standard lone player", "an empty team ended the round without a player event");
     }
 
     for (int i = 0; i < 4; i++) free(sv.conns[i].pending);

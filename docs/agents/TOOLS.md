@@ -114,6 +114,36 @@ Use it first to find code, then confirm with REA (`procedure_assembly`) or objdu
 An address inside a function is not found: the dump only indexes function starts. Use REA
 `resolve_containing_procedure` for that.
 
+## Disassembly of cs2d_dedicated.exe (`tools/agent/dedscan.py`)
+
+The dedicated has no Ghidra dump. `dedscan.py` keeps one objdump text of it in `tools/agent/out/ded.asm`
+(built on first use, ~80 MB, git-ignored) and answers address-level questions over it - useful because
+the stripped PE has no symbols, so neither Ghidra nor objdump names anything:
+
+| Command | Output |
+|---|---|
+| `python tools/agent/dedscan.py show 0x140150859 40 10` | The code around an address (40 lines before, 10 after) |
+| `python tools/agent/dedscan.py fn 0x140150859` | The nearest preceding call target - a decent function-head guess |
+| `python tools/agent/dedscan.py callers 0x14015ce30` | Every `call <addr>` with context (the call sites that date a behaviour) |
+| `python tools/agent/dedscan.py calltargets 0x140150000 0x140160000` | The distinct call targets inside a range (function heads) |
+| `python tools/agent/dedscan.py refs 0x1407dfe6c` | Every line touching a global (readers and writers) |
+| `python tools/agent/dedscan.py writes 0x1407dfe48` | Only the stores of a global (who sets a flag, and to what) |
+
+It was used to place the round-win check of `FUN_14015ce30` in the player events
+(`docs/agents/knowledge/standard-gamemode.md`). Remember that objdump also prints the `jmp`/tail calls:
+`jmp 0x14015ce30` means "return FUN_14015ce30(...)", which is how most of the death-path call sites look.
+
+## Round cadence / console timing (`tools/agent/round_timing.py`)
+
+`python tools/agent/round_timing.py <secs> [--client-after <s> -- <client cmd...> --] <server cmd...>`
+runs a dedicated, polls its merged output every 20 ms and prints each line with the elapsed milliseconds
+and the delta to the previous line; with `--client-after` it starts a second command (our client) that
+many seconds later, so one run covers the "one player" case (`round_timing_client.log`). The child is
+killed when the window ends. Used with `tools/agent/lua/round_probe.lua` (startround/endround hooks plus
+a one-second `SEC n=<players> [id team hp]` heartbeat) and `lua/round_probe_kill.lua` (kills the only
+player after 14 s) to measure how a dedicated restarts rounds with 0/1 players. The dedicated rewrites
+`sys/server.cfg`: check `git status sys/` afterwards.
+
 ## Capture scripts (`tools/agent/`)
 
 All output goes to `tools/agent/out/`, which is git-ignored.

@@ -5,6 +5,13 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **Round restart cadence with 0/1 players (2026-10-16, `docs/agents/knowledge/standard-gamemode.md`):**
+  fixed - `FUN_14015ce30(0)` is event driven in the original (death / removal / team change), so a server
+  with 0 or 1 players keeps its round; ours checked every frame and restarted it every 3 s (the round
+  lasted ~20 ms). Now `cs2d_sv_check_win` is called from `cs2d_sv_kill`, `sv_remove_player`,
+  `cs2d_sv_kick` and the "Game Commencing" team block; verified with `tools/agent/round_timing.py` against
+  both binaries. Still open: the offline client (`src/cs2d_game.c`) keeps the per-frame check and the
+  "simplified" win conditions; a 2-client elimination round was not captured side by side.
 - **Standard game mode (2026-10-16, `docs/agents/knowledge/standard-gamemode.md`):** the dedicated's
   round model is now a port of the original (round end reasons + winner/MVP table, the per-mission time
   out, the freezetime phase, the V.I.P. and the >50 % hostage rule) - see `src/cs2d_sv_game.c`. Still

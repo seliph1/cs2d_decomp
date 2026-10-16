@@ -10,7 +10,33 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-16 — Cline — o check de vitória do standard mode é por evento, não por frame (timer do round com 0/1 jogadores)
+- Sintoma (relato do usuário): com o servidor vazio ou com um jogador só, o nosso dedicated reiniciava o
+  round quase que imediatamente, enquanto o original deixa o round correr.
+- Medição no original (`cs2d_dedicated.exe`, `tools/agent/round_timing.py` + `tools/agent/lua/round_probe.lua`,
+  `round_probe_kill.lua`): com 0 jogadores nenhum round termina/inicia por 18 s; com 1 jogador (espectador
+  ou CT vivo) também não; o round de um jogador só termina **quando ele morre** (`killplayer 1` → draw 3,
+  3000 ms) e depois segue rodando. Nosso dedicated fazia o mesmo draw a cada 3 s (o round durava ~20 ms).
+- Causa (objdump/Ghidra do dedicated, `tools/agent/dedscan.py`): o check `FUN_14015ce30(0)` é chamado só de
+  eventos de jogador — o call em `0x14015085b` está dentro de `FUN_1401502a0` (o removedor/kick de jogador,
+  gateado por `DAT_1407dfe6c == 0`) e o de `0x140164da3` na função de time; além deles há tail calls em
+  `0x140160526` (morte, `cmp [pid+0x230], 3`), `0x1401647c4`, `0x1401840d1`, `0x14015d200/220/266`.
+  Nenhuma no tick por frame (`0x1401a2xxx`), que só cuida de freezetime, C4, VIP e do time out.
+- `src/cs2d_sv_game.c`: as regras de eliminação saíram do `cs2d_sv_step_round` para `cs2d_sv_check_win`
+  (FUN_14015ce30(0)) e passaram a ser chamadas das mortes (`cs2d_sv_kill`, com `cs2d_sv_vip_check` antes
+  para o motivo 10), das remoções (`sv_remove_player` / `cs2d_sv_kick`, `FUN_1401502a0`) e do "Game
+  Commencing" do time, agora fiel ao dump (`t+ct == 0`, `t+ct == 1` com o único jogador **morto**, 1v1 e
+  2v0/0v2). A explosão do C4 agora encerra o round (20) antes do dano de área, senão as mortes do blast
+  decidiriam o round primeiro.
+- Testes: `test_cs2d.c` passa a dirigi-lo por evento (`cs2d_sv_kill` para a morte do jogador solitário,
+  `cs2d_sv_check_win` nos casos de eliminação) e ganhou dois casos novos: "uma equipe sem jogadores empata"
+  e "jogador sozinho não perde o round sem evento". `build.bat` limpo, `test_cs2d.exe` **72 / 72**.
+- Verificado lado a lado: nosso dedicated agora não termina round com 0/1 jogadores e encerra com draw na
+  morte, com o mesmo atraso de 3000 ms do original.
+
+
 ## 2026-10-16 — Cline — standard game mode (sv_gamemode 0) reconstructed from cs2d_dedicated.exe
+
 - New `docs/agents/knowledge/standard-gamemode.md`: the round end model of `FUN_14015c840` +
   `FUN_14015c080` (`type` → winner/MVP, `mode` = the reason byte of `[226]`), the 19 reason ↔ language
   message pairs (0576..0594), the win conditions of `FUN_14015ce30` (a team without players draws), the
@@ -75,12 +101,3 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
   order, the empty return and the cancel with status 4 (71/71).
 - Left: where `connect` / `connect_initplayer` run (both documented as "no return value", so each needs its own
   evidence); the remaining Phase 1 gaps stay in OPEN_ISSUES.
-
-
-## 2026-10-16 — Claude — dedicated server: client [71] read as 5 bytes (phantom flashlight [57] and silent disconnects)
-- Symptom: original client on `cs2d_server.exe` heard the flashlight sound while moving/shooting, then lost the connection.
-- Cause: client `[71]` is `x u16, y u16, rot u16, aim u8` (7 bytes, same as `[72]`; ded `FUN_1401d3fb0` / `FUN_1401d4430` read opcode + 3 shorts + 1 byte, need > 7 left; proxy `47 10 04 6b 05 c1 d6 87`). We read only 5, so 2 bytes ran as opcodes (57 flashlight echo, 253 leave without telling the client).
-- Fix: `case 71: case 72` in `sv_recv_game` (71 = run, 72 = walk); `cs2d_sv_recv_payload` test entry; `test_server_move_aim_messages` (70/70).
-- Left: unknown client opcodes still `break` the datagram silently (e.g. `[40]`); probe longer sessions with `capture_server.sh`.
-- Follow-up 2026-10-16 (Claude): `[40]` on a dedicated is already faithful: handler `0x1401cfba0` returns 3 (`DAT_1407dfe48` set) or 4 without reading, so the original also drops the rest of the datagram. The `default` branch of `sv_recv_game` now logs `[sv] unhandled client opcode N` on stderr. Old proxy logs (C>S first opcode) show unported ones: 34 (`22 07 1f 00 53 00 00 e8 03`), 43 vote (`2b 01 01 00`), 53, 230 leaderboard (`e6 00`); handlers in the table in `knowledge/dedicated-server.md`. 70/70 tests. A new original-client capture was not run (it takes keyboard and mouse for ~90 s).
-
