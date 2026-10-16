@@ -6862,6 +6862,251 @@ static bool test_server_phase5_bomb_hostages_bots(void)
     return true;
 }
 
+/* ========================================================================= */
+/* Phase 6 Test: Dedicated Server Lua API (1:1 Port)                         */
+/* ========================================================================= */
+static bool test_server_phase6_lua(void)
+{
+    printf("\n=== Testing Dedicated Server Phase 6: Lua Subsystem 1:1 API ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    snprintf(sv.set.sv_name, sizeof(sv.set.sv_name), "Phase6 Test Server");
+    cs2d_sv_settings_set(&sv.set, "mp_luaserver", "");
+    cs2d_sv_settings_set(&sv.set, "custom_cvar", "hello_phase6");
+
+    sv.map_loaded = true;
+    sv.map.width = 40;
+    sv.map.height = 30;
+    sv.map.tile_count = 100;
+    snprintf(sv.map.tileset, sizeof(sv.map.tileset), "dust.bmp");
+    sv.map.tiles = (uint8_t *)calloc(40 * 30, sizeof(uint8_t));
+    sv.map.tile_modes[0] = 0; /* floor */
+    sv.map.tile_modes[1] = 1; /* wall */
+    sv.map.tile_modes[2] = 2; /* obstacle */
+    sv.map.tile_modes[50] = 50; /* deadly */
+    sv.map.tiles[5 * 40 + 5] = 1; /* wall at (5, 5) */
+    sv.map.tiles[10 * 40 + 10] = 2; /* obstacle at (10, 10) */
+
+    /* Add map entities */
+    sv.map.entity_count = 4;
+    sv.map.entities[0].type = CS2D_ENT_INFO_VIP;
+    sv.map.entities[0].x = 2;
+    sv.map.entities[0].y = 2;
+    snprintf(sv.map.entities[0].name, sizeof(sv.map.entities[0].name), "VIP_Spawn");
+
+    sv.map.entities[1].type = CS2D_ENT_INFO_BOMBSPOT;
+    sv.map.entities[1].x = 15;
+    sv.map.entities[1].y = 15;
+    snprintf(sv.map.entities[1].trigger, sizeof(sv.map.entities[1].trigger), "bomb_zone");
+    sv.map.entities[1].int_settings[0] = 42;
+    snprintf(sv.map.entities[1].str_settings[0], sizeof(sv.map.entities[1].str_settings[0]), "custom_data");
+
+    sv.map.entities[2].type = CS2D_ENT_INFO_CTF_FLAG;
+    sv.map.entities[2].x = 20;
+    sv.map.entities[2].y = 20;
+
+    sv.map.entities[3].type = CS2D_ENT_FUNC_TELEPORT;
+    sv.map.entities[3].x = 25;
+    sv.map.entities[3].y = 25;
+
+    /* Initialize dynobj world */
+    cs2d_dynobj_init(&sv.dynobj, &sv.map);
+    cs2d_dynobj_spawn(&sv.dynobj, 1, CS2D_DO_BARRICADE, 8 * 32, 8 * 32, 0.0f, 0, 1, 1);
+
+    /* Setup players */
+    for (int i = 0; i < 2; i++) {
+        sv.conns[i].active = true;
+        sv.conns[i].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+        sv.conns[i].player = i + 1;
+        sv.players[i + 1].used = true;
+        sv.players[i + 1].joined = true;
+        sv.players[i + 1].alive = true;
+        sv.players[i + 1].conn = i;
+        sv.players[i + 1].health = 100;
+        sv.players[i + 1].maxhealth = 100;
+        sv.players[i + 1].team = 1;
+    }
+    snprintf(sv.players[1].name, sizeof(sv.players[1].name), "HumanPlayer");
+    sv.players[1].bot = false;
+    sv.players[1].x = 100.0f;
+    sv.players[1].y = 100.0f;
+    sv.players[1].weapon = CS2D_WEP_AK47;
+
+    snprintf(sv.players[2].name, sizeof(sv.players[2].name), "BotPlayer");
+    sv.players[2].bot = true;
+    sv.players[2].x = 200.0f;
+    sv.players[2].y = 200.0f;
+    sv.players[2].weapon = CS2D_WEP_M4A1;
+
+    /* Ground item */
+    sv.items[0].active = true;
+    sv.items[0].id = 101;
+    sv.items[0].type = CS2D_WEP_DEAGLE;
+    sv.items[0].tile_x = 12;
+    sv.items[0].tile_y = 12;
+    sv.items[0].clip = 7;
+    sv.items[0].reserve = 35;
+    sv.items[0].dropped = true;
+    sv.items[0].drop_time_ms = cs2d_sv_now();
+
+    /* Init Lua subsystem */
+    cs2d_sv_lua_init(&sv);
+    if (!sv.lua) TEST_FAIL("Lua Init", "Failed to initialize Lua state");
+
+    /* 1. Test game() and cvar fallback */
+    bool rc = cs2d_sv_lua_dostring(&sv,
+        "assert(game('version') == '1.0.1.8', 'game version mismatch')\n"
+        "assert(game('dedicated') == 1, 'game dedicated flag mismatch')\n"
+        "assert(game('sv_name') == 'Phase6 Test Server', 'cvar sv_name mismatch')\n"
+        "assert(game('custom_cvar') == 'hello_phase6', 'generic cvar fallback mismatch')\n"
+        "assert(game('ticks') == 16, 'game ticks mismatch')\n"
+    );
+    if (!rc) TEST_FAIL("game() queries", "game() assertions failed");
+
+    /* 2. Test map() */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(map('xsize') == 40, 'map xsize mismatch')\n"
+        "assert(map('ysize') == 30, 'map ysize mismatch')\n"
+        "assert(map('tileset') == 'dust.bmp', 'map tileset mismatch')\n"
+        "assert(map('mission_vips') == 1, 'map mission_vips count mismatch')\n"
+        "assert(map('mission_bombspots') == 1, 'map mission_bombspots count mismatch')\n"
+        "assert(map('mission_ctfflags') == 1, 'map mission_ctfflags count mismatch')\n"
+        "assert(map('teleporters') == 1, 'map teleporters count mismatch')\n"
+    );
+    if (!rc) TEST_FAIL("map() queries", "map() assertions failed");
+
+    /* 3. Test tile() and tileproperty() */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(tile(0, 0, 'wall') == false, 'tile 0,0 should not be wall')\n"
+        "assert(tile(5, 5, 'wall') == true, 'tile 5,5 should be wall')\n"
+        "assert(tile(5, 5, 'property') == 1, 'tile 5,5 property should be 1')\n"
+        "assert(tile(10, 10, 'obstacle') == true, 'tile 10,10 should be obstacle')\n"
+        "assert(tile(15, 15, 'entity') == 5, 'tile 15,15 entity type should be 5')\n"
+        "assert(tileproperty(1) == 1, 'tileproperty(1) should be 1')\n"
+        "assert(tileproperty(2) == 2, 'tileproperty(2) should be 2')\n"
+    );
+    if (!rc) TEST_FAIL("tile() queries", "tile() assertions failed");
+
+    /* 4. Test itemtype() */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(itemtype(30, 'name') == 'AK-47', 'itemtype 30 name mismatch')\n"
+        "assert(itemtype(30, 'dmg') == 22, 'itemtype 30 damage mismatch')\n"
+        "assert(itemtype(30, 'price') == 2500, 'itemtype 30 price mismatch')\n"
+        "assert(itemtype(30, 'ammo') == 90, 'itemtype 30 reserve ammo mismatch')\n"
+        "assert(itemtype(30, 'ammoin') == 30, 'itemtype 30 clip size mismatch')\n"
+    );
+    if (!rc) TEST_FAIL("itemtype() queries", "itemtype() assertions failed");
+
+    /* 5. Test item() */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "local tbl = item(0, 'table')\n"
+        "assert(#tbl == 1 and tbl[1] == 101, 'item(0, table) mismatch')\n"
+        "assert(item(101, 'exists') == true, 'item 101 should exist')\n"
+        "assert(item(101, 'type') == 3, 'item 101 type mismatch (Deagle=3)')\n"
+        "assert(item(101, 'ammoin') == 7, 'item 101 clip mismatch')\n"
+        "assert(item(101, 'ammo') == 35, 'item 101 reserve mismatch')\n"
+        "assert(item(101, 'dropped') == true, 'item 101 dropped flag mismatch')\n"
+    );
+    if (!rc) TEST_FAIL("item() queries", "item() assertions failed");
+
+    /* 6. Test object(), objectat(), closeobjects() */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "local otbl = object(0, 'table')\n"
+        "assert(#otbl == 1, 'object(0, table) count mismatch')\n"
+        "local obj_id = otbl[1]\n"
+        "assert(object(obj_id, 'exists') == true, 'spawned building should exist')\n"
+        "assert(object(obj_id, 'type') == 1, 'spawned building type should be 1 (Barricade)')\n"
+        "assert(object(obj_id, 'name') == 'Barricade', 'building name mismatch')\n"
+        "assert(objectat(8, 8) == obj_id, 'objectat(8, 8) mismatch')\n"
+        "assert(objectat(0, 0) == 0, 'objectat(0, 0) should be 0')\n"
+        "local close_objs = closeobjects(8 * 32, 8 * 32, 64)\n"
+        "assert(#close_objs == 1 and close_objs[1] == obj_id, 'closeobjects mismatch')\n"
+    );
+    if (!rc) TEST_FAIL("object() queries", "object() assertions failed");
+
+    /* 7. Test player(), closeplayers(), hascloseplayers() */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(player(0, 'players') == 2, 'player(0, players) count mismatch')\n"
+        "local bots = player(0, 'tablebot')\n"
+        "assert(#bots == 1 and bots[1] == 2, 'tablebot mismatch')\n"
+        "local humans = player(0, 'tablehuman')\n"
+        "assert(#humans == 1 and humans[1] == 1, 'tablehuman mismatch')\n"
+        "assert(player(1, 'name') == 'HumanPlayer', 'player 1 name mismatch')\n"
+        "assert(player(1, 'mousemapx') == 100, 'mousemapx mismatch')\n"
+        "assert(player(1, 'language') == 'en', 'language mismatch')\n"
+        "local cp = closeplayers(100, 100, 50)\n"
+        "assert(#cp == 1 and cp[1] == 1, 'closeplayers mismatch')\n"
+        "assert(hascloseplayers(100, 100, 50) == true, 'hascloseplayers mismatch')\n"
+        "assert(hascloseplayers(500, 500, 50) == false, 'hascloseplayers negative mismatch')\n"
+    );
+    if (!rc) TEST_FAIL("player() queries", "player() assertions failed");
+
+    /* 8. Test freeline() */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(freeline(0, 0, 32, 32) == true, 'freeline in open space should be true')\n"
+        "assert(freeline(0, 0, 5 * 32 + 16, 5 * 32 + 16) == false, 'freeline through wall should be false')\n"
+    );
+    if (!rc) TEST_FAIL("freeline()", "freeline assertions failed");
+
+    /* 9. Test entity() and entitylist() */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(entity(2, 2, 'typename') == 'Info_VIP', 'entity typename mismatch')\n"
+        "assert(entity(15, 15, 'trigger') == 'bomb_zone', 'entity trigger mismatch')\n"
+        "assert(entity(15, 15, 'int0') == 42, 'entity int0 mismatch')\n"
+        "assert(entity(15, 15, 'str0') == 'custom_data', 'entity str0 mismatch')\n"
+        "local elist = entitylist()\n"
+        "assert(#elist == 4, 'entitylist count mismatch')\n"
+        "assert(elist['15 15'].x == 15 and elist['15 15'].y == 15, 'entitylist coordinate key mismatch')\n"
+    );
+    if (!rc) TEST_FAIL("entity() queries", "entity() assertions failed");
+
+    /* 10. Test stats() */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(stats(0, 'count') == 2, 'stats count mismatch')\n"
+        "assert(stats(1, 'exists') == true, 'stats(1) exists mismatch')\n"
+        "assert(stats(99, 'exists') == false, 'stats(99) should not exist')\n"
+    );
+    if (!rc) TEST_FAIL("stats() queries", "stats() assertions failed");
+
+    /* 11. Test addbind(), removebind(), removeallbinds() */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(addbind('F1') == true, 'addbind failed')\n"
+        "assert(removebind('F1') == true, 'removebind failed')\n"
+        "assert(removebind('F1') == false, 'second removebind should be false')\n"
+        "assert(addbind('X') == true, 'addbind X failed')\n"
+        "assert(removeallbinds() == true, 'removeallbinds failed')\n"
+    );
+    if (!rc) TEST_FAIL("bind queries", "bind functions assertions failed");
+
+    /* 12. Test Hook 'log' */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "g_log_captured = ''\n"
+        "function on_server_log(msg)\n"
+        "    g_log_captured = msg\n"
+        "end\n"
+        "addhook('log', 'on_server_log')\n"
+    );
+    if (!rc) TEST_FAIL("hook log registration", "failed to register log hook");
+
+    cs2d_server_print("TEST_HOOK_LOG_OUTPUT");
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(string.find(g_log_captured, 'TEST_HOOK_LOG_OUTPUT') ~= nil, 'hook log did not capture message')\n"
+    );
+    if (!rc) TEST_FAIL("hook log verification", "hook log did not capture cs2d_server_print");
+
+    /* Clean up */
+    cs2d_sv_lua_close(&sv);
+    for (int i = 0; i < 2; i++) free(sv.conns[i].pending);
+    free(sv.map.tiles);
+    sv.map.tiles = NULL;
+    cs2d_dynobj_clear(&sv.dynobj);
+
+    TEST_PASS("Dedicated server Phase 6: Lua Subsystem 1:1 API (map, tile, item, object, player, freeline, entity, stats, binds & log hook)");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -6870,7 +7115,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 67;
+    int total = 68;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -6939,6 +7184,7 @@ int main(void)
     if (test_server_phase3_rcon_and_commands()) passed++;
     if (test_server_phase4_lua()) passed++;
     if (test_server_phase5_bomb_hostages_bots()) passed++;
+    if (test_server_phase6_lua()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

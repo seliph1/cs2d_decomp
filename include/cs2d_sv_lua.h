@@ -61,6 +61,8 @@ typedef struct cs2d_sv_lua {
     uint32_t          last_ms100;
     uint32_t          last_second;
     uint32_t          last_minute;
+    char              bind_keys[64][32];
+    int               bind_key_count;
 } cs2d_sv_lua_t;
 
 /* Lifetime */
@@ -68,6 +70,7 @@ bool cs2d_sv_lua_init(cs2d_server_t *sv);
 void cs2d_sv_lua_close(cs2d_server_t *sv);
 void cs2d_sv_lua_frame(cs2d_server_t *sv);
 void cs2d_sv_lua_step_timers(cs2d_server_t *sv);
+void cs2d_sv_lua_log(cs2d_server_t *sv, const char *msg);
 
 /* Script runners */
 bool cs2d_sv_lua_dofile(cs2d_server_t *sv, const char *path);
@@ -103,6 +106,7 @@ int  cs2d_sv_lua_hook_hit(cs2d_server_t *sv, int victim, int source, int weapon,
 int  cs2d_sv_lua_hook_rcon(cs2d_server_t *sv, int id, const char *ip, int port, const char *password, const char *cmd);
 int  cs2d_sv_lua_hook_name(cs2d_server_t *sv, int id, const char *oldname, const char *newname, bool forced);
 int  cs2d_sv_lua_hook_parse(cs2d_server_t *sv, const char *cmd);
+void cs2d_sv_lua_hook_key(cs2d_server_t *sv, int id, const char *key, int state);
 
 /* Menu helper */
 void cs2d_sv_menu_send(cs2d_server_t *sv, int id, const char *menu_str);

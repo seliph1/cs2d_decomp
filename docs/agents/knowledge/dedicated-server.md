@@ -264,3 +264,33 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   - Broadcasts reliable `[239, 1]` to notify all clients to reload the map.
   - Frees old map resources, recalculates SHA256 checksum, re-initializes hostages, resets team scores, and triggers `cs2d_sv_round_start(sv, 0)`.
 
+## Phase 6: Lua C API 1:1, World Queries, DynObj & Hook Extensions
+
+- **Lua C API Registrations (`src/cs2d_sv_lua.c`, `include/cs2d_sv_lua.h`):**
+  - All 18 missing CS2D Dedicated Server Lua API functions decompiled from `cs2d_dedicated.exe` (jump tables and callback registries at `FUN_14013a980`):
+    - `map(prop)`: queries map dimensions (`"xsize"`, `"ysize"`), `"tileset"`, entity counts (`"mission_vips"`, `"mission_bombspots"`, `"mission_escapepoints"`, `"mission_hostages"`, `"mission_ctfflags"`, `"mission_dompoints"`, `"teleporters"`), and dynamic objects (`"buildings"`).
+    - `tile(x, y, prop)`: queries tile properties at tile coords (`"frame"`, `"property"`, `"wall"`, `"obstacle"`, `"deadly"`, `"entity"`).
+    - `tileproperty(id)`: returns the collision property mode of a tile index (0 floor, 1/3/5 wall, 2/4 obstacle, 50..53 deadly).
+    - `itemtype(type, prop)`: weapon and item metadata (`"name"`, `"slot"`, `"price"`, `"dmg"`, `"dmg_z1"`, `"dmg_z2"`, `"ammo"`, `"ammoin"`, `"range"`, `"dispersion"`, `"speedmod"`).
+    - `item(id, prop)`: queries ground/inventory items (`"exists"`, `"type"`, `"name"`, `"x"`, `"y"`, `"ammo"`, `"ammoin"`, `"player"`, `"dropped"`, `"table"`).
+    - `object(id, prop)`: queries dynamic objects / buildings (`"exists"`, `"type"`, `"name"`, `"x"`, `"y"`, `"tilex"`, `"tiley"`, `"health"`, `"maxhealth"`, `"team"`, `"player"`, `"table"`).
+    - `objectat(tx, ty)`: returns object ID at tile coords or 0.
+    - `closeobjects(x, y, radius [, type])`: returns array of object IDs within Euclidean distance.
+    - `closeplayers(x, y, radius [, team])` (`FUN_14004cc30`): returns array of alive player IDs within radius; team filter maps 1 to T, 2 to CT/VIP.
+    - `hascloseplayers(x, y, radius [, team])` (`FUN_14004ce50`): returns boolean `true`/`false` whether any alive player is within Euclidean radius.
+    - `freeline(x1, y1, x2, y2 [, mode])`: raycasts line of sight through map collision grid in 5px steps. Mode 0 checks walls & obstacles; mode 1 ignores obstacles; mode 2+ checks player hitboxes (12px radius).
+    - `entity(x, y, prop)`: queries entity attributes (`"typename"`, `"trigger"`, `"int0"`..`"int9"`, `"str0"`..`"str9"`, `"state"`).
+    - `entitylist([type])`: returns list of entity locations with coordinates `{ x, y }` and string keys `"X Y"`.
+    - `stats(id, prop)`: query player persistent stats (`"exists"`, `"name"`, `"score"`, `"kills"`, `"deaths"`, `"assists"`, `"shots"`, `"hits"`, `"count"`).
+    - `addbind(key)` / `removebind(key)` / `removeallbinds()`: manages custom client key hooks intercepted by the server.
+    - `reqcld` / `reqhttp`: stubs registered for script compatibility.
+- **Extended `player` and `game` queries:**
+  - `player(id, prop)`: added `"tablebot"`, `"tablehuman"`, `"players"`, `"mousemapx"`, `"mousemapy"`, `"mapmousex"`, `"mapmousey"`, `"mousex"`, `"mousey"`, `"mousedist"`, `"language"`, `"favweapon"`.
+  - `game(prop)`: added `"version"` (1.0.1.8), `"dedicated"` (1), `"phase"`, `"round"`, `"time"`, `"maptimeleft"`, `"ticks"`, `"port"`, `"sysfolder"`, `"bombplanted"`, and generic cvar fallback.
+- **Generic CVar Storage & Settings:**
+  - `cs2d_sv_cvar_t cvars[128]` in `cs2d_server_t`: stores custom script cvars dynamically set via server commands or config files, queried via `game(cvar_name)`.
+  - Settings fields: `mp_luaserver` (custom server script path, e.g. `"WQ2D/_server.lua"`), `mp_luamap` (toggle for per-map Lua loading).
+- **Console Log Hook (`hook "log"`):**
+  - `cs2d_server_print` dispatches the `"log"` hook with color-stripped text to the active server instance, protected against recursion via `s_in_log` guard.
+
+

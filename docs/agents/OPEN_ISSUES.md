@@ -255,7 +255,12 @@ sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT 
   `player(id, prop)` (40+ properties & tables), `playerweapons`, `playerammo`; `parse` with HUD text opcode `[234]` and tween `[54]`; dynamic images (`image`, `freeimage`, manipulation & tweens);
   timers (`timer`, `freetimer`); menu sending and response `[235]`. Locked in `test_server_phase4_lua` (66/66 tests pass).
 - **Phase 5 (done 2026-10-15):** bomb plant [30,1..3], defuse [26,3] / [30,4..5], explode [30,6] with 350px blast damage radius, round end modes 20 & 21; hostages ([29,1..5], use [26] follow/release, rescue rewards at Info_RescuePoint, damage & death); projectiles [27] (grenades consumed & relayed) and [41] (kill projectile); flashlight [57]; bot management (`bot_add`, `bot_kick`, `bot_kill` with ping 0xfffe and conn -1); ban management (`banip`, `banusgn`, `bansteam`, `unban`, `listbans`, join check status 4 refusal with reason); map change `cs2d_sv_change_map` (`[239,1]`, dynamic heap loading, SHA256, hostages re-init); snapshot sections 2 (hostages) and 3 (ground items) serialization. Locked in `test_server_phase5_bomb_hostages_bots` (67/67 tests pass).
-- **Phase 6:** `C:\C4` scripts end to end (with `-offline`).
+- **Phase 6 (done 2026-10-16):** Lua C API complete 1:1 coverage decompiled from `cs2d_dedicated.exe` (`FUN_14013a980`).
+  All 18 missing functions implemented: `map`, `tile`, `tileproperty`, `itemtype`, `item`, `object`, `objectat`, `closeobjects`, `closeplayers` (`FUN_14004cc30`), `hascloseplayers` (`FUN_14004ce50`), `freeline` (LOS raycasting), `entity`, `entitylist`, `stats`, `addbind`, `removebind`, `removeallbinds`, `reqcld`, `reqhttp`.
+  Expanded `player` queries (`tablebot`, `tablehuman`, `players`, `mousemapx/y`, `mapmousex/y`, `mousex/y/dist`, `language`, `favweapon`) and `game` queries (`version`, `dedicated`, `phase`, `round`, `ticks`, `time`, `maptimeleft`, `port`, `sysfolder`, `bombplanted`, generic cvar fallback).
+  Dynamic object integration with `cs2d_dynobj` world. Generic cvar storage (`sv->cvars[128]`), settings `mp_luaserver`, `mp_luamap`.
+  Console log hook `hook "log"` wired to `cs2d_server_print`. Locked in `test_server_phase6_lua` (68/68 tests pass).
+- **Phase 7 (next):** Dedicated server full live game scenario testing & network proxy verification against original client / server.
 
 ## GL 1.x / GDI+ removal (done 2026-10-12..2026-10-15, independent of the Wasm port)
 Goal: drop the two Windows-only backends the renderer still depends on. The UDP network layer is explicitly out

@@ -10,6 +10,21 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-16 — Antigravity — dedicated server phase 6: 1:1 Lua C API, world & dynobj queries, freeline raycasting, hook log, generic cvars & binds
+- Implemented all 18 missing CS2D Dedicated Server Lua API functions from `cs2d_dedicated.exe` (`FUN_14013a980`):
+  - World & Map: `map(prop)` (dimensions, tileset, counts, buildings), `tile(x, y, prop)`, `tileproperty(id)` (wall/obstacle/deadly collision modes).
+  - Combat & Items: `itemtype(type, prop)` (weapon damage, prices, slots, ammo), `item(id, prop)` (ground item states and slot queries).
+  - Dynamic Objects: `object(id, prop)`, `objectat(tx, ty)`, `closeobjects(x, y, r [, type])` integrated with `cs2d_dynobj`.
+  - Players & Geometry: `closeplayers(x, y, r [, team])` (`FUN_14004cc30`) and `hascloseplayers(x, y, r [, team])` (`FUN_14004ce50`), `freeline(x1, y1, x2, y2 [, mode])` collision raycasting.
+  - Entities & Stats: `entity(x, y, prop)` (int0..9, str0..9, state), `entitylist([type])`, `stats(id, prop)`.
+  - Client Binds & Stubs: `addbind(key)`, `removebind(key)`, `removeallbinds()`, `reqcld`, `reqhttp`.
+- Extended `player(id, prop)` with `tablebot`, `tablehuman`, `players`, `mousemapx/y`, `mapmousex/y`, `mousex/y/dist`, `language`, `favweapon`.
+- Extended `game(prop)` with version, dedicated, phase, round, ticks, time, maptimeleft, port, sysfolder, bombplanted, and generic cvar fallback.
+- Added generic cvar storage `sv->cvars[128]` with lookup and setting fallback, `mp_luaserver`, `mp_luamap`.
+- Implemented Console Log Hook (`hook "log"`): wired `cs2d_server_print` to `cs2d_sv_lua_log` with recursion protection.
+- Verified: `build.bat` compiles cleanly (`test_cs2d.exe`, `cs2d_client.exe`, `cs2d_server.exe`), `test_cs2d.exe` **68 / 68** tests pass (`test_server_phase6_lua`). `cs2d_server.exe -offline` starts and loads maps seamlessly.
+- Left: Server protocol end-to-end regression validation against live game scenarios.
+
 ## 2026-10-15 — Antigravity — dedicated server phase 5: bomb system [30]/[26], hostages [29], bots, bans, projectiles [27]/[41], flashlight [57] & map change [239]
 - Implemented C4 Bomb plant, abort, defuse and detonation (`FUN_14016a2d0`, `FUN_14016a700`, `FUN_14016ab00`):
   - Plant: `[30,1]` start countdown (`mp_c4timer`), `[30,2]` abort, `[30,3]` plant complete with ground bomb placement and broadcast.
@@ -60,14 +75,4 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - Verified: `build.bat` clean, `test_cs2d.exe` **64 / 64** passing tests.
 - Left: next Phase 2 items: Lua `spawn` / `team` / `die` / `kill` hooks, team code 12 and the per-team limits.
 
-## 2026-10-15 — Antigravity — dedicated server phase 2 (part 4): drop [24], collect [25], reload [16], chat [240], spectator [67]/[32]
-- Implemented weapon drop (`cs2d_sv_drop`, `FUN_14016bbd0`, `[24]`): validates possession, restricts dropping melee/knife, updates player inventory & bestweapon, spawns ground item slot, and broadcasts reliable `[24, id, type, clip, res, sub, item_id, tx, ty, held_weapon]` (15 bytes).
-- Implemented ground item tick (`cs2d_sv_step_items`):
-  - Authoritative collection `[25]`: dedicated rejects client `[25]`; server tests collision on ground item tile, validates weapon slots & gear rules, grants weapon preserving ammo, and broadcasts reliable `[25, pid, item_id, type, clip, reserve, 0]` (10 bytes).
-  - Fadeout `[40]`: dropped ground items age 1s per second and fade after 15s (`0x140a14d94`), broadcasting reliable `[40, item_id u16]`.
-- Implemented reload handler (`cs2d_sv_reload`, `FUN_14018b1c0`, `[16]`): mode 2 refills clip from reserve clamped to available ammunition, broadcasts `[16, pid, mode]` to all clients.
-- Implemented in-game chat (`cs2d_sv_chat`, `FUN_140153900`, `[240]`): UTF-16LE conversion, console logging, `mp_deadchat` filtering between alive and dead players, team chat routing, and reliable `[240, pid, mode, len, UTF-16LE]` transmission.
-- Implemented spectator target (`cs2d_sv_spec_target`, `[67]`), free-look position updates (`cs2d_sv_spec_pos`, `FUN_1401ced00`, `[32]` with -32768 bias), and spectator aim relay in `cs2d_sv_relay_movement` (`[70]-[72]` with `aim * 0.512f`).
-- Verified: `build.bat` clean, `test_cs2d.exe` **63 / 63** passing comprehensive drop, pickup, fadeout, reload, chat, and spectator test.
-- Left: next Phase 2 items: death and respawn timers per mode (`sv_gamemode`, `mp_respawndelay`), team change suicide (`FUN_1401647d0`), position validation & anti-speeder (`FUN_1401ca500`).
 

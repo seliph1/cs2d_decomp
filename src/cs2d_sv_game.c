@@ -2300,6 +2300,11 @@ bool cs2d_sv_change_map(cs2d_server_t *sv, const char *mapname)
     cs2d_net_sha256_file(path, sv->map_sha);
 
     cs2d_sv_init_hostages(sv);
+    cs2d_dynobj_init(&sv->dynobj, &sv->map);
+    cs2d_dynobj_spawn_map_buildings(&sv->dynobj);
+    if (sv->lua && sv->set.mp_luamap) {
+        cs2d_sv_lua_load_map(sv, mapname);
+    }
     sv->score_t = sv->score_ct = 0;
 
     cs2d_sv_round_start(sv, 0);

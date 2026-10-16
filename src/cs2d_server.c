@@ -31,6 +31,18 @@
 /* Console                                                                                          */
 /* ------------------------------------------------------------------------------------------------ */
 
+static cs2d_server_t *s_active_sv = NULL;
+
+void cs2d_sv_set_active(cs2d_server_t *sv)
+{
+    s_active_sv = sv;
+}
+
+cs2d_server_t *cs2d_sv_get_active(void)
+{
+    return s_active_sv;
+}
+
 /* FUN_1400ce590 prints a line on the console; a leading "©RRRGGGBBB" colour tag is not part of the
  * text (the dedicated's log shows the lines without it, ded_ph1.log) */
 void cs2d_server_print(const char *fmt, ...)
@@ -45,6 +57,10 @@ void cs2d_server_print(const char *fmt, ...)
     else if ((uint8_t)t[0] == 0xc2 && (uint8_t)t[1] == 0xa9 && strlen(t) >= 11) t += 11;
     printf("%s\n", t);
     fflush(stdout);
+
+    if (s_active_sv && s_active_sv->lua) {
+        cs2d_sv_lua_log(s_active_sv, t);
+    }
 }
 
 /* ------------------------------------------------------------------------------------------------ */
@@ -79,6 +95,9 @@ void cs2d_sv_settings_default(cs2d_sv_settings_t *s)
     s->lagcompensation    = 2;
     s->ticks              = 16;
     s->leaderboard        = 1;
+    s->mp_luamap          = 1;
+    s->mp_zombiespeedmod  = 100;
+    s->cvar_count         = 0;
 }
 
 static void cfg_value(char *v)
@@ -92,16 +111,15 @@ static void cfg_value(char *v)
     }
 }
 
-static void cfg_set(cs2d_sv_settings_t *s, const char *key, const char *val)
+void cs2d_sv_settings_set(cs2d_sv_settings_t *s, const char *key, const char *val)
 {
+    if (!s || !key || !key[0]) return;
     if (_stricmp(key, "sv_rcon") == 0) {
-        /* 0x14014908d: sv_rcon is truncated to 50 characters */
         snprintf(s->sv_rcon, sizeof(s->sv_rcon), "%.50s", val);
-        return;
     }
-#define SV_INT(name) if (_stricmp(key, #name) == 0) { s->name = atoi(val); return; }
-#define SV_STR(name) if (_stricmp(key, #name) == 0) { snprintf(s->name, sizeof(s->name), "%s", val); return; }
-    SV_STR(sv_name) SV_STR(sv_map) SV_STR(sv_password) SV_STR(mp_supply_items) SV_STR(sv_rconusers)
+#define SV_INT(name) else if (_stricmp(key, #name) == 0) { s->name = atoi(val); }
+#define SV_STR(name) else if (_stricmp(key, #name) == 0) { snprintf(s->name, sizeof(s->name), "%s", val); }
+    SV_STR(sv_name) SV_STR(sv_map) SV_STR(sv_password) SV_STR(mp_supply_items) SV_STR(sv_rconusers) SV_STR(mp_luaserver)
     SV_INT(sv_hostport) SV_INT(sv_maxplayers) SV_INT(sv_fow) SV_INT(sv_specmode) SV_INT(sv_gamemode)
     SV_INT(sv_usgnonly) SV_INT(sv_friendlyfire) SV_INT(sv_forcelight) SV_INT(sv_daylighttime)
     SV_INT(sv_voicechat) SV_INT(sv_offscreendamage) SV_INT(sv_maxclientsperip) SV_INT(sv_antiaccel)
@@ -109,8 +127,43 @@ static void cfg_set(cs2d_sv_settings_t *s, const char *key, const char *val)
     SV_INT(mp_infammo) SV_INT(mp_flashlight) SV_INT(mp_hovertext) SV_INT(mp_recoil) SV_INT(mp_hudscale)
     SV_INT(sv_spraytransfer) SV_INT(mp_startmoney) SV_INT(mp_postspawn) SV_INT(mp_autoteambalance)
     SV_INT(lagcompensation) SV_INT(ticks) SV_INT(leaderboard) SV_INT(physics)
+    SV_INT(mp_luamap) SV_INT(mp_randomspawn) SV_INT(mp_curtailedexplosions) SV_INT(mp_zombiespeedmod) SV_INT(mp_kevlar)
 #undef SV_INT
 #undef SV_STR
+
+    /* Store in generic cvar array */
+    for (int i = 0; i < s->cvar_count; i++) {
+        if (_stricmp(s->cvars[i].key, key) == 0) {
+            snprintf(s->cvars[i].val, sizeof(s->cvars[i].val), "%s", val);
+            return;
+        }
+    }
+    if (s->cvar_count < CS2D_SV_MAX_CVARS) {
+        snprintf(s->cvars[s->cvar_count].key, sizeof(s->cvars[s->cvar_count].key), "%s", key);
+        snprintf(s->cvars[s->cvar_count].val, sizeof(s->cvars[s->cvar_count].val), "%s", val);
+        s->cvar_count++;
+    }
+}
+
+const char *cs2d_sv_settings_get(const cs2d_sv_settings_t *s, const char *key)
+{
+    if (!s || !key || !key[0]) return NULL;
+    for (int i = 0; i < s->cvar_count; i++) {
+        if (_stricmp(s->cvars[i].key, key) == 0) {
+            return s->cvars[i].val;
+        }
+    }
+    if (_stricmp(key, "sv_name") == 0) return s->sv_name;
+    if (_stricmp(key, "sv_map") == 0) return s->sv_map;
+    if (_stricmp(key, "sv_password") == 0) return s->sv_password;
+    if (_stricmp(key, "mp_luaserver") == 0) return s->mp_luaserver;
+    if (_stricmp(key, "mp_supply_items") == 0) return s->mp_supply_items;
+    return NULL;
+}
+
+static void cfg_set(cs2d_sv_settings_t *s, const char *key, const char *val)
+{
+    cs2d_sv_settings_set(s, key, val);
 }
 
 bool cs2d_sv_settings_load(cs2d_sv_settings_t *s, const char *path)
@@ -1878,6 +1931,9 @@ bool cs2d_server_start(cs2d_server_t *sv, const char *map, int port, bool offlin
     cs2d_sv_init_hostages(sv);
     sv_load_serverinfo(sv);
     sv_load_maplist(sv);
+    cs2d_dynobj_init(&sv->dynobj, &sv->map);
+    cs2d_dynobj_spawn_map_buildings(&sv->dynobj);
+    s_active_sv = sv;
     cs2d_sv_lua_init(sv);
     cs2d_server_print("----- Server started -----");
     return true;
@@ -1929,6 +1985,7 @@ void cs2d_server_frame(cs2d_server_t *sv)
 
 void cs2d_server_stop(cs2d_server_t *sv)
 {
+    if (s_active_sv == sv) s_active_sv = NULL;
     cs2d_sv_lua_close(sv);
     if (sv->sock != INVALID_SOCKET) closesocket(sv->sock);
     sv->sock = INVALID_SOCKET;

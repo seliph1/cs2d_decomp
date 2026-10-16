@@ -257,6 +257,31 @@ static int l_player(lua_State *L)
             }
             return 1;
         }
+        if (strcmp(prop, "tablebot") == 0) {
+            for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+                if (sv->players[i].used && sv->players[i].bot) {
+                    lua_pushinteger(L, i);
+                    lua_rawseti(L, -2, idx++);
+                }
+            }
+            return 1;
+        }
+        if (strcmp(prop, "tablehuman") == 0) {
+            for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+                if (sv->players[i].used && !sv->players[i].bot) {
+                    lua_pushinteger(L, i);
+                    lua_rawseti(L, -2, idx++);
+                }
+            }
+            return 1;
+        }
+        if (strcmp(prop, "players") == 0) {
+            int cnt = 0;
+            for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) if (sv->players[i].used) cnt++;
+            lua_pop(L, 1); /* remove table */
+            lua_pushinteger(L, cnt);
+            return 1;
+        }
         return 1;
     }
 
@@ -298,6 +323,11 @@ static int l_player(lua_State *L)
     if (strcmp(prop, "rot") == 0) { lua_pushnumber(L, (double)pl->rot); return 1; }
     if (strcmp(prop, "tilex") == 0) { lua_pushinteger(L, (int)(pl->x / 32.0f)); return 1; }
     if (strcmp(prop, "tiley") == 0) { lua_pushinteger(L, (int)(pl->y / 32.0f)); return 1; }
+    if (strcmp(prop, "mousemapx") == 0 || strcmp(prop, "mapmousex") == 0) { lua_pushinteger(L, (int)pl->x); return 1; }
+    if (strcmp(prop, "mousemapy") == 0 || strcmp(prop, "mapmousey") == 0) { lua_pushinteger(L, (int)pl->y); return 1; }
+    if (strcmp(prop, "mousex") == 0 || strcmp(prop, "mousey") == 0 || strcmp(prop, "mousedist") == 0) { lua_pushinteger(L, 0); return 1; }
+    if (strcmp(prop, "language") == 0 || strcmp(prop, "language_iso") == 0) { lua_pushstring(L, "en"); return 1; }
+    if (strcmp(prop, "favweapon") == 0) { lua_pushinteger(L, pl->weapon); return 1; }
     if (strcmp(prop, "health") == 0) { lua_pushinteger(L, pl->health); return 1; }
     if (strcmp(prop, "armor") == 0) { lua_pushinteger(L, pl->armor); return 1; }
     if (strcmp(prop, "money") == 0) { lua_pushinteger(L, pl->money); return 1; }
@@ -714,10 +744,646 @@ static int l_game(lua_State *L)
     if (!sv) return 0;
     const char *key = luaL_checkstring(L, 1);
     if (strcmp(key, "version") == 0) { lua_pushstring(L, "1.0.1.8"); return 1; }
+    if (strcmp(key, "dedicated") == 0) { lua_pushinteger(L, 1); return 1; }
     if (strcmp(key, "map") == 0) { lua_pushstring(L, sv->set.sv_map); return 1; }
+    if (strcmp(key, "phase") == 0) { lua_pushinteger(L, sv->round_end ? 3 : 1); return 1; }
+    if (strcmp(key, "round") == 0) { lua_pushinteger(L, 1); return 1; }
     if (strcmp(key, "score_t") == 0) { lua_pushinteger(L, sv->score_t); return 1; }
     if (strcmp(key, "score_ct") == 0) { lua_pushinteger(L, sv->score_ct); return 1; }
     if (strcmp(key, "time") == 0) { lua_pushinteger(L, cs2d_sv_now() - sv->start_ms); return 1; }
+    if (strcmp(key, "maptimeleft") == 0) { lua_pushinteger(L, 0); return 1; }
+    if (strcmp(key, "ticks") == 0) { lua_pushinteger(L, sv->set.ticks); return 1; }
+    if (strcmp(key, "port") == 0) { lua_pushinteger(L, sv->set.sv_hostport); return 1; }
+    if (strcmp(key, "sysfolder") == 0) { lua_pushstring(L, "sys"); return 1; }
+    if (strcmp(key, "bombplanted") == 0) { lua_pushboolean(L, sv->bomb_planted); return 1; }
+
+    /* General cvar fallback (FUN_14013b6a0) */
+    const char *cvar = cs2d_sv_settings_get(&sv->set, key);
+    if (cvar) {
+        lua_pushstring(L, cvar);
+        return 1;
+    }
+    return 0;
+}
+
+/* map(prop) */
+static int l_map(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    const char *prop = luaL_checkstring(L, 1);
+    if (strcmp(prop, "name") == 0) { lua_pushstring(L, sv->set.sv_map); return 1; }
+    if (strcmp(prop, "xsize") == 0) { lua_pushinteger(L, sv->map.width); return 1; }
+    if (strcmp(prop, "ysize") == 0) { lua_pushinteger(L, sv->map.height); return 1; }
+    if (strcmp(prop, "tileset") == 0) { lua_pushstring(L, sv->map.tileset); return 1; }
+    if (strcmp(prop, "tilecount") == 0) { lua_pushinteger(L, sv->map.tile_count); return 1; }
+    if (strcmp(prop, "back_scrollx") == 0) { lua_pushinteger(L, sv->map.bg_scroll_x); return 1; }
+    if (strcmp(prop, "back_scrolly") == 0) { lua_pushinteger(L, sv->map.bg_scroll_y); return 1; }
+    if (strcmp(prop, "back_tile") == 0) { lua_pushinteger(L, sv->map.bg_image[0] ? 1 : 0); return 1; }
+    if (strcmp(prop, "back_r") == 0) { lua_pushinteger(L, sv->map.bg_r); return 1; }
+    if (strcmp(prop, "back_g") == 0) { lua_pushinteger(L, sv->map.bg_g); return 1; }
+    if (strcmp(prop, "back_b") == 0) { lua_pushinteger(L, sv->map.bg_b); return 1; }
+    if (strcmp(prop, "mission_vips") == 0) {
+        int cnt = 0;
+        for (uint32_t i = 0; i < sv->map.entity_count; i++) if (sv->map.entities[i].type == CS2D_ENT_INFO_VIP) cnt++;
+        lua_pushinteger(L, cnt); return 1;
+    }
+    if (strcmp(prop, "mission_hostages") == 0) {
+        lua_pushinteger(L, sv->hostage_count); return 1;
+    }
+    if (strcmp(prop, "mission_bombspots") == 0) {
+        int cnt = 0;
+        for (uint32_t i = 0; i < sv->map.entity_count; i++) if (sv->map.entities[i].type == CS2D_ENT_INFO_BOMBSPOT) cnt++;
+        lua_pushinteger(L, cnt); return 1;
+    }
+    if (strcmp(prop, "mission_ctfflags") == 0) {
+        int cnt = 0;
+        for (uint32_t i = 0; i < sv->map.entity_count; i++) if (sv->map.entities[i].type == CS2D_ENT_INFO_CTF_FLAG) cnt++;
+        lua_pushinteger(L, cnt); return 1;
+    }
+    if (strcmp(prop, "mission_dompoints") == 0) {
+        int cnt = 0;
+        for (uint32_t i = 0; i < sv->map.entity_count; i++) if (sv->map.entities[i].type == CS2D_ENT_INFO_DOM_POINT) cnt++;
+        lua_pushinteger(L, cnt); return 1;
+    }
+    if (strcmp(prop, "noweapons") == 0) { lua_pushboolean(L, 0); return 1; }
+    if (strcmp(prop, "teleporters") == 0) {
+        int cnt = 0;
+        for (uint32_t i = 0; i < sv->map.entity_count; i++) if (sv->map.entities[i].type == CS2D_ENT_FUNC_TELEPORT) cnt++;
+        lua_pushinteger(L, cnt); return 1;
+    }
+    return 0;
+}
+
+/* tile(x, y, prop) */
+static int l_tile(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv || !sv->map_loaded) return 0;
+    int tx = (int)luaL_checkinteger(L, 1);
+    int ty = (int)luaL_checkinteger(L, 2);
+    const char *prop = luaL_checkstring(L, 3);
+
+    int w = (int)sv->map.width;
+    int h = (int)sv->map.height;
+    if (tx < 0 || tx >= w || ty < 0 || ty >= h) {
+        if (strcmp(prop, "frame") == 0 || strcmp(prop, "originalframe") == 0 || strcmp(prop, "property") == 0) {
+            lua_pushinteger(L, 0);
+            return 1;
+        }
+        return 0;
+    }
+
+    int idx = ty * w + tx;
+    uint8_t frame = sv->map.tiles[idx];
+    uint8_t mode = sv->map.tile_modes[frame];
+
+    if (strcmp(prop, "frame") == 0) { lua_pushinteger(L, frame); return 1; }
+    if (strcmp(prop, "originalframe") == 0) { lua_pushinteger(L, frame); return 1; }
+    if (strcmp(prop, "hascustomframe") == 0) { lua_pushboolean(L, 0); return 1; }
+    if (strcmp(prop, "property") == 0) { lua_pushinteger(L, mode); return 1; }
+    if (strcmp(prop, "wall") == 0) {
+        lua_pushboolean(L, mode == 1 || mode == 3 || mode == 5);
+        return 1;
+    }
+    if (strcmp(prop, "obstacle") == 0) {
+        lua_pushboolean(L, mode == 2 || mode == 4);
+        return 1;
+    }
+    if (strcmp(prop, "deadly") == 0) {
+        lua_pushboolean(L, mode >= 50 && mode <= 53);
+        return 1;
+    }
+    if (strcmp(prop, "entity") == 0) {
+        for (uint32_t i = 0; i < sv->map.entity_count; i++) {
+            if (sv->map.entities[i].x == tx && sv->map.entities[i].y == ty) {
+                lua_pushinteger(L, sv->map.entities[i].type);
+                return 1;
+            }
+        }
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+    if (strcmp(prop, "blend") == 0) { lua_pushinteger(L, 0); return 1; }
+    if (strcmp(prop, "color") == 0) { lua_pushstring(L, "255 255 255"); return 1; }
+    if (strcmp(prop, "brightness") == 0) { lua_pushinteger(L, 255); return 1; }
+    if (strcmp(prop, "height") == 0) { lua_pushinteger(L, 0); return 1; }
+    return 0;
+}
+
+/* tileproperty(frame) */
+static int l_tileproperty(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv || !sv->map_loaded) return 0;
+    int frame = (int)luaL_checkinteger(L, 1);
+    if (frame >= 0 && frame < 256) {
+        lua_pushinteger(L, sv->map.tile_modes[frame]);
+    } else {
+        lua_pushinteger(L, 0);
+    }
+    return 1;
+}
+
+/* itemtype(type, prop) */
+static int l_itemtype(lua_State *L)
+{
+    int type = (int)luaL_checkinteger(L, 1);
+    const char *prop = luaL_checkstring(L, 2);
+    const cs2d_weapon_def_t *def = cs2d_weapon_get((uint8_t)type);
+    if (!def) return 0;
+
+    if (strcmp(prop, "name") == 0) { lua_pushstring(L, def->name ? def->name : ""); return 1; }
+    if (strcmp(prop, "dmg") == 0) { lua_pushinteger(L, def->damage); return 1; }
+    if (strcmp(prop, "dmg_z1") == 0) { lua_pushinteger(L, def->damage_z1); return 1; }
+    if (strcmp(prop, "dmg_z2") == 0) { lua_pushinteger(L, def->damage_z2); return 1; }
+    if (strcmp(prop, "rate") == 0) { lua_pushinteger(L, def->fire_delay_ticks); return 1; }
+    if (strcmp(prop, "reload") == 0) { lua_pushinteger(L, def->reload_ticks); return 1; }
+    if (strcmp(prop, "ammo") == 0) { lua_pushinteger(L, def->max_reserve); return 1; }
+    if (strcmp(prop, "ammoin") == 0) { lua_pushinteger(L, def->clip_size); return 1; }
+    if (strcmp(prop, "price") == 0) { lua_pushinteger(L, def->price); return 1; }
+    if (strcmp(prop, "range") == 0) { lua_pushinteger(L, def->range); return 1; }
+    if (strcmp(prop, "dispersion") == 0) { lua_pushinteger(L, def->dispersion); return 1; }
+    if (strcmp(prop, "slot") == 0) { lua_pushinteger(L, def->slot); return 1; }
+    if (strcmp(prop, "recoil") == 0) { lua_pushinteger(L, def->recoil_accuracy); return 1; }
+    return 0;
+}
+
+/* item(id, prop) */
+static int l_item(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int id = (int)luaL_checkinteger(L, 1);
+    const char *prop = luaL_checkstring(L, 2);
+
+    if (id == 0) {
+        if (strcmp(prop, "table") == 0) {
+            lua_newtable(L);
+            int idx = 1;
+            for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+                if (sv->items[i].active) {
+                    lua_pushinteger(L, sv->items[i].id);
+                    lua_rawseti(L, -2, idx++);
+                }
+            }
+            return 1;
+        }
+        return 0;
+    }
+
+    cs2d_sv_item_t *it = NULL;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (sv->items[i].active && sv->items[i].id == id) {
+            it = &sv->items[i];
+            break;
+        }
+    }
+    if (!it) {
+        if (strcmp(prop, "exists") == 0) { lua_pushboolean(L, 0); return 1; }
+        return 0;
+    }
+
+    if (strcmp(prop, "exists") == 0) { lua_pushboolean(L, 1); return 1; }
+    if (strcmp(prop, "type") == 0) { lua_pushinteger(L, it->type); return 1; }
+    if (strcmp(prop, "name") == 0) {
+        const cs2d_weapon_def_t *def = cs2d_weapon_get(it->type);
+        lua_pushstring(L, (def && def->name) ? def->name : "");
+        return 1;
+    }
+    if (strcmp(prop, "player") == 0) { lua_pushinteger(L, 0); return 1; }
+    if (strcmp(prop, "ammo") == 0) { lua_pushinteger(L, it->reserve); return 1; }
+    if (strcmp(prop, "ammoin") == 0) { lua_pushinteger(L, it->clip); return 1; }
+    if (strcmp(prop, "mode") == 0) { lua_pushinteger(L, it->sub); return 1; }
+    if (strcmp(prop, "x") == 0) { lua_pushnumber(L, (double)(it->tile_x * 32 + 16)); return 1; }
+    if (strcmp(prop, "y") == 0) { lua_pushnumber(L, (double)(it->tile_y * 32 + 16)); return 1; }
+    if (strcmp(prop, "dropped") == 0) { lua_pushboolean(L, it->dropped); return 1; }
+    if (strcmp(prop, "droptimer") == 0) {
+        uint32_t now = cs2d_sv_now();
+        lua_pushinteger(L, (now >= it->drop_time_ms) ? (now - it->drop_time_ms) : 0);
+        return 1;
+    }
+    if (strcmp(prop, "physicsid") == 0) { lua_pushinteger(L, 0); return 1; }
+    return 0;
+}
+
+/* object(id, prop) */
+static int l_object(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int id = (int)luaL_checkinteger(L, 1);
+    const char *prop = luaL_checkstring(L, 2);
+
+    if (id == 0) {
+        if (strcmp(prop, "table") == 0) {
+            lua_newtable(L);
+            int idx = 1;
+            for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+                if (sv->dynobj.objs[i].active) {
+                    lua_pushinteger(L, sv->dynobj.objs[i].id);
+                    lua_rawseti(L, -2, idx++);
+                }
+            }
+            return 1;
+        }
+        return 0;
+    }
+
+    const cs2d_dynobj_t *obj = NULL;
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        if (sv->dynobj.objs[i].active && sv->dynobj.objs[i].id == id) {
+            obj = &sv->dynobj.objs[i];
+            break;
+        }
+    }
+    if (!obj) {
+        if (strcmp(prop, "exists") == 0) { lua_pushboolean(L, 0); return 1; }
+        return 0;
+    }
+
+    if (strcmp(prop, "exists") == 0) { lua_pushboolean(L, 1); return 1; }
+    if (strcmp(prop, "type") == 0) { lua_pushinteger(L, obj->typ); return 1; }
+    if (strcmp(prop, "name") == 0) {
+        const cs2d_dynobj_def_t *def = cs2d_dynobj_def(obj->typ);
+        lua_pushstring(L, (def && def->name) ? def->name : "");
+        return 1;
+    }
+    if (strcmp(prop, "health") == 0) { lua_pushinteger(L, obj->health); return 1; }
+    if (strcmp(prop, "mode") == 0) { lua_pushinteger(L, obj->mode); return 1; }
+    if (strcmp(prop, "team") == 0) { lua_pushinteger(L, obj->team); return 1; }
+    if (strcmp(prop, "player") == 0) { lua_pushinteger(L, obj->player); return 1; }
+    if (strcmp(prop, "x") == 0) { lua_pushnumber(L, (double)obj->x); return 1; }
+    if (strcmp(prop, "y") == 0) { lua_pushnumber(L, (double)obj->y); return 1; }
+    if (strcmp(prop, "rot") == 0) { lua_pushnumber(L, (double)obj->rot); return 1; }
+    if (strcmp(prop, "tilex") == 0) { lua_pushinteger(L, (int)(obj->x * 0.03125f)); return 1; }
+    if (strcmp(prop, "tiley") == 0) { lua_pushinteger(L, (int)(obj->y * 0.03125f)); return 1; }
+    if (strcmp(prop, "countdown") == 0) { lua_pushinteger(L, obj->countdown); return 1; }
+    if (strcmp(prop, "idle") == 0) { lua_pushboolean(L, obj->countdown == 0); return 1; }
+    if (strcmp(prop, "upgrade") == 0) { lua_pushinteger(L, obj->upgrade); return 1; }
+    if (strcmp(prop, "alpha") == 0) { lua_pushnumber(L, (double)obj->alpha); return 1; }
+    return 0;
+}
+
+/* objectat(x, y [, type]) */
+static int l_objectat(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int x = (int)luaL_checkinteger(L, 1);
+    int y = (int)luaL_checkinteger(L, 2);
+    int type = (int)luaL_optinteger(L, 3, 0);
+
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *obj = &sv->dynobj.objs[i];
+        if (!obj->active) continue;
+        if (type > 0 && obj->typ != type) continue;
+        int ox = (int)(obj->x * 0.03125f);
+        int oy = (int)(obj->y * 0.03125f);
+        if (ox == x && oy == y) {
+            lua_pushinteger(L, obj->id);
+            return 1;
+        }
+    }
+    lua_pushinteger(L, 0);
+    return 1;
+}
+
+/* closeobjects(x, y, radius [, type]) */
+static int l_closeobjects(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    float x = (float)luaL_checknumber(L, 1);
+    float y = (float)luaL_checknumber(L, 2);
+    float r = (float)luaL_checknumber(L, 3);
+    int type = (int)luaL_optinteger(L, 4, 0);
+
+    lua_newtable(L);
+    int idx = 1;
+    float r2 = r * r;
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *obj = &sv->dynobj.objs[i];
+        if (!obj->active) continue;
+        if (type > 0 && obj->typ != type) continue;
+        float dx = (obj->x + 16.0f) - x;
+        float dy = (obj->y + 16.0f) - y;
+        if (dx * dx + dy * dy <= r2) {
+            lua_pushinteger(L, obj->id);
+            lua_rawseti(L, -2, idx++);
+        }
+    }
+    return 1;
+}
+
+/* closeplayers(x, y, radius [, team]) */
+static int l_closeplayers(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    float x = (float)luaL_checknumber(L, 1);
+    float y = (float)luaL_checknumber(L, 2);
+    float r = (float)luaL_checknumber(L, 3);
+    int team = (int)luaL_optinteger(L, 4, 0);
+
+    lua_newtable(L);
+    int idx = 1;
+    float r2 = r * r;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        const cs2d_sv_player_t *pl = &sv->players[i];
+        if (team == 1 && pl->team != 1) continue;
+        if (team == 2 && pl->team < 2) continue;
+        if (team > 2 && pl->team != team) continue;
+        float dx = pl->x - x;
+        float dy = pl->y - y;
+        if (dx * dx + dy * dy <= r2) {
+            lua_pushinteger(L, i);
+            lua_rawseti(L, -2, idx++);
+        }
+    }
+    return 1;
+}
+
+/* hascloseplayers(x, y, radius [, team]) - FUN_14004ce50 */
+static int l_hascloseplayers(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    float x = (float)luaL_checknumber(L, 1);
+    float y = (float)luaL_checknumber(L, 2);
+    float r = (float)luaL_checknumber(L, 3);
+    int team = (int)luaL_optinteger(L, 4, 0);
+
+    float r2 = r * r;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        const cs2d_sv_player_t *pl = &sv->players[i];
+        if (!pl->used || !pl->alive) continue;
+        if (team == 1 && pl->team != 1) continue;
+        if (team == 2 && pl->team < 2) continue;
+        if (team > 2 && pl->team != team) continue;
+        float dx = pl->x - x;
+        float dy = pl->y - y;
+        if (dx * dx + dy * dy <= r2) {
+            lua_pushboolean(L, 1);
+            return 1;
+        }
+    }
+    lua_pushboolean(L, 0);
+    return 1;
+}
+
+/* freeline(x1, y1, x2, y2 [, mode]) */
+static int l_freeline(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv || !sv->map_loaded) return 0;
+    float x1 = (float)luaL_checknumber(L, 1);
+    float y1 = (float)luaL_checknumber(L, 2);
+    float x2 = (float)luaL_checknumber(L, 3);
+    float y2 = (float)luaL_checknumber(L, 4);
+    int mode = (int)luaL_optinteger(L, 5, 0);
+
+    float dx = x2 - x1;
+    float dy = y2 - y1;
+    float dist = sqrtf(dx * dx + dy * dy);
+    if (dist <= 0.001f) {
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+
+    int steps = (int)(dist / 5.0f);
+    if (steps < 1) steps = 1;
+    float step_x = dx / (float)steps;
+    float step_y = dy / (float)steps;
+
+    float cx = x1;
+    float cy = y1;
+    int mw = (int)sv->map.width;
+    int mh = (int)sv->map.height;
+
+    for (int s = 0; s <= steps; s++) {
+        int tx = (int)(cx / 32.0f);
+        int ty = (int)(cy / 32.0f);
+        if (tx < 0 || tx >= mw || ty < 0 || ty >= mh) {
+            lua_pushboolean(L, 0);
+            return 1;
+        }
+        uint8_t frame = sv->map.tiles[ty * mw + tx];
+        uint8_t tmode = sv->map.tile_modes[frame];
+        if (tmode == 1 || tmode == 3 || tmode == 5 || (mode != 1 && (tmode == 2 || tmode == 4))) {
+            lua_pushboolean(L, 0);
+            return 1;
+        }
+        if (mode >= 2) {
+            for (int p = 1; p <= CS2D_SV_MAX_PLAYERS; p++) {
+                const cs2d_sv_player_t *pl = &sv->players[p];
+                if (!pl->used || !pl->alive) continue;
+                float pdx = pl->x - cx;
+                float pdy = pl->y - cy;
+                if (pdx * pdx + pdy * pdy <= 144.0f) { /* 12px player radius */
+                    lua_pushboolean(L, 0);
+                    return 1;
+                }
+            }
+        }
+        cx += step_x;
+        cy += step_y;
+    }
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/* entity(x, y, prop) */
+static int l_entity(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv || !sv->map_loaded) return 0;
+    int x = (int)luaL_checkinteger(L, 1);
+    int y = (int)luaL_checkinteger(L, 2);
+    const char *prop = luaL_checkstring(L, 3);
+
+    const cs2d_entity_t *ent = NULL;
+    int ent_idx = -1;
+    for (uint32_t i = 0; i < sv->map.entity_count; i++) {
+        if (sv->map.entities[i].x == x && sv->map.entities[i].y == y) {
+            ent = &sv->map.entities[i];
+            ent_idx = (int)i;
+            break;
+        }
+    }
+    if (!ent) {
+        if (strcmp(prop, "exists") == 0) { lua_pushboolean(L, 0); return 1; }
+        return 0;
+    }
+
+    if (strcmp(prop, "exists") == 0) { lua_pushboolean(L, 1); return 1; }
+    if (strcmp(prop, "typename") == 0) {
+        const char *tname = cs2d_entity_type_name((cs2d_entity_type_t)ent->type);
+        lua_pushstring(L, tname ? tname : "");
+        return 1;
+    }
+    if (strcmp(prop, "type") == 0) { lua_pushinteger(L, ent->type); return 1; }
+    if (strcmp(prop, "name") == 0) { lua_pushstring(L, ent->name); return 1; }
+    if (strcmp(prop, "trigger") == 0) { lua_pushstring(L, ent->trigger); return 1; }
+    if (strcmp(prop, "state") == 0) {
+        lua_pushinteger(L, (ent_idx >= 0 && ent_idx < CS2D_MAX_ENTITIES) ? sv->map.entity_state[ent_idx] : 0);
+        return 1;
+    }
+    if (strcmp(prop, "aistate") == 0) { lua_pushinteger(L, 0); return 1; }
+
+    /* int0 .. int9 */
+    if (strncmp(prop, "int", 3) == 0 && prop[3] >= '0' && prop[3] <= '9' && prop[4] == '\0') {
+        int idx = prop[3] - '0';
+        lua_pushinteger(L, ent->int_settings[idx]);
+        return 1;
+    }
+
+    /* str0 .. str9 */
+    if (strncmp(prop, "str", 3) == 0 && prop[3] >= '0' && prop[3] <= '9' && prop[4] == '\0') {
+        int idx = prop[3] - '0';
+        lua_pushstring(L, ent->str_settings[idx]);
+        return 1;
+    }
+
+    return 0;
+}
+
+/* entitylist([type]) */
+static int l_entitylist(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv || !sv->map_loaded) { lua_newtable(L); return 1; }
+    int type = (int)luaL_optinteger(L, 1, -1);
+
+    lua_newtable(L);
+    int idx = 1;
+    for (uint32_t i = 0; i < sv->map.entity_count; i++) {
+        const cs2d_entity_t *e = &sv->map.entities[i];
+        if (type != -1 && (int)e->type != type) continue;
+
+        /* Create sub-table { x = e->x, y = e->y } */
+        lua_createtable(L, 0, 2);
+        lua_pushinteger(L, e->x);
+        lua_setfield(L, -2, "x");
+        lua_pushinteger(L, e->y);
+        lua_setfield(L, -2, "y");
+
+        /* Set string key "X Y" and sequential index idx */
+        char key[32];
+        snprintf(key, sizeof(key), "%d %d", e->x, e->y);
+        lua_pushvalue(L, -1);
+        lua_setfield(L, -3, key);
+
+        lua_rawseti(L, -2, idx++);
+    }
+    return 1;
+}
+
+/* stats(id, prop) */
+static int l_stats(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int id = (int)luaL_checkinteger(L, 1);
+    const char *prop = luaL_checkstring(L, 2);
+
+    if (id == 0) {
+        if (strcmp(prop, "count") == 0) {
+            int cnt = 0;
+            for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) if (sv->players[i].used) cnt++;
+            lua_pushinteger(L, cnt);
+            return 1;
+        }
+        return 0;
+    }
+
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS || !sv->players[id].used) {
+        if (strcmp(prop, "exists") == 0) { lua_pushboolean(L, 0); return 1; }
+        return 0;
+    }
+
+    const cs2d_sv_player_t *pl = &sv->players[id];
+    if (strcmp(prop, "exists") == 0) { lua_pushboolean(L, 1); return 1; }
+    if (strcmp(prop, "rank") == 0) { lua_pushinteger(L, pl->rank); return 1; }
+    if (strcmp(prop, "killsperdeath") == 0) {
+        float kpd = pl->deaths > 0 ? (float)pl->score / (float)pl->deaths : (float)pl->score;
+        lua_pushnumber(L, (double)kpd);
+        return 1;
+    }
+    if (strcmp(prop, "score") == 0) { lua_pushinteger(L, pl->score); return 1; }
+    if (strcmp(prop, "frags") == 0) { lua_pushinteger(L, pl->score); return 1; }
+    if (strcmp(prop, "deaths") == 0) { lua_pushinteger(L, pl->deaths); return 1; }
+    if (strcmp(prop, "secs") == 0) {
+        uint32_t now = cs2d_sv_now();
+        lua_pushinteger(L, (now >= sv->start_ms) ? (now - sv->start_ms) / 1000 : 0);
+        return 1;
+    }
+    if (strcmp(prop, "assists") == 0) { lua_pushinteger(L, pl->assists); return 1; }
+    return 0;
+}
+
+/* addbind(key) */
+static int l_addbind(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv || !sv->lua) return 0;
+    cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
+    const char *key = luaL_checkstring(L, 1);
+    for (int i = 0; i < lua->bind_key_count; i++) {
+        if (_stricmp(lua->bind_keys[i], key) == 0) {
+            lua_pushboolean(L, 1);
+            return 1;
+        }
+    }
+    if (lua->bind_key_count < 64) {
+        snprintf(lua->bind_keys[lua->bind_key_count++], 32, "%s", key);
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/* removebind(key) */
+static int l_removebind(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv || !sv->lua) return 0;
+    cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
+    const char *key = luaL_checkstring(L, 1);
+    for (int i = 0; i < lua->bind_key_count; i++) {
+        if (_stricmp(lua->bind_keys[i], key) == 0) {
+            memmove(&lua->bind_keys[i], &lua->bind_keys[i + 1], (size_t)(lua->bind_key_count - 1 - i) * 32);
+            lua->bind_key_count--;
+            lua_pushboolean(L, 1);
+            return 1;
+        }
+    }
+    lua_pushboolean(L, 0);
+    return 1;
+}
+
+/* removeallbinds() */
+static int l_removeallbinds(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv || !sv->lua) return 0;
+    cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
+    lua->bind_key_count = 0;
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/* reqcld(...) */
+static int l_reqcld(lua_State *L)
+{
+    (void)L;
+    return 0;
+}
+
+/* reqhttp(...) */
+static int l_reqhttp(lua_State *L)
+{
+    (void)L;
     return 0;
 }
 
@@ -734,6 +1400,7 @@ bool cs2d_sv_lua_init(cs2d_server_t *sv)
     lua->sv = sv;
     lua->next_image_id = 1;
     sv->lua = lua;
+    if (!cs2d_sv_get_active()) cs2d_sv_set_active(sv);
 
     lua->L = luaL_newstate();
     if (!lua->L) {
@@ -790,17 +1457,44 @@ bool cs2d_sv_lua_init(cs2d_server_t *sv)
     lua_register(lua->L, "tween_frame", l_tween_frame);
     lua_register(lua->L, "tween_animate", l_tween_animate);
 
+    /* Game and world queries (Phase 6) */
+    lua_register(lua->L, "map", l_map);
+    lua_register(lua->L, "tile", l_tile);
+    lua_register(lua->L, "tileproperty", l_tileproperty);
+    lua_register(lua->L, "itemtype", l_itemtype);
+    lua_register(lua->L, "item", l_item);
+    lua_register(lua->L, "object", l_object);
+    lua_register(lua->L, "objectat", l_objectat);
+    lua_register(lua->L, "closeobjects", l_closeobjects);
+    lua_register(lua->L, "closeplayers", l_closeplayers);
+    lua_register(lua->L, "hascloseplayers", l_hascloseplayers);
+    lua_register(lua->L, "freeline", l_freeline);
+    lua_register(lua->L, "entity", l_entity);
+    lua_register(lua->L, "entitylist", l_entitylist);
+    lua_register(lua->L, "stats", l_stats);
+    lua_register(lua->L, "addbind", l_addbind);
+    lua_register(lua->L, "removebind", l_removebind);
+    lua_register(lua->L, "removeallbinds", l_removeallbinds);
+    lua_register(lua->L, "reqcld", l_reqcld);
+    lua_register(lua->L, "reqhttp", l_reqhttp);
+
     /* Load wrapper.lua if present */
     cs2d_sv_lua_dofile(sv, "sys/lua/wrapper.lua");
 
-    /* Load server.lua if present */
-    cs2d_sv_lua_dofile(sv, "sys/lua/server.lua");
+    /* Load server.lua (or mp_luaserver) if present */
+    if (sv->set.mp_luaserver[0] != '\0') {
+        char p[128];
+        snprintf(p, sizeof(p), "sys/lua/%s", sv->set.mp_luaserver);
+        cs2d_sv_lua_dofile(sv, p);
+    } else {
+        cs2d_sv_lua_dofile(sv, "sys/lua/server.lua");
+    }
 
     /* Load autorun */
     cs2d_sv_lua_load_autorun(sv);
 
-    /* Load map script if present */
-    if (sv->set.sv_map[0] != '\0') {
+    /* Load map script if present and mp_luamap != 0 */
+    if (sv->set.mp_luamap && sv->set.sv_map[0] != '\0') {
         cs2d_sv_lua_load_map(sv, sv->set.sv_map);
     }
 
@@ -823,6 +1517,7 @@ void cs2d_sv_lua_close(cs2d_server_t *sv)
             n = next;
         }
     }
+    if (cs2d_sv_get_active() == sv) cs2d_sv_set_active(NULL);
     free(lua);
     sv->lua = NULL;
 }
@@ -1254,6 +1949,31 @@ static int push_str(lua_State *L, void *ctx) {
 int cs2d_sv_lua_hook_parse(cs2d_server_t *sv, const char *cmd)
 {
     return dispatch_hook(sv, "parse", 1, push_str, (void *)cmd, NULL, 0);
+}
+
+void cs2d_sv_lua_log(cs2d_server_t *sv, const char *msg)
+{
+    if (!sv || !sv->lua || !msg) return;
+    static bool s_in_log = false;
+    if (s_in_log) return;
+    s_in_log = true;
+    dispatch_hook(sv, "log", 1, push_str, (void *)msg, NULL, 0);
+    s_in_log = false;
+}
+
+static int push_key(lua_State *L, void *ctx) {
+    hook_args_t *a = (hook_args_t *)ctx;
+    lua_pushinteger(L, a->a);
+    lua_pushstring(L, a->s1 ? a->s1 : "");
+    lua_pushinteger(L, a->b);
+    return 3;
+}
+
+void cs2d_sv_lua_hook_key(cs2d_server_t *sv, int id, const char *key, int state)
+{
+    if (!sv || !sv->lua || !key) return;
+    hook_args_t a = { .a = id, .s1 = key, .b = state, .c = 0, .d = 0, .e = 0, .f = 0, .g = 0, .s2 = NULL };
+    dispatch_hook(sv, "key", 3, push_key, &a, NULL, 0);
 }
 
 /* ---------------------------------------------------------------------------

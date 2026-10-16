@@ -13,10 +13,17 @@
 #include "cs2d_network.h"
 #include "cs2d_platform.h"
 #include "cs2d_map.h"
+#include "cs2d_dynobj.h"
 
 #define CS2D_SV_MAX_PLAYERS  32
 #define CS2D_SV_MAX_PENDING  256   /* unacknowledged reliable datagrams per connection */
 #define CS2D_SV_MAX_MAPS     256
+#define CS2D_SV_MAX_CVARS    128
+
+typedef struct {
+    char key[32];
+    char val[128];
+} cs2d_sv_cvar_t;
 
 /* Server settings: the cvar globals the [252,6] writer reads (FUN_1401dc530 near 0x1401ded48).
  * Defaults are the values the shipped sys/server.cfg produces (proxy capture of [252,6]). */
@@ -62,6 +69,16 @@ typedef struct {
     int     mp_autoteambalance;  /* PTR_DAT_1405a65f8 +1 */
     char    sv_rcon[64];         /* PTR_DAT_1405a66e0: RCON password (max 50 chars, 0x14014908d) */
     char    sv_rconusers[128];   /* PTR_DAT_1405a6500: USGN IDs allowed to use RCON */
+    /* Lua / gameplay settings (Phase 6) */
+    char    mp_luaserver[64];
+    int     mp_luamap;
+    int     mp_randomspawn;
+    int     mp_curtailedexplosions;
+    int     mp_zombiespeedmod;
+    int     mp_kevlar;
+    /* Generic cvar store */
+    cs2d_sv_cvar_t cvars[CS2D_SV_MAX_CVARS];
+    int     cvar_count;
 } cs2d_sv_settings_t;
 
 /* One reliable datagram waiting for its ACK */
@@ -235,11 +252,15 @@ typedef struct {
     /* Ban list (Phase 5) */
     cs2d_sv_ban_t      bans[CS2D_SV_MAX_BANS];
     int                ban_count;
+    /* Dynamic Objects (Phase 6, Tdo) */
+    cs2d_dynobj_world_t dynobj;
 } cs2d_server_t;
 
 void cs2d_sv_settings_default(cs2d_sv_settings_t *s);
-/* Reads "key value" lines of a server.cfg; unknown keys are ignored. False when the file is missing */
+/* Reads "key value" lines of a server.cfg; unknown keys are stored in cvars. False when the file is missing */
 bool cs2d_sv_settings_load(cs2d_sv_settings_t *s, const char *path);
+const char *cs2d_sv_settings_get(const cs2d_sv_settings_t *s, const char *key);
+void cs2d_sv_settings_set(cs2d_sv_settings_t *s, const char *key, const char *val);
 
 bool cs2d_server_start(cs2d_server_t *sv, const char *map, int port, bool offline);
 void cs2d_server_frame(cs2d_server_t *sv);
@@ -327,6 +348,8 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line);                     
 
 /* Console output: the dedicated prints every line with its colour prefix stripped */
 void cs2d_server_print(const char *fmt, ...);
+void cs2d_sv_set_active(cs2d_server_t *sv);
+cs2d_server_t *cs2d_sv_get_active(void);
 
 /* [252,6,0,...]: the game settings of the join (FUN_1401dc530 0x1401ded48), exposed for the tests */
 void cs2d_sv_build_join_settings(cs2d_pkt_t *p, const cs2d_sv_settings_t *s, const cs2d_map_t *m, int score_t,
