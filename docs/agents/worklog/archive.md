@@ -1,5 +1,16 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-15 — Claude — dedicated server phase 2 (part 1): team, spawn, movement relay
+- Receive dispatch found (`FUN_1401e3cf0`, jump table `0x1406cdb14`, handler per opcode in
+  `knowledge/dedicated-server.md`); new `src/cs2d_sv_game.c` ports team `FUN_1401624c0` (main path), spawn
+  `FUN_140160740` (spawn point, mode item tables, best weapon, money, `[21]`), the per-frame relay
+  `FUN_1401a68e0`; `[10]/[11]/[70]` input, `[248]` join notice. `tools/agent/reasave.py` saves REA pseudo-C with
+  strings and Tudp calls annotated (`docs/dump/dedicated/`).
+- Verified: original CS2D.exe picks CT on our server and gets `[20]` + `[21]` byte-equal to the original server's;
+  with our client as a second player the original sees its `[248]`, `[20]`, `[21]`, `[10]` relay and `[253]`.
+  `test_server_join` gains the spawn case: 62 / 62.
+- Left: OPEN_ISSUES "Dedicated server" phase 2 list (rounds, shooting, damage, buy...).
+
 ## 2026-10-15 — Claude — dedicated server phase 1: transport + join (cs2d_server.exe)
 - New `src/cs2d_server.c` / `include/cs2d_server.h` / `src/main_dedicated.c` (third gcc line in `build.bat`):
   Tudp (reliable ids, ACK triples, resend), connections, recv 252 `FUN_1401dc530` ([252,0] secret, [252,1] checks

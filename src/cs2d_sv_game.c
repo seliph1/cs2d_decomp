@@ -10,6 +10,7 @@
 #include "cs2d_server.h"
 #include "cs2d_weapons.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -99,6 +100,17 @@ static void sv_give(cs2d_sv_player_t *pl, int type)
     }
 }
 
+static void sv_remove_item(cs2d_sv_player_t *pl, int type)
+{
+    for (int i = 0; i < pl->item_count; i++) {
+        if (pl->items[i] == type) {
+            for (int j = i; j < pl->item_count - 1; j++) pl->items[j] = pl->items[j + 1];
+            pl->item_count--;
+            i--;
+        }
+    }
+}
+
 void cs2d_sv_write_spawn(cs2d_pkt_t *p, int id, const cs2d_sv_player_t *pl)
 {
     cs2d_pkt_w_byte(p, 21);
@@ -145,24 +157,66 @@ static bool sv_pick_spawn(cs2d_server_t *sv, int id, float *ox, float *oy)
     }
 }
 
-void cs2d_sv_spawn(cs2d_server_t *sv, int id)
+void cs2d_sv_spawn_at(cs2d_server_t *sv, int id, float custom_x, float custom_y)
 {
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
     cs2d_sv_player_t *pl = &sv->players[id];
     if (!pl->used || pl->team < 1) return;
-    float x, y;
-    if (!sv_pick_spawn(sv, id, &x, &y)) return;
+
+    /* Spawn-time auto-teambalance (FUN_140160740 lines 162-191):
+     * when mp_autoteambalance == 1, sv_gamemode != 4 (Zombies) and mode->balance == 1 */
+    const sv_mode_t *m = sv_mode(sv);
+    if (sv->set.mp_autoteambalance == 1 && sv->set.sv_gamemode != 4 && m->balance == 1) {
+        int t = cs2d_sv_count_team(sv, 1);
+        int ct = cs2d_sv_count_team(sv, 2);
+        int diff = t - ct;
+        if (diff < 0) diff = -diff;
+        if (diff > 1) {
+            if (ct < t && pl->team == 1) {
+                pl->team = 2;
+                pl->look = cs2d_sv_rand(0, 3);
+                pl->pending_team = 0;
+                pl->team_changes++;
+                uint8_t msg[4] = { 20, (uint8_t)id, 2, (uint8_t)pl->look };
+                sv_broadcast_joined(sv, msg, 4);
+            } else if (t < ct && pl->team > 1) {
+                pl->team = 1;
+                pl->look = cs2d_sv_rand(0, 3);
+                pl->pending_team = 0;
+                pl->team_changes++;
+                uint8_t msg[4] = { 20, (uint8_t)id, 1, (uint8_t)pl->look };
+                sv_broadcast_joined(sv, msg, 4);
+            }
+        }
+    }
+
+    float x = custom_x, y = custom_y;
+    if (x <= 0.0f && y <= 0.0f) {
+        if (!sv_pick_spawn(sv, id, &x, &y)) return;
+    }
     pl->x = x;
     pl->y = y;
     pl->last_valid_x = x;
     pl->last_valid_y = y;
     pl->last_move_ms = cs2d_sv_now();
+    pl->maxhealth = 100;
     pl->health = 100;
     pl->armor = 0;
+    pl->speedmod = 0;
     pl->alive = true;
     pl->move_flag = pl->rot_flag = 0;
+    pl->team_changes = 0;
+    pl->name_changes = 0;
+
+    /* Apply deferred name change if queued while dead (FUN_140160740 lines 200-203) */
+    if (pl->pending_name[0] != '\0') {
+        char pending[64];
+        snprintf(pending, sizeof(pending), "%s", pl->pending_name);
+        pl->pending_name[0] = '\0';
+        cs2d_sv_change_name(sv, id, pending, false, false);
+    }
 
     /* Items: the mode's list (the Lua spawn hook can replace it: not ported), then the melee weapon */
-    const sv_mode_t *m = sv_mode(sv);
     pl->item_count = 0;
     const char *list = (pl->team == 1) ? m->items_t : m->items_ct;
     for (const char *q = list; *q;) {
@@ -188,8 +242,14 @@ void cs2d_sv_spawn(cs2d_server_t *sv, int id)
     }
 }
 
-void cs2d_sv_team(cs2d_server_t *sv, int id, int team, int look)
+void cs2d_sv_spawn(cs2d_server_t *sv, int id)
 {
+    cs2d_sv_spawn_at(sv, id, 0.0f, 0.0f);
+}
+
+void cs2d_sv_team_ex(cs2d_server_t *sv, int id, int team, int look, bool force)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
     cs2d_sv_player_t *pl = &sv->players[id];
     if (!pl->used) return;
     cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, id);
@@ -200,24 +260,73 @@ void cs2d_sv_team(cs2d_server_t *sv, int id, int team, int look)
         cs2d_server_print("ERROR: team - %s tried to switch to invalid team/look (%d/%d)", pl->name, team, look);
         return;
     }
+    if (look != 5 && pl->pending_team > 0) {
+        team = pl->pending_team;
+        pl->pending_team = 0;
+    }
     if (team == 4) {
         /* FUN_1401624c0 LAB_140162b4c: the smaller team, a random one when even */
         int t = cs2d_sv_count_team(sv, 1), ct = cs2d_sv_count_team(sv, 2);
         team = (t == ct) ? cs2d_sv_rand(1, 2) : (ct <= t) + 1;
     }
 
+    /* Per-spawn team change limit (FUN_1401624c0 lines 144-147, 193, 245-254):
+     * client cannot switch teams more than once per spawn while on T/CT; answers [20, id, 12, look] */
+    bool already_changed = (!force && pl->team_changes > 0 && pl->team >= 1);
+
     /* Team balance (mp_autoteambalance with a balanced mode): T only while T <= CT + 1, CT while CT <= T + 1;
      * a refusal answers [20, id, 10 / 11, look] to the player alone */
-    if (team >= 1 && sv->set.mp_autoteambalance == 1 && sv_mode(sv)->balance && pl->team != team) {
+    if (!force && team >= 1 && sv->set.mp_autoteambalance == 1 && sv_mode(sv)->balance && pl->team != team) {
         int t = cs2d_sv_count_team(sv, 1), ct = cs2d_sv_count_team(sv, 2);
         bool refuse = (team == 1) ? (t > ct + 1) : (ct > t + 1);
-        if (refuse && c) {
-            cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
-            cs2d_pkt_w_byte(p, 20);
-            cs2d_pkt_w_byte(p, (uint8_t)id);
-            cs2d_pkt_w_byte(p, (uint8_t)(team == 1 ? 10 : 11));
-            cs2d_pkt_w_byte(p, (uint8_t)look);
+        if (refuse) {
+            if (already_changed) {
+                if (look == 5 && (team == 1 || team == 2)) pl->pending_team = team;
+                if (c) {
+                    cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+                    cs2d_pkt_w_byte(p, 20); cs2d_pkt_w_byte(p, (uint8_t)id);
+                    cs2d_pkt_w_byte(p, 12); cs2d_pkt_w_byte(p, (uint8_t)look);
+                }
+                return;
+            }
+            if (c) {
+                cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+                cs2d_pkt_w_byte(p, 20);
+                cs2d_pkt_w_byte(p, (uint8_t)id);
+                cs2d_pkt_w_byte(p, (uint8_t)(team == 1 ? 10 : 11));
+                cs2d_pkt_w_byte(p, (uint8_t)look);
+            }
             return;
+        }
+    }
+
+    if (already_changed) {
+        if (look == 5 && (team == 1 || team == 2)) pl->pending_team = team;
+        if (c) {
+            cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+            cs2d_pkt_w_byte(p, 20); cs2d_pkt_w_byte(p, (uint8_t)id);
+            cs2d_pkt_w_byte(p, 12); cs2d_pkt_w_byte(p, (uint8_t)look);
+        }
+        return;
+    }
+
+    /* Zombies mode (sv_gamemode == 4, FUN_1401624c0 lines 266-313):
+     * switching between T and CT is forbidden (refusal code 13); joining CT > 30s into round forces T */
+    if (!force && sv->set.sv_gamemode == 4) {
+        if (pl->team >= 1 && team >= 1) {
+            if (c) {
+                cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+                cs2d_pkt_w_byte(p, 20); cs2d_pkt_w_byte(p, (uint8_t)id);
+                cs2d_pkt_w_byte(p, 13); cs2d_pkt_w_byte(p, (uint8_t)look);
+            }
+            return;
+        }
+        if (team == 2) {
+            int t = cs2d_sv_count_team(sv, 1), ct = cs2d_sv_count_team(sv, 2);
+            if (t > 0 && ct > 0) {
+                float secs = (float)(int)(cs2d_sv_now() - sv->round_start_ms) * 0.001f;
+                if ((int)secs > 30) team = 1;
+            }
         }
     }
 
@@ -267,6 +376,11 @@ void cs2d_sv_team(cs2d_server_t *sv, int id, int team, int look)
             }
         }
     }
+}
+
+void cs2d_sv_team(cs2d_server_t *sv, int id, int team, int look)
+{
+    cs2d_sv_team_ex(sv, id, team, look, false);
 }
 
 /* FUN_1401a68e0, once per server frame */
@@ -1095,5 +1209,247 @@ void cs2d_sv_request_respawn(cs2d_server_t *sv, int id)
     }
 }
 
+/* FUN_14010ddb0: in-game name change ([238] and setname command) */
+void cs2d_sv_change_name(cs2d_server_t *sv, int id, const char *new_name, bool force, bool hide_msg)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used) return;
+    cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, id);
 
+    /* Sanitize while temporarily hiding pl->name so keeping one's own name doesn't get " 2" */
+    char old_name[64];
+    snprintf(old_name, sizeof(old_name), "%s", pl->name);
+    pl->name[0] = '\0';
+    char clean[64];
+    cs2d_sv_sanitize_name(sv, new_name, clean, sizeof(clean));
+    snprintf(pl->name, sizeof(pl->name), "%s", old_name);
+
+    /* Same name: nothing to do (FUN_14010ddb0 0x14010df6f) */
+    if (strcmp(clean, pl->name) == 0) return;
+
+    if (!force) {
+        /* Only one name change per spawn (0x14010df8b -> 0x14010e610: [238, 255, 0, ""]) */
+        if (pl->name_changes > 0) {
+            if (c) {
+                cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+                cs2d_pkt_w_byte(p, 238);
+                cs2d_pkt_w_byte(p, 255);
+                cs2d_pkt_w_byte(p, 0);
+                cs2d_pkt_w_str(p, "");
+            }
+            return;
+        }
+        /* Dead player: defer until next spawn (0x14010dfd9 -> 0x14010dfef: [238, 254, 0, ""]) */
+        if (!pl->alive) {
+            snprintf(pl->pending_name, sizeof(pl->pending_name), "%s", clean);
+            if (c) {
+                cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+                cs2d_pkt_w_byte(p, 238);
+                cs2d_pkt_w_byte(p, 254);
+                cs2d_pkt_w_byte(p, 0);
+                cs2d_pkt_w_str(p, "");
+            }
+            return;
+        }
+    }
+
+    cs2d_server_print("%s changed name to %s", pl->name, clean);
+    snprintf(pl->name, sizeof(pl->name), "%s", clean);
+    pl->name_changes++;
+    pl->pending_name[0] = '\0';
+
+    /* Broadcast [238, id, hide_msg, name] to all joined players (0x14010e108) */
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_conn_t *oc = cs2d_sv_conn_of_player(sv, i);
+        if (!oc || !sv->players[i].joined) continue;
+        cs2d_pkt_t *p = cs2d_sv_packet(sv, oc, true, false);
+        cs2d_pkt_w_byte(p, 238);
+        cs2d_pkt_w_byte(p, (uint8_t)id);
+        cs2d_pkt_w_byte(p, (uint8_t)(hide_msg ? 1 : 0));
+        cs2d_pkt_w_str(p, pl->name);
+    }
+}
+
+/* FUN_140159840: playerdata setter & broadcaster [42, id u8, mode u8, val u16] */
+void cs2d_sv_set_playerdata(cs2d_server_t *sv, int id, int mode, int val)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used) return;
+
+    /* Armor item IDs in equip (5) / strip (6) redirect to mode 3 (0x14015bc60 / 0x14015be50) */
+    if (mode == 5) {
+        if (val == 57) { mode = 3; val = 100; }
+        else if (val == 58) { mode = 3; val = 200; }
+        else if (val >= 79 && val <= 84) { mode = 3; val = val + 122; }
+    } else if (mode == 6) {
+        if (val == 57 || val == 58 || (val >= 79 && val <= 84)) { mode = 3; val = 0; }
+    }
+
+    switch (mode) {
+    case 0: { /* health */
+        if (val < 0) val = 0;
+        int maxhp = pl->maxhealth > 0 ? pl->maxhealth : 100;
+        if (val > maxhp) val = maxhp;
+        pl->health = val;
+        if (val == 0 && pl->alive) {
+            cs2d_sv_kill(sv, id, 0, 0, 0);
+            return;
+        }
+        break;
+    }
+    case 1: /* score */
+        pl->score = val;
+        break;
+    case 2: /* money (0..16000, 0x140159b60) */
+        if (val < 0) val = 0;
+        if (val > 16000) val = 16000;
+        pl->money = val;
+        break;
+    case 3: /* armor (0..255) */
+        if (val < 0) val = 0;
+        if (val > 255) val = 255;
+        pl->armor = val;
+        break;
+    case 4: /* deaths */
+        pl->deaths = val;
+        break;
+    case 5: /* equip weapon (0x140159d80 -> 0x140170970) */
+        if (val > 0 && val < CS2D_MAX_WEAPONS) {
+            if (!sv_has_item(pl, val)) sv_give(pl, val);
+            if (pl->weapon == 0) sv_best_weapon(sv, pl);
+        }
+        break;
+    case 6: /* strip weapon (0x140159da0; val == 0 strips all) */
+        if (val == 0) {
+            pl->item_count = 0;
+            pl->weapon = 0;
+        } else {
+            sv_remove_item(pl, val);
+            if (pl->weapon == val) sv_best_weapon(sv, pl);
+        }
+        break;
+    case 7: /* speedmod: wire value is speedmod + 100, clamped 0..200 (0x140159e80) */
+        if (val < 0) val = 0;
+        if (val > 200) val = 200;
+        pl->speedmod = val - 100;
+        break;
+    case 8: /* maxhealth: clamped 1..250, also sets health = maxhealth (0x140159ab0) */
+        if (val < 1) val = 1;
+        if (val > 250) val = 250;
+        pl->maxhealth = val;
+        pl->health = val;
+        break;
+    case 9: /* assists */
+        pl->assists = val;
+        break;
+    case 10: /* mvp */
+        pl->mvp = val;
+        break;
+    case 11: /* rank (0..17) */
+        if (val < 0) val = 0;
+        if (val > 17) val = 17;
+        pl->rank = val;
+        break;
+    default:
+        return;
+    }
+
+    uint8_t msg[5];
+    msg[0] = 42;
+    msg[1] = (uint8_t)id;
+    msg[2] = (uint8_t)mode;
+    uint16_t uval = (uint16_t)val;
+    memcpy(&msg[3], &uval, 2);
+    sv_broadcast_joined(sv, msg, 5);
+}
+
+/* FUN_140102950: teleport player [15, id u8, x u16, y u16] */
+void cs2d_sv_set_pos(cs2d_server_t *sv, int id, float x, float y)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used) return;
+
+    pl->x = x;
+    pl->y = y;
+    pl->last_valid_x = x;
+    pl->last_valid_y = y;
+    pl->last_move_ms = cs2d_sv_now();
+    pl->move_flag = 0;
+
+    uint8_t msg[6];
+    msg[0] = 15;
+    msg[1] = (uint8_t)id;
+    uint16_t ux = (uint16_t)(int)x;
+    uint16_t uy = (uint16_t)(int)y;
+    memcpy(&msg[2], &ux, 2);
+    memcpy(&msg[4], &uy, 2);
+    sv_broadcast_joined(sv, msg, 6);
+}
+
+/* FUN_140051ac0: set team scores [64, score_t u16, score_ct u16] */
+void cs2d_sv_set_teamscores(cs2d_server_t *sv, int score_t, int score_ct)
+{
+    if (score_t < 0) score_t = 0;
+    if (score_t > 65535) score_t = 65535;
+    if (score_ct < 0) score_ct = 0;
+    if (score_ct > 65535) score_ct = 65535;
+    sv->score_t = score_t;
+    sv->score_ct = score_ct;
+
+    uint8_t msg[5];
+    msg[0] = 64;
+    uint16_t ut = (uint16_t)score_t;
+    uint16_t uct = (uint16_t)score_ct;
+    memcpy(&msg[1], &ut, 2);
+    memcpy(&msg[3], &uct, 2);
+    sv_broadcast_joined(sv, msg, 5);
+}
+
+/* FUN_140153900(0, 1, text, 1, target_id): server message [240, 0, 1, len u16, UTF-16LE] */
+void cs2d_sv_msg(cs2d_server_t *sv, const char *text, int target_id)
+{
+    if (!text) return;
+    int len = (int)strlen(text);
+    if (len > 255) len = 255;
+
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (target_id > 0 && i != target_id) continue;
+        cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
+        if (!c || !sv->players[i].joined) continue;
+        cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+        cs2d_pkt_w_byte(p, 240);
+        cs2d_pkt_w_byte(p, 0);
+        cs2d_pkt_w_byte(p, 1);
+        cs2d_pkt_w_short(p, (uint16_t)len);
+        for (int j = 0; j < len; j++) {
+            cs2d_pkt_w_short(p, (uint8_t)text[j]);
+        }
+    }
+}
+
+/* FUN_140167e40: slap (10 HP) / deathslap (1000 HP) */
+void cs2d_sv_slap(cs2d_server_t *sv, int id, bool death)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team < 1) return;
+
+    char msg_txt[128];
+    snprintf(msg_txt, sizeof(msg_txt), "%s was slapped", pl->name);
+    cs2d_server_print("%s", msg_txt);
+    cs2d_sv_msg(sv, msg_txt, 0);
+
+    int dmg = death ? 1000 : 10;
+    /* FUN_1401658c0(id, 0, dmg, 255, 1): bypasses armor, weapon = 255 */
+    if (pl->health > dmg) {
+        pl->health -= dmg;
+        uint8_t pkt[5] = { 17, (uint8_t)id, 0, (uint8_t)pl->health, (uint8_t)pl->armor };
+        sv_broadcast_joined(sv, pkt, 5);
+    } else {
+        cs2d_sv_kill(sv, id, 0, 0, 255);
+    }
+}
 

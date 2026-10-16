@@ -60,6 +60,8 @@ typedef struct {
     int     mp_startmoney;       /* PTR_DAT_1405a6628 +4 */
     int     mp_postspawn;        /* DAT_1405a64c4: seconds into a round a first team choice still spawns */
     int     mp_autoteambalance;  /* PTR_DAT_1405a65f8 +1 */
+    char    sv_rcon[64];         /* PTR_DAT_1405a66e0: RCON password (max 50 chars, 0x14014908d) */
+    char    sv_rconusers[128];   /* PTR_DAT_1405a6500: USGN IDs allowed to use RCON */
 } cs2d_sv_settings_t;
 
 /* One reliable datagram waiting for its ACK */
@@ -121,8 +123,10 @@ typedef struct {
     int      rank;            /* +0x90 */
     float    x, y, rot;
     int      health, armor;
+    int      maxhealth;       /* +0x268: max HP (default 100, [42] mode 8) */
+    int      speedmod;        /* +0x390: speed modifier (default 0, [42] mode 7 sends speedmod + 100) */
     bool     joined;          /* +0xf4: finished [252,5], receives the ping list */
-    /* Game state (phase 2) */
+    /* Game state (phase 2 & 3) */
     bool     alive;           /* health object +0x260 > 0 */
     int      money;           /* +0x278 object */
     uint8_t  items[64];       /* +0x3f0 int array: the item types given at spawn, in order */
@@ -136,8 +140,11 @@ typedef struct {
     int      relay_ctr;       /* +0x164: 0..2, far players get every 3rd update */
     float    aim;             /* +0x3a0: aim distance ([70]) */
     bool     team_chosen;     /* +0x2d8: first team choice done (the mp_postspawn spawn happens once) */
-    int      team_changes;    /* +0x2a0 */
+    int      team_changes;    /* +0x2a0: team switches since last spawn */
     int      pending_team;    /* +0x400: team chosen with look 5, waiting for the skin */
+    int      name_changes;    /* +0x2a4: name changes since last spawn (FUN_14010ddb0) */
+    char     pending_name[64];/* +0x2a8: deferred name change while dead (applied on spawn) */
+    bool     rcon_auth;       /* +0xf0: authenticated via [236] / [241] */
     int      special;         /* vtable +0x200: the special byte */
     float    last_valid_x, last_valid_y;
     uint32_t last_move_ms;
@@ -195,9 +202,11 @@ cs2d_pkt_t     *cs2d_sv_packet(cs2d_server_t *sv, cs2d_sv_conn_t *c, bool reliab
 cs2d_sv_conn_t *cs2d_sv_conn_of_player(cs2d_server_t *sv, int id);
 uint32_t        cs2d_sv_now(void);
 
-/* cs2d_sv_game.c: team, spawn, movement relay, rounds (phase 2) */
-void cs2d_sv_team(cs2d_server_t *sv, int id, int team, int look);          /* FUN_1401624c0 */
+/* cs2d_sv_game.c: team, spawn, movement relay, rounds, playerdata, admin actions (phase 2 & 3) */
+void cs2d_sv_team(cs2d_server_t *sv, int id, int team, int look);          /* FUN_1401624c0 (force = false) */
+void cs2d_sv_team_ex(cs2d_server_t *sv, int id, int team, int look, bool force); /* FUN_1401624c0 */
 void cs2d_sv_spawn(cs2d_server_t *sv, int id);                             /* FUN_140160740 */
+void cs2d_sv_spawn_at(cs2d_server_t *sv, int id, float custom_x, float custom_y); /* FUN_14017c910 */
 void cs2d_sv_relay_movement(cs2d_server_t *sv);                            /* FUN_1401a68e0 */
 int  cs2d_sv_count_team(const cs2d_server_t *sv, int team);                /* FUN_140026150 / FUN_140026210 */
 void cs2d_sv_write_spawn(cs2d_pkt_t *p, int id, const cs2d_sv_player_t *pl); /* [21] */
@@ -220,6 +229,21 @@ void cs2d_sv_step_items(cs2d_server_t *sv);                                     
 bool cs2d_sv_validate_move(cs2d_server_t *sv, int id, float new_x, float new_y, int op);       /* FUN_1401c99a0 / FUN_1401ca500 */
 void cs2d_sv_step_respawns(cs2d_server_t *sv);                                                 /* FUN_14017cbb0 */
 void cs2d_sv_request_respawn(cs2d_server_t *sv, int id);                                       /* FUN_1401cf8d0: [39] */
+void cs2d_sv_change_name(cs2d_server_t *sv, int id, const char *new_name, bool force, bool hide_msg); /* FUN_14010ddb0: [238] */
+void cs2d_sv_set_playerdata(cs2d_server_t *sv, int id, int mode, int val);                     /* FUN_140159840: [42] */
+void cs2d_sv_set_pos(cs2d_server_t *sv, int id, float x, float y);                             /* FUN_140102950: [15] */
+void cs2d_sv_set_teamscores(cs2d_server_t *sv, int score_t, int score_ct);                     /* FUN_140051ac0: [64] */
+void cs2d_sv_msg(cs2d_server_t *sv, const char *text, int target_id);                          /* FUN_140153900: [240,0,1] */
+void cs2d_sv_slap(cs2d_server_t *sv, int id, bool death);                                      /* FUN_140167e40 */
+
+/* cs2d_server.c: kick, RCON ([236]/[241]/[242]), server command parser (FUN_140140a00) */
+void cs2d_sv_kick(cs2d_server_t *sv, int id, const char *reason);                              /* FUN_1401502a0: [253] */
+void cs2d_sv_rcon_check(cs2d_server_t *sv, int id, const uint8_t *enc_pw, int enc_pw_len);     /* FUN_1401d8d90: [236] */
+void cs2d_sv_rcon(cs2d_server_t *sv, int id, const uint8_t *enc_pw, int enc_pw_len,
+                  const uint8_t *enc_cmd, int enc_cmd_len);                                    /* FUN_1401d9990: [241] */
+void cs2d_sv_public_rcon(cs2d_server_t *sv, const struct sockaddr_in *from,
+                         const char *pw, const char *cmd);                                     /* FUN_1401be1c0: [242] */
+bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line);                                    /* FUN_140140a00 */
 
 /* Console output: the dedicated prints every line with its colour prefix stripped */
 void cs2d_server_print(const char *fmt, ...);

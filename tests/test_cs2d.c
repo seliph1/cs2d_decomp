@@ -6242,6 +6242,221 @@ static bool test_server_phase2_respawn_and_speeder(void)
     return true;
 }
 
+static bool test_server_phase3_rcon_and_commands(void)
+{
+    printf("\n=== Testing Dedicated Server Phase 3: Team Refusals 12/13, Auto-Balance, [238] Name, RCON & Commands ===\n");
+    cs2d_weapons_init();
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+    if (!cs2d_map_load_file(&sv.map, "maps/de_dust2.map")) {
+        TEST_FAIL("Map load", "failed to load maps/de_dust2.map for Phase 3 test");
+    }
+    sv.map_loaded = true;
+    sv.round_start_ms = cs2d_sv_now();
+
+    for (int i = 0; i < 4; i++) {
+        sv.conns[i].active = true;
+        sv.conns[i].player = i + 1;
+        sv.conns[i].next_seq = 2;
+        sv.conns[i].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+        cs2d_sv_player_t *pl = &sv.players[i + 1];
+        pl->used = true;
+        pl->joined = true;
+        pl->conn = i;
+        pl->team = 1;
+        pl->team_chosen = true;
+        pl->alive = true;
+        pl->health = 100;
+        pl->maxhealth = 100;
+        snprintf(pl->name, sizeof(pl->name), "Player%d", i + 1);
+        snprintf(pl->ip, sizeof(pl->ip), "127.0.0.%d", i + 1);
+        pl->port = 36963 + i + 1;
+    }
+
+    /* 1. Spawn-time auto-teambalance (FUN_140160740): 4 Ts vs 0 CTs -> spawning player 1 moves them to CT (2) */
+    cs2d_sv_spawn(&sv, 1);
+    if (sv.players[1].team != 2) {
+        TEST_FAIL("Auto-teambalance", "player 1 was not balanced from T (4) to CT (0) on spawn");
+    }
+    if (sv.players[1].team_changes != 0 || sv.players[1].name_changes != 0) {
+        TEST_FAIL("Spawn counters", "team_changes and name_changes were not reset on spawn");
+    }
+
+    /* 2. Per-spawn team change limit ([20, id, 12, look]):
+     * Put player 2 on CT so teams are 2v2, let player 1 switch once to T, then refuse a 2nd switch in the same spawn */
+    sv.players[2].team = 2;
+    cs2d_sv_team(&sv, 1, 1, 0); /* 1st switch since spawn -> allowed (team_changes becomes 1) */
+    if (sv.players[1].team != 1 || sv.players[1].team_changes != 1) {
+        TEST_FAIL("Team switch 1", "first team switch after spawn failed");
+    }
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_team(&sv, 1, 2, 1); /* 2nd switch -> refused with [20, 1, 12, 1] */
+    if (sv.players[1].team != 1) {
+        TEST_FAIL("Team refusal 12", "second team switch per spawn was not refused");
+    }
+    if (sv.conns[0].out.pos != 4 || sv.conns[0].out.buf[0] != 20 ||
+        sv.conns[0].out.buf[1] != 1 || sv.conns[0].out.buf[2] != 12 || sv.conns[0].out.buf[3] != 1) {
+        TEST_FAIL("Team refusal 12", "expected [20, 1, 12, 1] packet");
+    }
+
+    /* 3. Zombies mode (sv_gamemode == 4) team switch refusal ([20, id, 13, look]) */
+    sv.set.sv_gamemode = 4;
+    sv.players[1].team_changes = 0;
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_team(&sv, 1, 2, 0);
+    if (sv.players[1].team != 1 || sv.conns[0].out.pos != 4 || sv.conns[0].out.buf[2] != 13) {
+        TEST_FAIL("Team refusal 13", "Zombies mode T->CT switch did not reply [20, 1, 13, 0]");
+    }
+    sv.set.sv_gamemode = 0;
+
+    /* 4. In-game name change [238] (FUN_14010ddb0):
+     * A. Dead player queues pending_name and receives [238, 254, 0, ""] */
+    sv.players[1].alive = false;
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_change_name(&sv, 1, "DeadHero", false, false);
+    if (strcmp(sv.players[1].name, "Player1") != 0 || strcmp(sv.players[1].pending_name, "DeadHero") != 0) {
+        TEST_FAIL("[238] dead", "dead player name should stay Player1 with pending_name = DeadHero");
+    }
+    if (sv.conns[0].out.pos != 4 || sv.conns[0].out.buf[0] != 238 || sv.conns[0].out.buf[1] != 254) {
+        TEST_FAIL("[238] dead", "expected [238, 254, 0, \"\"] reply");
+    }
+
+    /* B. Spawning player 1 applies pending_name ("DeadHero") and sets name_changes = 1 */
+    cs2d_sv_spawn(&sv, 1);
+    if (strcmp(sv.players[1].name, "DeadHero") != 0 || sv.players[1].name_changes != 1) {
+        TEST_FAIL("[238] spawn apply", "pending_name was not applied on spawn");
+    }
+
+    /* C. Second name change during same spawn is refused with [238, 255, 0, ""] */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_change_name(&sv, 1, "AnotherName", false, false);
+    if (strcmp(sv.players[1].name, "DeadHero") != 0 ||
+        sv.conns[0].out.pos != 4 || sv.conns[0].out.buf[0] != 238 || sv.conns[0].out.buf[1] != 255) {
+        TEST_FAIL("[238] limit", "second name change in one spawn did not reply [238, 255, 0, \"\"]");
+    }
+
+    /* 5. RCON [236] check and [241] execution (FUN_1401d8d90 / FUN_1401d9990 / FUN_1401bd520) */
+    uint8_t enc_pw[64], enc_cmd[128];
+    int pw_len = 0, cmd_len = 0;
+    cs2d_net_encrypt("my_rcon_pass", "mysecretremotecontrolpw", enc_pw, &pw_len);
+    cs2d_net_encrypt("setmoney 1 13337", "rconcmd", enc_cmd, &cmd_len);
+
+    /* A. Empty sv_rcon -> [241] replies enc("2", "mysecretremotecontrolpw") */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_rcon(&sv, 1, enc_pw, pw_len, enc_cmd, cmd_len);
+    if (sv.conns[0].out.pos < 4 || sv.conns[0].out.buf[0] != 241) {
+        TEST_FAIL("[241] no rcon", "missing [241] error reply when sv_rcon is empty");
+    }
+    {
+        char dec_err[16];
+        cs2d_net_decrypt(&sv.conns[0].out.buf[2], sv.conns[0].out.buf[1], "mysecretremotecontrolpw", dec_err, sizeof(dec_err));
+        if (strcmp(dec_err, "2") != 0) TEST_FAIL("[241] no rcon", "expected error code '2'");
+    }
+
+    /* B. Set sv_rcon, test wrong password -> error '1', then right password -> executes command */
+    cs2d_sv_exec(&sv, "sv_rcon \"my_rcon_pass\"");
+    uint8_t bad_pw[64];
+    int bad_len = 0;
+    cs2d_net_encrypt("wrong_pass", "mysecretremotecontrolpw", bad_pw, &bad_len);
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_rcon(&sv, 1, bad_pw, bad_len, enc_cmd, cmd_len);
+    {
+        char dec_err[16];
+        cs2d_net_decrypt(&sv.conns[0].out.buf[2], sv.conns[0].out.buf[1], "mysecretremotecontrolpw", dec_err, sizeof(dec_err));
+        if (strcmp(dec_err, "1") != 0) TEST_FAIL("[241] bad pw", "expected error code '1'");
+    }
+
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_rcon_check(&sv, 1, enc_pw, pw_len);
+    if (!sv.players[1].rcon_auth || sv.conns[0].out.buf[0] != 236 ||
+        sv.conns[0].out.buf[sv.conns[0].out.pos - 1] != 1) {
+        TEST_FAIL("[236] rconcheck", "valid rcon_check did not authenticate or reply 1");
+    }
+
+    cs2d_sv_rcon(&sv, 1, enc_pw, pw_len, enc_cmd, cmd_len);
+    if (sv.players[1].money != 13337) {
+        TEST_FAIL("[241] rcon exec", "rcon command 'setmoney 1 13337' did not update player 1 money");
+    }
+
+    /* 6. Server console commands (FUN_140140a00) & [42] playerdata / [15] setpos / [64] setteamscores */
+    cs2d_sv_exec(&sv, "setmaxhealth 1 200");
+    cs2d_sv_exec(&sv, "sethealth 1 175");
+    cs2d_sv_exec(&sv, "setarmor 1 150");
+    cs2d_sv_exec(&sv, "speedmod 1 30");
+    cs2d_sv_exec(&sv, "setscore 1 12");
+    cs2d_sv_exec(&sv, "setdeaths 1 4");
+    cs2d_sv_exec(&sv, "setassists 1 5");
+    cs2d_sv_exec(&sv, "setmvp 1 3");
+    cs2d_sv_exec(&sv, "setrank 1 15");
+    if (sv.players[1].maxhealth != 200 || sv.players[1].health != 175 || sv.players[1].armor != 150 ||
+        sv.players[1].speedmod != 30 || sv.players[1].score != 12 || sv.players[1].deaths != 4 ||
+        sv.players[1].assists != 5 || sv.players[1].mvp != 3 || sv.players[1].rank != 15) {
+        TEST_FAIL("Playerdata commands", "one or more playerdata fields did not match expected values");
+    }
+
+    /* equip / strip / setweapon */
+    cs2d_sv_exec(&sv, "equip 1 30"); /* AK-47 */
+    cs2d_sv_exec(&sv, "setweapon 1 30");
+    if (sv.players[1].weapon != 30) TEST_FAIL("equip/setweapon", "player 1 not holding AK-47 (30)");
+    cs2d_sv_exec(&sv, "strip 1 30");
+    if (sv.players[1].weapon == 30) TEST_FAIL("strip", "AK-47 was not stripped from player 1");
+    cs2d_sv_exec(&sv, "equip 1 58"); /* Kevlar+Helm -> armor 200 */
+    if (sv.players[1].armor != 200) TEST_FAIL("equip 58", "equip 58 did not set armor to 200");
+
+    /* setpos [15], setteamscores [64], setname [238] */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_exec(&sv, "setpos 1 512 768");
+    if (sv.players[1].x != 512.0f || sv.players[1].y != 768.0f ||
+        sv.conns[0].out.pos != 6 || sv.conns[0].out.buf[0] != 15) {
+        TEST_FAIL("setpos [15]", "setpos did not update coordinates or broadcast [15]");
+    }
+
+    cs2d_sv_exec(&sv, "setteamscores 8 11");
+    if (sv.score_t != 8 || sv.score_ct != 11) {
+        TEST_FAIL("setteamscores [64]", "team scores not updated to 8:11");
+    }
+
+    cs2d_sv_exec(&sv, "setname 1 \"ServerAdmin\" 1");
+    if (strcmp(sv.players[1].name, "ServerAdmin") != 0) {
+        TEST_FAIL("setname", "forced setname did not rename player 1");
+    }
+
+    /* makect / slap / deathslap / kick */
+    cs2d_sv_exec(&sv, "makect ServerAdmin");
+    if (sv.players[1].team != 2) TEST_FAIL("makect", "makect by name did not switch player 1 to CT");
+    cs2d_sv_spawn(&sv, 1);
+    cs2d_sv_exec(&sv, "slap 1");
+    if (sv.players[1].health != 90) TEST_FAIL("slap", "slap did not reduce health from 100 to 90");
+    cs2d_sv_exec(&sv, "deathslap 1");
+    if (sv.players[1].alive) TEST_FAIL("deathslap", "deathslap did not kill player 1");
+
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_exec(&sv, "kick Player4 \"Idle\"");
+    if (sv.players[4].used || sv.conns[3].active) {
+        TEST_FAIL("kick", "kicked Player4 is still marked used/active");
+    }
+    if (sv.conns[0].out.pos < 4 || sv.conns[0].out.buf[0] != 253 ||
+        sv.conns[0].out.buf[1] != 4 || sv.conns[0].out.buf[2] != 16) {
+        TEST_FAIL("kick packet", "expected [253, 4, 16, \"Idle\"] broadcast");
+    }
+
+    TEST_PASS("Dedicated server Phase 3: Team refusals 12/13, spawn balance, [238] name, [236]/[241] RCON, [42]/[15]/[64] commands");
+    for (int i = 0; i < 4; i++) free(sv.conns[i].pending);
+    cs2d_map_free(&sv.map);
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -6250,7 +6465,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 64;
+    int total = 65;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -6316,6 +6531,7 @@ int main(void)
     if (test_server_join()) passed++;
     if (test_server_phase2_items_and_chat()) passed++;
     if (test_server_phase2_respawn_and_speeder()) passed++;
+    if (test_server_phase3_rcon_and_commands()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

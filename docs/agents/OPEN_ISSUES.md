@@ -244,11 +244,11 @@ sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT 
   authoritative ground item collection `[25]` and 15s fadeout `[40]`, weapon reload `[16]` (`FUN_14018b1c0`),
   in-game chat `[240]` (`FUN_140153900`), spectator camera target `[67]` & pos `[32]` with aim relay `[70]-[72]`,
   team switch suicide (`FUN_1401624c0`), respawn modes & timers per mode (`sv_gamemode`, `mp_respawndelay`, `[39]`),
-  and position validation & anti-speeder (`FUN_1401c99a0`, `FUN_1401ca500`).
-  Next, in order: Lua `spawn` / `team` / `die` / `kill` hooks, team code 12 and the per-team `+0x2a0` limits, Phase 3 (console commands & rcon).
-  Gaps inside what is done: mp_startmoney default (800 is not verified).
+  position validation & anti-speeder (`FUN_1401c99a0`, `FUN_1401ca500`), per-spawn team change limit (`+0x2a0`, refusal code 12),
+  Zombies team switch refusal (code 13) & >30s force-T rule, and spawn-time auto-teambalance (`FUN_140160740`).
+  Gaps inside what is done: mp_startmoney default (800 is not verified); Lua `spawn` / `team` / `die` / `kill` hooks (Phase 4).
 
-- **Phase 3:** console commands (`cs2d_netcode_codes.txt`, server.cfg cvars, rcon `[236]/[241]/[242]`).
+- **Phase 3 (done 2026-10-15):** in-game name change `[238]` (`FUN_14010ddb0`, per-spawn `+0x2a4` limit 255, dead deferred `pending_name` 254 applied on spawn), RCON `[236]` (`rconcheck`), `[241]` (`rcon`), `[242]` (`public rcon`), `sv_rcon` / `sv_rconusers`, playerdata setter & broadcaster `[42]` (`FUN_140159840` modes 0..11), teleport `[15]` (`FUN_140102950`), team scores `[64]` (`FUN_140051ac0`), server messages `[240,0,1]`, `kick` (`FUN_1401502a0`), `slap` / `deathslap` (`FUN_140167e40`), and console command parser `cs2d_sv_exec` (`FUN_140140a00`: `server.cfg` cvars, `setmoney`, `sethealth`, `setmaxhealth`, `setarmor`, `setscore`, `setdeaths`, `setassists`, `setmvp`, `setrank`, `speedmod`, `equip`, `strip`, `setweapon`, `setpos`, `setname`, `setteamscores`, `sv_msg`, `sv_msg2`, `maket`, `makect`, `makespec`, `slap`, `deathslap`, `kick`, `killplayer`, `spawnplayer`, `sv_restart`, `sv_restartround`, `endround`, `listplayers`). Remaining for later phases: `[237]` live cvar change broadcast, `[239]` `changemap` / `map` command, ban list commands (`banip`/`banusgn`/`bansteam`/`unban`).
 - **Phase 4:** Lua (lua_* API, `addhook` / every hook in the original order and return semantics, timers,
   `parse`, `player()`, `image()`, hudtxt, menus...). Compare with Lua probes on both servers.
 - **Phase 5:** construction, hostages, bomb, entities / triggers, items, projectiles, bots (present only).

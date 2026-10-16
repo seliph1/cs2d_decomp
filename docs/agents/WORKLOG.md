@@ -10,6 +10,14 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-15 — Antigravity — dedicated server phase 3: team codes 12/13 & spawn auto-balance, [238] name change, RCON [236]/[241]/[242], playerdata [42] & console commands [FUN_140140a00]
+- Completed remaining non-Lua Phase 2 items: per-spawn team change limit (`pl->team_changes`, refusal `[20, id, 12, look]`), Zombies mode team switch refusal (`[20, id, 13, look]`) and >30s force-T rule (`FUN_1401624c0`), and spawn-time auto-teambalance (`FUN_140160740`).
+- Implemented in-game name change `[238]` (`cs2d_sv_change_name`, `FUN_14010ddb0`): 25-char sanitize, per-spawn limit refusal `[238, 255, 0, ""]`, dead player deferred `pending_name` `[238, 254, 0, ""]` applied on `cs2d_sv_spawn`, and broadcast `[238, id, hide, name]`.
+- Implemented RCON (`[236]` `cs2d_sv_rcon_check` `FUN_1401d8d90`, `[241]` `cs2d_sv_rcon` `FUN_1401d9990`, `[242]` `cs2d_sv_public_rcon` `FUN_1401be1c0`, `FUN_1401bd520`) with `"mysecretremotecontrolpw"` / `"rconcmd"` ciphers, `sv_rcon` / `sv_rconusers`, and error replies `"1"`/`"2"`/`"4"`.
+- Implemented playerdata setter & broadcaster `[42]` (`cs2d_sv_set_playerdata`, `FUN_140159840` modes 0..11), teleport `[15]` (`cs2d_sv_set_pos`, `FUN_140102950`), team scores `[64]` (`cs2d_sv_set_teamscores`, `FUN_140051ac0`), server messages (`cs2d_sv_msg`), `slap` / `deathslap` (`FUN_140167e40`), `kick` (`FUN_1401502a0`), and console command parser `cs2d_sv_exec` (`FUN_140140a00`).
+- Verified: `build.bat` clean, `test_cs2d.exe` **65 / 65** passing `test_server_phase3_rcon_and_commands`.
+- Left: Phase 4 (Lua 5.1.4 integration, `addhook`, `parse`, `player()`, `image()`, timers, hudtxt, menus).
+
 ## 2026-10-15 — Antigravity — dedicated server phase 2 (part 5): team suicide [FUN_1401624c0], respawn modes & timer [39] [FUN_14017cbb0/FUN_1401cf8d0], position & anti-speeder validation [FUN_1401ca500/FUN_1401c99a0]
 - Implemented team switch suicide (`cs2d_sv_team`, `FUN_1401624c0`): when a living player changes team, `cs2d_sv_kill(sv, id, 0, 0, 0)` is invoked immediately, incrementing deaths and broadcasting reliable `[19]`.
 - Implemented respawn modes & timers (`cs2d_sv_step_respawns`, `FUN_14017cbb0`): in game modes with `respawn == 1` (Deathmatch, Team Deathmatch, Zombies), players auto-respawn after `mp_respawndelay` seconds; client respawn requests (`[39]`, `cs2d_sv_request_respawn`, `FUN_1401cf8d0`) enforce the same rule and delay.
@@ -47,14 +55,3 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - Implemented weapon selection `[9]` (`cs2d_sv_select_weapon`, `FUN_140158060`), primary fire relay `[7]` (`cs2d_sv_fire`, `FUN_140191a70`), and secondary attack relay `[8]` (`cs2d_sv_attack2`, `FUN_1401fd590`).
 - Verified: `build.bat` clean, `test_cs2d.exe` **62 / 62** (passed dedicated server round end / start tests and combat relay test).
 - Left: next Phase 2 items: damage / kill `[17]`/`[19]`, buy `[23]`, drop / collect `[24]`/`[25]`, reload `[16]`, chat `[240]`.
-
-## 2026-10-15 — Claude — dedicated server phase 2 (part 1): team, spawn, movement relay
-- Receive dispatch found (`FUN_1401e3cf0`, jump table `0x1406cdb14`, handler per opcode in
-  `knowledge/dedicated-server.md`); new `src/cs2d_sv_game.c` ports team `FUN_1401624c0` (main path), spawn
-  `FUN_140160740` (spawn point, mode item tables, best weapon, money, `[21]`), the per-frame relay
-  `FUN_1401a68e0`; `[10]/[11]/[70]` input, `[248]` join notice. `tools/agent/reasave.py` saves REA pseudo-C with
-  strings and Tudp calls annotated (`docs/dump/dedicated/`).
-- Verified: original CS2D.exe picks CT on our server and gets `[20]` + `[21]` byte-equal to the original server's;
-  with our client as a second player the original sees its `[248]`, `[20]`, `[21]`, `[10]` relay and `[253]`.
-  `test_server_join` gains the spawn case: 62 / 62.
-- Left: OPEN_ISSUES "Dedicated server" phase 2 list (rounds, shooting, damage, buy...).

@@ -8,6 +8,7 @@
  * +0x128 rstr, +0x130 rlstr). Createpacket(reliable, new) is the connection's vtable +0x98.
  */
 #include "cs2d_server.h"
+#include "cs2d_weapons.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -92,15 +93,21 @@ static void cfg_value(char *v)
 
 static void cfg_set(cs2d_sv_settings_t *s, const char *key, const char *val)
 {
+    if (_stricmp(key, "sv_rcon") == 0) {
+        /* 0x14014908d: sv_rcon is truncated to 50 characters */
+        snprintf(s->sv_rcon, sizeof(s->sv_rcon), "%.50s", val);
+        return;
+    }
 #define SV_INT(name) if (_stricmp(key, #name) == 0) { s->name = atoi(val); return; }
 #define SV_STR(name) if (_stricmp(key, #name) == 0) { snprintf(s->name, sizeof(s->name), "%s", val); return; }
-    SV_STR(sv_name) SV_STR(sv_map) SV_STR(sv_password) SV_STR(mp_supply_items)
+    SV_STR(sv_name) SV_STR(sv_map) SV_STR(sv_password) SV_STR(mp_supply_items) SV_STR(sv_rconusers)
     SV_INT(sv_hostport) SV_INT(sv_maxplayers) SV_INT(sv_fow) SV_INT(sv_specmode) SV_INT(sv_gamemode)
     SV_INT(sv_usgnonly) SV_INT(sv_friendlyfire) SV_INT(sv_forcelight) SV_INT(sv_daylighttime)
     SV_INT(sv_voicechat) SV_INT(sv_offscreendamage) SV_INT(sv_maxclientsperip) SV_INT(sv_antiaccel)
-    SV_INT(mp_roundtime) SV_INT(mp_freezetime) SV_INT(mp_c4timer) SV_INT(mp_respawndelay)
+    SV_INT(mp_roundtime) SV_INT(mp_freezetime) SV_INT(mp_c4timer) SV_INT(mp_respawndelay) SV_INT(mp_deadchat)
     SV_INT(mp_infammo) SV_INT(mp_flashlight) SV_INT(mp_hovertext) SV_INT(mp_recoil) SV_INT(mp_hudscale)
     SV_INT(sv_spraytransfer) SV_INT(mp_startmoney) SV_INT(mp_postspawn) SV_INT(mp_autoteambalance)
+    SV_INT(lagcompensation) SV_INT(ticks) SV_INT(leaderboard) SV_INT(physics)
 #undef SV_INT
 #undef SV_STR
 }
@@ -744,6 +751,7 @@ static void sv_recv_join1(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
     snprintf(pl->ip, sizeof(pl->ip), "%s", inet_ntoa(c->addr.sin_addr));
     pl->port = ntohs(c->addr.sin_port);
     pl->look = 0;
+    pl->maxhealth = 100;
     c->player = id;
     c->join_step = 2;
 
@@ -885,6 +893,425 @@ static void sv_remove_player(cs2d_server_t *sv, int id, int reason)
     }
 }
 
+/* FUN_1401502a0: kick a player with optional reason ([253, id, 2] or [253, id, 16, reason]) */
+void cs2d_sv_kick(cs2d_server_t *sv, int id, const char *reason)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS || !sv->players[id].used) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    bool has_reason = (reason && reason[0] != '\0');
+    if (has_reason) {
+        cs2d_server_print("%s has been kicked (%s)", pl->name, reason);
+    } else {
+        cs2d_server_print("%s has been kicked", pl->name);
+    }
+
+    cs2d_sv_conn_t *kicked_conn = conn_of_player(sv, id);
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_conn_t *oc = conn_of_player(sv, i);
+        if (!oc || !sv->players[i].joined) continue;
+        cs2d_pkt_t *p = sv_packet(sv, oc, true, false);
+        cs2d_pkt_w_byte(p, 253);
+        cs2d_pkt_w_byte(p, (uint8_t)id);
+        cs2d_pkt_w_byte(p, (uint8_t)(has_reason ? 16 : 2));
+        if (has_reason) cs2d_pkt_w_str(p, reason);
+    }
+    if (kicked_conn) {
+        sv_flush(sv, kicked_conn);
+        kicked_conn->active = false;
+    }
+    pl->used = false;
+}
+
+/* ------------------------------------------------------------------------------------------------ */
+/* RCON ([236], [241], [242]) and Server Command Parser (FUN_140140a00)                             */
+/* ------------------------------------------------------------------------------------------------ */
+
+static bool sv_is_rcon_user(const cs2d_server_t *sv, int32_t usgn)
+{
+    if (usgn <= 0 || sv->set.sv_rconusers[0] == '\0') return false;
+    const char *p = sv->set.sv_rconusers;
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (!*p) break;
+        if (atoi(p) == usgn) return true;
+        while (*p && *p != ' ' && *p != '\t' && *p != ',') p++;
+    }
+    return false;
+}
+
+/* FUN_1401d8d90: [236, enc_pw (rstr)] -> [236, enc_pw (wstr), ok (u8)] */
+void cs2d_sv_rcon_check(cs2d_server_t *sv, int id, const uint8_t *enc_pw, int enc_pw_len)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS || !sv->players[id].used) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    cs2d_sv_conn_t *c = conn_of_player(sv, id);
+
+    char pw[256];
+    cs2d_net_decrypt(enc_pw, enc_pw_len, "mysecretremotecontrolpw", pw, sizeof(pw));
+
+    bool ok = sv_is_rcon_user(sv, pl->usgn) ||
+              (sv->set.sv_rcon[0] != '\0' && strcmp(pw, sv->set.sv_rcon) == 0);
+    if (ok) pl->rcon_auth = true;
+
+    if (c) {
+        cs2d_pkt_t *p = sv_packet(sv, c, true, false);
+        cs2d_pkt_w_byte(p, 236);
+        cs2d_pkt_w_raw_str(p, enc_pw, enc_pw_len);
+        cs2d_pkt_w_byte(p, (uint8_t)(ok ? 1 : 0));
+    }
+}
+
+/* FUN_1401d9990 -> FUN_1401bd520: [241, enc_pw (rstr), enc_cmd (rlstr)] */
+void cs2d_sv_rcon(cs2d_server_t *sv, int id, const uint8_t *enc_pw, int enc_pw_len,
+                  const uint8_t *enc_cmd, int enc_cmd_len)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS || !sv->players[id].used) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    cs2d_sv_conn_t *c = conn_of_player(sv, id);
+
+    char pw[256], cmd[1024];
+    cs2d_net_decrypt(enc_pw, enc_pw_len, "mysecretremotecontrolpw", pw, sizeof(pw));
+    cs2d_net_decrypt(enc_cmd, enc_cmd_len, "rconcmd", cmd, sizeof(cmd));
+
+    bool allowed = sv_is_rcon_user(sv, pl->usgn);
+    if (!allowed) {
+        if (sv->set.sv_rcon[0] == '\0') {
+            /* 0x1401bd826: empty sv_rcon -> [241, enc("2"), enc("")] */
+            if (c) {
+                uint8_t ep[16];
+                int ep_len = 0;
+                cs2d_net_encrypt("2", "mysecretremotecontrolpw", ep, &ep_len);
+                cs2d_pkt_t *p = sv_packet(sv, c, true, false);
+                cs2d_pkt_w_byte(p, 241);
+                cs2d_pkt_w_raw_str(p, ep, ep_len);
+                cs2d_pkt_w_lstr(p, "");
+            }
+            return;
+        }
+        if (strcmp(pw, sv->set.sv_rcon) != 0) {
+            /* 0x1401bd90d: wrong password -> [241, enc("1"), enc("")] */
+            if (c) {
+                uint8_t ep[16];
+                int ep_len = 0;
+                cs2d_net_encrypt("1", "mysecretremotecontrolpw", ep, &ep_len);
+                cs2d_pkt_t *p = sv_packet(sv, c, true, false);
+                cs2d_pkt_w_byte(p, 241);
+                cs2d_pkt_w_raw_str(p, ep, ep_len);
+                cs2d_pkt_w_lstr(p, "");
+            }
+            return;
+        }
+    }
+
+    pl->rcon_auth = true;
+    cs2d_server_print("Parse RCon (%s:%d): %s", pl->ip, pl->port, cmd);
+    cs2d_sv_exec(sv, cmd);
+}
+
+/* FUN_1401be1c0 -> FUN_1401bd520: connectionless [242, pw (rstr), cmd (rlstr)] */
+void cs2d_sv_public_rcon(cs2d_server_t *sv, const struct sockaddr_in *from,
+                         const char *pw, const char *cmd)
+{
+    const char *err_code = NULL;
+    if (sv->set.sv_rcon[0] == '\0') {
+        err_code = "2"; /* 0x1401bdc50 */
+    } else if (!pw || strcmp(pw, sv->set.sv_rcon) != 0) {
+        err_code = "4"; /* 0x1401bdd16 */
+    }
+
+    if (err_code) {
+        if (from && sv->sock != INVALID_SOCKET) {
+            uint8_t d[32];
+            uint16_t hdr = 1;
+            memcpy(d, &hdr, 2);
+            cs2d_pkt_t p = { { 0 }, 0 };
+            cs2d_pkt_w_byte(&p, 242);
+            cs2d_pkt_w_str(&p, err_code);
+            cs2d_pkt_w_lstr(&p, "");
+            memcpy(d + 2, p.buf, (size_t)p.pos);
+            sendto(sv->sock, (const char *)d, p.pos + 2, 0,
+                   (const struct sockaddr *)from, sizeof(*from));
+        }
+        return;
+    }
+
+    if (from) {
+        cs2d_server_print("Parse RCon ext. (%s:%d): %s",
+                          inet_ntoa(from->sin_addr), ntohs(from->sin_port), cmd ? cmd : "");
+    }
+    if (cmd) cs2d_sv_exec(sv, cmd);
+}
+
+/* FUN_14006a840: resolve player by exact name or numeric ID */
+static int sv_resolve_player(const cs2d_server_t *sv, const char *tok)
+{
+    if (!tok || !tok[0]) return 0;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (sv->players[i].used && _stricmp(sv->players[i].name, tok) == 0) return i;
+    }
+    int id = atoi(tok);
+    if (id >= 1 && id <= CS2D_SV_MAX_PLAYERS && sv->players[id].used) return id;
+    return 0;
+}
+
+/* FUN_1401532f0: kick resolves by name, IP, or numeric ID */
+static int sv_resolve_kick_player(const cs2d_server_t *sv, const char *tok)
+{
+    if (!tok || !tok[0]) return 0;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (sv->players[i].used && _stricmp(sv->players[i].name, tok) == 0) return i;
+    }
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (sv->players[i].used && strcmp(sv->players[i].ip, tok) == 0) return i;
+    }
+    int id = atoi(tok);
+    if (id >= 1 && id <= CS2D_SV_MAX_PLAYERS && sv->players[id].used) return id;
+    return 0;
+}
+
+/* FUN_140071f40: resolve weapon by numeric ID or weapon name */
+static int sv_resolve_weapon(const char *tok)
+{
+    if (!tok || !tok[0]) return 0;
+    int id = atoi(tok);
+    if (id > 0 && id < CS2D_MAX_WEAPONS) return id;
+    for (int i = 1; i < CS2D_MAX_WEAPONS; i++) {
+        const cs2d_weapon_def_t *w = cs2d_weapon_get((uint8_t)i);
+        if (w && w->name && w->name[0] && _stricmp(w->name, tok) == 0) return i;
+    }
+    return 0;
+}
+
+/* Read one whitespace-or-quoted argument from *cursor (port of FUN_1400cd320) */
+static bool sv_next_arg(const char **cursor, char *out, size_t out_size)
+{
+    const char *p = *cursor;
+    while (*p == ' ' || *p == '\t') p++;
+    if (!*p || *p == '\r' || *p == '\n') {
+        out[0] = '\0';
+        *cursor = p;
+        return false;
+    }
+    size_t k = 0;
+    if (*p == '"') {
+        p++;
+        while (*p && *p != '"' && *p != '\r' && *p != '\n') {
+            if (k + 1 < out_size) out[k++] = *p;
+            p++;
+        }
+        if (*p == '"') p++;
+    } else {
+        while (*p && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') {
+            if (k + 1 < out_size) out[k++] = *p;
+            p++;
+        }
+    }
+    out[k] = '\0';
+    *cursor = p;
+    return true;
+}
+
+/* Read remainder of line (stripping surrounding quotes/trailing newline) */
+static void sv_rest_arg(const char *cursor, char *out, size_t out_size)
+{
+    while (*cursor == ' ' || *cursor == '\t') cursor++;
+    snprintf(out, out_size, "%s", cursor);
+    cfg_value(out);
+}
+
+/* FUN_140140a00: execute a server console / RCON command */
+bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
+{
+    if (!sv || !cmd_line) return false;
+    const char *cur = cmd_line;
+    char cmd[64];
+    if (!sv_next_arg(&cur, cmd, sizeof(cmd))) return false;
+
+    char a1[256], a2[256], a3[256];
+    if (_stricmp(cmd, "setmoney") == 0) { /* 0x140149bf1 -> 0x140183c00 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        cs2d_sv_set_playerdata(sv, atoi(a1), 2, atoi(a2));
+        return true;
+    }
+    if (_stricmp(cmd, "sethealth") == 0) { /* 0x140149c0d -> 0x14015b910 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        cs2d_sv_set_playerdata(sv, atoi(a1), 0, atoi(a2));
+        return true;
+    }
+    if (_stricmp(cmd, "setmaxhealth") == 0) { /* 0x140149c1b -> 0x14015b980 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        cs2d_sv_set_playerdata(sv, atoi(a1), 8, atoi(a2));
+        return true;
+    }
+    if (_stricmp(cmd, "setarmor") == 0) { /* 0x140149c29 -> 0x14015ba10 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        cs2d_sv_set_playerdata(sv, atoi(a1), 3, atoi(a2));
+        return true;
+    }
+    if (_stricmp(cmd, "setscore") == 0) { /* 0x140149b1f -> 0x14015bc20 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        cs2d_sv_set_playerdata(sv, atoi(a1), 1, atoi(a2));
+        return true;
+    }
+    if (_stricmp(cmd, "setdeaths") == 0) { /* 0x140149b57 -> 0x14015bc00 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        cs2d_sv_set_playerdata(sv, atoi(a1), 4, atoi(a2));
+        return true;
+    }
+    if (_stricmp(cmd, "setassists") == 0) { /* 0x140149b2d -> 0x14015bb20 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        cs2d_sv_set_playerdata(sv, atoi(a1), 9, atoi(a2));
+        return true;
+    }
+    if (_stricmp(cmd, "setmvp") == 0) { /* 0x140149b3b -> 0x14015bb90 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        cs2d_sv_set_playerdata(sv, atoi(a1), 10, atoi(a2));
+        return true;
+    }
+    if (_stricmp(cmd, "setrank") == 0) { /* 0x140149b49 -> 0x14015ba80 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        cs2d_sv_set_playerdata(sv, atoi(a1), 11, atoi(a2));
+        return true;
+    }
+    if (_stricmp(cmd, "speedmod") == 0) { /* 0x140149b65 -> 0x14015c000 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        cs2d_sv_set_playerdata(sv, atoi(a1), 7, atoi(a2) + 100);
+        return true;
+    }
+    if (_stricmp(cmd, "equip") == 0) { /* 0x140149c37 -> 0x14015bc60 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        int wpn = sv_resolve_weapon(a2);
+        if (wpn > 0) cs2d_sv_set_playerdata(sv, atoi(a1), 5, wpn);
+        return true;
+    }
+    if (_stricmp(cmd, "strip") == 0) { /* 0x140149c45 -> 0x14015be50 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        int wpn = (a2[0] == '0' && a2[1] == '\0') ? 0 : sv_resolve_weapon(a2);
+        cs2d_sv_set_playerdata(sv, atoi(a1), 6, wpn);
+        return true;
+    }
+    if (_stricmp(cmd, "setweapon") == 0) { /* 0x140149bff -> 0x140159700 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        cs2d_sv_select_weapon(sv, atoi(a1), sv_resolve_weapon(a2), 0);
+        return true;
+    }
+    if (_stricmp(cmd, "setpos") == 0) { /* 0x140149be3 -> 0x14011be70 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        sv_next_arg(&cur, a3, sizeof(a3));
+        cs2d_sv_set_pos(sv, atoi(a1), (float)atoi(a2), (float)atoi(a3));
+        return true;
+    }
+    if (_stricmp(cmd, "setname") == 0) { /* 0x140149b11 -> 0x14011d180 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        bool hide = sv_next_arg(&cur, a3, sizeof(a3)) && (atoi(a3) != 0);
+        cs2d_sv_change_name(sv, atoi(a1), a2, true, hide);
+        return true;
+    }
+    if (_stricmp(cmd, "setteamscores") == 0) { /* 0x14014a35a -> 0x14011f890 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        cs2d_sv_set_teamscores(sv, atoi(a1), atoi(a2));
+        return true;
+    }
+    if (_stricmp(cmd, "sv_msg") == 0) { /* 0x140144a92 */
+        sv_rest_arg(cur, a1, sizeof(a1));
+        cs2d_sv_msg(sv, a1, 0);
+        return true;
+    }
+    if (_stricmp(cmd, "sv_msg2") == 0) { /* 0x140144b99 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_rest_arg(cur, a2, sizeof(a2));
+        cs2d_sv_msg(sv, a2, atoi(a1));
+        return true;
+    }
+    if (_stricmp(cmd, "maket") == 0 || _stricmp(cmd, "makect") == 0 || _stricmp(cmd, "makespec") == 0) {
+        /* 0x140149c53 / 0x140149c65 / 0x140149c77 -> 0x140164590 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        int pid = sv_resolve_player(sv, a1);
+        if (pid > 0) {
+            int t = (_stricmp(cmd, "maket") == 0) ? 1 : ((_stricmp(cmd, "makect") == 0) ? 2 : 0);
+            cs2d_sv_team_ex(sv, pid, t, t == 0 ? 5 : 4, true);
+        }
+        return true;
+    }
+    if (_stricmp(cmd, "slap") == 0 || _stricmp(cmd, "deathslap") == 0) {
+        /* 0x140149cba / 0x140149c8d -> 0x140167e40 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        int pid = sv_resolve_player(sv, a1);
+        if (pid > 0) cs2d_sv_slap(sv, pid, _stricmp(cmd, "deathslap") == 0);
+        return true;
+    }
+    if (_stricmp(cmd, "kick") == 0) { /* 0x140149cf7 -> 0x1401532f0 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_rest_arg(cur, a2, sizeof(a2));
+        int pid = sv_resolve_kick_player(sv, a1);
+        if (pid > 0) cs2d_sv_kick(sv, pid, a2);
+        return true;
+    }
+    if (_stricmp(cmd, "killplayer") == 0) { /* 0x140149ae0 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        int pid = atoi(a1);
+        if (pid >= 1 && pid <= CS2D_SV_MAX_PLAYERS && sv->players[pid].used && sv->players[pid].alive) {
+            cs2d_sv_kill(sv, pid, 0, 0, 0);
+        }
+        return true;
+    }
+    if (_stricmp(cmd, "spawnplayer") == 0) { /* 0x140149ad2 -> 0x14017c910 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        sv_next_arg(&cur, a3, sizeof(a3));
+        cs2d_sv_spawn_at(sv, atoi(a1), (float)atoi(a2), (float)atoi(a3));
+        return true;
+    }
+    if (_stricmp(cmd, "sv_restart") == 0 || _stricmp(cmd, "sv_restartround") == 0) {
+        /* 0x140145180 -> 0x14015d2a0 */
+        int delay = sv_next_arg(&cur, a1, sizeof(a1)) ? atoi(a1) : 0;
+        if (delay < 0) delay = 0;
+        if (delay > 10) delay = 10;
+        cs2d_sv_round_end(sv, 5, delay * 1000);
+        if (delay == 0) cs2d_sv_round_start(sv, 5);
+        return true;
+    }
+    if (_stricmp(cmd, "endround") == 0) { /* 0x140145172 -> 0x14015d3c0 */
+        int m = sv_next_arg(&cur, a1, sizeof(a1)) ? atoi(a1) : 0;
+        int rmode = (m == 1) ? 1 : ((m == 2) ? 2 : 3);
+        cs2d_sv_round_end(sv, rmode, 5000);
+        return true;
+    }
+    if (_stricmp(cmd, "listplayers") == 0) { /* 0x1401417d9 */
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            if (sv->players[i].used) {
+                cs2d_server_print("#%d %s (%s:%d)", i, sv->players[i].name,
+                                  sv->players[i].ip, sv->players[i].port);
+            }
+        }
+        return true;
+    }
+
+    /* Fall back to server settings cvars (sv_*, mp_*, etc.) */
+    sv_rest_arg(cur, a1, sizeof(a1));
+    if (a1[0] != '\0') {
+        cfg_set(&sv->set, cmd, a1);
+        return true;
+    }
+    return false;
+}
+
 /* Messages of a joined player. Phase 1 handles the team choice; everything else is skipped by length
  * where it is known and ends the datagram otherwise (like the original does on an unknown opcode). */
 static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int op)
@@ -1024,6 +1451,29 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         if (pl) cs2d_sv_spec_pos(sv, c->player, sx, sy);
         return true;
     }
+    case 238: { /* changename: [238, name (rstr)] (FUN_1401d9450 -> FUN_14010ddb0) */
+        if (rd_left(r) < 1) return false;
+        char new_name[256];
+        rd_str(r, new_name, sizeof(new_name));
+        if (pl) cs2d_sv_change_name(sv, c->player, new_name, false, false);
+        return true;
+    }
+    case 236: { /* rconcheck: [236, enc_pw (rstr)] (FUN_1401d8d90) */
+        if (rd_left(r) < 1) return false;
+        char enc_pw[256];
+        int pw_len = rd_str(r, enc_pw, sizeof(enc_pw));
+        if (pl) cs2d_sv_rcon_check(sv, c->player, (const uint8_t *)enc_pw, pw_len);
+        return true;
+    }
+    case 241: { /* rcon: [241, enc_pw (rstr), enc_cmd (rlstr)] (FUN_1401d9990) */
+        if (rd_left(r) < 3) return false;
+        char enc_pw[256], enc_cmd[1024];
+        int pw_len = rd_str(r, enc_pw, sizeof(enc_pw));
+        int cmd_len = rd_lstr(r, enc_cmd, sizeof(enc_cmd));
+        if (pl) cs2d_sv_rcon(sv, c->player, (const uint8_t *)enc_pw, pw_len,
+                             (const uint8_t *)enc_cmd, cmd_len);
+        return true;
+    }
     default:
         return false;
     }
@@ -1035,11 +1485,19 @@ static void sv_handle_datagram(cs2d_server_t *sv, const struct sockaddr_in *from
     uint16_t seq;
     memcpy(&seq, buf, 2);
     sv_rd_t r = { buf, n, 2 };
-    /* Only a [252,0] opens a connection */
+    /* Only a [252,0] opens a connection; [242] public RCON is connectionless (FUN_1401be1c0) */
     bool hello = false;
     {
         int q = 2;
         while (q + 3 <= n && buf[q] >= 1 && buf[q] <= 4) q += 3;
+        if (q < n && buf[q] == 242) {
+            r.p = q + 1;
+            char pw[256], cmd[1024];
+            rd_str(&r, pw, sizeof(pw));
+            rd_lstr(&r, cmd, sizeof(cmd));
+            cs2d_sv_public_rcon(sv, from, pw, cmd);
+            return;
+        }
         hello = (q + 1 < n && buf[q] == 252 && buf[q + 1] == 0);
     }
     cs2d_sv_conn_t *c = sv_find_conn(sv, from, hello);

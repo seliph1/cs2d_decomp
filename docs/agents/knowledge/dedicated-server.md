@@ -137,3 +137,50 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   - Anti-speeder (`FUN_1401ca500`): calculates distance moved since `last_move_ms`. If `dist > 160.0f` and velocity
     `dist / dt > 650.0f` px/s, server logs `"MP_ANTISPEEDER: %s is too fast - reset position!"` to console and sends reliable
     `[10, id, last_valid_x, last_valid_y]` back to the mover.
+- **Per-spawn Team Change Limit & Zombies Team Rules (`FUN_1401624c0`, `FUN_140160740`):**
+  - `pl->team_changes` (`Tpl +0x2a0`) is reset to `0` on `cs2d_sv_spawn` (`FUN_140160740` line 198) and incremented on every
+    completed team switch (`FUN_1401624c0` line 464).
+  - Client-initiated (`!force`) switch when `pl->team_changes > 0 && pl->team >= 1` is refused with reliable `[20, id, 12, look]`
+    to `id` alone (`FUN_1401624c0` lines 144-147, 193, 245-254; if `look == 5 && (team == 1 || team == 2)`, stores `pl->pending_team = team`).
+  - In Zombies mode (`sv_gamemode == 4`, `FUN_1401624c0` lines 266-313): switching between T and CT (`pl->team >= 1 && team >= 1`)
+    is refused with reliable `[20, id, 13, look]`; joining CT (`team == 2`) when both teams have `>= 1` player and round age `> 30` s
+    forces `team = 1` (T).
+  - Spawn-time Auto-Teambalance (`FUN_140160740` lines 162-191): when `mp_autoteambalance == 1 && sv_gamemode != 4 && mode->balance == 1`
+    and `|T - CT| > 1`, spawning a player on the larger team switches them to the smaller team with a random skin `0..3` and broadcasts
+    reliable `[20, id, new_team, look]` before `[21]`.
+
+## Phase 3: in-game name change [238], RCON [236]/[241]/[242], playerdata [42] & console commands
+
+- **In-Game Name Change `[238]` (`FUN_1401d9450` → `FUN_14010ddb0`):**
+  - Client sends `[238, new_name (rstr)]`; server sanitizes via `FUN_14010d970` (truncating to 25 chars). If equal to `pl->name`, returns.
+  - Unless `force` (`setname`): if `pl->name_changes > 0` (`Tpl +0x2a4`, reset to `0` on spawn), refuses with reliable `[238, 255, 0, ""]`
+    to `id` alone (`0x14010e610`); if `!pl->alive`, stores `pl->pending_name` (`Tpl +0x2a8`), replies reliable `[238, 254, 0, ""]` to `id`
+    alone (`0x14010dfef`), and applies it automatically on `cs2d_sv_spawn` (`FUN_140160740` lines 200-203).
+  - On success: updates `pl->name`, increments `pl->name_changes++`, clears `pending_name`, logs `"%s changed name to %s"`, and broadcasts
+    reliable `[238, id u8, hide_msg u8, name (wstr)]` (`0x14010e108`).
+- **RCON (`[236]`, `[241]`, `[242]` — `FUN_1401d8d90`, `FUN_1401d9990`, `FUN_1401be1c0`, `FUN_1401bd520`):**
+  - Password key: `"mysecretremotecontrolpw"` (`0x1405c6b00`); command key: `"rconcmd"` (`0x1405c4a80`). `sv_rcon` (`PTR_DAT_1405a66e0`)
+    is truncated to 50 chars (`0x14014908d`). Players whose U.S.G.N. ID is in `sv_rconusers` (`PTR_DAT_1405a6500`) are authorized without a password.
+  - `[236, enc_pw (rstr)]` (`rconcheck`, `0x1401d8d90`): decrypts `enc_pw`; if valid, sets `pl->rcon_auth = 1` (`Tpl +0xf0`); replies reliable
+    `[236, enc_pw (wstr), ok u8]`.
+  - `[241, enc_pw (rstr), enc_cmd (rlstr)]` (`rcon`, `0x1401d9990` → `0x1401bd520`): if `sv_rcon` is empty, replies reliable
+    `[241, enc("2", pw_key) (wstr), enc("", cmd_key) (wlstr)]` (`0x1401bd826`); if password mismatches, replies with `"1"` (`0x1401bd90d`);
+    on match, sets `pl->rcon_auth = 1`, logs `"Parse RCon (%s:%d): %s"`, and calls `FUN_140140a00(cmd)`.
+  - `[242, pw (rstr), cmd (rlstr)]` (`public rcon`, `0x1401be1c0` → `0x1401bd520`, connectionless): if `sv_rcon` is empty, replies unreliable
+    `[242, "2" (wstr), "" (wlstr)]` (`0x1401bdc50`); if password mismatches, replies with `"4"` (`0x1401bdd16`); on match, logs
+    `"Parse RCon ext. (%s:%d): %s"` and calls `FUN_140140a00(cmd)`.
+- **Playerdata `[42]` (`FUN_140159840`, `[42, id u8, mode u8, val u16]`):**
+  - Modes: `0` health (`0..maxhealth`, kills if `0`), `1` score, `2` money (`0..16000`), `3` armor (`0..255`), `4` deaths, `5` equip weapon
+    (`0x14015bc60` redirects armor items `57->100`, `58->200`, `79..84->201..206` to mode `3`), `6` strip weapon (`0` strips all; armor items
+    redirect to mode `3, val=0`), `7` speedmod (`wire = speedmod + 100`, clamped `0..200`, `Tpl +0x390`), `8` maxhealth (`1..250`, also sets
+    `health = maxhealth`, `Tpl +0x268`), `9` assists, `10` mvp, `11` rank (`0..17`).
+- **Admin & Server Commands (`FUN_140140a00`):**
+  - `setpos <id> <x> <y>` (`0x14011be70` → `FUN_140102950`): teleports player and broadcasts reliable `[15, id u8, x u16, y u16]`.
+  - `setteamscores <t> <ct>` (`0x14011f890` → `FUN_140051ac0`): clamps `0..65535` and broadcasts reliable `[64, t u16, ct u16]`.
+  - `sv_msg <text>` / `sv_msg2 <id> <text>` (`0x140144a92` / `0x140144b99` → `FUN_140153900`): sends reliable `[240, 0, 1, len u16, UTF-16LE]`.
+  - `maket` / `makect` / `makespec <p>` (`0x140164590`): resolves player by name or ID (`FUN_14006a840`), forces team switch (`force = 1`).
+  - `slap` (10 HP) / `deathslap` (1000 HP) (`0x140167e40`): broadcasts `"<name> was slapped"` (`[240,0,1]`) and applies armor-bypassing damage (`weapon = 255`).
+  - `kick <p> [reason]` (`0x1401532f0` → `FUN_1401502a0`): resolves by name, IP, or ID; broadcasts reliable `[253, id, 2]` (no reason) or
+    `[253, id, 16, reason (wstr)]` and closes the connection.
+  - `killplayer <id>` (`0x140149ae0`), `spawnplayer <id> <x> <y>` (`0x14017c910`), `setweapon <id> <wpn>` (`0x140159700`),
+    `sv_restart` / `sv_restartround [delay]` (`0x14015d2a0`), `endround [mode]` (`0x14015d3c0`), `listplayers` (`0x1401417d9`).
