@@ -93,3 +93,8 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - Verified: `build.bat` compiles cleanly (`test_cs2d.exe`, `cs2d_client.exe`, `cs2d_server.exe`), `test_cs2d.exe` **68 / 68** tests pass (`test_server_phase6_lua`). `cs2d_server.exe -offline` starts and loads maps seamlessly.
 - Left: Server protocol end-to-end regression validation against live game scenarios.
 
+
+## 2026-10-16 — Claude — dedicated: [237] live cvar broadcast (all ids from the original)
+- Decompiled the sender `FUN_14015d960` (REA, saved to `docs/dump/dedicated/`) and mapped every call-site id to its cvar (23 ids, see `knowledge/dedicated-server.md`). The original only sends on a real change; strings are 1 / 11 / 12, the rest i32.
+- `sv_broadcast_setting` (`src/cs2d_server.c`) now follows that: old-vs-new check, string/i32, raw `sv_daylighttime`; `cs2d_sv_settings_get` also reads the typed int fields for settings still at default. Test: `test_server_phase7_transfer_and_spray` case 4 (70/70).
+- Not done: `connect_attempt` hook wiring (where it runs / return mapping not decompiled); id 21 / 25 senders; Phase 8 live proxy comparison.

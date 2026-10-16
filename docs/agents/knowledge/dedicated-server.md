@@ -300,4 +300,16 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
 - **Console Log Hook (`hook "log"`):**
   - `cs2d_server_print` dispatches the `"log"` hook with color-stripped text to the active server instance, protected against recursion via `s_in_log` guard.
 
+## Live cvar change [237] (`FUN_14015d960`, dump `docs/dump/dedicated/FUN_14015d960_setting_broadcast.c`)
 
+- Each cvar handler in the console parser (`FUN_140140a00`) stores the value and calls `FUN_14015d960(id, int, _, str)`
+  **only if the value changed** (`cmp [rax+4], edx`). The function, in server mode (`DAT_1407dfe48`), sends reliable
+  `[237, id u8, value]` to every connection whose player has `+0xf4 == 1`: ids **1, 11, 12 = u8-length string**, every
+  other id an **i32** (the raw stored value; `sv_daylighttime` has no +1 here, unlike `[252,6]`).
+- Ids (ecx at the call sites 0x14014b867..0x14014d143): 1 sv_name, 2 sv_fow, 3 sv_specmode, 4 mp_roundtime,
+  5 mp_freezetime, 6 mp_c4timer, 7 sv_gamemode (clamped 0..4), 8 mp_respawndelay, 9 mp_infammo, 10 mp_radar,
+  11 mp_supply_items, 12 mp_buymenu, 13 mp_hud, 14 mp_flashlight, 15 mp_smokeblock, 16 mp_hovertext, 17 sv_maxplayers,
+  18 sv_friendlyfire, 19 sv_forcelight, 20 sv_daylighttime, 22 mp_hudscale, 23 sv_voicechat, 24 sv_offscreendamage.
+  21 and 25 are not console cvars (the function prints a message; callers 0x14015eab9 / 0x14015fe9b, not identified).
+- Our client decodes only some of them (client `FUN_1401e3f10`: 3, 11, 14, 16, 19, 20, 22 do something visible); the
+  rest are stored in the settings arrays. Port: `sv_broadcast_setting` in `src/cs2d_server.c`.

@@ -159,6 +159,15 @@ const char *cs2d_sv_settings_get(const cs2d_sv_settings_t *s, const char *key)
     if (_stricmp(key, "sv_password") == 0) return s->sv_password;
     if (_stricmp(key, "mp_luaserver") == 0) return s->mp_luaserver;
     if (_stricmp(key, "mp_supply_items") == 0) return s->mp_supply_items;
+    /* numeric settings still at their default (never set by cfg / console): read the typed field */
+    static char num[16];
+#define SV_GET_INT(name) if (_stricmp(key, #name) == 0) { snprintf(num, sizeof(num), "%d", (int)s->name); return num; }
+    SV_GET_INT(sv_fow) SV_GET_INT(sv_specmode) SV_GET_INT(sv_gamemode) SV_GET_INT(mp_roundtime)
+    SV_GET_INT(mp_freezetime) SV_GET_INT(mp_c4timer) SV_GET_INT(mp_respawndelay) SV_GET_INT(mp_infammo)
+    SV_GET_INT(mp_flashlight) SV_GET_INT(mp_hovertext) SV_GET_INT(sv_maxplayers) SV_GET_INT(sv_friendlyfire)
+    SV_GET_INT(sv_forcelight) SV_GET_INT(sv_daylighttime) SV_GET_INT(mp_hudscale) SV_GET_INT(sv_voicechat)
+    SV_GET_INT(sv_offscreendamage)
+#undef SV_GET_INT
     return NULL;
 }
 
@@ -1429,6 +1438,51 @@ static void sv_rest_arg(const char *cursor, char *out, size_t out_size)
 }
 
 /* FUN_140140a00: execute a server console / RCON command */
+/* Live cvar change: [237, setting, value] reliable to every joined player (+0xf4 == 1). Sender FUN_14015d960
+ * (docs/dump/dedicated/FUN_14015d960_setting_broadcast.c): each console cvar handler in FUN_140140a00 calls it
+ * only when the value actually changed. Setting 1 / 11 / 12 carry a u8-length string, all others an i32
+ * (the raw stored value: sv_daylighttime is sent without the +1 of [252,6]). The id of each cvar is the ecx
+ * immediate of its call site (0x14014b867..0x14014d143). Settings 21 and 25 are not cvars (they print a
+ * message, callers 0x14015eab9 / 0x14015fe9b), and are not sent here. */
+static const struct { const char *name; int id; bool is_str; } sv_setting_ids[] = {
+    { "sv_name", 1, true },       { "sv_fow", 2, false },          { "sv_specmode", 3, false },
+    { "mp_roundtime", 4, false }, { "mp_freezetime", 5, false },   { "mp_c4timer", 6, false },
+    { "sv_gamemode", 7, false },  { "mp_respawndelay", 8, false }, { "mp_infammo", 9, false },
+    { "mp_radar", 10, false },    { "mp_supply_items", 11, true }, { "mp_buymenu", 12, true },
+    { "mp_hud", 13, false },      { "mp_flashlight", 14, false },  { "mp_smokeblock", 15, false },
+    { "mp_hovertext", 16, false },{ "sv_maxplayers", 17, false },  { "sv_friendlyfire", 18, false },
+    { "sv_forcelight", 19, false },{ "sv_daylighttime", 20, false },{ "mp_hudscale", 22, false },
+    { "sv_voicechat", 23, false },{ "sv_offscreendamage", 24, false },
+};
+
+static void sv_broadcast_setting(cs2d_server_t *sv, const char *key, const char *old_val)
+{
+    for (size_t k = 0; k < sizeof(sv_setting_ids) / sizeof(sv_setting_ids[0]); k++) {
+        if (_stricmp(key, sv_setting_ids[k].name) != 0) continue;
+        const char *cur = cs2d_sv_settings_get(&sv->set, key);
+        if (!cur) cur = "";
+        if (!old_val) old_val = "";
+        bool is_str = sv_setting_ids[k].is_str;
+        if (is_str ? strcmp(cur, old_val) == 0 : atoi(cur) == atoi(old_val)) return;
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            cs2d_sv_conn_t *oc = conn_of_player(sv, i);
+            if (!oc || !sv->players[i].joined) continue;
+            cs2d_pkt_t *p = sv_packet(sv, oc, true, false);
+            cs2d_pkt_w_byte(p, 237);
+            cs2d_pkt_w_byte(p, (uint8_t)sv_setting_ids[k].id);
+            if (is_str) {
+                size_t n = strlen(cur);
+                if (n > 255) n = 255;
+                cs2d_pkt_w_byte(p, (uint8_t)n);
+                for (size_t c = 0; c < n; c++) cs2d_pkt_w_byte(p, (uint8_t)cur[c]);
+            } else {
+                cs2d_pkt_w_int(p, atoi(cur));
+            }
+        }
+        return;
+    }
+}
+
 bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
 {
     if (!sv || !cmd_line) return false;
@@ -1682,7 +1736,11 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
     /* Fall back to server settings cvars (sv_*, mp_*, etc.) */
     sv_rest_arg(cur, a1, sizeof(a1));
     if (a1[0] != '\0') {
+        char old_val[256];
+        const char *prev = cs2d_sv_settings_get(&sv->set, cmd);
+        snprintf(old_val, sizeof(old_val), "%s", prev ? prev : "");
         cfg_set(&sv->set, cmd, a1);
+        sv_broadcast_setting(sv, cmd, old_val);
         return true;
     }
     return false;

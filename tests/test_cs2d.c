@@ -7254,6 +7254,37 @@ static bool test_server_phase7_transfer_and_spray(void)
     /* 3. File transfer: verify sv_maptransfer configuration */
     if (sv.set.sv_maptransfer != 1) TEST_FAIL("file transfer", "sv_maptransfer default should be enabled");
 
+    /* 4. Live cvar change [237, setting, i32] (client decoder FUN_1401e3f10: 14 = mp_flashlight) reaches joined players */
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].next_seq = 2;
+    sv.players[1].conn = 0;
+    sv.players[2].conn = 1; /* connection 1 stays inactive */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    /* FUN_14015d960 callers send only on a real change: mp_flashlight defaults to 1, so "1" is silent, "0" is sent */
+    cs2d_sv_exec(&sv, "mp_flashlight 1");
+    if (sv.conns[0].out.pos != 0) TEST_FAIL("[237] live cvar", "unchanged mp_flashlight must not be broadcast");
+    cs2d_sv_exec(&sv, "mp_flashlight 0");
+    if (sv.conns[0].out.pos != 6 || sv.conns[0].out.buf[0] != 237 || sv.conns[0].out.buf[1] != 14 ||
+        sv.conns[0].out.buf[2] != 0) {
+        TEST_FAIL("[237] live cvar", "mp_flashlight 0 did not broadcast [237, 14, 0 i32]");
+    }
+    /* string setting 12 (mp_buymenu): u8 length + chars; sv_daylighttime (20) goes out raw */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_exec(&sv, "mp_buymenu 1,2");
+    if (sv.conns[0].out.pos != 6 || sv.conns[0].out.buf[1] != 12 || sv.conns[0].out.buf[2] != 3 ||
+        sv.conns[0].out.buf[3] != '1') {
+        TEST_FAIL("[237] live cvar", "mp_buymenu did not broadcast [237, 12, len, chars]");
+    }
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_exec(&sv, "sv_daylighttime 5");
+    if (sv.conns[0].out.pos != 6 || sv.conns[0].out.buf[1] != 20 || sv.conns[0].out.buf[2] != 5) {
+        TEST_FAIL("[237] live cvar", "sv_daylighttime 5 did not broadcast [237, 20, 5 i32]");
+    }
+
     for (int i = 0; i < 4; i++) free(sv.conns[i].pending);
     cs2d_dynobj_clear(&sv.dynobj);
 
