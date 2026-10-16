@@ -86,3 +86,54 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   the mover** (`MP_ANTISPEEDER` / "is too fast - reset position!"), not the relay.
 - **`[248]` (`FUN_1401184f0`, at the end of a successful `[252,1]`):** `[248,id,name,spray,usgn i32,usgn name
   u16str,steam id i64,steam name u16str,os]` reliable to every joined player but the new one.
+- **Rounds & End (`FUN_14015c840`, `FUN_1402520b0`):** `[226, 1, winner, mvp, reason_lstr, mode_byte]` broadcast on
+  round end; score awarded, intermission countdown (default 3 s); `[22, reason, count, ...]` broadcast on round start
+  resetting surviving players and spawning new/dead players.
+- **Combat relay (`FUN_140158060`, `FUN_140191a70`, `FUN_1401fd590`):** `[9, pid, type]` weapon selection broadcast;
+  `[7, pid, x, y, rot, weapon]` primary attack relay; `[8, pid, mode]` secondary attack relay.
+- **Damage & Kills (`FUN_1401658c0`, `FUN_1401647d0`):** damage reduces armor by ~35% (`ceil(dmg * 0.35)` absorbed),
+  remainder to HP; broadcasts reliable `[17, victim, attacker, hp, armor]`. On fatal damage: sets `alive = 0`,
+  increments victim deaths, awards killer score (+1, +$300 for enemy kill; -1 / penalty for team kill / suicide),
+  broadcasts reliable `[19, victim, killer, assist, weapon, x, y]`.
+- **Buy (`FUN_1401cd710`):** client sends `[23, type]`; server verifies price and player balance, deducts money,
+  adds item to inventory (`sv_give`), handles equipment/armor limits, broadcasts `[9]` on weapon change, and responds
+  reliable `[23, id, type, money u16, 0]`.
+- **Drop `[24]` & Collect `[25]` (`FUN_14016bbd0`, `0x1401cda30`, `0x1401e49da`):**
+  - Drop: client sends `[24, type]`. Server validates player owns item; cannot drop knife / melee (types 50, 74, 78).
+    Removes item from inventory, switches held weapon to `bestweapon` if holding the dropped item, creates ground item
+    slot, clears bomb/kit carried flags, and broadcasts reliable `[24, pid, type, clip, reserve, sub, item_id, tx, ty, held_weapon]` (15 bytes).
+  - Collect: **client never sends [25]** (dedicated dispatch case 18 rejects it with code 3). Server is authoritative
+    and checks living players in contact with ground items on the same tile every frame (`cs2d_sv_step_items`).
+    Validates slot rules (cannot carry multiple primary or secondary weapons, bomb only for T, defuse kit only for CT,
+    kevlar only if armor < 100). On pickup: adds item to inventory preserving dropped clip and reserve, removes ground item,
+    and broadcasts reliable `[25, pid, item_id, type, clip, reserve, 0]` (10 bytes).
+  - Fadeout `[40]` (`0x140a14d94`): dropped items age 1 s per second; after 15 s server removes ground item and broadcasts
+    reliable `[40, item_id u16]` (3 bytes).
+- **Reload `[16]` (`FUN_14018b1c0`, `0x1401cc750`):** client sends `[16, mode]`. In mode 2 (clip refilled), server
+  transfers ammunition from player reserve to clip (`needed = clip_size - clip`), clamped to available reserve, and broadcasts
+  `[16, pid, mode]` to all players.
+- **Chat `[240]` (`FUN_140153900`, `0x1401bd120`):** client sends `[240, mode, len, UTF-16LE]`. Mode 1 = all, Mode 2 = team.
+  Server verifies alive status vs `mp_deadchat` (dead players cannot chat to living players unless `mp_deadchat 1`),
+  logs to console (`cs2d_server_print`), and broadcasts reliable `[240, pid, mode, len, UTF-16LE]` to eligible recipients.
+- **Spectator `[67]` & `[32]` (`0x140108260`, `FUN_1401ced00`):**
+  - `[67, target_id]`: updates player's `spectating_player` target.
+  - `[32, sx, sy]`: free-look position updates sent by dead/spectating players where `sx/sy = pos + 32768`. Server decodes
+    via `pos = s - 32768` and sets player `x` and `y`.
+  - Aim relay: when a player moves/rotates, spectators following that player receive `[70, id, rot, aim]`, `[71, id, x, y, aim]`,
+- **Team Switch Suicide (`FUN_1401624c0`, `FUN_1401647d0`):**
+  If a living player (`pl->alive`) on team 1 (T) or 2 (CT) switches team (to spectator or to the opposing team), the
+  server immediately triggers suicide via `cs2d_sv_kill(sv, id, 0, 0, 0)`: victim deaths incremented, score updated,
+  and reliable `[19, victim, 0, 0, 0, x, y]` broadcast to all players.
+- **Respawn Timers & Modes (`FUN_14017cbb0`, `FUN_1401cf8d0`, `[39]`):**
+  - In modes with `respawn == 1` (Deathmatch mode 1, Team Deathmatch mode 2, Zombies mode 3, etc.): dead players automatically
+    respawn after `mp_respawndelay` seconds (`sv_gamemode` mode rule table). `cs2d_sv_step_respawns` checks `death_ms` every
+    frame and calls `cs2d_sv_spawn`.
+  - Opcode 39 (`[39]`): client request to respawn. Server checks that the gamemode allows respawns (`sv_mode(sv)->respawn == 1`)
+    and that `mp_respawndelay` seconds have elapsed since death before spawning the player.
+- **Position Validation & Anti-Speeder (`FUN_1401c99a0`, `FUN_1401ca500`):**
+  - Limit & Collision checks (`FUN_1401c99a0`): coordinates must remain within `[16 .. width*32 - 16]` and `[16 .. height*32 - 16]`.
+    Target tile must not be solid (`cs2d_map_is_solid(map, tx, ty)`). If a player steps outside the map or into a solid wall,
+    server rejects the movement and resets player position via unreliable `[11, id, last_valid_x, last_valid_y]`.
+  - Anti-speeder (`FUN_1401ca500`): calculates distance moved since `last_move_ms`. If `dist > 160.0f` and velocity
+    `dist / dt > 650.0f` px/s, server logs `"MP_ANTISPEEDER: %s is too fast - reset position!"` to console and sends reliable
+    `[10, id, last_valid_x, last_valid_y]` back to the mover.

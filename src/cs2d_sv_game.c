@@ -12,6 +12,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 /* Game mode tables, index = sv_gamemode (init at 0x14021f4f4..0x14021fbef; proxy: CT gets USP + knife in
  * mode 0). "items" are the comma lists of PTR_DAT_14059c080 (T) / 0x14059c078 (CT), "melee" the weapon
@@ -91,6 +92,11 @@ static void sv_give(cs2d_sv_player_t *pl, int type)
 {
     if (type <= 0 || pl->item_count >= (int)sizeof(pl->items)) return;
     pl->items[pl->item_count++] = (uint8_t)type;
+    const cs2d_weapon_def_t *def = cs2d_weapon_get((uint8_t)type);
+    if (def) {
+        pl->clip[type] = (int16_t)def->clip_size;
+        pl->reserve[type] = (int16_t)def->max_reserve;
+    }
 }
 
 void cs2d_sv_write_spawn(cs2d_pkt_t *p, int id, const cs2d_sv_player_t *pl)
@@ -147,6 +153,9 @@ void cs2d_sv_spawn(cs2d_server_t *sv, int id)
     if (!sv_pick_spawn(sv, id, &x, &y)) return;
     pl->x = x;
     pl->y = y;
+    pl->last_valid_x = x;
+    pl->last_valid_y = y;
+    pl->last_move_ms = cs2d_sv_now();
     pl->health = 100;
     pl->armor = 0;
     pl->alive = true;
@@ -225,7 +234,11 @@ void cs2d_sv_team(cs2d_server_t *sv, int id, int team, int look)
     }
     if (team >= 1 && look == 4) look = cs2d_sv_rand(0, 3); /* LAB_14016371c: random skin */
 
-    /* Leaving a team alive kills the player (FUN_1401647d0): not ported yet, the player just changes team */
+    /* Leaving a team alive kills the player (FUN_1401624c0) */
+    int old_team = pl->team;
+    if (pl->alive && old_team >= 1 && old_team <= 2 && old_team != team) {
+        cs2d_sv_kill(sv, id, 0, 0, 0);
+    }
     pl->team_changes++;
     pl->team = team;
     pl->look = look;
@@ -279,23 +292,47 @@ void cs2d_sv_relay_movement(cs2d_server_t *sv)
                 if (dy < 0) dy = -dy;
                 if (!(dx < 525.0f && dy < 340.0f)) continue;
             }
-            /* Spectators following this player get the aim too ([70]/[71]/[72], DAT_1405a64ac): not ported */
+            /* Spectators following this player get the aim too ([70]/[71]/[72], DAT_1405a64ac) */
+            bool spec_follow = (!o->alive && o->spectating_player == id);
             cs2d_pkt_t *p = cs2d_sv_packet(sv, c, false, false);
-            if (pl->move_flag < 1) {
-                cs2d_pkt_w_byte(p, 12);
-                cs2d_pkt_w_byte(p, (uint8_t)id);
-                cs2d_pkt_w_short(p, rot);
-            } else if (pl->rot_flag == 0) {
-                cs2d_pkt_w_byte(p, (uint8_t)(pl->move_flag == 1 ? 10 : 11));
-                cs2d_pkt_w_byte(p, (uint8_t)id);
-                cs2d_pkt_w_short(p, (uint16_t)(int)pl->x);
-                cs2d_pkt_w_short(p, (uint16_t)(int)pl->y);
+            if (spec_follow) {
+                uint8_t aim_scaled = (uint8_t)(int)(pl->aim * 0.512f);
+                if (pl->move_flag < 1) {
+                    cs2d_pkt_w_byte(p, 70);
+                    cs2d_pkt_w_byte(p, (uint8_t)id);
+                    cs2d_pkt_w_short(p, rot);
+                    cs2d_pkt_w_byte(p, aim_scaled);
+                } else if (pl->rot_flag == 0) {
+                    cs2d_pkt_w_byte(p, (uint8_t)(pl->move_flag == 1 ? 71 : 72));
+                    cs2d_pkt_w_byte(p, (uint8_t)id);
+                    cs2d_pkt_w_short(p, (uint16_t)(int)pl->x);
+                    cs2d_pkt_w_short(p, (uint16_t)(int)pl->y);
+                    cs2d_pkt_w_byte(p, aim_scaled);
+                } else {
+                    cs2d_pkt_w_byte(p, 72);
+                    cs2d_pkt_w_byte(p, (uint8_t)id);
+                    cs2d_pkt_w_short(p, (uint16_t)(int)pl->x);
+                    cs2d_pkt_w_short(p, (uint16_t)(int)pl->y);
+                    cs2d_pkt_w_short(p, rot);
+                    cs2d_pkt_w_byte(p, aim_scaled);
+                }
             } else {
-                cs2d_pkt_w_byte(p, (uint8_t)(pl->move_flag == 1 ? 13 : 14));
-                cs2d_pkt_w_byte(p, (uint8_t)id);
-                cs2d_pkt_w_short(p, (uint16_t)(int)pl->x);
-                cs2d_pkt_w_short(p, (uint16_t)(int)pl->y);
-                cs2d_pkt_w_short(p, rot);
+                if (pl->move_flag < 1) {
+                    cs2d_pkt_w_byte(p, 12);
+                    cs2d_pkt_w_byte(p, (uint8_t)id);
+                    cs2d_pkt_w_short(p, rot);
+                } else if (pl->rot_flag == 0) {
+                    cs2d_pkt_w_byte(p, (uint8_t)(pl->move_flag == 1 ? 10 : 11));
+                    cs2d_pkt_w_byte(p, (uint8_t)id);
+                    cs2d_pkt_w_short(p, (uint16_t)(int)pl->x);
+                    cs2d_pkt_w_short(p, (uint16_t)(int)pl->y);
+                } else {
+                    cs2d_pkt_w_byte(p, (uint8_t)(pl->move_flag == 1 ? 13 : 14));
+                    cs2d_pkt_w_byte(p, (uint8_t)id);
+                    cs2d_pkt_w_short(p, (uint16_t)(int)pl->x);
+                    cs2d_pkt_w_short(p, (uint16_t)(int)pl->y);
+                    cs2d_pkt_w_short(p, rot);
+                }
             }
         }
         pl->move_flag = 0;
@@ -548,6 +585,7 @@ void cs2d_sv_kill(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id
 
     v->health = 0;
     v->alive = false;
+    v->death_ms = cs2d_sv_now();
     if (weapon != 0xfc) v->deaths++;
 
     cs2d_sv_player_t *k = (killer_id >= 1 && killer_id <= CS2D_SV_MAX_PLAYERS && sv->players[killer_id].used)
@@ -680,5 +718,382 @@ void cs2d_sv_buy(cs2d_server_t *sv, int id, int weapon_id)
         cs2d_sv_select_weapon(sv, id, weapon_id, 0);
     }
 }
+
+/* FUN_14016bbd0: player drops a carried item -> [24, pid, type, clip, res, sub, item_id, tx, ty, held_weapon] */
+void cs2d_sv_drop(cs2d_server_t *sv, int id, int type, int clip, int reserve, int sub)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team < 1) return;
+    if (!sv_has_item(pl, type)) return;
+
+    /* Melee weapons cannot be dropped: Knife (50), Wrench (74), Claw (78) */
+    if (type == CS2D_WEP_KNIFE || type == 74 || type == 78) return;
+
+    /* Remove from player's inventory */
+    int idx = -1;
+    for (int i = 0; i < pl->item_count; i++) {
+        if (pl->items[i] == type) { idx = i; break; }
+    }
+    if (idx >= 0) {
+        for (int i = idx; i < pl->item_count - 1; i++) pl->items[i] = pl->items[i + 1];
+        pl->item_count--;
+    }
+    pl->clip[type] = 0;
+    pl->reserve[type] = 0;
+
+    /* Clear special byte bit 1 if bomb or defuse kit */
+    if (type == CS2D_WEP_BOMB || type == CS2D_WEP_DEFUSEKIT) {
+        pl->special &= ~1;
+    }
+
+    /* If held weapon was dropped, switch to next best weapon */
+    if (pl->weapon == type) {
+        sv_best_weapon(sv, pl);
+    }
+
+    /* Allocate ground item */
+    int slot = -1;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (!sv->items[i].active) { slot = i; break; }
+    }
+    if (slot < 0) slot = 0;
+
+    if (sv->next_item_id == 0) sv->next_item_id = 1;
+    uint16_t item_id = (uint16_t)sv->next_item_id++;
+
+    int tx = (int)(pl->x * 0.03125f);
+    int ty = (int)(pl->y * 0.03125f);
+    if (tx < 0) tx = 0;
+    if (ty < 0) ty = 0;
+
+    cs2d_sv_item_t *it = &sv->items[slot];
+    it->active = true;
+    it->id = item_id;
+    it->type = (uint8_t)type;
+    it->clip = (uint16_t)clip;
+    it->reserve = (uint16_t)reserve;
+    it->sub = (uint8_t)sub;
+    it->tile_x = (uint16_t)tx;
+    it->tile_y = (uint16_t)ty;
+    it->dropped = true;
+    it->drop_time_ms = cs2d_sv_now();
+
+    /* Broadcast [24, id, type, clip u16, reserve u16, sub u8, item_id u16, tx u16, ty u16, held_weapon u8] */
+    uint8_t msg[15];
+    msg[0] = 24;
+    msg[1] = (uint8_t)id;
+    msg[2] = (uint8_t)type;
+    msg[3] = (uint8_t)(clip & 0xff);
+    msg[4] = (uint8_t)((clip >> 8) & 0xff);
+    msg[5] = (uint8_t)(reserve & 0xff);
+    msg[6] = (uint8_t)((reserve >> 8) & 0xff);
+    msg[7] = (uint8_t)sub;
+    msg[8] = (uint8_t)(item_id & 0xff);
+    msg[9] = (uint8_t)((item_id >> 8) & 0xff);
+    msg[10] = (uint8_t)(tx & 0xff);
+    msg[11] = (uint8_t)((tx >> 8) & 0xff);
+    msg[12] = (uint8_t)(ty & 0xff);
+    msg[13] = (uint8_t)((ty >> 8) & 0xff);
+    msg[14] = (uint8_t)pl->weapon;
+
+    sv_broadcast_joined(sv, msg, sizeof(msg));
+}
+
+/* Ground item pickups [25] and 15s drop lifetime fadeout [40] (FUN_14004cd20) */
+void cs2d_sv_step_items(cs2d_server_t *sv)
+{
+    uint32_t now = cs2d_sv_now();
+
+    /* 1. Item fadeout [40] for dropped items older than 15s (0x140a14d94) */
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        cs2d_sv_item_t *it = &sv->items[i];
+        if (!it->active || !it->dropped) continue;
+        if (now - it->drop_time_ms >= 15000) {
+            it->active = false;
+            uint8_t msg[3] = { 40, (uint8_t)(it->id & 0xff), (uint8_t)((it->id >> 8) & 0xff) };
+            sv_broadcast_joined(sv, msg, sizeof(msg));
+        }
+    }
+
+    /* 2. Item collection [25] */
+    for (int pid = 1; pid <= CS2D_SV_MAX_PLAYERS; pid++) {
+        cs2d_sv_player_t *pl = &sv->players[pid];
+        if (!pl->used || !pl->alive || pl->team < 1) continue;
+
+        int ptx = (int)(pl->x * 0.03125f);
+        int pty = (int)(pl->y * 0.03125f);
+
+        for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+            cs2d_sv_item_t *it = &sv->items[i];
+            if (!it->active) continue;
+            if (it->tile_x != ptx || it->tile_y != pty) continue;
+
+            const cs2d_weapon_def_t *def = cs2d_weapon_get(it->type);
+            if (!def) continue;
+
+            bool can_pickup = false;
+            if (def->slot == CS2D_SLOT_PRIMARY) {
+                bool has_primary = false;
+                for (int k = 0; k < pl->item_count; k++) {
+                    if (cs2d_weapon_hud_slot(pl->items[k]) == 1) { has_primary = true; break; }
+                }
+                if (!has_primary) can_pickup = true;
+            } else if (def->slot == CS2D_SLOT_SECONDARY) {
+                bool has_secondary = false;
+                for (int k = 0; k < pl->item_count; k++) {
+                    if (cs2d_weapon_hud_slot(pl->items[k]) == 2) { has_secondary = true; break; }
+                }
+                if (!has_secondary) can_pickup = true;
+            } else if (it->type == CS2D_WEP_BOMB) {
+                if (pl->team == 1 && !sv_has_item(pl, CS2D_WEP_BOMB)) {
+                    can_pickup = true;
+                    pl->special |= 1;
+                }
+            } else if (it->type == CS2D_WEP_DEFUSEKIT) {
+                if (pl->team == 2 && !(pl->special & 1)) {
+                    can_pickup = true;
+                    pl->special |= 1;
+                }
+            } else if (it->type == CS2D_WEP_KEVLAR || it->type == CS2D_WEP_KEVLARHELM) {
+                if (pl->armor < 100) {
+                    can_pickup = true;
+                    pl->armor = 100;
+                }
+            } else if (def->slot == CS2D_SLOT_GRENADE) {
+                can_pickup = true;
+            } else {
+                if (!sv_has_item(pl, it->type)) can_pickup = true;
+            }
+
+            if (can_pickup) {
+                sv_give(pl, it->type);
+                pl->clip[it->type] = (int16_t)it->clip;
+                pl->reserve[it->type] = (int16_t)it->reserve;
+                if (def->slot == CS2D_SLOT_PRIMARY || def->slot == CS2D_SLOT_SECONDARY) {
+                    pl->weapon = it->type;
+                }
+                uint16_t taken_id = it->id;
+                uint8_t type = it->type;
+                uint16_t clip = it->clip;
+                uint16_t reserve = it->reserve;
+                it->active = false;
+
+                /* Broadcast [25, player, item_id u16, type u8, clip u16, reserve u16, 0 u8] */
+                uint8_t msg[10];
+                msg[0] = 25;
+                msg[1] = (uint8_t)pid;
+                msg[2] = (uint8_t)(taken_id & 0xff);
+                msg[3] = (uint8_t)((taken_id >> 8) & 0xff);
+                msg[4] = type;
+                msg[5] = (uint8_t)(clip & 0xff);
+                msg[6] = (uint8_t)((clip >> 8) & 0xff);
+                msg[7] = (uint8_t)(reserve & 0xff);
+                msg[8] = (uint8_t)((reserve >> 8) & 0xff);
+                msg[9] = 0;
+                sv_broadcast_joined(sv, msg, sizeof(msg));
+                break;
+            }
+        }
+    }
+}
+
+/* FUN_14018b1c0: reload message [16, id, mode] */
+void cs2d_sv_reload(cs2d_server_t *sv, int id, int mode)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team < 1) return;
+
+    if (mode == 2 && pl->weapon > 0) {
+        const cs2d_weapon_def_t *def = cs2d_weapon_get((uint8_t)pl->weapon);
+        if (def && def->clip_size > 0) {
+            int needed = def->clip_size - pl->clip[pl->weapon];
+            if (needed > 0) {
+                int taken = pl->reserve[pl->weapon];
+                if (taken > needed) taken = needed;
+                pl->reserve[pl->weapon] -= (int16_t)taken;
+                pl->clip[pl->weapon] += (int16_t)taken;
+            }
+        }
+    }
+
+    uint8_t msg[3] = { 16, (uint8_t)id, (uint8_t)mode };
+    sv_broadcast_joined(sv, msg, sizeof(msg));
+}
+
+/* FUN_140153900: chat message [240, id, mode, char_len, UTF-16LE] */
+void cs2d_sv_chat(cs2d_server_t *sv, int id, int mode, int char_len, const uint16_t *chars)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->joined) return;
+    if (char_len < 0 || char_len > 255) return;
+
+    /* Decode UTF-16LE to UTF-8 for server console output */
+    char utf8_text[1024];
+    int out = 0;
+    for (int i = 0; i < char_len && out < (int)sizeof(utf8_text) - 4; i++) {
+        uint16_t ch = chars[i];
+        if (ch < 0x80) {
+            utf8_text[out++] = (char)ch;
+        } else if (ch < 0x800) {
+            utf8_text[out++] = (char)(0xC0 | (ch >> 6));
+            utf8_text[out++] = (char)(0x80 | (ch & 0x3F));
+        } else {
+            utf8_text[out++] = (char)(0xE0 | (ch >> 12));
+            utf8_text[out++] = (char)(0x80 | ((ch >> 6) & 0x3F));
+            utf8_text[out++] = (char)(0x80 | (ch & 0x3F));
+        }
+    }
+    utf8_text[out] = '\0';
+    cs2d_server_print("%s%s: %s", (mode == 2 ? "(TEAM) " : ""), pl->name, utf8_text);
+
+    /* Broadcast to eligible recipients */
+    for (int q = 1; q <= CS2D_SV_MAX_PLAYERS; q++) {
+        cs2d_sv_player_t *recip = &sv->players[q];
+        cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, q);
+        if (!recip->used || !recip->joined || !c) continue;
+
+        if (mode == 2) {
+            if (recip->team != pl->team) continue;
+            if (!pl->alive && sv->set.mp_deadchat == 0 && recip->alive) continue;
+        } else {
+            if (!pl->alive && sv->set.mp_deadchat == 0 && recip->alive) continue;
+        }
+
+        cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+        cs2d_pkt_w_byte(p, 240);
+        cs2d_pkt_w_byte(p, (uint8_t)id);
+        cs2d_pkt_w_byte(p, (uint8_t)mode);
+        cs2d_pkt_w_short(p, (uint16_t)char_len);
+        for (int i = 0; i < char_len; i++) cs2d_pkt_w_short(p, chars[i]);
+    }
+}
+
+/* 0x140108260: spectator target player [67, target_pid] */
+void cs2d_sv_spec_target(cs2d_server_t *sv, int id, int target_pid)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used) return;
+    pl->spectating_player = target_pid;
+}
+
+/* FUN_1401ced00: spectator camera position [32, sx u16, sy u16] */
+void cs2d_sv_spec_pos(cs2d_server_t *sv, int id, int sx, int sy)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || pl->alive) return;
+    pl->x = (float)(sx - 32768);
+    pl->y = (float)(sy - 32768);
+    pl->move_flag = 0;
+    pl->rot_flag = 0;
+}
+
+/* FUN_1401c99a0 (position validation) & FUN_1401ca500 (anti-speeder):
+ * Validates player movement; resets position if colliding with solid walls or moving too fast. */
+bool cs2d_sv_validate_move(cs2d_server_t *sv, int id, float new_x, float new_y, int op)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return false;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team < 1) return false;
+    cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, id);
+
+    /* 1. Map boundary check (if map is loaded) */
+    if (sv->map_loaded && sv->map.width > 0 && sv->map.height > 0) {
+        float max_x = (float)(sv->map.width * 32 - 16);
+        float max_y = (float)(sv->map.height * 32 - 16);
+        if (new_x < 16.0f || new_x > max_x || new_y < 16.0f || new_y > max_y) {
+            /* Out of bounds: send [11] to reset client position (FUN_1401c99a0) */
+            if (c) {
+                cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+                cs2d_pkt_w_byte(p, 11);
+                cs2d_pkt_w_byte(p, (uint8_t)id);
+                cs2d_pkt_w_short(p, (uint16_t)(int)pl->last_valid_x);
+                cs2d_pkt_w_short(p, (uint16_t)(int)pl->last_valid_y);
+            }
+            return false;
+        }
+
+        /* 2. Solid wall check */
+        if (cs2d_map_is_solid(&sv->map, new_x, new_y)) {
+            /* Inside a solid tile: reset position to last valid via [11] */
+            if (c) {
+                cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+                cs2d_pkt_w_byte(p, 11);
+                cs2d_pkt_w_byte(p, (uint8_t)id);
+                cs2d_pkt_w_short(p, (uint16_t)(int)pl->last_valid_x);
+                cs2d_pkt_w_short(p, (uint16_t)(int)pl->last_valid_y);
+            }
+            return false;
+        }
+    }
+
+    /* 3. Anti-speeder check (FUN_1401ca500):
+     * Calculate delta distance and time elapsed since last move */
+    uint32_t now = cs2d_sv_now();
+    float dx = new_x - pl->last_valid_x;
+    float dy = new_y - pl->last_valid_y;
+    float dist = sqrtf(dx * dx + dy * dy);
+    float dt = (float)(now - pl->last_move_ms) * 0.001f;
+    if (dt < 0.010f) dt = 0.010f; /* clamp to avoid divide-by-zero on burst */
+
+    float speed = dist / dt;
+    /* Normal CS2D knife run speed is ~260 px/s; allow burst up to ~650 px/s or 160 px single jump */
+    if (dist > 160.0f && speed > 650.0f) {
+        cs2d_server_print("MP_ANTISPEEDER: %s is too fast - reset position!", pl->name);
+        if (c) {
+            cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+            cs2d_pkt_w_byte(p, 10);
+            cs2d_pkt_w_byte(p, (uint8_t)id);
+            cs2d_pkt_w_short(p, (uint16_t)(int)pl->last_valid_x);
+            cs2d_pkt_w_short(p, (uint16_t)(int)pl->last_valid_y);
+        }
+        return false;
+    }
+
+    /* Move is valid: commit */
+    pl->x = new_x;
+    pl->y = new_y;
+    pl->last_valid_x = new_x;
+    pl->last_valid_y = new_y;
+    pl->last_move_ms = now;
+    pl->move_flag = (op == 10) ? 1 : 2;
+    return true;
+}
+
+/* FUN_14017cbb0 / FUN_14017ca60: step respawns for modes where respawn == 1 */
+void cs2d_sv_step_respawns(cs2d_server_t *sv)
+{
+    if (sv_mode(sv)->respawn != 1) return;
+    uint32_t now = cs2d_sv_now();
+    uint32_t delay_ms = (uint32_t)(sv->set.mp_respawndelay > 0 ? sv->set.mp_respawndelay * 1000 : 0);
+
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_player_t *pl = &sv->players[i];
+        if (!pl->used || !pl->joined || pl->alive || pl->team < 1 || pl->team > 2) continue;
+        if (now - pl->death_ms >= delay_ms) {
+            cs2d_sv_spawn(sv, i);
+        }
+    }
+}
+
+/* FUN_1401cf8d0 / [39]: client clicks to respawn */
+void cs2d_sv_request_respawn(cs2d_server_t *sv, int id)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->joined || pl->alive || pl->team < 1 || pl->team > 2) return;
+    if (sv_mode(sv)->respawn != 1 && sv->set.sv_gamemode == 0) return;
+
+    uint32_t now = cs2d_sv_now();
+    uint32_t delay_ms = (uint32_t)(sv->set.mp_respawndelay > 0 ? sv->set.mp_respawndelay * 1000 : 0);
+    if (now - pl->death_ms >= delay_ms) {
+        cs2d_sv_spawn(sv, id);
+    }
+}
+
 
 

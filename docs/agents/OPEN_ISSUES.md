@@ -240,11 +240,14 @@ sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT 
   relay `FUN_1401a68e0`, `[248]` join notice, "game commencing" trigger, round end (`FUN_14015c840`, `[226]`),
   round start (`FUN_1402520b0`, `[22]`), `[253]` leave reason parsing, weapon selection `[9]` (`FUN_140158060`),
   primary fire `[7]` (`FUN_140191a70`), secondary attack relay `[8]` (`FUN_1401fd590`), damage `[17]`
-  (`FUN_1401658c0`), kill `[19]` (`FUN_1401647d0`), and buy `[23]` (`FUN_1401cd710`). Next, in order:
-  drop / collect `[24]`/`[25]`, reload `[16]`, chat `[240]`, spectate `[67]`/`[32]`, death and respawn timers per mode.
-  Gaps inside what is done: position validation `FUN_1401c99a0` + anti-speeder `FUN_1401ca500`, killing a living
-  player who changes team (`FUN_1401647d0`), the Lua `spawn` / `team` hooks, spectator aim relay `[70]-[72]`,
-  mp_startmoney default (800 is not verified), team code 12 and the per-team `+0x2a0` limits.
+  (`FUN_1401658c0`), kill `[19]` (`FUN_1401647d0`), buy `[23]` (`FUN_1401cd710`), weapon drop `[24]` (`FUN_14016bbd0`),
+  authoritative ground item collection `[25]` and 15s fadeout `[40]`, weapon reload `[16]` (`FUN_14018b1c0`),
+  in-game chat `[240]` (`FUN_140153900`), spectator camera target `[67]` & pos `[32]` with aim relay `[70]-[72]`,
+  team switch suicide (`FUN_1401624c0`), respawn modes & timers per mode (`sv_gamemode`, `mp_respawndelay`, `[39]`),
+  and position validation & anti-speeder (`FUN_1401c99a0`, `FUN_1401ca500`).
+  Next, in order: Lua `spawn` / `team` / `die` / `kill` hooks, team code 12 and the per-team `+0x2a0` limits, Phase 3 (console commands & rcon).
+  Gaps inside what is done: mp_startmoney default (800 is not verified).
+
 - **Phase 3:** console commands (`cs2d_netcode_codes.txt`, server.cfg cvars, rcon `[236]/[241]/[242]`).
 - **Phase 4:** Lua (lua_* API, `addhook` / every hook in the original order and return semantics, timers,
   `parse`, `player()`, `image()`, hudtxt, menus...). Compare with Lua probes on both servers.

@@ -911,11 +911,28 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
     case 10: case 11: { /* position [10 run / 11 walk, x, y] (FUN_1401cb570 / FUN_1401cb930) */
         if (rd_left(r) < 4) return false;
         int x = rd_short(r), y = rd_short(r);
-        /* FUN_1401c99a0 (validation) and the anti-speeder of FUN_1401ca500 are not ported yet */
         if (pl && pl->alive) {
-            pl->x = (float)x;
-            pl->y = (float)y;
-            pl->move_flag = (op == 10) ? 1 : 2;
+            cs2d_sv_validate_move(sv, c->player, (float)x, (float)y, op);
+        }
+        return true;
+    }
+    case 71: { /* move + aim: [71, x u16, y u16, aim] (FUN_1401d3fb0) */
+        if (rd_left(r) < 5) return false;
+        int x = rd_short(r), y = rd_short(r), aim = rd_byte(r);
+        if (pl && pl->alive) {
+            cs2d_sv_validate_move(sv, c->player, (float)x, (float)y, 10);
+            pl->aim = (float)aim * 2.0f;
+        }
+        return true;
+    }
+    case 72: { /* move + rot + aim: [72, x u16, y u16, rot u16, aim] (FUN_1401d4430) */
+        if (rd_left(r) < 7) return false;
+        int x = rd_short(r), y = rd_short(r), rot = rd_short(r), aim = rd_byte(r);
+        if (pl && pl->alive) {
+            cs2d_sv_validate_move(sv, c->player, (float)x, (float)y, 10);
+            pl->rot = (float)rot / 182.04445f;
+            pl->aim = (float)aim * 2.0f;
+            pl->rot_flag = 1;
         }
         return true;
     }
@@ -927,6 +944,10 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
             pl->aim = (float)aim * 2.0f;
             pl->rot_flag = 1;
         }
+        return true;
+    }
+    case 39: { /* respawn request: [39] (FUN_1401cf8d0) */
+        if (pl) cs2d_sv_request_respawn(sv, c->player);
         return true;
     }
     case 9: { /* select weapon: [9, weapon u8, mode u8] (FUN_1401c8f00) */
@@ -966,8 +987,43 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         if (pl) cs2d_sv_buy(sv, c->player, weapon_id);
         return true;
     }
-    case 32: rd_short(r); rd_short(r); return true;    /* spectator camera */
-    case 67: rd_byte(r); return true;                  /* spectated player */
+    case 24: { /* drop: [24, type u8, clip u16, reserve u16, sub u8] (FUN_1401cda30) */
+        if (rd_left(r) < 6) return false;
+        int type = rd_byte(r);
+        int clip = rd_short(r);
+        int res  = rd_short(r);
+        int sub  = rd_byte(r);
+        if (pl) cs2d_sv_drop(sv, c->player, type, clip, res, sub);
+        return true;
+    }
+    case 16: { /* reload: [16, mode u8] (FUN_1401cc750) */
+        if (rd_left(r) < 1) return false;
+        int mode = rd_byte(r);
+        if (pl) cs2d_sv_reload(sv, c->player, mode);
+        return true;
+    }
+    case 240: { /* chat: [240, mode u8, len u16, len * 2 bytes UTF-16LE] (FUN_1401bd120) */
+        if (rd_left(r) < 3) return false;
+        int mode = rd_byte(r);
+        int char_len = rd_short(r);
+        if (char_len < 0 || char_len > 255 || rd_left(r) < char_len * 2) return false;
+        uint16_t chars[256];
+        for (int i = 0; i < char_len; i++) chars[i] = (uint16_t)rd_short(r);
+        if (pl) cs2d_sv_chat(sv, c->player, mode, char_len, chars);
+        return true;
+    }
+    case 67: { /* spectated player: [67, target_pid u8] (FUN_1401d3730) */
+        if (rd_left(r) < 1) return false;
+        int target = rd_byte(r);
+        if (pl) cs2d_sv_spec_target(sv, c->player, target);
+        return true;
+    }
+    case 32: { /* spectator camera: [32, sx u16, sy u16] (FUN_1401ced00) */
+        if (rd_left(r) < 4) return false;
+        int sx = rd_short(r), sy = rd_short(r);
+        if (pl) cs2d_sv_spec_pos(sv, c->player, sx, sy);
+        return true;
+    }
     default:
         return false;
     }
@@ -1157,6 +1213,9 @@ bool cs2d_server_start(cs2d_server_t *sv, const char *map, int port, bool offlin
     sv->seed = rand() & 0x7fffffff;
     sv->start_ms = sv->round_start_ms = sv->second_ms = sv_now();
 
+    sv->next_item_id = 1;
+    memset(sv->items, 0, sizeof(sv->items));
+
     sv_load_serverinfo(sv);
     sv_load_maplist(sv);
     cs2d_server_print("----- Server started -----");
@@ -1194,6 +1253,8 @@ void cs2d_server_frame(cs2d_server_t *sv)
 
     cs2d_sv_relay_movement(sv);
     cs2d_sv_step_round(sv);
+    cs2d_sv_step_items(sv);
+    cs2d_sv_step_respawns(sv);
 
     sv->frames++;
     if (now - sv->second_ms >= 1000) {

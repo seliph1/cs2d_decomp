@@ -6049,16 +6049,208 @@ static bool test_server_join(void)
     return true;
 }
 
+static bool test_server_phase2_items_and_chat(void)
+{
+    printf("\n=== Testing Dedicated Server Phase 2: Drop/Collect, Reload, Chat & Spectator ===\n");
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.set.mp_startmoney = 16000;
+    if (!cs2d_map_load_file(&sv.map, "maps/de_dust2.map")) TEST_FAIL("Server phase 2", "de_dust2 missing");
 
+    /* Setup player 1 (CT, alive) and player 2 (T, alive) */
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].team = 2; /* CT */
+    sv.players[1].alive = true;
+    sv.players[1].health = 100;
+    sv.players[1].x = 320.0f;
+    sv.players[1].y = 320.0f;
+    sv.players[1].money = 10000;
+
+    sv.players[2].used = true;
+    sv.players[2].joined = true;
+    sv.players[2].team = 1; /* T */
+    sv.players[2].alive = true;
+    sv.players[2].health = 100;
+    sv.players[2].x = 640.0f;
+    sv.players[2].y = 640.0f;
+    sv.players[2].money = 10000;
+
+    /* Give player 1 M4A1 (32) and Knife (50) */
+    cs2d_sv_buy(&sv, 1, 32); /* buys M4A1 */
+    if (sv.players[1].weapon != 32 || sv.players[1].clip[32] != 30 || sv.players[1].reserve[32] != 90)
+        TEST_FAIL("Drop/Collect", "initial weapon state invalid");
+
+    /* 1. Drop test [24]: player 1 drops M4A1 */
+    cs2d_sv_drop(&sv, 1, 32, 25, 60, 0);
+    if (sv.players[1].weapon == 32) TEST_FAIL("Drop", "weapon not removed from player held state");
+    if (sv.items[0].active != true || sv.items[0].type != 32 || sv.items[0].clip != 25 || sv.items[0].reserve != 60)
+        TEST_FAIL("Drop", "ground item not created with proper ammo");
+    if (sv.items[0].tile_x != 10 || sv.items[0].tile_y != 10) /* 320 / 32 = 10 */
+        TEST_FAIL("Drop", "ground item tile coords incorrect");
+
+    /* Knife (50) cannot be dropped */
+    cs2d_sv_drop(&sv, 1, 50, 0, 0, 0);
+    if (sv.items[1].active) TEST_FAIL("Drop knife", "knife was incorrectly dropped");
+
+    /* 2. Collect test [25]: player 1 moves away, player 2 walks to tile (10, 10) and picks up M4A1 */
+    sv.players[1].x = 0.0f;
+    sv.players[1].y = 0.0f;
+    sv.players[2].x = 320.0f + 16.0f;
+    sv.players[2].y = 320.0f + 16.0f;
+    cs2d_sv_step_items(&sv);
+    if (sv.items[0].active) TEST_FAIL("Collect", "ground item was not picked up");
+    if (sv.players[2].weapon != 32 || sv.players[2].clip[32] != 25 || sv.players[2].reserve[32] != 60)
+        TEST_FAIL("Collect", "player 2 did not receive collected weapon & ammo");
+
+    /* 3. Reload test [16]: player 2 reloads M4A1 */
+    /* Currently clip=25, reserve=60. Max clip=30. Mode 2 finishes reload. */
+    cs2d_sv_reload(&sv, 2, 2);
+    if (sv.players[2].clip[32] != 30 || sv.players[2].reserve[32] != 55)
+        TEST_FAIL("Reload", "clip not refilled from reserve properly (needed=5, clip=30, res=55)");
+
+    /* 4. Chat test [240]: say and team say */
+    uint16_t msg_hello[] = { 'H', 'e', 'l', 'l', 'o' };
+    cs2d_sv_chat(&sv, 2, 1, 5, msg_hello); /* mode 1 = say */
+    cs2d_sv_chat(&sv, 2, 2, 5, msg_hello); /* mode 2 = team say */
+
+    /* 5. Spectator camera test [67] and [32] */
+    /* Kill player 1 so they become dead/spectator */
+    cs2d_sv_kill(&sv, 1, 2, 0, 32);
+    if (sv.players[1].alive) TEST_FAIL("Spectator", "player 1 still alive");
+
+    /* [67]: player 1 spectates player 2 */
+    cs2d_sv_spec_target(&sv, 1, 2);
+    if (sv.players[1].spectating_player != 2) TEST_FAIL("[67]", "spectating_player target not set");
+
+    /* [32]: spectator camera position update */
+    cs2d_sv_spec_pos(&sv, 1, 32768 + 450, 32768 + 600);
+    if (sv.players[1].x != 450.0f || sv.players[1].y != 600.0f)
+        TEST_FAIL("[32]", "spectator camera position not offset from 32768 properly");
+
+    /* 6. Item 15s fadeout test [40] */
+    cs2d_sv_drop(&sv, 2, 32, 30, 55, 0);
+    if (!sv.items[0].active) TEST_FAIL("[40] fadeout", "ground item slot 0 not active");
+    /* Simulate 16s passing */
+    sv.items[0].drop_time_ms = cs2d_sv_now() - 16000;
+    cs2d_sv_step_items(&sv);
+    if (sv.items[0].active) TEST_FAIL("[40] fadeout", "item older than 15s did not fade out");
+
+    TEST_PASS("Dedicated server Phase 2: [24] drop, [25] collect, [16] reload, [240] chat, [67]/[32] spectator, [40] fadeout");
+    cs2d_map_free(&sv.map);
+    return true;
+}
+
+static bool test_server_phase2_respawn_and_speeder(void)
+{
+    printf("\n=== Testing Dedicated Server Phase 2: Team Suicide, Respawn Modes & Anti-Speeder ===\n");
+    cs2d_weapons_init();
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.set.sv_gamemode = 0; /* Standard */
+    sv.set.mp_respawndelay = 2; /* 2 seconds */
+
+    if (!cs2d_map_load_file(&sv.map, "maps/de_dust2.map")) {
+        TEST_FAIL("Map load", "failed to load maps/de_dust2.map for server test");
+    }
+    sv.map_loaded = true;
+
+    /* Setup player 1 connection with pending reliable buffer */
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+
+    /* Setup player 1 */
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].team = 1; /* T */
+    sv.players[1].look = 0;
+    sv.players[1].alive = true;
+    sv.players[1].health = 100;
+    sv.players[1].team_chosen = true;
+    sv.players[1].x = 1000.0f;
+    sv.players[1].y = 1000.0f;
+    sv.players[1].last_valid_x = 1000.0f;
+    sv.players[1].last_valid_y = 1000.0f;
+    sv.players[1].last_move_ms = cs2d_sv_now();
+    sv.players[1].conn = 0;
+    snprintf(sv.players[1].name, sizeof(sv.players[1].name), "Player1");
+
+    /* 1. Team switch suicide test (FUN_1401624c0):
+     * Living player changes team from 1 (T) to 2 (CT) -> must kill player */
+    int prev_deaths = sv.players[1].deaths;
+    cs2d_sv_team(&sv, 1, 2, 0);
+    if (sv.players[1].alive) TEST_FAIL("Team switch suicide", "player was not killed on team change");
+    if (sv.players[1].deaths != prev_deaths + 1) TEST_FAIL("Team switch suicide", "player deaths not incremented");
+    if (sv.players[1].team != 2) TEST_FAIL("Team switch suicide", "player team not updated to CT");
+
+    /* 2. Respawn mode test (FUN_14017cbb0):
+     * In Standard mode (sv_gamemode 0), respawn is disabled, so stepping respawns must NOT spawn the player */
+    uint32_t now = cs2d_sv_now();
+    sv.players[1].death_ms = now - 5000; /* died 5s ago */
+    cs2d_sv_step_respawns(&sv);
+    if (sv.players[1].alive) TEST_FAIL("Standard respawn", "player spawned in mode 0 (Standard)");
+
+    /* Switch to Deathmatch mode (sv_gamemode 1): respawn is enabled (respawn == 1) */
+    sv.set.sv_gamemode = 1;
+
+    /* A. Player recently died (< 2s delay): must NOT respawn yet */
+    sv.players[1].death_ms = now - 500; /* died 500ms ago */
+    cs2d_sv_step_respawns(&sv);
+    if (sv.players[1].alive) TEST_FAIL("Respawn delay", "player spawned before mp_respawndelay elapsed");
+
+    /* Opcode 39 (respawn request) before delay: must NOT respawn */
+    cs2d_sv_request_respawn(&sv, 1);
+    if (sv.players[1].alive) TEST_FAIL("Opcode 39 delay", "player respawned on request before delay");
+
+    /* B. Player died >= 2s ago: opcode 39 or step_respawns spawns the player */
+    sv.players[1].death_ms = now - 2500; /* died 2.5s ago */
+    cs2d_sv_step_respawns(&sv);
+    if (!sv.players[1].alive) TEST_FAIL("Deathmatch respawn", "player did not auto-respawn after delay");
+    if (sv.players[1].health != 100) TEST_FAIL("Deathmatch respawn", "respawned player does not have 100 hp");
+
+    /* 3. Anti-speeder & position validation tests:
+     * A. Normal movement: walking within limits to an empty tile */
+    float valid_x = sv.players[1].x;
+    float valid_y = sv.players[1].y;
+    bool ok = cs2d_sv_validate_move(&sv, 1, valid_x + 5.0f, valid_y + 5.0f, 10);
+    if (!ok || sv.players[1].x != valid_x + 5.0f || sv.players[1].y != valid_y + 5.0f)
+        TEST_FAIL("Validate move", "normal move rejected or position not updated");
+
+    /* B. Out of bounds move: should be rejected */
+    float cur_x = sv.players[1].x;
+    ok = cs2d_sv_validate_move(&sv, 1, -50.0f, cur_x, 10);
+    if (ok || sv.players[1].x != cur_x)
+        TEST_FAIL("Out of bounds", "out of bounds move accepted");
+
+    /* C. Solid wall collision: tile (0, 0) is solid wall in de_dust2 */
+    ok = cs2d_sv_validate_move(&sv, 1, 16.0f, 16.0f, 10);
+    if (ok || sv.players[1].x != cur_x)
+        TEST_FAIL("Solid wall", "move into solid wall tile accepted");
+
+    /* D. Speeder hack: moving 250 pixels in 10ms */
+    sv.players[1].last_move_ms = cs2d_sv_now();
+    ok = cs2d_sv_validate_move(&sv, 1, cur_x + 250.0f, sv.players[1].y, 10);
+    if (ok || sv.players[1].x != cur_x)
+        TEST_FAIL("Anti-speeder", "excessive speed move was not blocked");
+
+    TEST_PASS("Dedicated server Phase 2: Team suicide, deathmatch respawn [39], solid collision and anti-speeder");
+    free(sv.conns[0].pending);
+    cs2d_map_free(&sv.map);
+    return true;
+}
 
 int main(void)
 {
+    setbuf(stdout, NULL);
     printf("============================================================\n");
     printf("   CS2D Reconstructed Game Logic Test Suite (C99)\n");
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 62;
+    int total = 64;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -6122,6 +6314,8 @@ int main(void)
     if (test_screenshot_paths()) passed++;
     if (test_random_and_dropwep()) passed++;
     if (test_server_join()) passed++;
+    if (test_server_phase2_items_and_chat()) passed++;
+    if (test_server_phase2_respawn_and_speeder()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

@@ -41,6 +41,7 @@ typedef struct {
     int     mp_freezetime;       /* PTR_DAT_1405a6638 +4 */
     int     mp_c4timer;          /* PTR_DAT_1405a65f0 +4 */
     int     mp_respawndelay;     /* PTR_DAT_1405a65e0 +4 */
+    int     mp_deadchat;         /* 0 = alive cannot hear dead, 1 = dead can chat with all */
     int     mp_infammo;          /* PTR_DAT_1405a65d8 +1 */
     int     s_65d0;              /* PTR_DAT_1405a65d0 +1: not identified yet (1 by default) */
     char    mp_supply_items[128];/* PTR_DAT_1405a65c8: the id list, sent as one byte per item */
@@ -86,6 +87,22 @@ typedef struct {
     uint32_t           bytes_in, bytes_out;
 } cs2d_sv_conn_t;
 
+#define CS2D_SV_MAX_GROUND_ITEMS 256
+
+/* A ground item entity on the dedicated server (Titem) */
+typedef struct {
+    bool     active;
+    uint16_t id;          /* unique ground item entity id */
+    uint8_t  type;        /* weapon id */
+    uint16_t clip;
+    uint16_t reserve;
+    uint8_t  sub;         /* mode / flags */
+    uint16_t tile_x;
+    uint16_t tile_y;
+    bool     dropped;     /* created by a drop ([24]), fades after 15s ([40]) */
+    uint32_t drop_time_ms;
+} cs2d_sv_item_t;
+
 /* Tpl fields the join snapshot and the ping list read (FUN_1401dc530, 0x1401e505d) */
 typedef struct {
     bool     used;
@@ -111,6 +128,9 @@ typedef struct {
     uint8_t  items[64];       /* +0x3f0 int array: the item types given at spawn, in order */
     int      item_count;
     int      weapon;          /* +0x2e0 held weapon type (0 = none) */
+    int16_t  clip[CS2D_MAX_WEAPONS];
+    int16_t  reserve[CS2D_MAX_WEAPONS];
+    int      spectating_player; /* +0x238: 0 = free look, > 0 = player id */
     int      move_flag;       /* +0xfc: 1 ran, 2 walked since the last relay (FUN_1401a68e0) */
     int      rot_flag;        /* +0x118: 1 turned since the last relay */
     int      relay_ctr;       /* +0x164: 0..2, far players get every 3rd update */
@@ -119,6 +139,9 @@ typedef struct {
     int      team_changes;    /* +0x2a0 */
     int      pending_team;    /* +0x400: team chosen with look 5, waiting for the skin */
     int      special;         /* vtable +0x200: the special byte */
+    float    last_valid_x, last_valid_y;
+    uint32_t last_move_ms;
+    uint32_t death_ms;
     bool     bot;             /* +0x198 */
     int      ping;            /* +0xd0 */
     char     ip[32];
@@ -139,6 +162,8 @@ typedef struct {
     int                score_t, score_ct;
     cs2d_sv_conn_t     conns[CS2D_SV_MAX_PLAYERS + 8];
     cs2d_sv_player_t   players[CS2D_SV_MAX_PLAYERS + 1];
+    cs2d_sv_item_t     items[CS2D_SV_MAX_GROUND_ITEMS];
+    int                next_item_id;
     /* the one-second timer and its counters (0x1401e505d) */
     uint32_t           second_ms;
     int                ping_ctr, pinglist_ctr;
@@ -186,6 +211,15 @@ void cs2d_sv_attack2(cs2d_server_t *sv, int id, int mode);                 /* FU
 void cs2d_sv_damage(cs2d_server_t *sv, int victim_id, int attacker_id, int dmg, int weapon); /* [17] */
 void cs2d_sv_kill(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id, int weapon); /* FUN_1401647d0: [19] */
 void cs2d_sv_buy(cs2d_server_t *sv, int id, int weapon_id);                /* FUN_1401cd710: [23] */
+void cs2d_sv_drop(cs2d_server_t *sv, int id, int type, int clip, int reserve, int sub);       /* FUN_14016bbd0: [24] */
+void cs2d_sv_reload(cs2d_server_t *sv, int id, int mode);                                      /* FUN_14018b1c0: [16] */
+void cs2d_sv_chat(cs2d_server_t *sv, int id, int mode, int char_len, const uint16_t *chars); /* FUN_140153900: [240] */
+void cs2d_sv_spec_target(cs2d_server_t *sv, int id, int target_pid);                           /* 0x140108260: [67] */
+void cs2d_sv_spec_pos(cs2d_server_t *sv, int id, int sx, int sy);                             /* FUN_1401ced00: [32] */
+void cs2d_sv_step_items(cs2d_server_t *sv);                                                   /* check item pickups and 15s drop fadeout [40] */
+bool cs2d_sv_validate_move(cs2d_server_t *sv, int id, float new_x, float new_y, int op);       /* FUN_1401c99a0 / FUN_1401ca500 */
+void cs2d_sv_step_respawns(cs2d_server_t *sv);                                                 /* FUN_14017cbb0 */
+void cs2d_sv_request_respawn(cs2d_server_t *sv, int id);                                       /* FUN_1401cf8d0: [39] */
 
 /* Console output: the dedicated prints every line with its colour prefix stripped */
 void cs2d_server_print(const char *fmt, ...);
