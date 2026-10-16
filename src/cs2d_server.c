@@ -1639,6 +1639,12 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         if (pl) cs2d_sv_projectile(sv, c->player, type, (uint16_t)x, (uint16_t)y, (uint16_t)dir, (uint16_t)flydist);
         return true;
     }
+    case 28: { /* spray: [28, kind u8, sub u8] */
+        if (rd_left(r) < 2) return false;
+        rd_byte(r); rd_byte(r);
+        if (pl) cs2d_sv_lua_hook_spray(sv, c->player);
+        return true;
+    }
     case 30: { /* process/bomb: [30, mode u8] (FUN_1401ce7c0) */
         if (rd_left(r) < 1) return false;
         int mode = rd_byte(r);
@@ -1685,6 +1691,10 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         if (char_len < 0 || char_len > 255 || rd_left(r) < char_len * 2) return false;
         uint16_t chars[256];
         for (int i = 0; i < char_len; i++) chars[i] = (uint16_t)rd_short(r);
+        if (mode == 3) {
+            int radio_msg = (char_len > 0 && chars[0] >= '0' && chars[0] <= '9') ? (chars[0] - '0') : 1;
+            if (pl) cs2d_sv_lua_hook_radio(sv, c->player, radio_msg);
+        }
         if (mode == 4) {
             int action = (char_len > 0 && chars[0] >= '1' && chars[0] <= '9') ? (chars[0] - '0') : 1;
             if (pl) cs2d_sv_lua_hook_serveraction(sv, c->player, action);

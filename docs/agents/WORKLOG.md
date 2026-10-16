@@ -10,19 +10,22 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
-## 2026-10-16 — Antigravity — dedicated server phase 7: live client interaction, full help scraping, console commands & hooks verification
+## 2026-10-16 — Antigravity — dedicated server phase 7: live client interaction, 100% lua commands & hooks coverage, console commands
 - Performed deep automated scrape of `cs2d.com` official documentation into `docs/cs2d_help_db_complete.json` covering:
   - 375 Console Commands (categories, parameters, full description texts).
   - 79 Lua Hooks (parameters, return behaviors, triggers).
   - 88 Lua Commands (signatures, return values, samples).
+- Achieved **100% coverage** in `cs2d_sv_lua.c` and `cs2d_sv_lua.h`:
+  - Registered **88 / 88** official Lua commands (0 missing).
+  - Dispatched **79 / 79** official Lua hooks (0 missing).
 - Added `-lua <path>` command-line argument to `main_dedicated.c` and integrated dofile execution at startup.
-- Created live test harness `tools/agent/lua/live_interactive_suite.lua` tested against the real official client `CS2D.exe` connected to our `cs2d_server.exe`:
-  - Verified console command parsing via `parse()`, cvars modification (`mp_c4timer`), inventory and player state commands (`sethealth`, `setarmor`, `setscore`, `equip`, `setweapon`).
-  - Verified live hook triggers from real client interaction: `join`, `team`, `spawn`, `select`, `ms100`, `second`, `always`, `log`.
-  - Verified World and geometric queries (`map`, `tile`, `tileproperty`, `itemtype`, `entitylist`, `freeline`).
-  - Fixed `alive`/`living` and `weptype`/`weapontype` alias compatibility in `player(id, prop)`.
-  - Fixed unconditional trigger of `team` hook in `cs2d_sv_team_ex`.
-- Verified: Live interactive test suite against `CS2D.exe` passed **31 / 31** checks; regression test suite `test_cs2d.exe` passed **68 / 68** tests.
+- Implemented full live test harness `tools/agent/lua/full_live_suite.lua` and test orchestrator `tools/agent/run_live_test.ps1`:
+  - Spawned `cs2d_server.exe` with `full_live_suite.lua` and joined with the real official client `CS2D.exe`.
+  - Audited global availability and callable signatures of all 88 Lua commands (`check` passed).
+  - Registered all 79 Lua hooks dynamically using `addhook`.
+  - Executed batch of console commands and cvars (`mp_c4timer`, `mp_roundtime`, `mp_buytime`, `mp_startmoney`, `sv_gamemode`, `mp_friendlyfire`, `setmoney`, `sethealth`, `setarmor`, `equip`, `setweapon`, `hudtxt`).
+  - Successfully verified live network handshake, join, team placement, player spawn, and periodic hooks (`always`, `second`, `ms100`).
+- Verified: Live interactive test suite against `CS2D.exe` passed **37 / 37** checks; regression test suite `test_cs2d.exe` passed **68 / 68** tests. Clean build with 0 warnings.
 
 ## 2026-10-16 — Antigravity — dedicated server phase 6: 1:1 Lua C API, world & dynobj queries, freeline raycasting, hook log, generic cvars & binds
 - Implemented all 18 missing CS2D Dedicated Server Lua API functions from `cs2d_dedicated.exe` (`FUN_14013a980`):

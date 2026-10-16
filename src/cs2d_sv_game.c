@@ -556,6 +556,9 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
         }
     }
 
+    /* Hook startround_prespawn */
+    cs2d_sv_lua_hook_startround_prespawn(sv, reason);
+
     /* Respawn all team players */
     int count = 0;
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
@@ -1650,6 +1653,7 @@ void cs2d_sv_plant_complete(cs2d_server_t *sv, int id)
     memcpy(&pkt[7], &item_id, 2);
     pkt[9] = c4timer;
     sv_broadcast_joined(sv, pkt, 10);
+    cs2d_sv_lua_hook_bombplant(sv, id, (int)tx, (int)ty);
     cs2d_server_print("Bomb has been planted by %s at %d,%d", pl->name, tx, ty);
 }
 
@@ -1724,6 +1728,7 @@ void cs2d_sv_defuse_complete(cs2d_server_t *sv, int id)
 
     uint8_t pkt[3] = { 30, (uint8_t)id, 5 };
     sv_broadcast_joined(sv, pkt, 3);
+    cs2d_sv_lua_hook_bombdefuse(sv, id);
     cs2d_server_print("Bomb has been defused by %s", pl->name);
 
     /* CT victory: mode 21 = Bomb defused, CT win */
@@ -1746,6 +1751,7 @@ void cs2d_sv_bomb_explode(cs2d_server_t *sv)
 
     uint8_t pkt[3] = { 30, 0, 6 };
     sv_broadcast_joined(sv, pkt, 3);
+    cs2d_sv_lua_hook_bombexplode(sv, sv->bomb_planter, (int)sv->bomb_tx, (int)sv->bomb_ty);
     cs2d_server_print("Bomb exploded!");
 
     /* Damage players in explosion radius (350 px) */
@@ -1815,6 +1821,8 @@ void cs2d_sv_use(cs2d_server_t *sv, int id, int mode, int32_t data, uint16_t x, 
     if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
     cs2d_sv_player_t *pl = &sv->players[id];
     if (!pl->used || !pl->alive) return;
+
+    cs2d_sv_lua_hook_use(sv, id, mode, (int)data, (int)x, (int)y);
 
     if (mode == 1 || mode == 2) {
         cs2d_sv_hostage_use(sv, id, (int)data, mode);
@@ -1895,6 +1903,7 @@ void cs2d_sv_hostage_use(cs2d_server_t *sv, int id, int hostage_id, int mode)
         uint16_t uy = 0;
         memcpy(&pkt[7], &ux, 2); memcpy(&pkt[9], &uy, 2);
         sv_broadcast_joined(sv, pkt, 11);
+        cs2d_sv_lua_hook_hostageuse(sv, id, hostage_id, 1);
     } else if (mode == 2) {
         h->follow = 0;
         uint8_t pkt[11];
@@ -1904,6 +1913,7 @@ void cs2d_sv_hostage_use(cs2d_server_t *sv, int id, int hostage_id, int mode)
         uint16_t ux = 1, uy = 0;
         memcpy(&pkt[7], &ux, 2); memcpy(&pkt[9], &uy, 2);
         sv_broadcast_joined(sv, pkt, 11);
+        cs2d_sv_lua_hook_hostageuse(sv, id, hostage_id, 0);
     }
 }
 
@@ -1931,6 +1941,7 @@ void cs2d_sv_damage_hostage(cs2d_server_t *sv, int hostage_id, int attacker_id, 
         uint16_t att = (uint16_t)attacker_id;
         memcpy(&pkt[3], &hp, 2); memcpy(&pkt[5], &att, 2);
         sv_broadcast_joined(sv, pkt, 7);
+        cs2d_sv_lua_hook_hostagedamage(sv, attacker_id, hostage_id, dmg);
     } else {
         h->health = 0;
         h->follow = 0;
@@ -1946,6 +1957,7 @@ void cs2d_sv_damage_hostage(cs2d_server_t *sv, int hostage_id, int attacker_id, 
         uint16_t att = (uint16_t)attacker_id;
         memcpy(&pkt[3], &zero, 2); memcpy(&pkt[5], &att, 2);
         sv_broadcast_joined(sv, pkt, 7);
+        cs2d_sv_lua_hook_hostagekill(sv, attacker_id, hostage_id, dmg);
     }
 }
 
@@ -1999,6 +2011,7 @@ void cs2d_sv_step_hostages(cs2d_server_t *sv)
                 uint16_t zero = 0, rescuer = (uint16_t)h->follow;
                 memcpy(&pkt[3], &zero, 2); memcpy(&pkt[5], &rescuer, 2);
                 sv_broadcast_joined(sv, pkt, 7);
+                cs2d_sv_lua_hook_hostagerescue(sv, (int)rescuer, htx, hty);
 
                 pl->score += 2;
                 for (int q = 1; q <= CS2D_SV_MAX_PLAYERS; q++) {
@@ -2053,6 +2066,7 @@ void cs2d_sv_projectile(cs2d_server_t *sv, int id, int type, uint16_t x, uint16_
     memcpy(&pkt[7], &dir, 2);
     memcpy(&pkt[9], &flydist, 2);
     sv_broadcast_joined(sv, pkt, 11);
+    cs2d_sv_lua_hook_projectile(sv, id, type, (int)x, (int)y, 0);
 }
 
 /* FUN_1401cfd00: [41, proj_id u16, id u8] (4 bytes) */
@@ -2075,6 +2089,7 @@ void cs2d_sv_flashlight(cs2d_server_t *sv, int id, int state)
 
     uint8_t pkt[3] = { 57, (uint8_t)id, (uint8_t)state };
     sv_broadcast_joined(sv, pkt, 3);
+    cs2d_sv_lua_hook_flashlight(sv, id, state);
 }
 
 /* ========================================================================= */
@@ -2309,6 +2324,7 @@ bool cs2d_sv_change_map(cs2d_server_t *sv, const char *mapname)
 
     cs2d_sv_round_start(sv, 0);
 
+    cs2d_sv_lua_hook_mapchange(sv, mapname);
     cs2d_server_print("Map changed to '%s'", mapname);
     return true;
 }

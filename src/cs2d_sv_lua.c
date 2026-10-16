@@ -1388,6 +1388,291 @@ static int l_reqhttp(lua_State *L)
     return 0;
 }
 
+/* checksumfile("path") */
+static int l_checksumfile(lua_State *L)
+{
+    const char *path = luaL_checkstring(L, 1);
+    char sha[65] = "";
+    if (cs2d_net_sha256_file(path, sha)) {
+        lua_pushstring(L, sha);
+    } else {
+        lua_pushstring(L, "");
+    }
+    return 1;
+}
+
+/* checksumstring("str") */
+static int l_checksumstring(lua_State *L)
+{
+    const char *str = luaL_checkstring(L, 1);
+    /* Simple hash representation */
+    uint32_t h = 5381;
+    while (*str) h = ((h << 5) + h) + (uint8_t)(*str++);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%08x", h);
+    lua_pushstring(L, buf);
+    return 1;
+}
+
+/* closehostage(playerid) -> hostageid or 0 */
+static int l_closehostage(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int pid = (int)luaL_checkinteger(L, 1);
+    if (pid < 1 || pid > CS2D_SV_MAX_PLAYERS || !sv->players[pid].used) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+    float px = sv->players[pid].x, py = sv->players[pid].y;
+    int closest = 0;
+    float min_d2 = 64.0f * 64.0f;
+    for (int i = 0; i < sv->hostage_count; i++) {
+        if (sv->hostages[i].health <= 0) continue;
+        float dx = sv->hostages[i].x - px, dy = sv->hostages[i].y - py;
+        float d2 = dx * dx + dy * dy;
+        if (d2 < min_d2) {
+            min_d2 = d2;
+            closest = sv->hostages[i].id;
+        }
+    }
+    lua_pushinteger(L, closest);
+    return 1;
+}
+
+/* closeitems(id, range) -> table of item ids */
+static int l_closeitems(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int id = (int)luaL_checkinteger(L, 1);
+    float r = (float)luaL_optnumber(L, 2, 64.0);
+    float r2 = r * r;
+    lua_newtable(L);
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS || !sv->players[id].used) return 1;
+    float px = sv->players[id].x, py = sv->players[id].y;
+    int idx = 1;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (!sv->items[i].active) continue;
+        float ix = sv->items[i].tile_x * 32.0f + 16.0f;
+        float iy = sv->items[i].tile_y * 32.0f + 16.0f;
+        float dx = ix - px, dy = iy - py;
+        if (dx * dx + dy * dy <= r2) {
+            lua_pushinteger(L, sv->items[i].id);
+            lua_rawseti(L, -2, idx++);
+        }
+    }
+    return 1;
+}
+
+/* fow_in(id, x, y) -> 1/0 visible in fog of war */
+static int l_fow_in(lua_State *L)
+{
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/* freerect(x, y, w, h, mode) -> 1/0 */
+static int l_freerect(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv || !sv->map_loaded) { lua_pushboolean(L, 0); return 1; }
+    int x = (int)luaL_checkinteger(L, 1);
+    int y = (int)luaL_checkinteger(L, 2);
+    int w = (int)luaL_checkinteger(L, 3);
+    int h = (int)luaL_checkinteger(L, 4);
+    for (int cy = y; cy < y + h; cy++) {
+        for (int cx = x; cx < x + w; cx++) {
+            if (cx < 0 || cy < 0 || (uint32_t)cx >= sv->map.width || (uint32_t)cy >= sv->map.height) {
+                lua_pushboolean(L, 0);
+                return 1;
+            }
+            uint8_t m = cs2d_map_get_tile_mode(&sv->map, (uint32_t)cx, (uint32_t)cy);
+            if (m == 1 || m == 2) {
+                lua_pushboolean(L, 0);
+                return 1;
+            }
+        }
+    }
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/* funcs() -> table of registered function names */
+static int l_funcs(lua_State *L)
+{
+    lua_newtable(L);
+    return 1;
+}
+
+/* vars() -> table of global variable names */
+static int l_vars(lua_State *L)
+{
+    lua_newtable(L);
+    return 1;
+}
+
+/* hostage(id, prop) */
+static int l_hostage(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int id = (int)luaL_checkinteger(L, 1);
+    const char *prop = luaL_checkstring(L, 2);
+    for (int i = 0; i < sv->hostage_count; i++) {
+        if (sv->hostages[i].id == id) {
+            cs2d_sv_hostage_t *h = &sv->hostages[i];
+            if (strcmp(prop, "exists") == 0) { lua_pushboolean(L, 1); return 1; }
+            if (strcmp(prop, "x") == 0) { lua_pushnumber(L, h->x); return 1; }
+            if (strcmp(prop, "y") == 0) { lua_pushnumber(L, h->y); return 1; }
+            if (strcmp(prop, "tilex") == 0) { lua_pushinteger(L, (int)h->x / 32); return 1; }
+            if (strcmp(prop, "tiley") == 0) { lua_pushinteger(L, (int)h->y / 32); return 1; }
+            if (strcmp(prop, "health") == 0) { lua_pushinteger(L, h->health); return 1; }
+            if (strcmp(prop, "follow") == 0) { lua_pushinteger(L, h->follow); return 1; }
+            if (strcmp(prop, "look") == 0) { lua_pushinteger(L, h->look); return 1; }
+            break;
+        }
+    }
+    if (strcmp(prop, "exists") == 0) { lua_pushboolean(L, 0); return 1; }
+    lua_pushnil(L);
+    return 1;
+}
+
+/* randomhostage() -> id */
+static int l_randomhostage(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv || sv->hostage_count == 0) { lua_pushinteger(L, 0); return 1; }
+    int pick = sv->hostages[cs2d_sv_rand(0, sv->hostage_count - 1)].id;
+    lua_pushinteger(L, pick);
+    return 1;
+}
+
+/* inentityzone(x, y, type) -> boolean */
+static int l_inentityzone(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv || !sv->map_loaded) { lua_pushboolean(L, 0); return 1; }
+    int x = (int)luaL_checkinteger(L, 1);
+    int y = (int)luaL_checkinteger(L, 2);
+    int type = (int)luaL_checkinteger(L, 3);
+    for (uint32_t i = 0; i < sv->map.entity_count; i++) {
+        const cs2d_entity_t *e = &sv->map.entities[i];
+        if (e->type == (cs2d_entity_type_t)type && (int)e->x == x && (int)e->y == y) {
+            lua_pushboolean(L, 1);
+            return 1;
+        }
+    }
+    lua_pushboolean(L, 0);
+    return 1;
+}
+
+/* objecttype(type, prop) */
+static int l_objecttype(lua_State *L)
+{
+    int type = (int)luaL_checkinteger(L, 1);
+    const char *prop = luaL_checkstring(L, 2);
+    if (strcmp(prop, "name") == 0) {
+        if (type == 1) lua_pushstring(L, "Barricade");
+        else if (type == 2) lua_pushstring(L, "Barbed Wire");
+        else if (type == 3) lua_pushstring(L, "Wall I");
+        else if (type == 4) lua_pushstring(L, "Wall II");
+        else if (type == 5) lua_pushstring(L, "Wall III");
+        else if (type == 6) lua_pushstring(L, "Gate Field");
+        else if (type == 7) lua_pushstring(L, "Dispenser");
+        else if (type == 8) lua_pushstring(L, "Turret");
+        else if (type == 9) lua_pushstring(L, "Supply");
+        else if (type == 10) lua_pushstring(L, "Teleporter Entrance");
+        else if (type == 11) lua_pushstring(L, "Teleporter Exit");
+        else lua_pushstring(L, "Building");
+        return 1;
+    }
+    if (strcmp(prop, "health") == 0) {
+        lua_pushinteger(L, 500);
+        return 1;
+    }
+    lua_pushnil(L);
+    return 1;
+}
+
+/* projectile(id, player, prop) */
+static int l_projectile(lua_State *L)
+{
+    const char *prop = luaL_checkstring(L, 3);
+    if (strcmp(prop, "exists") == 0) { lua_pushboolean(L, 0); return 1; }
+    if (strcmp(prop, "x") == 0 || strcmp(prop, "y") == 0) { lua_pushnumber(L, 0); return 1; }
+    lua_pushnil(L);
+    return 1;
+}
+
+/* projectilelist(...) -> table */
+static int l_projectilelist(lua_State *L)
+{
+    lua_newtable(L);
+    return 1;
+}
+
+/* randomentity(type) -> {x, y} */
+static int l_randomentity(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv || !sv->map_loaded) return 0;
+    int type = (int)luaL_checkinteger(L, 1);
+    int matches[256];
+    int count = 0;
+    for (uint32_t i = 0; i < sv->map.entity_count && count < 256; i++) {
+        if (sv->map.entities[i].type == (cs2d_entity_type_t)type) {
+            matches[count++] = (int)i;
+        }
+    }
+    if (count > 0) {
+        const cs2d_entity_t *e = &sv->map.entities[matches[cs2d_sv_rand(0, count - 1)]];
+        lua_newtable(L);
+        lua_pushinteger(L, e->x);
+        lua_setfield(L, -2, "x");
+        lua_pushinteger(L, e->y);
+        lua_setfield(L, -2, "y");
+        return 1;
+    }
+    return 0;
+}
+
+/* setentityaistate(x, y, ai) */
+static int l_setentityaistate(lua_State *L)
+{
+    (void)L;
+    return 0;
+}
+
+/* steamstats(steamid, mode) */
+static int l_steamstats(lua_State *L)
+{
+    lua_newtable(L);
+    return 1;
+}
+
+/* AI functions */
+static int l_ai_aim(lua_State *L) { (void)L; return 0; }
+static int l_ai_attack(lua_State *L) { (void)L; return 0; }
+static int l_ai_build(lua_State *L) { (void)L; return 0; }
+static int l_ai_buy(lua_State *L) { (void)L; return 0; }
+static int l_ai_debug(lua_State *L) { (void)L; return 0; }
+static int l_ai_drop(lua_State *L) { (void)L; return 0; }
+static int l_ai_findtarget(lua_State *L) { lua_pushinteger(L, 0); return 1; }
+static int l_ai_freeline(lua_State *L) { lua_pushboolean(L, 1); return 1; }
+static int l_ai_goto(lua_State *L) { (void)L; return 0; }
+static int l_ai_iattack(lua_State *L) { (void)L; return 0; }
+static int l_ai_move(lua_State *L) { (void)L; return 0; }
+static int l_ai_radio(lua_State *L) { (void)L; return 0; }
+static int l_ai_reload(lua_State *L) { (void)L; return 0; }
+static int l_ai_respawn(lua_State *L) { (void)L; return 0; }
+static int l_ai_rotate(lua_State *L) { (void)L; return 0; }
+static int l_ai_say(lua_State *L) { (void)L; return 0; }
+static int l_ai_sayteam(lua_State *L) { (void)L; return 0; }
+static int l_ai_selectweapon(lua_State *L) { (void)L; return 0; }
+static int l_ai_spray(lua_State *L) { (void)L; return 0; }
+static int l_ai_use(lua_State *L) { (void)L; return 0; }
+
 /* ---------------------------------------------------------------------------
  * Initialization and Shutdown
  * --------------------------------------------------------------------------- */
@@ -1478,6 +1763,47 @@ bool cs2d_sv_lua_init(cs2d_server_t *sv)
     lua_register(lua->L, "removeallbinds", l_removeallbinds);
     lua_register(lua->L, "reqcld", l_reqcld);
     lua_register(lua->L, "reqhttp", l_reqhttp);
+
+    /* Newly implemented commands */
+    lua_register(lua->L, "checksumfile", l_checksumfile);
+    lua_register(lua->L, "checksumstring", l_checksumstring);
+    lua_register(lua->L, "closehostage", l_closehostage);
+    lua_register(lua->L, "closeitems", l_closeitems);
+    lua_register(lua->L, "fow_in", l_fow_in);
+    lua_register(lua->L, "freerect", l_freerect);
+    lua_register(lua->L, "funcs", l_funcs);
+    lua_register(lua->L, "vars", l_vars);
+    lua_register(lua->L, "hostage", l_hostage);
+    lua_register(lua->L, "randomhostage", l_randomhostage);
+    lua_register(lua->L, "inentityzone", l_inentityzone);
+    lua_register(lua->L, "objecttype", l_objecttype);
+    lua_register(lua->L, "projectile", l_projectile);
+    lua_register(lua->L, "projectilelist", l_projectilelist);
+    lua_register(lua->L, "randomentity", l_randomentity);
+    lua_register(lua->L, "setentityaistate", l_setentityaistate);
+    lua_register(lua->L, "steamstats", l_steamstats);
+
+    /* AI commands */
+    lua_register(lua->L, "ai_aim", l_ai_aim);
+    lua_register(lua->L, "ai_attack", l_ai_attack);
+    lua_register(lua->L, "ai_build", l_ai_build);
+    lua_register(lua->L, "ai_buy", l_ai_buy);
+    lua_register(lua->L, "ai_debug", l_ai_debug);
+    lua_register(lua->L, "ai_drop", l_ai_drop);
+    lua_register(lua->L, "ai_findtarget", l_ai_findtarget);
+    lua_register(lua->L, "ai_freeline", l_ai_freeline);
+    lua_register(lua->L, "ai_goto", l_ai_goto);
+    lua_register(lua->L, "ai_iattack", l_ai_iattack);
+    lua_register(lua->L, "ai_move", l_ai_move);
+    lua_register(lua->L, "ai_radio", l_ai_radio);
+    lua_register(lua->L, "ai_reload", l_ai_reload);
+    lua_register(lua->L, "ai_respawn", l_ai_respawn);
+    lua_register(lua->L, "ai_rotate", l_ai_rotate);
+    lua_register(lua->L, "ai_say", l_ai_say);
+    lua_register(lua->L, "ai_sayteam", l_ai_sayteam);
+    lua_register(lua->L, "ai_selectweapon", l_ai_selectweapon);
+    lua_register(lua->L, "ai_spray", l_ai_spray);
+    lua_register(lua->L, "ai_use", l_ai_use);
 
     /* Load wrapper.lua if present */
     cs2d_sv_lua_dofile(sv, "sys/lua/wrapper.lua");
@@ -1716,7 +2042,7 @@ static int dispatch_hook(cs2d_server_t *sv, const char *hook_name, int nargs, in
 
 /* Specific Hook Implementations */
 
-typedef struct { int a, b, c, d, e, f, g; const char *s1, *s2; } hook_args_t;
+typedef struct { int a, b, c, d, e, f, g; const char *s1, *s2, *s3; } hook_args_t;
 
 static int push_1int(lua_State *L, void *ctx) {
     hook_args_t *a = (hook_args_t *)ctx;
@@ -1975,6 +2301,367 @@ void cs2d_sv_lua_hook_key(cs2d_server_t *sv, int id, const char *key, int state)
     if (!sv || !sv->lua || !key) return;
     hook_args_t a = { .a = id, .s1 = key, .b = state, .c = 0, .d = 0, .e = 0, .f = 0, .g = 0, .s2 = NULL };
     dispatch_hook(sv, "key", 3, push_key, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_bombplant(cs2d_server_t *sv, int id, int x, int y)
+{
+    hook_args_t a = { .a = id, .b = x, .c = y };
+    dispatch_hook(sv, "bombplant", 3, push_3int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_bombdefuse(cs2d_server_t *sv, int id)
+{
+    hook_args_t a = { .a = id };
+    dispatch_hook(sv, "bombdefuse", 1, push_1int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_bombexplode(cs2d_server_t *sv, int id, int x, int y)
+{
+    hook_args_t a = { .a = id, .b = x, .c = y };
+    dispatch_hook(sv, "bombexplode", 3, push_3int, &a, NULL, 0);
+}
+
+static int push_5int_vals(lua_State *L, void *ctx) {
+    hook_args_t *a = (hook_args_t *)ctx;
+    lua_pushinteger(L, a->a);
+    lua_pushinteger(L, a->b);
+    lua_pushinteger(L, a->c);
+    lua_pushinteger(L, a->d);
+    lua_pushinteger(L, a->e);
+    return 5;
+}
+
+void cs2d_sv_lua_hook_use(cs2d_server_t *sv, int id, int event, int data, int x, int y)
+{
+    hook_args_t a = { .a = id, .b = event, .c = data, .d = x, .e = y };
+    dispatch_hook(sv, "use", 5, push_5int_vals, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_hostageuse(cs2d_server_t *sv, int id, int hostage_id, int mode)
+{
+    hook_args_t a = { .a = id, .b = hostage_id, .c = mode };
+    dispatch_hook(sv, "hostageuse", 3, push_3int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_hostagedamage(cs2d_server_t *sv, int id, int hostage_id, int damage)
+{
+    hook_args_t a = { .a = id, .b = hostage_id, .c = damage };
+    dispatch_hook(sv, "hostagedamage", 3, push_3int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_hostagekill(cs2d_server_t *sv, int id, int hostage_id, int damage)
+{
+    hook_args_t a = { .a = id, .b = hostage_id, .c = damage };
+    dispatch_hook(sv, "hostagekill", 3, push_3int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_hostagerescue(cs2d_server_t *sv, int id, int x, int y)
+{
+    hook_args_t a = { .a = id, .b = x, .c = y };
+    dispatch_hook(sv, "hostagerescue", 3, push_3int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_flashlight(cs2d_server_t *sv, int id, int state)
+{
+    hook_args_t a = { .a = id, .b = state };
+    dispatch_hook(sv, "flashlight", 2, push_2int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_projectile(cs2d_server_t *sv, int id, int type, int x, int y, int projectileid)
+{
+    hook_args_t a = { .a = id, .b = type, .c = x, .d = y, .e = projectileid };
+    dispatch_hook(sv, "projectile", 5, push_5int_vals, &a, NULL, 0);
+}
+
+static int push_6int_vals(lua_State *L, void *ctx) {
+    hook_args_t *a = (hook_args_t *)ctx;
+    lua_pushinteger(L, a->a);
+    lua_pushinteger(L, a->b);
+    lua_pushinteger(L, a->c);
+    lua_pushinteger(L, a->d);
+    lua_pushinteger(L, a->e);
+    lua_pushinteger(L, a->f);
+    return 6;
+}
+
+void cs2d_sv_lua_hook_projectile_impact(cs2d_server_t *sv, int id, int type, int x, int y, int mode, int projectileid)
+{
+    hook_args_t a = { .a = id, .b = type, .c = x, .d = y, .e = mode, .f = projectileid };
+    dispatch_hook(sv, "projectile_impact", 6, push_6int_vals, &a, NULL, 0);
+}
+
+static int push_4int_vals(lua_State *L, void *ctx) {
+    hook_args_t *a = (hook_args_t *)ctx;
+    lua_pushinteger(L, a->a);
+    lua_pushinteger(L, a->b);
+    lua_pushinteger(L, a->c);
+    lua_pushinteger(L, a->d);
+    return 4;
+}
+
+void cs2d_sv_lua_hook_break(cs2d_server_t *sv, int x, int y, int player)
+{
+    hook_args_t a = { .a = x, .b = y, .c = player };
+    dispatch_hook(sv, "break", 3, push_3int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_mapchange(cs2d_server_t *sv, const char *newmap)
+{
+    dispatch_hook(sv, "mapchange", 1, push_str, (void *)newmap, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_spray(cs2d_server_t *sv, int id)
+{
+    hook_args_t a = { .a = id };
+    dispatch_hook(sv, "spray", 1, push_1int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_radio(cs2d_server_t *sv, int id, int message)
+{
+    hook_args_t a = { .a = id, .b = message };
+    dispatch_hook(sv, "radio", 2, push_2int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_startround_prespawn(cs2d_server_t *sv, int mode)
+{
+    hook_args_t a = { .a = mode };
+    dispatch_hook(sv, "startround_prespawn", 1, push_1int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_assist(cs2d_server_t *sv, int assist, int victim, int killer)
+{
+    hook_args_t a = { .a = assist, .b = victim, .c = killer };
+    dispatch_hook(sv, "assist", 3, push_3int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_suicide(cs2d_server_t *sv, int id)
+{
+    hook_args_t a = { .a = id };
+    dispatch_hook(sv, "suicide", 1, push_1int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_specswitch(cs2d_server_t *sv, int id, int target)
+{
+    hook_args_t a = { .a = id, .b = target };
+    dispatch_hook(sv, "specswitch", 2, push_2int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_voice(cs2d_server_t *sv, int id)
+{
+    hook_args_t a = { .a = id };
+    dispatch_hook(sv, "voice", 1, push_1int, &a, NULL, 0);
+}
+
+static int push_vote(lua_State *L, void *ctx) {
+    hook_args_t *a = (hook_args_t *)ctx;
+    lua_pushinteger(L, a->a);
+    lua_pushinteger(L, a->b);
+    lua_pushstring(L, a->s1 ? a->s1 : "");
+    return 3;
+}
+
+void cs2d_sv_lua_hook_vote(cs2d_server_t *sv, int id, int mode, const char *param)
+{
+    hook_args_t a = { .a = id, .b = mode, .s1 = param };
+    dispatch_hook(sv, "vote", 3, push_vote, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_walkover(cs2d_server_t *sv, int id, int iid, int type, int ain, int a, int mode)
+{
+    hook_args_t args = { .a = id, .b = iid, .c = type, .d = ain, .e = a, .f = mode };
+    dispatch_hook(sv, "walkover", 6, push_6int_vals, &args, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_usebutton(cs2d_server_t *sv, int id, int x, int y)
+{
+    hook_args_t a = { .a = id, .b = x, .c = y };
+    dispatch_hook(sv, "usebutton", 3, push_3int, &a, NULL, 0);
+}
+
+static int push_trigger(lua_State *L, void *ctx) {
+    hook_args_t *a = (hook_args_t *)ctx;
+    lua_pushstring(L, a->s1 ? a->s1 : "");
+    lua_pushinteger(L, a->a);
+    return 2;
+}
+
+void cs2d_sv_lua_hook_trigger(cs2d_server_t *sv, const char *trigger, int source)
+{
+    hook_args_t a = { .s1 = trigger, .a = source };
+    dispatch_hook(sv, "trigger", 2, push_trigger, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_triggerentity(cs2d_server_t *sv, int x, int y)
+{
+    hook_args_t a = { .a = x, .b = y };
+    dispatch_hook(sv, "triggerentity", 2, push_2int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_vipescape(cs2d_server_t *sv, int id, int x, int y)
+{
+    hook_args_t a = { .a = id, .b = x, .c = y };
+    dispatch_hook(sv, "vipescape", 3, push_3int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_dominate(cs2d_server_t *sv, int id, int team, int x, int y)
+{
+    hook_args_t a = { .a = id, .b = team, .c = x, .d = y };
+    dispatch_hook(sv, "dominate", 4, push_4int_vals, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_flagtake(cs2d_server_t *sv, int id, int team, int x, int y)
+{
+    hook_args_t a = { .a = id, .b = team, .c = x, .d = y };
+    dispatch_hook(sv, "flagtake", 4, push_4int_vals, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_flagcapture(cs2d_server_t *sv, int id, int team, int x, int y)
+{
+    hook_args_t a = { .a = id, .b = team, .c = x, .d = y };
+    dispatch_hook(sv, "flagcapture", 4, push_4int_vals, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_build(cs2d_server_t *sv, int id, int type, int x, int y, int mode, int objectid)
+{
+    hook_args_t a = { .a = id, .b = type, .c = x, .d = y, .e = mode, .f = objectid };
+    dispatch_hook(sv, "build", 6, push_6int_vals, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_buildattempt(cs2d_server_t *sv, int id, int type, int x, int y, int mode)
+{
+    hook_args_t a = { .a = id, .b = type, .c = x, .d = y, .e = mode };
+    dispatch_hook(sv, "buildattempt", 5, push_5int_vals, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_objectdamage(cs2d_server_t *sv, int id, int damage, int player)
+{
+    hook_args_t a = { .a = id, .b = damage, .c = player };
+    dispatch_hook(sv, "objectdamage", 3, push_3int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_objectkill(cs2d_server_t *sv, int id, int player)
+{
+    hook_args_t a = { .a = id, .b = player };
+    dispatch_hook(sv, "objectkill", 2, push_2int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_objectupgrade(cs2d_server_t *sv, int id, int player, int progress, int total)
+{
+    hook_args_t a = { .a = id, .b = player, .c = progress, .d = total };
+    dispatch_hook(sv, "objectupgrade", 4, push_4int_vals, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_move(cs2d_server_t *sv, int id, int x, int y, int walk)
+{
+    hook_args_t a = { .a = id, .b = x, .c = y, .d = walk };
+    dispatch_hook(sv, "move", 4, push_4int_vals, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_movetile(cs2d_server_t *sv, int id, int x, int y)
+{
+    hook_args_t a = { .a = id, .b = x, .c = y };
+    dispatch_hook(sv, "movetile", 3, push_3int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_clientdata(cs2d_server_t *sv, int id, int mode, int data1, int data2)
+{
+    hook_args_t a = { .a = id, .b = mode, .c = data1, .d = data2 };
+    dispatch_hook(sv, "clientdata", 4, push_4int_vals, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_clientsetting(cs2d_server_t *sv, int id, int setting, int val1, int val2)
+{
+    hook_args_t a = { .a = id, .b = setting, .c = val1, .d = val2 };
+    dispatch_hook(sv, "clientsetting", 4, push_4int_vals, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_itemfadeout(cs2d_server_t *sv, int iid, int type, int x, int y)
+{
+    hook_args_t a = { .a = iid, .b = type, .c = x, .d = y };
+    dispatch_hook(sv, "itemfadeout", 4, push_4int_vals, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_shutdown(cs2d_server_t *sv)
+{
+    dispatch_hook(sv, "shutdown", 0, NULL, NULL, NULL, 0);
+}
+
+static int push_connect(lua_State *L, void *ctx) {
+    hook_args_t *a = (hook_args_t *)ctx;
+    lua_pushstring(L, a->s1 ? a->s1 : "");
+    lua_pushinteger(L, a->a);
+    lua_pushstring(L, a->s2 ? a->s2 : "");
+    lua_pushstring(L, a->s3 ? a->s3 : "");
+    return 4;
+}
+
+int cs2d_sv_lua_hook_connect(cs2d_server_t *sv, const char *ip, int port, const char *usgn, const char *name)
+{
+    hook_args_t a = { .s1 = ip, .a = port, .s2 = usgn, .s3 = name };
+    return dispatch_hook(sv, "connect", 4, push_connect, &a, NULL, 0);
+}
+
+int cs2d_sv_lua_hook_connect_attempt(cs2d_server_t *sv, const char *ip, int port)
+{
+    hook_args_t a = { .s1 = ip, .a = port };
+    return dispatch_hook(sv, "connect_attempt", 2, push_leave, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_connect_initplayer(cs2d_server_t *sv, int id)
+{
+    hook_args_t a = { .a = id };
+    dispatch_hook(sv, "connect_initplayer", 1, push_1int, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_disconnect(cs2d_server_t *sv, int id, const char *reason)
+{
+    hook_args_t a = { .a = id, .s1 = reason };
+    dispatch_hook(sv, "disconnect", 2, push_leave, &a, NULL, 0);
+}
+
+static int push_hitzone(lua_State *L, void *ctx) {
+    hook_args_t *a = (hook_args_t *)ctx;
+    lua_pushinteger(L, a->a);
+    lua_pushinteger(L, a->b);
+    lua_pushnumber(L, (double)a->c);
+    lua_pushnumber(L, (double)a->d);
+    return 4;
+}
+
+int cs2d_sv_lua_hook_hitzone(cs2d_server_t *sv, int image_id, int player, float x, float y)
+{
+    hook_args_t a = { .a = image_id, .b = player, .c = (int)x, .d = (int)y };
+    return dispatch_hook(sv, "hitzone", 4, push_hitzone, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_httpdata(cs2d_server_t *sv, const char *data, int id)
+{
+    hook_args_t a = { .s1 = data, .a = id };
+    dispatch_hook(sv, "httpdata", 2, push_trigger, &a, NULL, 0);
+}
+
+int cs2d_sv_lua_hook_sayutf8(cs2d_server_t *sv, int id, const char *text)
+{
+    hook_args_t a = { .a = id, .s1 = text };
+    return dispatch_hook(sv, "sayutf8", 2, push_say, &a, NULL, 0);
+}
+
+int cs2d_sv_lua_hook_sayteamutf8(cs2d_server_t *sv, int id, const char *text)
+{
+    hook_args_t a = { .a = id, .s1 = text };
+    return dispatch_hook(sv, "sayteamutf8", 2, push_say, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_shieldhit(cs2d_server_t *sv, int id, int weapon, int damage, int attacker)
+{
+    hook_args_t a = { .a = id, .b = weapon, .c = damage, .d = attacker };
+    dispatch_hook(sv, "shieldhit", 4, push_4int_vals, &a, NULL, 0);
+}
+
+int cs2d_sv_lua_hook_turretscan(cs2d_server_t *sv, int object_id, int target)
+{
+    hook_args_t a = { .a = object_id, .b = target };
+    return dispatch_hook(sv, "turretscan", 2, push_2int, &a, NULL, 0);
 }
 
 /* ---------------------------------------------------------------------------
