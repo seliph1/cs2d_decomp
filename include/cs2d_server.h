@@ -132,6 +132,23 @@ typedef struct {
 
 #define CS2D_SV_MAX_HOSTAGES 32
 #define CS2D_SV_MAX_BANS     64
+#define CS2D_SV_MAX_PROJECTILES 64
+
+/* A projectile entity on the dedicated server (Tpro) */
+typedef struct {
+    bool     active;
+    uint16_t id;          /* 1..255 projectile id */
+    uint8_t  player;      /* owner player id (1..32) */
+    uint8_t  type;        /* weapon id */
+    float    x, y;        /* current position in pixels */
+    float    dir;         /* direction angle in degrees (0..360) */
+    float    flydist;     /* remaining distance in pixels */
+    float    speed;       /* travel speed in px/s */
+    uint32_t spawn_ms;    /* spawn timestamp */
+    uint32_t detonate_ms; /* fuse expiration timestamp */
+    bool     is_flying;   /* true while in flight, false on ground */
+    uint32_t expire_ms;   /* ground expiration timestamp */
+} cs2d_sv_projectile_t;
 
 /* A hostage entity on the dedicated server (Thostage) */
 typedef struct {
@@ -171,7 +188,7 @@ typedef struct {
     int      team;            /* +0x230 */
     int      spec_state;      /* +0x234 */
     int      look;            /* +0x23c */
-    int      score, deaths, assists, mvp;
+    int      score, deaths, assists, mvp, kills, hostages_rescued;
     int      rank;            /* +0x90 */
     float    x, y, rot;
     int      health, armor;
@@ -286,6 +303,17 @@ typedef struct {
     int                ban_count;
     /* Dynamic Objects (Phase 6, Tdo) */
     cs2d_dynobj_world_t dynobj;
+    /* Construction building overrides (mp_building_price, mp_building_limit, mp_building_health) */
+    int                building_price[CS2D_DYNOBJ_TYPES];
+    int                building_limit[CS2D_DYNOBJ_TYPES];
+    int                building_health[CS2D_DYNOBJ_TYPES];
+    uint64_t           building_price_mask;
+    uint64_t           building_limit_mask;
+    uint64_t           building_health_mask;
+    /* Projectiles (Phase 5, Tpro) */
+    cs2d_sv_projectile_t projectiles[CS2D_SV_MAX_PROJECTILES];
+    uint16_t             next_proj_id;
+    uint32_t             last_proj_ms;
 } cs2d_server_t;
 
 void cs2d_sv_settings_default(cs2d_sv_settings_t *s);
@@ -394,6 +422,11 @@ void cs2d_sv_wrench_hit(cs2d_server_t *sv, int id);
 /* The dedicated keeps the building health in points: raises every category 1 object to its max health
  * after a map load (the join snapshot and [37] send Tdo.healthpercent / Tdo.hpupnetvalue). */
 void cs2d_sv_fix_building_health(cs2d_server_t *sv);
+int  cs2d_sv_building_price(const cs2d_server_t *sv, int typ);
+int  cs2d_sv_building_limit(const cs2d_server_t *sv, int typ);
+int  cs2d_sv_building_health(const cs2d_server_t *sv, int typ);
+int  cs2d_sv_resolve_building_type(const char *name);
+
 void cs2d_sv_init_hostages(cs2d_server_t *sv);
 void cs2d_sv_step_hostages(cs2d_server_t *sv);
 void cs2d_sv_damage_hostage(cs2d_server_t *sv, int hostage_id, int attacker_id, int dmg);
@@ -401,6 +434,8 @@ void cs2d_sv_hostage_use(cs2d_server_t *sv, int id, int hostage_id, int mode);
 
 void cs2d_sv_projectile(cs2d_server_t *sv, int id, int type, uint16_t x, uint16_t y, uint16_t dir, uint16_t flydist); /* FUN_1401d4910: [27] */
 void cs2d_sv_kill_projectile(cs2d_server_t *sv, int id, int proj_id);         /* FUN_1401cfd00: [41] */
+void cs2d_sv_step_projectiles(cs2d_server_t *sv);                             /* FUN_140179060 */
+void cs2d_sv_detonate_projectile(cs2d_server_t *sv, cs2d_sv_projectile_t *p); /* FUN_140167fa0 / FUN_1401f1130 */
 void cs2d_sv_flashlight(cs2d_server_t *sv, int id, int state);                /* FUN_1401d28b0: [57] */
 
 int  cs2d_sv_bot_add(cs2d_server_t *sv, int team, int look, const char *name);
@@ -436,5 +471,7 @@ void cs2d_sv_build_join_settings(cs2d_pkt_t *p, const cs2d_sv_settings_t *s, con
 void cs2d_sv_write_player_record(cs2d_pkt_t *p, int id, const cs2d_sv_player_t *pl);
 /* FUN_14010d970: the name the server gives a joining player (trim, filter, unique) */
 void cs2d_sv_sanitize_name(const cs2d_server_t *sv, const char *in, char *out, size_t out_size);
+/* Strips directory prefix, quotes/whitespace and .map extension */
+void cs2d_sv_sanitize_map_name(char *dst, size_t dst_size, const char *src);
 
 #endif /* CS2D_SERVER_H */

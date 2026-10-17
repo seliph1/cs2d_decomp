@@ -453,6 +453,36 @@ void cs2d_sv_sanitize_name(const cs2d_server_t *sv, const char *in, char *out, s
     out[0] = '\0';
 }
 
+void cs2d_sv_sanitize_map_name(char *dst, size_t dst_size, const char *src)
+{
+    if (!dst || dst_size == 0) return;
+    dst[0] = '\0';
+    if (!src || !src[0]) return;
+
+    /* Skip leading whitespace / quotes */
+    while (*src == ' ' || *src == '\t' || *src == '"' || *src == '\'') src++;
+    /* Strip directory prefix (e.g. maps/ or maps\) */
+    const char *slash1 = strrchr(src, '/');
+    const char *slash2 = strrchr(src, '\\');
+    const char *slash = slash1 > slash2 ? slash1 : slash2;
+    if (slash) src = slash + 1;
+
+    snprintf(dst, dst_size, "%s", src);
+
+    /* Strip trailing quotes or whitespace */
+    size_t len = strlen(dst);
+    while (len > 0 && (dst[len - 1] == ' ' || dst[len - 1] == '\t' ||
+                       dst[len - 1] == '"' || dst[len - 1] == '\'' ||
+                       dst[len - 1] == '\r' || dst[len - 1] == '\n')) {
+        dst[--len] = '\0';
+    }
+
+    /* Strip .map extension if present (case-insensitive) */
+    if (len >= 4 && _stricmp(dst + len - 4, ".map") == 0) {
+        dst[len - 4] = '\0';
+    }
+}
+
 /* FUN_140098050(1, -1): the lowest free player id (estimated: allocation order not verified) */
 static int sv_alloc_player(cs2d_server_t *sv)
 {
@@ -1771,6 +1801,47 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
         cs2d_sv_change_map(sv, a1);
         return true;
     }
+    if (_stricmp(cmd, "mp_building_price") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        int typ = cs2d_sv_resolve_building_type(a1);
+        if (typ > 0 && typ < CS2D_DYNOBJ_TYPES) {
+            sv->building_price[typ] = atoi(a2);
+            sv->building_price_mask |= (1ULL << typ);
+            return true;
+        }
+        return false;
+    }
+    if (_stricmp(cmd, "mp_building_limit") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        int typ = cs2d_sv_resolve_building_type(a1);
+        if (typ > 0 && typ < CS2D_DYNOBJ_TYPES) {
+            sv->building_limit[typ] = atoi(a2);
+            sv->building_limit_mask |= (1ULL << typ);
+            return true;
+        }
+        return false;
+    }
+    if (_stricmp(cmd, "mp_building_health") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        int typ = cs2d_sv_resolve_building_type(a1);
+        if (typ > 0 && typ < CS2D_DYNOBJ_TYPES) {
+            int hp = atoi(a2);
+            sv->building_health[typ] = hp;
+            sv->building_health_mask |= (1ULL << typ);
+            /* Clamp existing buildings of this type if health exceeds new max (0x1401182a6) */
+            for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+                cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+                if (o->active && o->typ == typ && o->health > hp) {
+                    o->health = hp;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
 
     /* Fall back to server settings cvars (sv_*, mp_*, etc.) */
     sv_rest_arg(cur, a1, sizeof(a1));
@@ -2212,11 +2283,66 @@ static void sv_load_maplist(cs2d_server_t *sv)
     qsort(sv->maps, (size_t)sv->map_count, sizeof(sv->maps[0]), map_cmp);
 }
 
+int cs2d_sv_building_price(const cs2d_server_t *sv, int typ)
+{
+    if (sv && typ >= 0 && typ < CS2D_DYNOBJ_TYPES && (sv->building_price_mask & (1ULL << typ))) {
+        return sv->building_price[typ];
+    }
+    const cs2d_dynobj_def_t *d = cs2d_dynobj_def(typ);
+    return d ? d->price : 0;
+}
+
+int cs2d_sv_building_limit(const cs2d_server_t *sv, int typ)
+{
+    if (sv && typ >= 0 && typ < CS2D_DYNOBJ_TYPES && (sv->building_limit_mask & (1ULL << typ))) {
+        return sv->building_limit[typ];
+    }
+    const cs2d_dynobj_def_t *d = cs2d_dynobj_def(typ);
+    return d ? d->limit : 0;
+}
+
+int cs2d_sv_building_health(const cs2d_server_t *sv, int typ)
+{
+    if (sv && typ >= 0 && typ < CS2D_DYNOBJ_TYPES && (sv->building_health_mask & (1ULL << typ))) {
+        return sv->building_health[typ];
+    }
+    const cs2d_dynobj_def_t *d = cs2d_dynobj_def(typ);
+    return d ? d->max_health : 100;
+}
+
+int cs2d_sv_resolve_building_type(const char *name)
+{
+    if (!name || !name[0]) return -1;
+    char *end = NULL;
+    long val = strtol(name, &end, 10);
+    if (end && *end == '\0' && val > 0 && val < CS2D_DYNOBJ_TYPES) return (int)val;
+
+    for (int i = 1; i < CS2D_DYNOBJ_TYPES; i++) {
+        const cs2d_dynobj_def_t *d = cs2d_dynobj_def(i);
+        if (!d || !d->name[0]) continue;
+        if (_stricmp(d->name, name) == 0) return i;
+        char s1[64], s2[64];
+        int p1 = 0, p2 = 0;
+        for (int k = 0; d->name[k] && p1 < 63; k++) {
+            if (d->name[k] != ' ' && d->name[k] != '_') s1[p1++] = (char)tolower((unsigned char)d->name[k]);
+        }
+        s1[p1] = '\0';
+        for (int k = 0; name[k] && p2 < 63; k++) {
+            if (name[k] != ' ' && name[k] != '_') s2[p2++] = (char)tolower((unsigned char)name[k]);
+        }
+        s2[p2] = '\0';
+        if (strcmp(s1, s2) == 0) return i;
+    }
+    return -1;
+}
+
 bool cs2d_server_start(cs2d_server_t *sv, const char *map, int port, bool offline)
 {
     if (!cs2d_platform_net_init()) return false;
     sv->offline = offline;
-    if (map && map[0]) snprintf(sv->set.sv_map, sizeof(sv->set.sv_map), "%s", map);
+    if (map && map[0]) {
+        cs2d_sv_sanitize_map_name(sv->set.sv_map, sizeof(sv->set.sv_map), map);
+    }
     if (port <= 0) port = sv->set.sv_hostport;
 
     sv->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -2255,6 +2381,15 @@ bool cs2d_server_start(cs2d_server_t *sv, const char *map, int port, bool offlin
 
     sv->next_item_id = 1;
     memset(sv->items, 0, sizeof(sv->items));
+    memset(sv->projectiles, 0, sizeof(sv->projectiles));
+    sv->next_proj_id = 1;
+    sv->last_proj_ms = sv_now();
+
+    for (int i = 0; i < CS2D_DYNOBJ_TYPES; i++) {
+        sv->building_price[i] = -1;
+        sv->building_limit[i] = -1;
+        sv->building_health[i] = -1;
+    }
 
     cs2d_sv_init_hostages(sv);
     sv_load_serverinfo(sv);
@@ -2305,6 +2440,7 @@ void cs2d_server_frame(cs2d_server_t *sv)
     cs2d_sv_step_reloads(sv);
     cs2d_sv_step_respawns(sv);
     cs2d_sv_step_buildings(sv);
+    cs2d_sv_step_projectiles(sv);
     cs2d_sv_lua_frame(sv);
 
     sv->frames++;

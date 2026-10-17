@@ -22,17 +22,99 @@
 
 static cs2d_server_t g_sv;
 
+static bool is_flag(const char *arg, const char *name)
+{
+    if (!arg || !name) return false;
+    const char *p = NULL;
+    if (arg[0] == '-' && arg[1] == '-') p = arg + 2;
+    else if (arg[0] == '-' || arg[0] == '/') p = arg + 1;
+    else return false;
+    return _stricmp(p, name) == 0;
+}
+
+static const char *get_arg_val(const char *arg, const char *prefix, int *i, int argc, char **argv)
+{
+    if (!arg || !prefix) return NULL;
+    const char *p = NULL;
+    if (arg[0] == '-' && arg[1] == '-') {
+        p = arg + 2;
+    } else if (arg[0] == '-' || arg[0] == '/') {
+        p = arg + 1;
+    } else {
+        return NULL;
+    }
+
+    size_t plen = strlen(prefix);
+    if (_strnicmp(p, prefix, plen) == 0) {
+        if (p[plen] == '\0') {
+            if (i && *i + 1 < argc) {
+                (*i)++;
+                return argv[*i];
+            }
+            return "";
+        } else if (p[plen] == '=' || p[plen] == ':') {
+            return p + plen + 1;
+        }
+    }
+    return NULL;
+}
+
+static void print_usage(const char *prog)
+{
+    printf("CS2D Dedicated Server (1.0.1.8 p1)\n");
+    printf("Usage: %s [options]\n\n", prog ? prog : "cs2d_server.exe");
+    printf("Options:\n");
+    printf("  --map, -map, -m <name>      Map to load (e.g. --map fun_roleplay)\n");
+    printf("  --port, -port, -p <port>    UDP port to bind (default: 36963 or sys/server.cfg)\n");
+    printf("  --offline, -off             Run in offline mode (no U.S.G.N. master server)\n");
+    printf("  --lua, -lua, -l <file>      Execute Lua script at startup\n");
+    printf("  --name, -name <name>        Server name (sv_name)\n");
+    printf("  --pw, --password <pass>     Server password (sv_password)\n");
+    printf("  --rcon <pass>               Remote console password (sv_rcon)\n");
+    printf("  --maxplayers <n>            Maximum players (sv_maxplayers)\n");
+    printf("  --help, -h, -?              Show this help message\n\n");
+}
+
 int main(int argc, char **argv)
 {
+    char map_buf[64] = {0};
+    char name_buf[64] = {0};
+    char pw_buf[64] = {0};
+    char rcon_buf[64] = {0};
     const char *map = NULL;
     const char *lua_script = NULL;
     int port = 0;
+    int maxplayers = 0;
     bool offline = false;
+
     for (int i = 1; i < argc; i++) {
-        if (_stricmp(argv[i], "-offline") == 0 || _stricmp(argv[i], "-off") == 0) offline = true;
-        else if (_stricmp(argv[i], "-map") == 0 && i + 1 < argc) map = argv[++i];
-        else if (_stricmp(argv[i], "-port") == 0 && i + 1 < argc) port = atoi(argv[++i]);
-        else if (_stricmp(argv[i], "-lua") == 0 && i + 1 < argc) lua_script = argv[++i];
+        const char *val = NULL;
+        if (is_flag(argv[i], "help") || is_flag(argv[i], "h") || is_flag(argv[i], "?")) {
+            print_usage(argv[0]);
+            return 0;
+        } else if (is_flag(argv[i], "offline") || is_flag(argv[i], "off")) {
+            offline = true;
+        } else if ((val = get_arg_val(argv[i], "map", &i, argc, argv)) != NULL ||
+                   (val = get_arg_val(argv[i], "m", &i, argc, argv)) != NULL) {
+            cs2d_sv_sanitize_map_name(map_buf, sizeof(map_buf), val);
+            map = map_buf;
+        } else if ((val = get_arg_val(argv[i], "port", &i, argc, argv)) != NULL ||
+                   (val = get_arg_val(argv[i], "p", &i, argc, argv)) != NULL) {
+            port = atoi(val);
+        } else if ((val = get_arg_val(argv[i], "lua", &i, argc, argv)) != NULL ||
+                   (val = get_arg_val(argv[i], "l", &i, argc, argv)) != NULL) {
+            lua_script = val;
+        } else if ((val = get_arg_val(argv[i], "name", &i, argc, argv)) != NULL) {
+            snprintf(name_buf, sizeof(name_buf), "%.63s", val);
+        } else if ((val = get_arg_val(argv[i], "password", &i, argc, argv)) != NULL ||
+                   (val = get_arg_val(argv[i], "pw", &i, argc, argv)) != NULL) {
+            snprintf(pw_buf, sizeof(pw_buf), "%.63s", val);
+        } else if ((val = get_arg_val(argv[i], "rcon", &i, argc, argv)) != NULL) {
+            snprintf(rcon_buf, sizeof(rcon_buf), "%.63s", val);
+        } else if ((val = get_arg_val(argv[i], "maxplayers", &i, argc, argv)) != NULL ||
+                   (val = get_arg_val(argv[i], "max", &i, argc, argv)) != NULL) {
+            maxplayers = atoi(val);
+        }
     }
 
     static const char *months[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -60,6 +142,13 @@ int main(int argc, char **argv)
 
     cs2d_sv_settings_default(&g_sv.set);
     cs2d_sv_settings_load(&g_sv.set, "sys/server.cfg");
+
+    /* Apply commandline overrides */
+    if (name_buf[0]) snprintf(g_sv.set.sv_name, sizeof(g_sv.set.sv_name), "%.63s", name_buf);
+    if (pw_buf[0]) snprintf(g_sv.set.sv_password, sizeof(g_sv.set.sv_password), "%.63s", pw_buf);
+    if (rcon_buf[0]) snprintf(g_sv.set.sv_rcon, sizeof(g_sv.set.sv_rcon), "%.63s", rcon_buf);
+    if (maxplayers > 0) g_sv.set.sv_maxplayers = maxplayers;
+
     if (!cs2d_server_start(&g_sv, map, port, offline)) return 1;
 
     if (lua_script && lua_script[0]) {

@@ -332,6 +332,7 @@ static int l_player(lua_State *L)
     if (strcmp(prop, "armor") == 0) { lua_pushinteger(L, pl->armor); return 1; }
     if (strcmp(prop, "money") == 0) { lua_pushinteger(L, pl->money); return 1; }
     if (strcmp(prop, "score") == 0) { lua_pushinteger(L, pl->score); return 1; }
+    if (strcmp(prop, "kills") == 0) { lua_pushinteger(L, pl->kills); return 1; }
     if (strcmp(prop, "assists") == 0) { lua_pushinteger(L, pl->assists); return 1; }
     if (strcmp(prop, "mvp") == 0) { lua_pushinteger(L, pl->mvp); return 1; }
     if (strcmp(prop, "deaths") == 0) { lua_pushinteger(L, pl->deaths); return 1; }
@@ -1308,10 +1309,11 @@ static int l_stats(lua_State *L)
     if (strcmp(prop, "exists") == 0) { lua_pushboolean(L, 1); return 1; }
     if (strcmp(prop, "rank") == 0) { lua_pushinteger(L, pl->rank); return 1; }
     if (strcmp(prop, "killsperdeath") == 0) {
-        float kpd = pl->deaths > 0 ? (float)pl->score / (float)pl->deaths : (float)pl->score;
+        float kpd = pl->deaths > 0 ? (float)pl->kills / (float)pl->deaths : (float)pl->kills;
         lua_pushnumber(L, (double)kpd);
         return 1;
     }
+    if (strcmp(prop, "kills") == 0) { lua_pushinteger(L, pl->kills); return 1; }
     if (strcmp(prop, "score") == 0) { lua_pushinteger(L, pl->score); return 1; }
     if (strcmp(prop, "frags") == 0) { lua_pushinteger(L, pl->score); return 1; }
     if (strcmp(prop, "deaths") == 0) { lua_pushinteger(L, pl->deaths); return 1; }

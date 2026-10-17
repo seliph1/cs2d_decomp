@@ -80,14 +80,20 @@ static int sv_count_side(const cs2d_server_t *sv, int side)
     return n;
 }
 
-static void sv_broadcast_joined(cs2d_server_t *sv, const uint8_t *msg, int len)
+static void sv_broadcast_joined_except(cs2d_server_t *sv, int except_id, const uint8_t *msg, int len)
 {
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (i == except_id) continue;
         cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
         if (!c || !sv->players[i].joined) continue;
         cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
         for (int k = 0; k < len; k++) cs2d_pkt_w_byte(p, msg[k]);
     }
+}
+
+static void sv_broadcast_joined(cs2d_server_t *sv, const uint8_t *msg, int len)
+{
+    sv_broadcast_joined_except(sv, 0, msg, len);
 }
 
 /* Tpl.bestweapon (CS2D.exe 0x140032450, the same code in the dedicated): the last owned item of HUD slot 1,
@@ -546,16 +552,15 @@ static const char *sv_round_mvp_text(int type)
     }
 }
 
-/* FUN_14015c080: the best player of one team (kills * 2 + assists, the highest value wins). The
- * original reads its Kills / Assists stats; our port has no separate kill counter yet, so score
- * (1 per enemy kill) stands in. Team 2 only: the VIP (team 3) never becomes the MVP. */
+/* FUN_14015c080: the best player of one team (kills * 2 + assists, the highest value wins).
+ * Team 2 only: the VIP (team 3) never becomes the MVP. */
 static int sv_best_of_team(cs2d_server_t *sv, int team)
 {
     int best = 0, best_val = 0;
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
         cs2d_sv_player_t *pl = &sv->players[i];
         if (!pl->used || pl->team != team) continue;
-        int pts = pl->score * 2 + pl->assists;
+        int pts = pl->kills * 2 + pl->assists;
         if (pts > best_val) { best_val = pts; best = i; }
     }
     return best;
@@ -589,7 +594,19 @@ void cs2d_sv_round_end_ex(cs2d_server_t *sv, int type, int mode, int delay_ms, i
     case 1:  mvp = sv_best_of_team(sv, 1); break;
     case 2:  mvp = sv_best_of_team(sv, 2); break;
     case 20: case 21: mvp = player_id; break;    /* the planter / the defuser */
-    case 31: mvp = player_id; break;             /* the best rescuer */
+    case 31: {                                   /* 0x14015c080 case 0x1f: most hostages rescued */
+        int best_rescuer = 0, best_cnt = 0;
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            cs2d_sv_player_t *pl = &sv->players[i];
+            if (!pl->used || pl->team != 2) continue;
+            if (pl->hostages_rescued > best_cnt) {
+                best_cnt = pl->hostages_rescued;
+                best_rescuer = i;
+            }
+        }
+        mvp = best_rescuer ? best_rescuer : player_id;
+        break;
+    }
     case 60: mvp = sv_best_of_team(sv, 1); break;
     case 61: mvp = sv_best_of_team(sv, 2); break;
     default: break;    /* 3, 10, 11, 12, 22, 30, 40, 41, 50, 51: no MVP (FUN_14015c080) */
@@ -782,6 +799,7 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
             sv->items[i].active = false;
         }
     }
+    memset(sv->projectiles, 0, sizeof(sv->projectiles));
     cs2d_sv_init_hostages(sv);
 
     /* Update team scores according to round end reason (FUN_1402520b0 / cs2d_game_apply_round_reason) */
@@ -794,7 +812,7 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
         sv->score_t = sv->score_ct = 0;
         for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
             cs2d_sv_player_t *pl = &sv->players[i];
-            pl->score = pl->assists = pl->deaths = pl->mvp = 0;
+            pl->score = pl->kills = pl->assists = pl->deaths = pl->mvp = pl->hostages_rescued = 0;
         }
     }
 
@@ -805,6 +823,7 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
     int count = 0;
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
         cs2d_sv_player_t *pl = &sv->players[i];
+        pl->hostages_rescued = 0;
         if (pl->used && pl->team >= 1) {
             count++;
             float x, y;
@@ -1101,7 +1120,9 @@ void cs2d_sv_kill(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id
 
     if (k) {
         bool enemies = (v->team == 1 && k->team >= 2) || (v->team >= 2 && k->team == 1);
+        if (sv->set.sv_gamemode == 1 && k != v) enemies = true;
         if (enemies) {
+            k->kills++;
             k->score++;
             k->money += 300;
             if (k->money > 16000) k->money = 16000;
@@ -1112,13 +1133,9 @@ void cs2d_sv_kill(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id
             /* Friendly fire or suicide / world */
             unsigned w = (unsigned)weapon - 72u;
             if (k != v && weapon != 0xff && !(w < 16 && ((0x8033u >> w) & 1))) {
-                if (sv->set.sv_gamemode != 1) {
-                    k->score--;
-                    k->money -= 3300;
-                    if (k->money < 0) k->money = 0;
-                } else {
-                    k->score++;
-                }
+                k->score--;
+                k->money -= 3300;
+                if (k->money < 0) k->money = 0;
             }
         }
     }
@@ -2519,6 +2536,7 @@ void cs2d_sv_step_hostages(cs2d_server_t *sv)
                 cs2d_sv_lua_hook_hostagerescue(sv, (int)rescuer, htx, hty);
 
                 pl->score += 2;
+                pl->hostages_rescued++;
                 for (int q = 1; q <= CS2D_SV_MAX_PLAYERS; q++) {
                     if (sv->players[q].used && sv->players[q].team == 2) {
                         sv->players[q].money += 1000;
@@ -2536,6 +2554,192 @@ void cs2d_sv_step_hostages(cs2d_server_t *sv)
 /* ========================================================================= */
 /* Phase 5: Projectiles & Flashlight                                         */
 /* ========================================================================= */
+
+static bool sv_tile_blocks(const cs2d_server_t *sv, int tx, int ty);
+
+static bool sv_projectile_is_impact(int type)
+{
+    switch (type) {
+        case CS2D_WEP_ROCKETLAUNCHER:
+        case CS2D_WEP_RPG7:
+        case CS2D_WEP_GRENADELAUNCHER:
+        case CS2D_WEP_MOLOTOV:
+        case CS2D_WEP_SNOWBALL:
+        case CS2D_WEP_GUTBOMB:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void sv_projectile_props(int type, float *out_speed, float *out_lifetime, float *out_flydist)
+{
+    float speed = 350.0f;
+    float lifetime = 1.8f;
+    float flydist = 385.0f;
+
+    switch (type) {
+        case CS2D_WEP_RPG7:
+            speed = 750.0f;
+            lifetime = 10.0f;
+            flydist = 10000.0f;
+            break;
+        case CS2D_WEP_ROCKETLAUNCHER:
+            speed = 700.0f;
+            lifetime = 10.0f;
+            flydist = 10000.0f;
+            break;
+        case CS2D_WEP_GRENADELAUNCHER:
+            speed = 550.0f;
+            lifetime = 5.0f;
+            flydist = 600.0f;
+            break;
+        case CS2D_WEP_HE:
+        case CS2D_WEP_FLASHBANG:
+        case CS2D_WEP_SMOKE:
+        case CS2D_WEP_GAS:
+            speed = 350.0f;
+            lifetime = 1.8f; /* 1800 ms in CS2D */
+            flydist = 385.0f;
+            break;
+        case CS2D_WEP_FLARE:
+            speed = 350.0f;
+            lifetime = 60.0f;
+            flydist = 385.0f;
+            break;
+        case CS2D_WEP_MOLOTOV:
+            speed = 320.0f;
+            lifetime = 10.0f;
+            flydist = 385.0f;
+            break;
+        case CS2D_WEP_SNOWBALL:
+            speed = 450.0f;
+            lifetime = 5.0f;
+            flydist = 385.0f;
+            break;
+        case CS2D_WEP_AIRSTRIKE:
+            speed = 350.0f;
+            lifetime = 7.0f;
+            flydist = 385.0f;
+            break;
+        case CS2D_WEP_GUTBOMB:
+            speed = 320.0f;
+            lifetime = 10.0f;
+            flydist = 385.0f;
+            break;
+        default:
+            speed = 350.0f;
+            lifetime = 1.8f;
+            flydist = 385.0f;
+            break;
+    }
+
+    if (out_speed) *out_speed = speed;
+    if (out_lifetime) *out_lifetime = lifetime;
+    if (out_flydist) *out_flydist = flydist;
+}
+
+/* FUN_140167fa0 / FUN_1401f1130: projectile detonation, applying object and player explosion damage */
+void cs2d_sv_detonate_projectile(cs2d_server_t *sv, cs2d_sv_projectile_t *p)
+{
+    if (!sv || !p || !p->active) return;
+    p->active = false;
+
+    float radius_bld = 40.0f;
+    float radius_pl = 160.0f;
+    int damage = 105;
+
+    switch (p->type) {
+        case CS2D_WEP_RPG7:
+            radius_bld = 45.0f;
+            radius_pl = 140.0f;
+            damage = 325;
+            break;
+        case CS2D_WEP_ROCKETLAUNCHER:
+            radius_bld = 45.0f;
+            radius_pl = 140.0f;
+            damage = 100;
+            break;
+        case CS2D_WEP_GRENADELAUNCHER:
+            radius_bld = 40.0f;
+            radius_pl = 160.0f;
+            damage = 105;
+            break;
+        case CS2D_WEP_HE:
+            radius_bld = 40.0f;
+            radius_pl = 160.0f;
+            damage = 105;
+            break;
+        case CS2D_WEP_MOLOTOV:
+            radius_bld = 45.0f;
+            radius_pl = 50.0f;
+            damage = 15;
+            break;
+        case CS2D_WEP_SNOWBALL:
+            radius_bld = 0.0f;
+            radius_pl = 24.0f;
+            damage = 35;
+            break;
+        case CS2D_WEP_GUTBOMB:
+            radius_bld = 40.0f;
+            radius_pl = 96.0f;
+            damage = 50;
+            break;
+        case CS2D_WEP_AIRSTRIKE:
+            radius_bld = 250.0f;
+            radius_pl = 300.0f;
+            damage = 1500;
+            break;
+        case CS2D_WEP_FLASHBANG:
+        case CS2D_WEP_SMOKE:
+        case CS2D_WEP_GAS:
+        case CS2D_WEP_FLARE:
+        default:
+            return;
+    }
+
+    /* 1. Buildings & dynamic objects: Tdo.damage falloff (FUN_1401f1130) */
+    if (radius_bld > 0.0f && damage > 0) {
+        cs2d_sv_explosion_objects(sv, p->x, p->y, radius_bld, damage, (int)p->player);
+    }
+
+    /* 2. Players radial damage with linear falloff (FUN_140167fa0 / FUN_1401658c0) */
+    if (radius_pl > 0.0f && damage > 0) {
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            cs2d_sv_player_t *v = &sv->players[i];
+            if (!v->used || !v->alive) continue;
+            float dx = v->x - p->x;
+            float dy = v->y - p->y;
+            float dist = sqrtf(dx * dx + dy * dy);
+            if (dist > radius_pl) continue;
+
+            int dmg = (int)((radius_pl - dist) * (float)damage / radius_pl);
+            if (dmg <= 0) continue;
+
+            /* Friendly fire check */
+            if (p->player >= 1 && p->player <= CS2D_SV_MAX_PLAYERS) {
+                const cs2d_sv_player_t *atk = &sv->players[p->player];
+                if (atk->used && sv->set.sv_friendlyfire == 0 && sv->set.sv_gamemode != 1 &&
+                    i != (int)p->player && v->team == atk->team) {
+                    continue;
+                }
+            }
+            cs2d_sv_damage(sv, i, (int)p->player, dmg, p->type);
+        }
+
+        /* 3. Hostages radial damage */
+        for (int h = 0; h < sv->hostage_count; h++) {
+            cs2d_sv_hostage_t *hos = &sv->hostages[h];
+            if (!hos->active || hos->rescued || hos->health <= 0) continue;
+            float dx = hos->x - p->x;
+            float dy = hos->y - p->y;
+            float dist = sqrtf(dx * dx + dy * dy);
+            if (dist > radius_pl) continue;
+            int dmg = (int)((radius_pl - dist) * (float)damage / radius_pl);
+            if (dmg > 0) cs2d_sv_damage_hostage(sv, (int)hos->id, (int)p->player, dmg);
+        }
+    }
+}
 
 /* FUN_1401d4910: [27, player u8, type u8, x u16, y u16, dir u16, flydist u16] (11 bytes) */
 void cs2d_sv_projectile(cs2d_server_t *sv, int id, int type, uint16_t x, uint16_t y, uint16_t dir, uint16_t flydist)
@@ -2565,19 +2769,162 @@ void cs2d_sv_projectile(cs2d_server_t *sv, int id, int type, uint16_t x, uint16_
     memcpy(&pkt[5], &y, 2);
     memcpy(&pkt[7], &dir, 2);
     memcpy(&pkt[9], &flydist, 2);
-    sv_broadcast_joined(sv, pkt, 11);
+    /* cs2d_dedicated FUN_140190000: relays opcode 27 to all joined players EXCEPT the shooter,
+     * because the client already predicted and spawned the projectile locally (Tpro.spawnprojectile).
+     * Sending it back to the sender causes duplicate visual projectiles. */
+    sv_broadcast_joined_except(sv, id, pkt, 11);
     cs2d_sv_lua_hook_projectile(sv, id, type, (int)x, (int)y, 0);
+
+    /* Allocate slot in server projectile world (FUN_140095b80) */
+    int slot = -1;
+    for (int i = 0; i < CS2D_SV_MAX_PROJECTILES; i++) {
+        if (!sv->projectiles[i].active) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        slot = 0;
+    }
+
+    float speed, lifetime, def_flydist;
+    sv_projectile_props(type, &speed, &lifetime, &def_flydist);
+
+    float fdist = (float)flydist;
+    if (fdist <= 0.0f) fdist = def_flydist;
+
+    /* Network direction: 16-bit 0..65535 normalized to 0..360 degrees (FUN_1401ce010 0.005493164) */
+    float dir_deg = (float)dir * (360.0f / 65536.0f);
+
+    uint32_t now = cs2d_sv_now();
+    if (sv->next_proj_id == 0) sv->next_proj_id = 1;
+
+    cs2d_sv_projectile_t *p = &sv->projectiles[slot];
+    p->active = true;
+    p->id = sv->next_proj_id++;
+    p->player = (uint8_t)id;
+    p->type = (uint8_t)type;
+    p->x = (float)x;
+    p->y = (float)y;
+    p->dir = dir_deg;
+    p->flydist = fdist;
+    p->speed = speed;
+    p->spawn_ms = now;
+    p->detonate_ms = (type == CS2D_WEP_HE || type == CS2D_WEP_FLASHBANG) ? (now + 1800) : 0;
+    p->is_flying = true;
+    p->expire_ms = now + (uint32_t)(lifetime * 1000.0f);
 }
 
-/* FUN_1401cfd00: [41, proj_id u16, id u8] (4 bytes) */
+/* FUN_1401cfd00 / FUN_140168ac0: [41, proj_id u8, id u8] (3 bytes) */
 void cs2d_sv_kill_projectile(cs2d_server_t *sv, int id, int proj_id)
 {
-    uint8_t pkt[4];
+    uint8_t pkt[3];
     pkt[0] = 41;
-    uint16_t pid = (uint16_t)proj_id;
-    memcpy(&pkt[1], &pid, 2);
-    pkt[3] = (uint8_t)id;
-    sv_broadcast_joined(sv, pkt, 4);
+    pkt[1] = (uint8_t)proj_id;
+    pkt[2] = (uint8_t)id;
+    sv_broadcast_joined(sv, pkt, 3);
+
+    for (int i = 0; i < CS2D_SV_MAX_PROJECTILES; i++) {
+        cs2d_sv_projectile_t *p = &sv->projectiles[i];
+        if (p->active && p->player == id && p->id == proj_id) {
+            cs2d_sv_detonate_projectile(sv, p);
+            break;
+        }
+    }
+}
+
+/* FUN_140179060: projectile physics, wall ricochet and detonation update */
+void cs2d_sv_step_projectiles(cs2d_server_t *sv)
+{
+    if (!sv) return;
+    uint32_t now = cs2d_sv_now();
+    float dt = (sv->last_proj_ms > 0 && now >= sv->last_proj_ms)
+               ? (float)(now - sv->last_proj_ms) * 0.001f : 0.016f;
+    if (dt > 0.1f) dt = 0.1f;
+    sv->last_proj_ms = now;
+
+    for (int i = 0; i < CS2D_SV_MAX_PROJECTILES; i++) {
+        cs2d_sv_projectile_t *p = &sv->projectiles[i];
+        if (!p->active) continue;
+
+        if (p->is_flying) {
+            float step = p->speed * dt;
+            if (step > p->flydist) step = p->flydist;
+
+            double rad = (double)p->dir * 0.017453292519943295;
+            float vx = (float)sin(rad) * p->speed;
+            float vy = -(float)cos(rad) * p->speed;
+
+            float next_x = p->x + vx * dt;
+            float next_y = p->y + vy * dt;
+
+            int tx_cur = (int)(p->x * 0.03125f);
+            int ty_cur = (int)(p->y * 0.03125f);
+            int tx_next = (int)(next_x * 0.03125f);
+            int ty_next = (int)(next_y * 0.03125f);
+
+            bool hit_solid_x = sv_tile_blocks(sv, tx_next, ty_cur);
+            bool hit_solid_y = sv_tile_blocks(sv, tx_cur, ty_next);
+            bool hit_solid = hit_solid_x || hit_solid_y || sv_tile_blocks(sv, tx_next, ty_next);
+
+            bool hit_player = false;
+            for (int pl_idx = 1; pl_idx <= CS2D_SV_MAX_PLAYERS; pl_idx++) {
+                if (pl_idx == (int)p->player) continue;
+                const cs2d_sv_player_t *pl = &sv->players[pl_idx];
+                if (!pl->used || !pl->alive || pl->team < 1) continue;
+                if (fabsf(pl->x - next_x) < 20.0f && fabsf(pl->y - next_y) < 20.0f) {
+                    hit_player = true;
+                    break;
+                }
+            }
+
+            if (hit_solid || hit_player) {
+                if (sv_projectile_is_impact(p->type)) {
+                    p->x = next_x;
+                    p->y = next_y;
+                    cs2d_sv_detonate_projectile(sv, p);
+                    continue;
+                } else {
+                    /* Bouncing grenades: invert velocity components and lose 50% flydist */
+                    if (hit_solid_x) vx = -vx * 0.5f;
+                    if (hit_solid_y) vy = -vy * 0.5f;
+                    p->dir = (float)(atan2((double)vx, (double)-vy) * 57.29577951308232);
+                    p->flydist *= 0.5f;
+                    p->speed *= 0.65f;
+                }
+            } else {
+                p->x = next_x;
+                p->y = next_y;
+                p->flydist -= step;
+            }
+
+            if (p->flydist <= 0.0f) {
+                p->is_flying = false;
+                p->speed = 0.0f;
+                if (sv_projectile_is_impact(p->type)) {
+                    cs2d_sv_detonate_projectile(sv, p);
+                    continue;
+                }
+            }
+        }
+
+        /* Check fuse expiration (HE / Flashbang: 1.8s) */
+        if (p->detonate_ms > 0 && now >= p->detonate_ms) {
+            cs2d_sv_detonate_projectile(sv, p);
+            continue;
+        }
+
+        /* Check airstrike expiration (7s countdown on the ground) */
+        if (p->type == CS2D_WEP_AIRSTRIKE && p->expire_ms > 0 && now >= p->expire_ms) {
+            cs2d_sv_detonate_projectile(sv, p);
+            continue;
+        }
+
+        /* General expiration */
+        if (p->expire_ms > 0 && now >= p->expire_ms) {
+            p->active = false;
+        }
+    }
 }
 
 /* FUN_1401d28b0: [57, player u8, state u8] (3 bytes) */
@@ -2791,8 +3138,12 @@ bool cs2d_sv_change_map(cs2d_server_t *sv, const char *mapname)
 {
     if (!sv || !mapname || !mapname[0]) return false;
 
+    char clean_map[64];
+    cs2d_sv_sanitize_map_name(clean_map, sizeof(clean_map), mapname);
+    if (!clean_map[0]) return false;
+
     char path[256];
-    snprintf(path, sizeof(path), "maps/%s.map", mapname);
+    snprintf(path, sizeof(path), "maps/%s.map", clean_map);
     cs2d_map_t *new_map = (cs2d_map_t *)calloc(1, sizeof(cs2d_map_t));
     if (!new_map) return false;
     if (!cs2d_map_load_file(new_map, path)) {
@@ -2809,7 +3160,7 @@ bool cs2d_sv_change_map(cs2d_server_t *sv, const char *mapname)
     sv->map = *new_map;
     free(new_map);
     sv->map_loaded = true;
-    snprintf(sv->set.sv_map, sizeof(sv->set.sv_map), "%s", mapname);
+    snprintf(sv->set.sv_map, sizeof(sv->set.sv_map), "%s", clean_map);
 
     /* Recalculate SHA */
     cs2d_net_sha256_file(path, sv->map_sha);
@@ -2819,14 +3170,14 @@ bool cs2d_sv_change_map(cs2d_server_t *sv, const char *mapname)
     cs2d_dynobj_spawn_map_buildings(&sv->dynobj);
     cs2d_sv_fix_building_health(sv);
     if (sv->lua && sv->set.mp_luamap) {
-        cs2d_sv_lua_load_map(sv, mapname);
+        cs2d_sv_lua_load_map(sv, clean_map);
     }
     sv->score_t = sv->score_ct = 0;
 
     cs2d_sv_round_start(sv, 0);
 
-    cs2d_sv_lua_hook_mapchange(sv, mapname);
-    cs2d_server_print("Map changed to '%s'", mapname);
+    cs2d_sv_lua_hook_mapchange(sv, clean_map);
+    cs2d_server_print("Map changed to '%s'", clean_map);
     return true;
 }
 
@@ -2955,7 +3306,8 @@ void cs2d_sv_fix_building_health(cs2d_server_t *sv)
         if (!o->active) continue;
         const cs2d_dynobj_def_t *d = cs2d_dynobj_def(o->typ);
         if (!d || d->category != 1) continue;
-        if (o->health < d->max_health) o->health = d->max_health;
+        int max_hp = cs2d_sv_building_health(sv, o->typ);
+        if (o->health < max_hp) o->health = max_hp;
     }
 }
 
@@ -2975,8 +3327,9 @@ void cs2d_sv_build(cs2d_server_t *sv, int id, int typ, int tx, int ty, int mode,
     const cs2d_dynobj_def_t *def = cs2d_dynobj_def(typ);
     if (!def || def->category != 1 || typ == CS2D_DO_SITE) return;
 
+    int price = cs2d_sv_building_price(sv, typ);
     /* 1. funds: money < price refuses with 0562 (category 2 - mines, portals - is exempt) */
-    if (def->category != 2 && pl->money < def->price) {
+    if (def->category != 2 && pl->money < price) {
         sv_build_refuse(sv, id, pl->team, tx, ty, SV_BUILD_INSUFFICIENT);
         return;
     }
@@ -3011,18 +3364,20 @@ void cs2d_sv_build(cs2d_server_t *sv, int id, int typ, int tx, int ty, int mode,
     if (can < 0) { sv_build_refuse(sv, id, pl->team, tx, ty, SV_BUILD_PLAYERS_CLOSE); return; }
 
     /* 5. price sanity / the Site itself: 0711 ("you are not allowed to build this") */
-    if (def->price > 16000 || def->price < 0 || typ == CS2D_DO_SITE) {
+    if (price > 16000 || price < 0 || typ == CS2D_DO_SITE) {
         sv_build_refuse(sv, id, pl->team, tx, ty, SV_BUILD_NOT_ALLOWED);
         return;
     }
 
     /* 6. per player limit (0713). A Turret counts its Dual / Triple upgrades too (limit = limit[8]). */
+    int limit = (typ == CS2D_DO_TURRET) ? cs2d_sv_building_limit(sv, CS2D_DO_TURRET)
+                                        : cs2d_sv_building_limit(sv, typ);
     if (typ == CS2D_DO_TURRET) {
         int n = cs2d_dynobj_count_type(&sv->dynobj, id, pl->team, CS2D_DO_TURRET, false) +
                 cs2d_dynobj_count_type(&sv->dynobj, id, pl->team, CS2D_DO_DUAL_TURRET, false) +
                 cs2d_dynobj_count_type(&sv->dynobj, id, pl->team, CS2D_DO_TRIPLE_TURRET, false);
-        if (def->limit <= n) { sv_build_refuse(sv, id, pl->team, tx, ty, SV_BUILD_LIMIT); return; }
-    } else if (cs2d_dynobj_count_type(&sv->dynobj, id, pl->team, typ, false) >= def->limit) {
+        if (limit <= n) { sv_build_refuse(sv, id, pl->team, tx, ty, SV_BUILD_LIMIT); return; }
+    } else if (cs2d_dynobj_count_type(&sv->dynobj, id, pl->team, typ, false) >= limit) {
         sv_build_refuse(sv, id, pl->team, tx, ty, SV_BUILD_LIMIT);
         return;
     }
@@ -3039,7 +3394,7 @@ void cs2d_sv_build(cs2d_server_t *sv, int id, int typ, int tx, int ty, int mode,
     if (cs2d_sv_lua_hook_buildattempt(sv, id, typ, tx, ty, mode) == 1) return;
 
     /* 9. pay (FUN_1401fab30 0x1401fb494: Tpl.money.Inc(-price), clamped at 0) */
-    pl->money -= def->price;
+    pl->money -= price;
     if (pl->money < 0) pl->money = 0;
 
     /* 10. place: Barbed Wire directly (mode 60 = the hit wobble), the rest as a Construction Site whose
@@ -3049,8 +3404,7 @@ void cs2d_sv_build(cs2d_server_t *sv, int id, int typ, int tx, int ty, int mode,
     cs2d_dynobj_t *o = cs2d_dynobj_spawn(&sv->dynobj, -1, site_typ, tx * 32, ty * 32, rot, site_mode,
                                          pl->team, id);
     if (!o) return; /* the 1024 object pool is full */
-    const cs2d_dynobj_def_t *sitedef = cs2d_dynobj_def(site_typ);
-    o->health = sitedef ? sitedef->max_health : 100; /* Tdo.inibuilding: max_health of the placed type */
+    o->health = cs2d_sv_building_health(sv, site_typ);
     if (site_typ == CS2D_DO_SITE) o->t1_ms = cs2d_sv_now() + (uint32_t)sv_build_time(typ);
 
     /* 11. [34] to everyone: the Site (or the Barbed Wire) with the requested type in the mode byte */
@@ -3111,14 +3465,15 @@ void cs2d_sv_object_damage(cs2d_server_t *sv, int obj_id, int damage, int player
         }
     }
 
+    int max_hp = cs2d_sv_building_health(sv, o->typ);
     o->health -= damage;
-    if (o->health != def->max_health) o->upgrade = 0;
+    if (o->health != max_hp) o->upgrade = 0;
     if (o->health <= 0) {
         o->health = 0;
         sv_object_kill(sv, o, player);
         return;
     }
-    if (o->health > def->max_health) o->health = def->max_health;
+    if (o->health > max_hp) o->health = max_hp;
     cs2d_dynobj_refresh(&sv->dynobj, o);
     sv_broadcast_obj_health(sv, o); /* [37] */
 }
@@ -3163,10 +3518,10 @@ int cs2d_sv_object_upgrade(cs2d_server_t *sv, int obj_id, int player, int points
         sv_broadcast_obj_health(sv, o);
     }
     if (o->upgrade >= def->upgrade_points) {
-        const cs2d_dynobj_def_t *nd = cs2d_dynobj_def(def->upgrade_to);
+        int max_hp = cs2d_sv_building_health(sv, def->upgrade_to);
         o->typ = (uint8_t)def->upgrade_to;
         o->upgrade = 0;
-        o->health = nd ? nd->max_health : 100;
+        o->health = max_hp;
         cs2d_dynobj_refresh(&sv->dynobj, o); /* cs2d_update_mapdata */
         sv_broadcast_obj_data(sv, o, 4, def->upgrade_to, true);
     }
@@ -3198,6 +3553,30 @@ static bool sv_tile_object_effect(cs2d_server_t *sv, int id, int tx, int ty)
     for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
         cs2d_dynobj_t *o = &sv->dynobj.objs[i];
         if (!o->active) continue;
+
+        if (o->typ == CS2D_DO_LASER_MINE) {
+            if (o->mode == 1 && cs2d_dynobj_in_lasermine(o, tx, ty)) {
+                const cs2d_weapon_def_t *w = cs2d_weapon_get(CS2D_WEP_LASERMINE);
+                float mx = o->x + 16.0f, my = o->y + 16.0f;
+                float radius = (w && w->range > 0) ? (float)w->range : 200.0f;
+                int dmg = (w && w->damage > 0) ? w->damage : 150;
+                int attacker = o->player;
+                sv_object_kill(sv, o, 0);   /* Tdo.kill(obj, 0) */
+                for (int p = 1; p <= CS2D_SV_MAX_PLAYERS; p++) {
+                    cs2d_sv_player_t *pp = &sv->players[p];
+                    if (!pp->used || !pp->alive) continue;
+                    float ddx = pp->x - mx, ddy = pp->y - my;
+                    float dist = sqrtf(ddx * ddx + ddy * ddy);
+                    if (dist > radius) continue;
+                    int d = (int)((radius - dist) * (float)dmg / radius);
+                    if (d > 0) cs2d_sv_damage(sv, p, attacker, d, CS2D_WEP_LASERMINE);
+                }
+                cs2d_sv_explosion_objects(sv, mx, my, radius, dmg, attacker);
+                return true;
+            }
+            continue;
+        }
+
         if ((int)(o->x * 0.03125f) != tx || (int)(o->y * 0.03125f) != ty) continue;
 
         if (o->typ == CS2D_DO_BARBED_WIRE) {
@@ -3520,7 +3899,7 @@ void cs2d_sv_step_buildings(cs2d_server_t *sv)
             if (def && def->category == 1 && typ != CS2D_DO_SITE) {
                 o->typ    = (uint8_t)typ;
                 o->mode   = (typ == CS2D_DO_SUPPLY) ? 1 : 0; /* Tdo.inibuilding case 9 */
-                o->health = def->max_health;
+                o->health = cs2d_sv_building_health(sv, typ);
                 if (typ == CS2D_DO_TURRET) { /* ini_building: a random rest angle */
                     o->rot = (float)cs2d_sv_rand(1, 360);
                     o->rrot = o->rot;
@@ -3557,6 +3936,40 @@ void cs2d_sv_step_buildings(cs2d_server_t *sv)
             o->scan_ms = now + 1000;
             sv_step_dispenser_supply(sv, o);
             continue;
+        }
+
+        /* Laser Mine: update beam length (target) and check if anyone intersects it */
+        if (o->typ == CS2D_DO_LASER_MINE && o->mode == 1) {
+            cs2d_dynobj_update_lasermine(&sv->dynobj, &sv->map, o);
+            bool triggered = false;
+            for (int p = 1; p <= CS2D_SV_MAX_PLAYERS; p++) {
+                const cs2d_sv_player_t *pl = &sv->players[p];
+                if (!pl->used || !pl->alive || pl->team < 1) continue;
+                int ptx = (int)(pl->x * 0.03125f), pty = (int)(pl->y * 0.03125f);
+                if (cs2d_dynobj_in_lasermine(o, ptx, pty)) {
+                    triggered = true;
+                    break;
+                }
+            }
+            if (triggered) {
+                const cs2d_weapon_def_t *w = cs2d_weapon_get(CS2D_WEP_LASERMINE);
+                float mx = o->x + 16.0f, my = o->y + 16.0f;
+                float radius = (w && w->range > 0) ? (float)w->range : 200.0f;
+                int dmg = (w && w->damage > 0) ? w->damage : 150;
+                int attacker = o->player;
+                sv_object_kill(sv, o, 0);
+                for (int p = 1; p <= CS2D_SV_MAX_PLAYERS; p++) {
+                    cs2d_sv_player_t *pp = &sv->players[p];
+                    if (!pp->used || !pp->alive) continue;
+                    float ddx = pp->x - mx, ddy = pp->y - my;
+                    float dist = sqrtf(ddx * ddx + ddy * ddy);
+                    if (dist > radius) continue;
+                    int d = (int)((radius - dist) * (float)dmg / radius);
+                    if (d > 0) cs2d_sv_damage(sv, p, attacker, d, CS2D_WEP_LASERMINE);
+                }
+                cs2d_sv_explosion_objects(sv, mx, my, radius, dmg, attacker);
+                continue;
+            }
         }
 
         if (o->typ != CS2D_DO_TURRET && o->typ != CS2D_DO_DUAL_TURRET && o->typ != CS2D_DO_TRIPLE_TURRET) continue;
@@ -3623,7 +4036,7 @@ void cs2d_sv_step_buildings(cs2d_server_t *sv)
  *   health < max health -> repair: damage -15 (a negative amount heals), needs $50, and the health
  *                         message drops the upgrade progress with it;
  *   else, upgrade_points > 0 -> one upgrade point (Tdo.doupgrade), needs $100.
- * The target is the object on the tile where the swing ends (Tdo.getatpos at the end of the shot ray;
+ * The target is found by raycasting along the shot ray up to the Wrench's reach (Tdo.getatpos along the ray;
  * the Wrench's range is 15 px in the weapon table set_wep(74, ...)).
  */
 static cs2d_dynobj_t *sv_wrench_target(const cs2d_server_t *sv, const cs2d_sv_player_t *pl)
@@ -3631,7 +4044,27 @@ static cs2d_dynobj_t *sv_wrench_target(const cs2d_server_t *sv, const cs2d_sv_pl
     const cs2d_weapon_def_t *w = cs2d_weapon_get(CS2D_WEP_WRENCH);
     float reach = (w && w->range > 0) ? (float)w->range : 15.0f;
     double a = (double)pl->rot * 0.017453292519943295;
-    float ex = pl->x + (float)sin(a) * reach, ey = pl->y - (float)cos(a) * reach;
+    float dx = (float)sin(a), dy = -(float)cos(a);
+    int px_tile = (int)(pl->x * 0.03125f), py_tile = (int)(pl->y * 0.03125f);
+
+    /* First check building on the player's own tile */
+    cs2d_dynobj_t *obj = cs2d_dynobj_at_tile((cs2d_dynobj_world_t *)&sv->dynobj, px_tile, py_tile);
+    if (obj) return obj;
+
+    /* Tshoot.Shoot: raycast probe in 2 px steps up to reach */
+    int last_tx = px_tile, last_ty = py_tile;
+    for (float d = 2.0f; d <= reach; d += 2.0f) {
+        float ex = pl->x + dx * d, ey = pl->y + dy * d;
+        int tx = (int)(ex * 0.03125f), ty = (int)(ey * 0.03125f);
+        if (tx != last_tx || ty != last_ty) {
+            last_tx = tx;
+            last_ty = ty;
+            obj = cs2d_dynobj_at_tile((cs2d_dynobj_world_t *)&sv->dynobj, tx, ty);
+            if (obj) return obj;
+            if (sv_tile_blocks(sv, tx, ty)) break;
+        }
+    }
+    float ex = pl->x + dx * reach, ey = pl->y + dy * reach;
     return cs2d_dynobj_at_tile((cs2d_dynobj_world_t *)&sv->dynobj, (int)(ex * 0.03125f), (int)(ey * 0.03125f));
 }
 
@@ -3648,11 +4081,12 @@ void cs2d_sv_wrench_hit(cs2d_server_t *sv, int id)
     /* Tshoot.Shoot: only a same team building is repaired / upgraded */
     if (!sv_obj_same_team(sv, o, pl, id)) return;
 
-    if (o->health < def->max_health) {
+    int max_hp = cs2d_sv_building_health(sv, o->typ);
+    if (o->health < max_hp) {
         if (pl->money <= 49) return;                 /* needs $50 */
         o->health += 15;                             /* Tdo.damage(-15, player, 0) */
-        if (o->health != def->max_health) o->upgrade = 0;
-        if (o->health > def->max_health) o->health = def->max_health;
+        if (o->health != max_hp) o->upgrade = 0;
+        if (o->health > max_hp) o->health = max_hp;
         cs2d_dynobj_refresh(&sv->dynobj, o);
         sv_broadcast_obj_health(sv, o);
         cs2d_sv_set_playerdata(sv, id, 2, pl->money - 50);   /* [42,id,2,money] */

@@ -289,6 +289,82 @@ static void laser_mine_dir(cs2d_dynobj_t *o)
     o->target = -1;
 }
 
+/*
+ * Tdo.inlasermine (0x14000aa30 in cs2d_dedicated.exe): checks whether tile (tx, ty) intersects the laser mine beam.
+ * Target is the beam span in tiles (0..6).
+ * Facing direction (rot):
+ *   0: down  (+Y) -> tx == mx && ty >= my && ty < my + target
+ *   1: left  (-X) -> ty == my && tx <= mx && tx > mx - target
+ *   2: up    (-Y) -> tx == mx && ty <= my && ty > my - target
+ *   3: right (+X) -> ty == my && tx >= mx && tx < mx + target
+ */
+bool cs2d_dynobj_in_lasermine(const cs2d_dynobj_t *o, int tx, int ty)
+{
+    if (!o || o->typ != CS2D_DO_LASER_MINE) return false;
+    int mx = (int)(o->x * 0.03125f);
+    int my = (int)(o->y * 0.03125f);
+    if (mx != tx && my != ty) return false;
+    if (o->target <= 0) return false;
+    int dir = (int)o->rot;
+    if (dir == 0) { /* down (+Y) */
+        return (tx == mx && ty >= my && ty < my + o->target);
+    } else if (dir == 1) { /* left (-X) */
+        return (ty == my && tx <= mx && tx > mx - o->target);
+    } else if (dir == 2) { /* up (-Y) */
+        return (tx == mx && ty <= my && ty > my - o->target);
+    } else if (dir == 3) { /* right (+X) */
+        return (ty == my && tx >= mx && tx < mx + o->target);
+    }
+    return false;
+}
+
+/*
+ * FUN_14028e310 / FUN_14028f880: steps up to 5 tiles ahead along the laser mine's facing direction.
+ * If a wall, map border or solid building blocks the beam, the beam stops before that tile.
+ * Sets o->target to the total span in tiles (1..6), where 1 means only the mine tile itself.
+ */
+void cs2d_dynobj_update_lasermine(cs2d_dynobj_world_t *w, const cs2d_map_t *map, cs2d_dynobj_t *o)
+{
+    if (!o || o->typ != CS2D_DO_LASER_MINE || o->mode != 1) return;
+    int mx = (int)(o->x * 0.03125f);
+    int my = (int)(o->y * 0.03125f);
+    int dir = (int)o->rot;
+    int dx = 0, dy = 0;
+    if (dir == 0) dy = 1;       /* down (+Y) */
+    else if (dir == 1) dx = -1; /* left (-X) */
+    else if (dir == 2) dy = -1; /* up (-Y) */
+    else if (dir == 3) dx = 1;  /* right (+X) */
+    else return;
+
+    int target = 6;
+    for (int i = 1; i <= 5; i++) {
+        int tx = mx + dx * i;
+        int ty = my + dy * i;
+        if (map) {
+            if (tx < 0 || ty < 0 || (uint32_t)tx >= map->width || (uint32_t)ty >= map->height) {
+                target = i;
+                break;
+            }
+            if (cs2d_map_prop_class(cs2d_map_get_tile_mode(map, (uint32_t)tx, (uint32_t)ty)) != 1) {
+                target = i;
+                break;
+            }
+            if (map->object_collision && map->object_collision[(size_t)ty * map->width + tx]) {
+                target = i;
+                break;
+            }
+        }
+        if (w) {
+            const cs2d_dynobj_t *other = cs2d_dynobj_at_tile(w, tx, ty);
+            if (other && other->id != o->id && other->typ != CS2D_DO_IMAGE) {
+                target = i;
+                break;
+            }
+        }
+    }
+    o->target = target;
+}
+
 cs2d_dynobj_t *cs2d_dynobj_spawn(cs2d_dynobj_world_t *w, int id, int typ, int x, int y, float rot,
                                  int mode, int team, int player)
 {

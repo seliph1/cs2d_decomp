@@ -7666,8 +7666,74 @@ static bool test_standard_gamemode(void)
         TEST_FAIL("Standard lone player", "an empty team ended the round without a player event");
     }
 
+    /* 9. Live 2-player 1v1 elimination round and event-driven win check */
+    for (int i = 1; i <= 4; i++) {
+        sv.players[i].used = (i <= 2);
+        sv.players[i].alive = (i <= 2);
+        sv.players[i].health = 100;
+        sv.players[i].kills = sv.players[i].deaths = sv.players[i].assists = sv.players[i].score = sv.players[i].mvp = 0;
+    }
+    sv.players[1].team = 1; /* T */
+    sv.players[2].team = 2; /* CT */
+    sv.round_end = 0;
+    sv.round_phase = 1;
+    sv.bomb_planted = false;
+    cs2d_sv_step_round(&sv);
+    if (sv.round_end != 0) {
+        TEST_FAIL("1v1 Elimination active", "1v1 match ended while both players are alive");
+    }
+    /* CT kills T -> CT wins by elimination (reason 2) immediately */
+    cs2d_sv_kill(&sv, 1, 2, 0, CS2D_WEP_DEAGLE);
+    if (sv.players[1].alive || sv.players[1].deaths != 1) {
+        TEST_FAIL("1v1 Victim stats", "victim was not marked dead with deaths = 1");
+    }
+    if (sv.players[2].kills != 1 || sv.players[2].score != 1) {
+        TEST_FAIL("1v1 Killer stats", "killer kills or score was not incremented");
+    }
+    if (sv.round_end != 2 || sv.round_winner != 2 || sv.round_mvp != 2) {
+        TEST_FAIL("1v1 Elimination win", "killing lone T did not trigger CT win (reason 2) with killer as MVP");
+    }
+    if (sv.players[2].mvp != 1) {
+        TEST_FAIL("1v1 MVP award", "MVP player did not receive +1 MVP count");
+    }
+
+    /* 10. MVP ranking formula: kills * 2 + assists (FUN_14015c080) vs score */
+    sv.players[3].used = true; sv.players[3].team = 2;
+    sv.players[4].used = true; sv.players[4].team = 2;
+    /* Player 3 has high objective score (15) but lower combat points (1 kill * 2 + 2 assists = 4) */
+    sv.players[3].score = 15;
+    sv.players[3].kills = 1;
+    sv.players[3].assists = 2;
+    /* Player 4 has low score (2) but higher combat points (2 kills * 2 + 1 assist = 5) */
+    sv.players[4].score = 2;
+    sv.players[4].kills = 2;
+    sv.players[4].assists = 1;
+    sv.round_end = 0;
+    cs2d_sv_round_end(&sv, 2, 5000); /* CT elimination win */
+    if (sv.round_mvp != 4) {
+        TEST_FAIL("MVP combat formula", "MVP did not choose player with highest kills * 2 + assists");
+    }
+
+    /* 11. MVP for Hostage Rescue (type 31, case 0x1f): most hostages rescued */
+    sv.players[3].hostages_rescued = 1;
+    sv.players[4].hostages_rescued = 3;
+    sv.round_end = 0;
+    cs2d_sv_round_end(&sv, 31, 3000);
+    if (sv.round_mvp != 4) {
+        TEST_FAIL("MVP hostage rescue", "type 31 MVP did not choose the player who rescued most hostages");
+    }
+
+    /* 12. VIP (team 3) is never MVP (FUN_14015c080 checks pl->team == 2) */
+    sv.players[4].team = 3; /* VIP */
+    sv.players[4].kills = 100;
+    sv.round_end = 0;
+    cs2d_sv_round_end(&sv, 2, 5000);
+    if (sv.round_mvp == 4) {
+        TEST_FAIL("VIP MVP immunity", "VIP (team 3) must never be awarded MVP");
+    }
+
     for (int i = 0; i < 4; i++) free(sv.conns[i].pending);
-    TEST_PASS("Standard game mode: missions, VIP (10/11), hostage 50 % rule (31), winner table, freezetime, elimination");
+    TEST_PASS("Standard game mode: missions, VIP (10/11), hostage 50 % rule (31), winner table, freezetime, elimination, 1v1 round, MVP formula");
     return true;
 }
 
@@ -8359,6 +8425,263 @@ static bool test_construction_tile_effects(void)
     return true;
 }
 
+static bool test_construction_laser_mine_and_cvars(void)
+{
+    printf("\n=== Testing Construction: Laser Mine & Building Cvars ===\n");
+    static cs2d_server_t sv;
+    construction_setup(&sv);
+    if (sv.players[1].used == false || sv.map.width == 0) TEST_FAIL("Laser Mine", "setup failed");
+
+    int px, py, bx, by;
+    if (!construction_find_tiles(&sv, &px, &py, &bx, &by)) TEST_FAIL("Laser Mine", "no free tile");
+
+    /* 1. Building cvars override via cs2d_sv_exec (by name and by number) */
+    if (!cs2d_sv_exec(&sv, "mp_building_price \"Laser Mine\" 1500")) TEST_FAIL("mp_building_price", "command failed for named building");
+    if (!cs2d_sv_exec(&sv, "mp_building_limit 21 4")) TEST_FAIL("mp_building_limit", "command failed for numeric building");
+    if (!cs2d_sv_exec(&sv, "mp_building_health \"Laser Mine\" 220")) TEST_FAIL("mp_building_health", "command failed for named building");
+
+    if (cs2d_sv_building_price(&sv, CS2D_DO_LASER_MINE) != 1500) TEST_FAIL("mp_building_price", "price was not overridden to 1500");
+    if (cs2d_sv_building_limit(&sv, CS2D_DO_LASER_MINE) != 4) TEST_FAIL("mp_building_limit", "limit was not overridden to 4");
+    if (cs2d_sv_building_health(&sv, CS2D_DO_LASER_MINE) != 220) TEST_FAIL("mp_building_health", "health was not overridden to 220");
+
+    /* Default intact for unconfigured building */
+    if (cs2d_sv_building_price(&sv, CS2D_DO_TURRET) != 5000) TEST_FAIL("mp_building_price", "turret price did not retain default");
+
+    /* 2. Geometric beam coverage (cs2d_dynobj_in_lasermine 0x14000aa30 for all 4 rotations) */
+    cs2d_dynobj_t lm;
+    memset(&lm, 0, sizeof(lm));
+    lm.active = true;
+    lm.typ = CS2D_DO_LASER_MINE;
+    lm.x = 10 * 32;
+    lm.y = 10 * 32;
+    lm.target = 5;
+
+    /* rot 0 (DOWN, +Y) */
+    lm.rot = 0;
+    if (!cs2d_dynobj_in_lasermine(&lm, 10, 11)) TEST_FAIL("inlasermine rot 0", "missed adjacent tile down");
+    if (!cs2d_dynobj_in_lasermine(&lm, 10, 14)) TEST_FAIL("inlasermine rot 0", "missed tile inside beam");
+    if (cs2d_dynobj_in_lasermine(&lm, 10, 15)) TEST_FAIL("inlasermine rot 0", "matched beyond beam target");
+    if (cs2d_dynobj_in_lasermine(&lm, 10, 9)) TEST_FAIL("inlasermine rot 0", "matched behind mine");
+
+    /* rot 1 (LEFT, -X) */
+    lm.rot = 1;
+    if (!cs2d_dynobj_in_lasermine(&lm, 9, 10)) TEST_FAIL("inlasermine rot 1", "missed adjacent tile left");
+    if (!cs2d_dynobj_in_lasermine(&lm, 6, 10)) TEST_FAIL("inlasermine rot 1", "missed tile inside beam");
+    if (cs2d_dynobj_in_lasermine(&lm, 5, 10)) TEST_FAIL("inlasermine rot 1", "matched beyond beam target");
+    if (cs2d_dynobj_in_lasermine(&lm, 11, 10)) TEST_FAIL("inlasermine rot 1", "matched behind mine");
+
+    /* rot 2 (UP, -Y) */
+    lm.rot = 2;
+    if (!cs2d_dynobj_in_lasermine(&lm, 10, 9)) TEST_FAIL("inlasermine rot 2", "missed adjacent tile up");
+    if (!cs2d_dynobj_in_lasermine(&lm, 10, 6)) TEST_FAIL("inlasermine rot 2", "missed tile inside beam");
+    if (cs2d_dynobj_in_lasermine(&lm, 10, 5)) TEST_FAIL("inlasermine rot 2", "matched beyond beam target");
+    if (cs2d_dynobj_in_lasermine(&lm, 10, 11)) TEST_FAIL("inlasermine rot 2", "matched behind mine");
+
+    /* rot 3 (RIGHT, +X) */
+    lm.rot = 3;
+    if (!cs2d_dynobj_in_lasermine(&lm, 11, 10)) TEST_FAIL("inlasermine rot 3", "missed adjacent tile right");
+    if (!cs2d_dynobj_in_lasermine(&lm, 14, 10)) TEST_FAIL("inlasermine rot 3", "missed tile inside beam");
+    if (cs2d_dynobj_in_lasermine(&lm, 15, 10)) TEST_FAIL("inlasermine rot 3", "matched beyond beam target");
+    if (cs2d_dynobj_in_lasermine(&lm, 9, 10)) TEST_FAIL("inlasermine rot 3", "matched behind mine");
+
+    /* 3. Spawn Laser Mine, calculate beam via cs2d_dynobj_update_lasermine and detonate upon crossing */
+    /* Place mine at bx, by facing LEFT (rot 1) towards px, py (which is floor) */
+    cs2d_dynobj_t *spawned = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_LASER_MINE, bx * 32, by * 32, 270.0f, 1, 1, 1);
+    if (!spawned) TEST_FAIL("Laser Mine", "failed to spawn laser mine");
+    spawned->rot = 1.0f;
+    spawned->mode = 1;
+    int lm_id = spawned->id;
+    spawned->health = cs2d_sv_building_health(&sv, CS2D_DO_LASER_MINE);
+    if (spawned->health != 220) TEST_FAIL("Laser Mine health", "spawned health does not match cvar override");
+
+    /* Verify health clamping when mp_building_health is lowered */
+    cs2d_sv_exec(&sv, "mp_building_health 21 180");
+    if (spawned->health != 180) TEST_FAIL("Laser Mine clamp", "existing mine health was not clamped to 180");
+
+    /* Update laser mine beam stops at solid or max 6 tiles */
+    cs2d_dynobj_update_lasermine(&sv.dynobj, &sv.map, spawned);
+    if (spawned->target < 1) TEST_FAIL("Laser Mine beam", "target beam length is 0");
+
+    /* Place enemy player 2 outside the beam, then walk into px, py (inside beam) */
+    sv.players[2].health = 100;
+    sv.players[2].alive = true;
+    sv.players[2].team = 2; /* Enemy (T) */
+    sv.players[2].x = sv.players[2].last_valid_x = (float)(px * 32 + 16);
+    sv.players[2].y = sv.players[2].last_valid_y = (float)((py + 1) * 32 + 16);
+
+    cs2d_sv_validate_move(&sv, 2, (float)(px * 32 + 16), (float)(py * 32 + 16), 10);
+
+    /* Mine must detonate (150 radial damage at radius 200) and kill the 100 HP enemy */
+    if (cs2d_dynobj_get(&sv.dynobj, lm_id) != NULL) TEST_FAIL("Laser Mine detonate", "mine did not detonate on beam crossing");
+    if (sv.players[2].alive) TEST_FAIL("Laser Mine kill", "enemy player survived the 150 hp laser mine blast");
+
+    /* 4. Wrench target raycast test: can reach object when within 15px reach */
+    cs2d_dynobj_t *wall = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_WALL_1, bx * 32, by * 32, 0, 0, 1, 1);
+    if (!wall) TEST_FAIL("Wrench raycast", "failed to spawn wall");
+    wall->health = 400;
+    int wall_id = wall->id;
+    sv.players[1].x = (float)((bx - 1) * 32 + 24); /* 8 px away from wall tile boundary, within 15px reach */
+    sv.players[1].y = (float)(by * 32 + 16);
+    sv.players[1].rot = 90.0f; /* facing East towards bx */
+    sv.players[1].money = 16000;
+    cs2d_sv_wrench_hit(&sv, 1);
+    wall = cs2d_dynobj_get(&sv.dynobj, wall_id);
+    if (!wall || wall->health != 415) TEST_FAIL("Wrench raycast", "wrench raycast failed to hit wall within reach");
+
+    for (int i = 0; i < 2; i++) free(sv.conns[i].pending);
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Construction: Laser Mine beam length/crossing detonation, Wrench raycast and mp_building_* cvars");
+    return true;
+}
+
+static bool test_server_projectiles(void)
+{
+    printf("\n=== Testing Dedicated Server: Projectile Simulation (Tpro) ===\n");
+    static cs2d_server_t sv;
+    construction_setup(&sv);
+    if (!sv.players[1].used || sv.map.width == 0) TEST_FAIL("Server Projectiles", "setup failed");
+
+    int px, py, bx, by;
+    if (!construction_find_tiles(&sv, &px, &py, &bx, &by)) TEST_FAIL("Server Projectiles", "no free tile");
+
+    /* 1. Build a Wall 1 of team 2 (health 500) */
+    cs2d_dynobj_t *wall = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_WALL_1, bx * 32, by * 32, 0, 0, 2, 2);
+    if (!wall) TEST_FAIL("Server Projectiles", "failed to spawn wall");
+    wall->health = 500;
+    int wall_id = wall->id;
+
+    /* Player 1 (Team 1) stands 1 tile (32 px) away from the wall */
+    sv.players[1].team = 1;
+    sv.players[1].alive = true;
+    sv.players[1].health = 100;
+    sv.players[1].x = (float)(px * 32 + 16);
+    sv.players[1].y = (float)(py * 32 + 16);
+
+    /* Player 2 (Team 2) stands near the wall (within 30 px) */
+    sv.players[2].team = 2;
+    sv.players[2].alive = true;
+    sv.players[2].health = 100;
+    sv.players[2].x = (float)(bx * 32 + 16);
+    sv.players[2].y = (float)(by * 32 + 16 + 20);
+
+    /* Test 1: Rocket Launcher (48) - Impact weapon fired towards the wall */
+    float target_x = (float)(bx * 32 + 16);
+    float target_y = (float)(by * 32 + 16);
+    float dx = target_x - sv.players[1].x;
+    float dy = target_y - sv.players[1].y;
+    float angle_deg = atan2f(dx, -dy) * 57.29577951308232f;
+    if (angle_deg < 0.0f) angle_deg += 360.0f;
+    uint16_t dir_u16 = (uint16_t)(angle_deg * (65536.0f / 360.0f));
+
+    /* Fire rocket */
+    cs2d_sv_projectile(&sv, 1, CS2D_WEP_ROCKETLAUNCHER, (uint16_t)sv.players[1].x, (uint16_t)sv.players[1].y, dir_u16, 500);
+
+    /* Verify registered in sv.projectiles */
+    cs2d_sv_projectile_t *proj = NULL;
+    for (int i = 0; i < CS2D_SV_MAX_PROJECTILES; i++) {
+        if (sv.projectiles[i].active && sv.projectiles[i].player == 1) {
+            proj = &sv.projectiles[i];
+            break;
+        }
+    }
+    if (!proj) TEST_FAIL("Server Projectiles", "rocket was not added to sv.projectiles");
+    if (!proj->is_flying) TEST_FAIL("Server Projectiles", "rocket is not flying");
+
+    /* Step simulation until rocket hits the wall (approx 0.1s at 700 px/s over 32 px) */
+    for (int step = 0; step < 20; step++) {
+        sv.last_proj_ms = cs2d_sv_now() - 16; /* force dt = 0.016s */
+        cs2d_sv_step_projectiles(&sv);
+        if (!proj->active) break; /* detonated on impact */
+    }
+
+    if (proj->active) TEST_FAIL("Server Projectiles", "rocket did not detonate on wall impact");
+
+    /* Verify wall took damage (100 damage at center with falloff) */
+    wall = cs2d_dynobj_get(&sv.dynobj, wall_id);
+    if (!wall || wall->health >= 500) TEST_FAIL("Server Projectiles", "wall took no damage from rocket explosion");
+    if (sv.players[2].health >= 100) TEST_FAIL("Server Projectiles", "player 2 took no damage from rocket explosion");
+
+    /* Test 2: HE Grenade (51) - Throwable bouncing grenade with 1.8s fuse */
+    wall->health = 500;
+    sv.players[2].health = 100;
+    cs2d_sv_projectile(&sv, 1, CS2D_WEP_HE, (uint16_t)sv.players[1].x, (uint16_t)sv.players[1].y, dir_u16, 200);
+
+    proj = NULL;
+    for (int i = 0; i < CS2D_SV_MAX_PROJECTILES; i++) {
+        if (sv.projectiles[i].active && sv.projectiles[i].player == 1) {
+            proj = &sv.projectiles[i];
+            break;
+        }
+    }
+    if (!proj) TEST_FAIL("Server Projectiles", "HE grenade was not added");
+
+    /* First step into wall: must bounce (not detonate immediately) */
+    sv.last_proj_ms = cs2d_sv_now() - 100; /* move ~35 px into wall */
+    cs2d_sv_step_projectiles(&sv);
+    if (!proj->active) TEST_FAIL("Server Projectiles", "HE grenade detonated on wall contact instead of bouncing");
+    if (proj->flydist >= 200.0f) TEST_FAIL("Server Projectiles", "HE grenade did not lose flydist on bounce");
+
+    /* Advance time to trigger 1800 ms fuse */
+    proj->detonate_ms = cs2d_sv_now() - 1; /* fuse expired */
+    sv.last_proj_ms = cs2d_sv_now() - 16;
+    cs2d_sv_step_projectiles(&sv);
+    if (proj->active) TEST_FAIL("Server Projectiles", "HE grenade did not detonate after fuse expiration");
+
+    /* Verify damage applied to wall and player 2 */
+    wall = cs2d_dynobj_get(&sv.dynobj, wall_id);
+    if (!wall || wall->health >= 500) TEST_FAIL("Server Projectiles", "wall took no damage from HE grenade");
+    if (sv.players[2].health >= 100) TEST_FAIL("Server Projectiles", "player 2 took no damage from HE grenade");
+
+    for (int i = 0; i < 2; i++) free(sv.conns[i].pending);
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Dedicated server projectile simulation: flight, bounce, impact detonation, fuse and radial damage");
+    return true;
+}
+
+static bool test_server_cli_and_map_sanitize(void)
+{
+    printf("\n=== Testing Server CLI & Map Sanitization ===\n");
+
+    char clean[64];
+
+    /* Test 1: plain map name */
+    cs2d_sv_sanitize_map_name(clean, sizeof(clean), "fun_roleplay");
+    if (strcmp(clean, "fun_roleplay") != 0) TEST_FAIL("Map Sanitize", "plain map name failed");
+
+    /* Test 2: with .map extension */
+    cs2d_sv_sanitize_map_name(clean, sizeof(clean), "fun_roleplay.map");
+    if (strcmp(clean, "fun_roleplay") != 0) TEST_FAIL("Map Sanitize", ".map extension not stripped");
+
+    /* Test 3: with uppercase .MAP extension */
+    cs2d_sv_sanitize_map_name(clean, sizeof(clean), "fun_roleplay.MAP");
+    if (strcmp(clean, "fun_roleplay") != 0) TEST_FAIL("Map Sanitize", "uppercase .MAP not stripped");
+
+    /* Test 4: with maps/ directory prefix */
+    cs2d_sv_sanitize_map_name(clean, sizeof(clean), "maps/fun_roleplay.map");
+    if (strcmp(clean, "fun_roleplay") != 0) TEST_FAIL("Map Sanitize", "maps/ prefix not stripped");
+
+    /* Test 5: with maps\\ windows backslash prefix */
+    cs2d_sv_sanitize_map_name(clean, sizeof(clean), "maps\\fun_roleplay");
+    if (strcmp(clean, "fun_roleplay") != 0) TEST_FAIL("Map Sanitize", "maps\\ prefix not stripped");
+
+    /* Test 6: quotes and whitespace */
+    cs2d_sv_sanitize_map_name(clean, sizeof(clean), "  \"maps/fun_roleplay.map\"  ");
+    if (strcmp(clean, "fun_roleplay") != 0) TEST_FAIL("Map Sanitize", "quotes and whitespace not trimmed");
+
+    /* Test 7: cs2d_server_start with map override */
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    bool ok = cs2d_server_start(&sv, "maps/fun_roleplay.map", 36980, true);
+    if (!ok) TEST_FAIL("Server Start Map", "failed to start server with maps/fun_roleplay.map");
+    if (strcmp(sv.set.sv_map, "fun_roleplay") != 0) TEST_FAIL("Server Start Map", "sv_map was not set to fun_roleplay");
+    if (!sv.map_loaded) TEST_FAIL("Server Start Map", "map was not marked as loaded");
+    cs2d_server_stop(&sv);
+
+    TEST_PASS("Dedicated server CLI & map sanitization: path stripping, .map extension removal, quotes trim and start-up map override");
+    return true;
+}
+
 
 int main(void)
 {
@@ -8368,7 +8691,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 80;
+    int total = 83;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -8450,6 +8773,9 @@ int main(void)
     if (test_construction_spawn_money()) passed++;
     if (test_construction_rounds_and_explosion()) passed++;
     if (test_construction_tile_effects()) passed++;
+    if (test_construction_laser_mine_and_cvars()) passed++;
+    if (test_server_projectiles()) passed++;
+    if (test_server_cli_and_map_sanitize()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

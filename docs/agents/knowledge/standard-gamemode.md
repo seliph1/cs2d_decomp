@@ -141,18 +141,18 @@ test `test_standard_gamemode`.
   `round_end(21, 21, 5000)` with `r9` = the defuser (`0x14016aa78`).
 - The C4 goes to a random terrorist at round start when the map has bomb spots (our `[22]` path).
 
+### Verified in our port (2026-10-17)
+
+- `cs2d_sv_player_t` now has separate `kills` and `hostages_rescued` counters.
+- MVP ranking uses `kills * 2 + assists` for elimination wins (1, 2) and Zombies (60, 61), the planter/defuser for bomb (20, 21), and the CT who rescued the most hostages for CS rescue (31). Locked in `test_standard_gamemode`.
+- A 2-player 1v1 elimination round (T vs CT) terminates immediately with reason 2 (or 1) and awards the killer the MVP (+1 MVP count, `[42, id, 10, mvp]`), verified without per-frame polling leaks. Locked in `test_standard_gamemode`.
+- The `[42, id, 10, n]` mvp award is dispatched on all MVP wins (types 1, 2, 20, 21, 31, 60, 61).
+- V.I.P. announcement `[20, id, 3, look]` and 200 armor `[42, id, 3, 200]` verified; VIP players (team 3) are strictly excluded from MVP eligibility matching `FUN_14015c080`.
+
 ### Still open (our port)
 
-- `Tpl` has no separate `kills` counter, so the MVP ranking uses `score * 2 + assists` as a stand-in.
-- The `[42, id, 10, n]` mvp award also happens for types 1 / 2 / 60 / 61 (the original).
-- The `[226]` MVP text of type 22 is "for most eliminations" (the original's literal), even though the
-  round ended by time out.
-- Not verified on a proxy capture: the exact `[20, id, 3, look]` VIP announcement (our port sends it) and
-  the round start sound.
-- The event-driven win check is only exercised with 0/1 players end to end (`tools/agent/round_timing.py`);
-  a two-client elimination round (one team wiped out mid-round on the original) has not been captured side
-  by side yet.
 - The offline client (`src/cs2d_game.c`) still checks its simplified win conditions every frame, so with one
   player it ends the round on its own - its model is not the dedicated's (see OPEN_ISSUES).
+- Proxy capture comparison of the VIP announcement sound and exact byte streams side-by-side with 2 live clients.
 
 - Phase 2 also resets the bomb flag (`0x1401c55ec` → `PTR_DAT_1405ac770 +8 = 0`).

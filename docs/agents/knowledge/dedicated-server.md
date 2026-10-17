@@ -337,3 +337,10 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   21 and 25 are not console cvars (the function prints a message; callers 0x14015eab9 / 0x14015fe9b, not identified).
 - Our client decodes only some of them (client `FUN_1401e3f10`: 3, 11, 14, 16, 19, 20, 22 do something visible); the
   rest are stored in the settings arrays. Port: `sv_broadcast_setting` in `src/cs2d_server.c`.
+
+## Dedicated server command line flags (`src/main_dedicated.c`)
+
+- Original parameters: `-offline` / `-off`, `-map <map>`, `-port <port>`, `-lua <script>`, `-pw` / `-password <pass>`, `-name <name>`, `-rcon <pass>`, `-maxplayers <n>`.
+- Our implementation supports both single and double dashes (`--map`, `-map`, `-m`), and equals/colon syntax (`--map=de_dust`, `--port:36963`).
+- `cs2d_sv_sanitize_map_name`: automatically trims quotes, whitespace, directory paths (`maps/`, `maps\`, absolute paths), and case-insensitive `.map` extensions so that `--map fun_roleplay.map` or `--map maps/fun_roleplay` resolves cleanly to `fun_roleplay`.
+

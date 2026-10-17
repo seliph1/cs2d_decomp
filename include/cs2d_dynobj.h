@@ -155,6 +155,12 @@ const cs2d_dynobj_t *cs2d_dynobj_hovered(const cs2d_dynobj_world_t *w, float wx,
 /* Health line of that hover text: percent, upgrade progress (0 = no "Upgrade n%" line) and color 0..255 */
 void cs2d_dynobj_hover_health(const cs2d_dynobj_t *o, int *percent, int *upgrade, int rgb[3]);
 
+/* Laser Mine: checks if tile (tx, ty) is intersected by the mine's beam (Tdo.inlasermine 0x140005510) */
+bool cs2d_dynobj_in_lasermine(const cs2d_dynobj_t *o, int tx, int ty);
+
+/* Laser Mine: update target field (beam length 0..6 tiles) up to map borders, walls or buildings */
+void cs2d_dynobj_update_lasermine(cs2d_dynobj_world_t *w, const cs2d_map_t *map, cs2d_dynobj_t *o);
+
 /* Does a bullet hitting this type throw debris (Tshoot.Shoot)? */
 bool cs2d_dynobj_hit_debris(int typ);
 

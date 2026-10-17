@@ -244,6 +244,21 @@ below were read from.
   and the weapon byte 0xfd. Its damage argument is -1, which falls back to `DAT_140a14da8`
   (**CS2D.exe .data = 5**, the default of the `mp_turretdamage` cvar). The burst ends with `rrot = rot` and
   `rotvar = 0`, and the next scan is 1000 ms later.
+- **Laser Mine beam & detonation (`0x14000aa30` in cs2d_dedicated.exe):** `Tdo.inlasermine(o, tx, ty)` checks
+  whether tile (tx, ty) intersects the active beam (target is beam length 1..6 tiles). Directions (`dir = (int)o->rot`):
+  0: down (+Y) `tx == mx && ty >= my && ty < my + target`
+  1: left (-X) `ty == my && tx <= mx && tx > mx - target`
+  2: up (-Y)   `tx == mx && ty <= my && ty > my - target`
+  3: right (+X) `ty == my && tx >= mx && tx < mx + target`
+  Beam length calculation (`FUN_14028e310`): steps 1..5 tiles ahead along the facing direction, stopping early on
+  walls, map boundaries or solid buildings. Crossing the beam (`sv_tile_object_effect`) detonates the mine with
+  weapon 87 (`CS2D_WEP_LASERMINE`), 150 radial damage at radius 200, credited to the owner. Client renders the flare
+  and beam line up to target.
+- **Dynamic building cvars (`0x140118060` in cs2d_dedicated.exe):** `mp_building_price`, `mp_building_limit` and
+  `mp_building_health` allow runtime overrides by building name or numerical ID (1..CS2D_DYNOBJ_TYPES). Lowering
+  `mp_building_health` clamps existing active buildings of that type to the new max (`0x1401182a6`).
+- **Wrench raycast probe (`Tdo.getatpos`):** tests the player's own tile first, then steps every 2 px along `rot`
+  up to the weapon's range (15 px), stopping early if a solid tile is hit.
 - **Ping/join:** the join snapshot section 5 lists the objects with the **health percent**; `[36, id, 1]` on a
   finished Site and `[36, id, 5]` when a Teleporter Entrance is charged (**5 s** after the build).
 

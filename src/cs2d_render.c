@@ -4982,6 +4982,29 @@ void cs2d_render_dynobjs(cs2d_dynobj_world_t *w, cs2d_dynobj_layer_t layer, floa
                     dynobj_flare(bank, cx, cy, (float)ms * 0.1f, 0.3f, tc,
                                  clamp01((float)sin(((double)ms * 0.1 + o->x + o->y) * 0.017453292519943295)));
                     break;
+                case CS2D_DO_LASER_MINE: {
+                    if (bank->tex_flare1.id) {
+                        dynobj_shadow(bank, cx, cy, 0.5f, 0.4f);
+                        dynobj_flare(bank, cx, cy, (float)ms * 0.1f, 0.4f, tc, 1.0f);
+                    }
+                    /* Draw laser beam along direction up to target tiles */
+                    if (o->mode == 1 && o->target > 0) {
+                        int dir = (int)o->rot;
+                        float bdx = 0.0f, bdy = 0.0f;
+                        if (dir == 0) bdy = 32.0f;
+                        else if (dir == 1) bdx = -32.0f;
+                        else if (dir == 2) bdy = -32.0f;
+                        else if (dir == 3) bdx = 32.0f;
+                        for (int k = 1; k < o->target; k++) {
+                            float bx = cx + bdx * (float)k;
+                            float by = cy + bdy * (float)k;
+                            if (bank->tex_flare1.id) {
+                                dynobj_flare(bank, bx, by, 0.0f, 0.25f, tc, 0.8f);
+                            }
+                        }
+                    }
+                    break;
+                }
                 default:
                     break;
             }
