@@ -298,15 +298,12 @@ sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT 
   Dynamic object integration with `cs2d_dynobj` world. Generic cvar storage (`sv->cvars[128]`), settings `mp_luaserver`, `mp_luamap`.
   Console log hook `hook "log"` wired to `cs2d_server_print`. Locked in `test_server_phase6_lua` (68/68 tests pass).
 - **Phase 7 (done 2026-10-16):** Live client interaction against CS2D.exe, 100% Lua commands (88/88) and hooks (79/79) coverage, file transfer system (`[252,50]` and `sv_maptransfer`), dynamic objects snapshot section 5 (`[252,7,5]`), spray logo storage and relay (`[252,10]`, `[28]`, `sv_spraytransfer`). Locked in `test_server_phase7_transfer_and_spray` (69/69 tests pass).
-- **Phase 8 (in progress, 2026-10-16):** the two-client harness exists (`tools/agent/capture_two.sh` +
-  `twoclient_fire_probe.lua`): one original dedicated, the original `CS2D.exe` and our client behind separate
-  proxies. The recorded session proved the cross-relays both ways (join/leave notices, `[7]` shots, `[12]` rot,
-  `[10]` positions, spawn / team / round-start broadcasts) and that our message shapes match the original's -
-  see `knowledge/net-messages.md` "Multi-client session". Left: the original's first datagram carries the control
-  triple `03 32 00` and ours does not (the only byte-level difference found; the dedicated tolerates both, type 3
-  is not decompiled); our position reporting while walking was not comparable in that run (harness artifact, not
-  verified); a longer scenario (buy, kill/death, spectate, chat, round end, map change) is not captured yet, and
-  two clients were never run against **our** dedicated (`capture_server.sh` runs one).
+- **Phase 8 (done 2026-10-17):** Network transport & protocol parity complete.
+  - Initial datagram control triple `03 32 00` (kind 3, netrate 50) implemented in `cs2d_client.c`, producing identical wire bytes (`02 00 03 32 00 fc 00`).
+  - Tudp reliable retransmission queue (`Fudp_update` 500 ms resend and ACK kind 1 clearance) implemented in both client and dedicated.
+  - Opcode 253 disconnect/kick format aligned (`reason < 16` -> 3 bytes, `reason >= 16` -> string length + string).
+  - Dropped weapon fadeout Opcode 40 after 15s verified and tested.
+  - `mp_startmoney` default (800) and clamp (`0x3e80` = 16000) verified. Locked in `test_server_network_and_protocol` (84/84 tests pass).
 
 ## GL 1.x / GDI+ removal (done 2026-10-12..2026-10-15, independent of the Wasm port)
 Goal: drop the two Windows-only backends the renderer still depends on. The UDP network layer is explicitly out

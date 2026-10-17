@@ -344,3 +344,20 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
 - Our implementation supports both single and double dashes (`--map`, `-map`, `-m`), and equals/colon syntax (`--map=de_dust`, `--port:36963`).
 - `cs2d_sv_sanitize_map_name`: automatically trims quotes, whitespace, directory paths (`maps/`, `maps\`, absolute paths), and case-insensitive `.map` extensions so that `--map fun_roleplay.map` or `--map maps/fun_roleplay` resolves cleanly to `fun_roleplay`.
 
+## Network, Tudp Transport & Protocol Parity (2026-10-17)
+
+- **Tudp Reliable Resend Queue**: BlitzMax `Fudp_update` (`0x1402bca30` / `0x1403c90c0`) queues outbound reliable datagrams (`even` seq numbers) in `con.out` and retransmits them every 500 ms (`CS2D_CLIENT_RESEND_MS` / `SV_RESEND_MS`) until acknowledged by a control triple kind 1 (`[01, seq u16]`, `Tudp_con.clearoutbuffer`). Both dedicated and client implement this retry mechanism and process ACKs.
+- **Initial Handshake Control Triple (`03 32 00`)**: The original `CS2D.exe` client prefixes its first datagram with the Tudp control triple `03 32 00` (kind 3 session reset, u16 value 0x0032 = 50 netrate ticks), producing the exact 7 wire bytes: `02 00 03 32 00 fc 00`. Handled in `cs2d_client_connect` and parsed in `cs2d_server.c`.
+- **Leave / Disconnect / Kick (`[253, id, reason]` / `FUN_1401502a0`, `0x140150ae0`)**:
+  - `cmp edi, 0xf` (15): if `reason < 16`, sends 3 bytes `[253, id, reason]`.
+  - if `reason >= 16`, appends u8-length string `[253, id, reason, str_len, str]`.
+  - Client parser in `src/cs2d_client.c` consumes the optional reason string on `reason >= 16`, preventing subsequent opcodes from desyncing.
+- **`mp_startmoney` Default and Clamp**:
+  - In code (`cs2d_sv_settings_default`): default fallback is 800 (CS default).
+  - Shipped `sys/server.cfg`: sets `mp_startmoney 16000`.
+  - REA `0x14014c217`: `mov edx, 0x3e80` clamps console input to max 16000 (`0x3e80`).
+- **Ground Item Fadeout (`[40, id u16]`, `0x140a14d94`)**:
+  - Dropped items (`dropped == true`) age 1 second per second on the server.
+  - After 15 seconds (`drop_time_ms >= 15000`), the server deactivates the item and broadcasts reliable `[40, id u16]`. Map spawned items (`dropped == false`) never expire.
+
+

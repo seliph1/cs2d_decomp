@@ -587,6 +587,7 @@ void cs2d_client_send_udp(cs2d_client_t *client, const uint8_t *payload, size_t 
     if (client->net_send_seq == 0) client->net_send_seq = 2;
 
     uint16_t hdr = reliable ? client->net_send_seq : (uint16_t)(client->net_send_seq - 1);
+    uint16_t this_seq = hdr;
     if (reliable) {
         client->net_send_seq += 2;
         if (client->net_send_seq == 0) client->net_send_seq = 2;
@@ -594,8 +595,25 @@ void cs2d_client_send_udp(cs2d_client_t *client, const uint8_t *payload, size_t 
 
     memcpy(dgram, &hdr, 2);
     memcpy(dgram + 2, payload, len);
-    net_log_datagram("out", dgram, (int)(len + 2));
-    int sent = sendto(client->net_sock, (const char *)dgram, (int)(len + 2), 0,
+    size_t dgram_len = len + 2;
+
+    if (reliable) {
+        /* Store in net_pending queue for Tudp retransmission (BlitzMax Fudp_update 500 ms) */
+        int slot = -1;
+        for (int i = 0; i < CS2D_CLIENT_MAX_PENDING; i++) {
+            if (client->net_pending[i].len == 0) { slot = i; break; }
+        }
+        if (slot >= 0) {
+            cs2d_client_pending_t *pd = &client->net_pending[slot];
+            memcpy(pd->data, dgram, dgram_len);
+            pd->len = (uint16_t)dgram_len;
+            pd->seq = this_seq;
+            pd->last_send = (uint32_t)GetTickCount();
+        }
+    }
+
+    net_log_datagram("out", dgram, (int)dgram_len);
+    int sent = sendto(client->net_sock, (const char *)dgram, (int)dgram_len, 0,
                       (struct sockaddr *)&client->server_addr, sizeof(client->server_addr));
     if (sent > 0) {
         client->net_bytes_up_accum += (uint32_t)sent;
@@ -649,12 +667,13 @@ bool cs2d_client_connect(cs2d_client_t *client, const char *ip, int port)
     client->download_open = false;
     client->join_menu     = 0;
     memset(client->net_seen_seq, 0, sizeof(client->net_seen_seq));
+    memset(client->net_pending, 0, sizeof(client->net_pending));
     cs2d_xfer_reset(&client->xfer);
 
-    /* Initiate Opcode 252 Stage 0 Join Request ([252, 0, ""]) */
-    cs2d_pkt_t p0;
-    cs2d_net_build_join_stage0(&p0);
-    cs2d_client_send_udp(client, p0.buf, (size_t)p0.pos, true);
+    /* Initiate Opcode 252 Stage 0 Join Request with Tudp control triple 03 32 00:
+     * Exactly matches the wire bytes recorded from original CS2D.exe: 02 00 03 32 00 fc 00 (proxy_orig1.log) */
+    uint8_t init_pkt[5] = { 0x03, 0x32, 0x00, 252, 0 };
+    cs2d_client_send_udp(client, init_pkt, sizeof(init_pkt), true);
 
     return true;
 }
@@ -1164,6 +1183,7 @@ static void join_abort(cs2d_client_t *client, uint8_t reason)
     client->download_open  = false;
     client->join_menu      = 0;
     client->xfer.map_mode  = 0;
+    memset(client->net_pending, 0, sizeof(client->net_pending));
     if (client->scene != CS2D_SCENE_LOBBY) cs2d_client_set_scene(client, CS2D_SCENE_LOBBY);
 }
 
@@ -1498,12 +1518,21 @@ void cs2d_client_poll_network(cs2d_client_t *client)
         memcpy(&srv_seq, buffer, 2);
         int pos = 2;
 
-        if ((srv_seq & 1) == 1) {
-            /* Unreliable Tudp packet: strip leading 3-byte ACK/control triples (1..4) */
-            while (pos + 3 <= recvd && buffer[pos] >= 1 && buffer[pos] <= 4) {
-                pos += 3;
+        /* Control triples: 1 = ACK of our reliable id (Tudp_con.clearoutbuffer); 2..4 carry connection data */
+        while (pos + 3 <= recvd && buffer[pos] >= 1 && buffer[pos] <= 4) {
+            uint8_t kind = buffer[pos];
+            uint16_t v = (uint16_t)(buffer[pos + 1] | (buffer[pos + 2] << 8));
+            pos += 3;
+            if (kind == 1) {
+                for (int k = 0; k < CS2D_CLIENT_MAX_PENDING; k++) {
+                    if (client->net_pending[k].len && client->net_pending[k].seq == v) {
+                        client->net_pending[k].len = 0;
+                    }
+                }
             }
-        } else if (srv_seq != 0) {
+        }
+
+        if ((srv_seq & 1) == 0 && srv_seq != 0) {
             /* Reliable Tudp packet: immediately acknowledge srv_seq */
             cs2d_client_send_ack(client, srv_seq);
             /*
@@ -2410,14 +2439,21 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 }
                 pos += 3 + nlen + 18;
             } else if (opcode == CS2D_NET_LEAVE) {
-                /* Server -> Client: [253, player, reason u8] (3 bytes): the player left (the server
-                 * then drops what it carried with [24] and announces it with a [226] message) */
+                /* Server -> Client: [253, player, reason u8] (and optional u8-length string if reason >= 16):
+                 * the player left (the server then drops what it carried with [24] and announces it with a [226] message) */
                 if (pos + 3 > recvd) break;
                 uint8_t pid = buffer[pos + 1];
+                uint8_t reason = buffer[pos + 2];
+                pos += 3;
+                if (reason >= 16 && pos < recvd) {
+                    uint8_t slen = buffer[pos++];
+                    if (pos + slen <= recvd) {
+                        pos += slen;
+                    }
+                }
                 if (pid > 0 && pid <= CS2D_MAX_PLAYERS && pid != client->local_player_id) {
                     memset(&client->game.players[pid], 0, sizeof(cs2d_player_t));
                 }
-                pos += 3;
             } else if (opcode == CS2D_NET_FLASHLIGHT) {
                 /* Server -> Client: [57, player, state] (FUN_1402dda70 -> FUN_140167440(player, state, 0)) */
                 if (pos + 3 > recvd) break;
@@ -2759,6 +2795,21 @@ void cs2d_client_poll_network(cs2d_client_t *client)
 
         recvd = recvfrom(client->net_sock, (char *)buffer, sizeof(buffer), 0,
                          (struct sockaddr *)&from, &fromlen);
+    }
+
+    /* Retransmit unacknowledged reliable datagrams (BlitzMax Tudp 500 ms) */
+    uint32_t now = (uint32_t)GetTickCount();
+    for (int k = 0; k < CS2D_CLIENT_MAX_PENDING; k++) {
+        cs2d_client_pending_t *pd = &client->net_pending[k];
+        if (pd->len > 0 && now - pd->last_send >= CS2D_CLIENT_RESEND_MS) {
+            pd->last_send = now;
+            net_log_datagram("retry", pd->data, pd->len);
+            int sent = sendto(client->net_sock, (const char *)pd->data, (int)pd->len, 0,
+                              (struct sockaddr *)&client->server_addr, sizeof(client->server_addr));
+            if (sent > 0) {
+                client->net_bytes_up_accum += (uint32_t)sent;
+            }
+        }
     }
 }
 

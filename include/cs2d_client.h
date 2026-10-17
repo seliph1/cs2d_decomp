@@ -29,6 +29,16 @@
 #define CS2D_SERVER_INFO_MAX_LINES 128
 #define CS2D_LEADERBOARD_MAX       100 /* Ranks 1..100 (LeaderboardRequest.add: p1 - 1 < 100) */
 #define CS2D_VOTE_MAX_MAPS         64
+#define CS2D_CLIENT_MAX_PENDING    32
+#define CS2D_CLIENT_RESEND_MS      500
+
+/* Reliable Tudp pending datagram waiting for ACK (BlitzMax Fudp_update, 500 ms resend) */
+typedef struct {
+    uint8_t  data[2048];
+    uint16_t len;
+    uint16_t seq;
+    uint32_t last_send;
+} cs2d_client_pending_t;
 
 /* Ingame menu (Tgui_hudmen menu 2) and vote screen (menu 100) */
 enum {
@@ -252,6 +262,7 @@ struct cs2d_client {
     int                 net_seed;          /* Spread seed from [252,6] (TRandom.GenerateSeed, 0x1402d0560) */
     char                net_password[64];  /* Server password sent in [252,1] (connect <ip> <port> [password]) */
     uint8_t             net_seen_seq[8192]; /* Reliable sequence numbers already handled (1 bit each) */
+    cs2d_client_pending_t net_pending[CS2D_CLIENT_MAX_PENDING]; /* Outbound reliable packets pending ACK */
     cs2d_xfer_t         xfer;               /* Join-time file transfer [252,50] */
     bool                download_open;      /* "Downloading" window (Tgui_joinmen menu 10) */
     int                 join_menu;          /* Tgui_joinmen.menu: 0 none, 1 password prompt, 2 error prompt */

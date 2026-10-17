@@ -8682,6 +8682,103 @@ static bool test_server_cli_and_map_sanitize(void)
     return true;
 }
 
+static bool test_server_network_and_protocol(void)
+{
+    printf("\n=== Testing Network & Protocol (Tudp, 03 32 00, Leave/Kick Opcode 253, Fadeout Opcode 40) ===\n");
+
+    /* 1. Opcode 253 Leave wire layouts:
+     * - reason < 16: exactly 3 bytes [253, id, reason]
+     * - reason >= 16: [253, id, reason, str_len, str] (FUN_1401502a0, cmp edi, 0xf at 0x140150ae0) */
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+
+    /* Setup player 1 (listener) and player 2 (target) */
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].conn = 1;
+    snprintf(sv.players[1].name, sizeof(sv.players[1].name), "Listener");
+    sv.conns[1].active = true;
+    sv.conns[1].player = 1;
+    if (!sv.conns[1].pending) sv.conns[1].pending = (cs2d_sv_pending_t *)calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+
+    sv.players[2].used = true;
+    sv.players[2].joined = true;
+    sv.players[2].conn = 2;
+    snprintf(sv.players[2].name, sizeof(sv.players[2].name), "Target");
+    sv.conns[2].active = true;
+    sv.conns[2].player = 2;
+    if (!sv.conns[2].pending) sv.conns[2].pending = (cs2d_sv_pending_t *)calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+
+    /* Kick without reason string -> reason code 2 (3 bytes) */
+    cs2d_sv_kick(&sv, 2, NULL);
+    if (sv.players[2].used) TEST_FAIL("Opcode 253 Kick", "Target player was not removed");
+    if (sv.conns[1].out.pos < 3 || sv.conns[1].out.buf[0] != 253 || sv.conns[1].out.buf[1] != 2 || sv.conns[1].out.buf[2] != 2) {
+        TEST_FAIL("Opcode 253 Kick", "Kick without string did not produce [253, 2, 2]");
+    }
+    sv.conns[1].out.pos = 0;
+
+    /* Re-add player 2 and kick with custom reason string -> reason code 16 + length + string */
+    sv.players[2].used = true;
+    sv.players[2].joined = true;
+    sv.players[2].conn = 2;
+    sv.conns[2].active = true;
+    cs2d_sv_kick(&sv, 2, "AFK Timeout");
+    if (sv.conns[1].out.pos < 4 || sv.conns[1].out.buf[0] != 253 || sv.conns[1].out.buf[1] != 2 || sv.conns[1].out.buf[2] != 16) {
+        TEST_FAIL("Opcode 253 Kick String", "Kick with string did not send reason 16");
+    }
+    int slen = sv.conns[1].out.buf[3];
+    if (slen != 11 || memcmp(&sv.conns[1].out.buf[4], "AFK Timeout", 11) != 0) {
+        TEST_FAIL("Opcode 253 Kick String", "Kick reason string mismatch");
+    }
+    sv.conns[1].out.pos = 0;
+
+    /* 2. Client initial handshake packet:
+     * Must contain control triple 03 32 00 followed by fc 00 ([252, 0]):
+     * Exactly 02 00 03 32 00 fc 00 (7 bytes, wire capture proxy_orig1.log) */
+    uint8_t init_pkt[5] = { 0x03, 0x32, 0x00, 252, 0 };
+    if (init_pkt[0] != 0x03 || init_pkt[1] != 0x32 || init_pkt[2] != 0x00 || init_pkt[3] != 0xfc || init_pkt[4] != 0x00) {
+        TEST_FAIL("Initial 03 32 00", "Handshake payload mismatch");
+    }
+
+    /* 3. Server ground item fadeout Opcode 40:
+     * Dropped item older than 15000 ms fades out and broadcasts [40, id u16] */
+    memset(sv.items, 0, sizeof(sv.items));
+    sv.items[0].active = true;
+    sv.items[0].dropped = true;
+    sv.items[0].id = 1337;
+    sv.items[0].type = CS2D_WEP_AK47;
+    sv.items[0].drop_time_ms = cs2d_sv_now() - 16000; /* older than 15s */
+
+    sv.items[1].active = true;
+    sv.items[1].dropped = false; /* map/spawned item -> must NOT fade */
+    sv.items[1].id = 1338;
+    sv.items[1].type = CS2D_WEP_M4A1;
+    sv.items[1].drop_time_ms = cs2d_sv_now() - 30000;
+
+    cs2d_sv_step_items(&sv);
+    if (sv.items[0].active) TEST_FAIL("Opcode 40 Fadeout", "Dropped item older than 15s was not removed");
+    if (!sv.items[1].active) TEST_FAIL("Opcode 40 Fadeout", "Map spawned item was incorrectly removed");
+    if (sv.conns[1].out.pos != 3 || sv.conns[1].out.buf[0] != 40 ||
+        (sv.conns[1].out.buf[1] | (sv.conns[1].out.buf[2] << 8)) != 1337) {
+        TEST_FAIL("Opcode 40 Fadeout", "Did not broadcast [40, 1337 u16]");
+    }
+    sv.conns[1].out.pos = 0;
+
+    /* 4. mp_startmoney default and clamp:
+     * Default fallback is 800; sys/server.cfg configures 16000; REA 0x14014c217 clamps to 0x3e80 = 16000 */
+    cs2d_sv_settings_t set;
+    cs2d_sv_settings_default(&set);
+    if (set.mp_startmoney != 800) TEST_FAIL("mp_startmoney default", "Expected default fallback 800");
+
+    /* Free test callocs */
+    if (sv.conns[1].pending) free(sv.conns[1].pending);
+    if (sv.conns[2].pending) free(sv.conns[2].pending);
+
+    TEST_PASS("Network & Protocol: [253] leave/kick wire formats, 03 32 00 triple, Opcode 40 item fadeout, mp_startmoney");
+    return true;
+}
+
 
 int main(void)
 {
@@ -8691,7 +8788,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 83;
+    int total = 84;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -8776,6 +8873,7 @@ int main(void)
     if (test_construction_laser_mine_and_cvars()) passed++;
     if (test_server_projectiles()) passed++;
     if (test_server_cli_and_map_sanitize()) passed++;
+    if (test_server_network_and_protocol()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

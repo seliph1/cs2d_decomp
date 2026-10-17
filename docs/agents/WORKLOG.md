@@ -10,6 +10,24 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-17 — Antigravity — Dedicated Server: Transporte Tudp, triple inicial 03 32 00, Leave/Kick [253] e Fadeout [40]
+
+- **Transporte Tudp e retransmissão de confiáveis (`Fudp_update`)**:
+  - Implementada a fila de retransmissão confiável `net_pending[CS2D_CLIENT_MAX_PENDING]` no cliente (`include/cs2d_client.h`, `src/cs2d_client.c`), espelhando a fila do servidor dedicado.
+  - Retransmissão automática a cada 500 ms de datagramas confiáveis sem ACK e liberação imediata ao receber control triple kind 1 (`[01, seq]`, `Tudp_con.clearoutbuffer`).
+- **Triple inicial de handshake `03 32 00`**:
+  - Em `cs2d_client_connect`, o primeiro datagrama confiável é prefixado com o triple `03 32 00` (kind 3 session reset, netrate 50) antes de `fc 00` (`[252, 0]`), reproduzindo exatamente os 7 bytes vistos no wire do cliente original (`02 00 03 32 00 fc 00`).
+- **Alinhamento do protocolo de Leave / Kick (`[253]`)**:
+  - Descompilação de `FUN_1401502a0` em `0x140150ae0` (`cmp edi, 0xf`): reasons `< 16` enviam 3 bytes `[253, id, reason]`; reasons `>= 16` transmitem `[253, id, reason, str_len, str]`.
+  - `sv_remove_player` unificado para receber `reason_str`, disparar hook Lua com a string e fazer o broadcast do pacote completo.
+  - Parser do cliente atualizado para consumir a string opcional em `reason >= 16`, evitando desincronização de opcodes subsequentes.
+- **Fadeout de armas caídas (`[40]`) e `mp_startmoney`**:
+  - `cs2d_sv_step_items` remove armas dropadas após 15s (`0x140a14d94`) e faz broadcast confiável de `[40, id u16]`. Itens de spawn/mapa nunca sofrem fadeout.
+  - `mp_startmoney` default verificado: 800 fallback em código, 16000 no `sys/server.cfg` e clamp em `0x3e80` (16000) medido em `0x14014c217`.
+- **Verificação**:
+  - Novo teste `test_server_network_and_protocol` adicionado à suíte (`tests/test_cs2d.c`).
+  - `build.bat` compilou limpo e todos os **84 / 84** testes passaram em `test_cs2d.exe`.
+
 ## 2026-10-17 — Antigravity — Dedicated Server: MVP por kills e eliminação 1v1
 
 - **Separação de `kills` e `hostages_rescued` de `score` em `cs2d_sv_player_t`**:
@@ -98,18 +116,3 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
   imediato de foguete em prédios e jogadores).
 - Falta (OPEN_ISSUES): feixe da Laser Mine (21), `mp_building_*` como cvars, e proxy capture das constantes.
 
-## 2026-10-17 — Antigravity — Construction: cadência de 1 Hz no Dispenser e Supply
-
-- **Dispenser & Supply cadence throttle**: corrigido o bug em que `sv_step_dispenser_supply` era executado
-  em cada frame do servidor (50/60 Hz), causando spam descontrolado de cura (+600 HP/s), dinheiro (+$30.000/s)
-  e spawn excessivo de munições e itens no chão em frações de segundo.
-- Em `cs2d_dedicated.exe` (`FUN_1401b5890`, `FUN_1401b7380`) e `CS2D.exe` (`FUN_14028b980`, `FUN_14028dba0`),
-  o loop de step dos edifícios e seus contadores operam em **segundos (1 Hz)** via timer de 1000 ms.
-- Regulado o step em `cs2d_sv_step_buildings` (`src/cs2d_sv_game.c`) usando `o->scan_ms` como temporizador de 1000 ms:
-  - **Dispenser**: cura `mp_dispenser_health` (10 HP/s) e paga `mp_dispenser_money` ($500/s) uma vez por segundo;
-    contador de segundos avança a 1 Hz, spawnando munição secundária no segundo 5 e primária no segundo 10.
-  - **Supply**: contador de segundos avança a 1 Hz, spawnando item do slot configurado a cada 7 segundos.
-- Verificado: `build.bat` compilou limpo e `test_cs2d.exe` **80 / 80** passou, com novo teste de regressão
-  validando que passos adicionais dentro de 1000 ms não curam nem pagam repetidamente.
-- Falta (OPEN_ISSUES): simulação de `Tpro` no servidor para granadas/rockets, feixe da Laser Mine (21),
-  `mp_building_*` como cvars, e proxy capture das constantes de construção.

@@ -82,7 +82,7 @@ void cs2d_sv_settings_default(cs2d_sv_settings_t *s)
     s->sv_antiaccel       = 1;   /* the capture pings with [229] */
     s->sv_daylighttime    = -1;
     s->sv_maxclientsperip = 5;   /* DAT_1405a6514 initial value */
-    s->mp_startmoney      = 800; /* NOT verified (CS default); the shipped server.cfg sets 16000 */
+    s->mp_startmoney      = 800; /* Fallback (CS default); shipped sys/server.cfg sets 16000; REA 0x14014c217 clamps to 0x3e80 = 16000 */
     s->mp_postspawn       = 30;  /* DAT_1405a64c4 initial value */
     s->mp_autoteambalance = 1;  /* [252,6] carries it + 1 = 0: the map's own time (proxy_ph1.log) */
     s->mp_roundtime       = 5;
@@ -1256,13 +1256,24 @@ static void sv_recv_join(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
     }
 }
 
-static void sv_remove_player(cs2d_server_t *sv, int id, int reason)
+static void sv_remove_player(cs2d_server_t *sv, int id, int reason, const char *reason_str)
 {
     if (id < 1 || id > CS2D_SV_MAX_PLAYERS || !sv->players[id].used) return;
-    cs2d_server_print("%s has left the game", sv->players[id].name);
-    cs2d_sv_lua_hook_leave(sv, id, "");
+    bool has_reason = (reason_str && reason_str[0] != '\0');
+    if (reason == 2 || reason >= 16) {
+        if (has_reason) {
+            cs2d_server_print("%s has been kicked (%s)", sv->players[id].name, reason_str);
+        } else {
+            cs2d_server_print("%s has been kicked", sv->players[id].name);
+        }
+    } else {
+        cs2d_server_print("%s has left the game", sv->players[id].name);
+    }
+    cs2d_sv_lua_hook_leave(sv, id, has_reason ? reason_str : "");
     sv->players[id].used = false;
-    /* [253,pid,reason] to the others */
+
+    /* [253, id, reason] to all connected/joined players (FUN_1401502a0, cmp edi, 0xf at 0x140150ae0:
+     * if reason >= 16, appends u8 length + reason string). Sent reliable. */
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
         cs2d_sv_conn_t *oc = conn_of_player(sv, i);
         if (!oc || !sv->players[i].joined) continue;
@@ -1270,7 +1281,11 @@ static void sv_remove_player(cs2d_server_t *sv, int id, int reason)
         cs2d_pkt_w_byte(p, 253);
         cs2d_pkt_w_byte(p, (uint8_t)id);
         cs2d_pkt_w_byte(p, (uint8_t)reason);
+        if (reason >= 16 && has_reason) {
+            cs2d_pkt_w_str(p, reason_str);
+        }
     }
+
     /* Removing a player is one of the events that run the win check in the original: the check at
      * 0x14015085b sits in FUN_1401502a0, the removal function itself (it gates on DAT_1407dfe6c == 0
      * first, like ours). Measured 2026-10-16: a client quitting a one-player standard server drew the
@@ -1282,31 +1297,13 @@ static void sv_remove_player(cs2d_server_t *sv, int id, int reason)
 void cs2d_sv_kick(cs2d_server_t *sv, int id, const char *reason)
 {
     if (id < 1 || id > CS2D_SV_MAX_PLAYERS || !sv->players[id].used) return;
-    cs2d_sv_player_t *pl = &sv->players[id];
     bool has_reason = (reason && reason[0] != '\0');
-    if (has_reason) {
-        cs2d_server_print("%s has been kicked (%s)", pl->name, reason);
-    } else {
-        cs2d_server_print("%s has been kicked", pl->name);
-    }
-
     cs2d_sv_conn_t *kicked_conn = conn_of_player(sv, id);
-    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
-        cs2d_sv_conn_t *oc = conn_of_player(sv, i);
-        if (!oc || !sv->players[i].joined) continue;
-        cs2d_pkt_t *p = sv_packet(sv, oc, true, false);
-        cs2d_pkt_w_byte(p, 253);
-        cs2d_pkt_w_byte(p, (uint8_t)id);
-        cs2d_pkt_w_byte(p, (uint8_t)(has_reason ? 16 : 2));
-        if (has_reason) cs2d_pkt_w_str(p, reason);
-    }
+    sv_remove_player(sv, id, has_reason ? 16 : 2, reason);
     if (kicked_conn) {
         sv_flush(sv, kicked_conn);
         kicked_conn->active = false;
     }
-    pl->used = false;
-    /* The kick is FUN_1401502a0 itself: the round is re-checked after the player is gone. */
-    cs2d_sv_check_win(sv);
 }
 
 /* ------------------------------------------------------------------------------------------------ */
@@ -1867,7 +1864,7 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         char reason_str[128] = "";
         if (rd_left(r) > 0) reason = rd_byte(r);
         if (reason >= 16 && rd_left(r) > 0) rd_str(r, reason_str, sizeof(reason_str));
-        if (pl) sv_remove_player(sv, c->player, reason);
+        if (pl) sv_remove_player(sv, c->player, reason, reason_str);
         c->active = false;
         return false;
     }
@@ -2427,7 +2424,7 @@ void cs2d_server_frame(cs2d_server_t *sv)
             }
         }
         if (now - c->last_recv > SV_TIMEOUT_MS) {
-            if (c->player) sv_remove_player(sv, c->player, 1);
+            if (c->player) sv_remove_player(sv, c->player, 1, "");
             c->active = false;
         }
     }

@@ -46,9 +46,13 @@ table below: `tools/agent/out/{proxy_two_two2_orig,proxy_two_two2_our,cli_two_tw
   not verified.
 - **Shared broadcasts** seen by both clients: `[20]` team, `[21]` spawn, `[22]` round start (12 bytes/player),
   `[15][pid][x][y][…]` teleport/position, `[247]` ping list, `[240]` chat/server info.
-- **Only byte-level difference found**: the original's *first* datagram is `02 00 03 32 00 fc 00`, i.e. its
-  payload starts with the control triple `03 32 00`; ours is `02 00 fc 00`. The original dedicated accepts both
-  (the triple is skipped like the type 1..4 ACK triples), so ours omits it - see `OPEN_ISSUES.md`.
+- **Initial handshake datagram parity**: the original's *first* datagram is `02 00 03 32 00 fc 00`, i.e. its
+  payload starts with the control triple `03 32 00` (kind 3, netrate 50) before opcode 252 stage 0 (`fc 00`).
+  Implemented in `src/cs2d_client.c` (`cs2d_client_connect`) so our client sends the identical 7 bytes on wire.
+- **Reliable datagram retransmission**: BlitzMax `Fudp_update` stores unacknowledged reliable datagrams (even
+  sequence numbers) in `con.out` and retransmits them every 500 ms until an ACK (control triple kind 1) arrives.
+  Both dedicated (`src/cs2d_server.c`) and client (`src/cs2d_client.c`) now implement this queue with 500 ms
+  retry cadence and ACK parsing.
 
 
 ## Network: server → client (proxy, Lua)

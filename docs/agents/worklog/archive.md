@@ -1,5 +1,19 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-17 — Antigravity — Construction: cadência de 1 Hz no Dispenser e Supply
+
+- **Dispenser & Supply cadence throttle**: corrigido o bug em que `sv_step_dispenser_supply` era executado
+  em cada frame do servidor (50/60 Hz), causando spam descontrolado de cura (+600 HP/s), dinheiro (+$30.000/s)
+  e spawn excessivo de munições e itens no chão em frações de segundo.
+- Em `cs2d_dedicated.exe` (`FUN_1401b5890`, `FUN_1401b7380`) e `CS2D.exe` (`FUN_14028b980`, `FUN_14028dba0`),
+  o loop de step dos edifícios e seus contadores operam em **segundos (1 Hz)** via timer de 1000 ms.
+- Regulado o step em `cs2d_sv_step_buildings` (`src/cs2d_sv_game.c`) usando `o->scan_ms` como temporizador de 1000 ms:
+  - **Dispenser**: cura `mp_dispenser_health` (10 HP/s) e paga `mp_dispenser_money` ($500/s) uma vez por segundo;
+    contador de segundos avança a 1 Hz, spawnando munição secundária no segundo 5 e primária no segundo 10.
+  - **Supply**: contador de segundos avança a 1 Hz, spawnando item do slot configurado a cada 7 segundos.
+- Verificado: `build.bat` compilou limpo e `test_cs2d.exe` **80 / 80** passou, com novo teste de regressão
+  validando que passos adicionais dentro de 1000 ms não curam nem pagam repetidamente.
+
 ## 2026-10-16 — Cline — Construction part 5: Gate Field, arame farpado e minas ao pisar o tile
 
 - **`sv_tile_object_effect`** (chamado do `cs2d_sv_validate_move` na mudança de tile, antes do teleporte) porta
