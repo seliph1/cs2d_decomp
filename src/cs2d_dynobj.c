@@ -699,6 +699,19 @@ static bool area_blocks(const cs2d_map_t *map, int tx, int ty, bool own_tile_ok)
 int cs2d_dynobj_can_build(const cs2d_dynobj_world_t *w, const cs2d_player_t *players, int self_id,
                           int ptx, int pty, int tx, int ty, bool own_tile_ok)
 {
+    int r = cs2d_dynobj_can_build_at(w, ptx, pty, tx, ty, own_tile_ok);
+    if (r != 1 || !players) return r;
+    float cx = (float)(tx * 32 + 16), cy = (float)(ty * 32 + 16);
+    for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
+        const cs2d_player_t *p = &players[i];
+        if (i == self_id || !p->alive || p->team == CS2D_TEAM_SPEC || p->health < 1) continue;
+        if (fabsf(p->pos.x - cx) < 32.0f && fabsf(p->pos.y - cy) < 32.0f) return -1;
+    }
+    return 1;
+}
+
+int cs2d_dynobj_can_build_at(const cs2d_dynobj_world_t *w, int ptx, int pty, int tx, int ty, bool own_tile_ok)
+{
     const cs2d_map_t *map = w->map;
     if (!map || !map->collision) return 0;
     if (abs(tx - ptx) >= 2 || abs(ty - pty) >= 2) return 0;
@@ -709,15 +722,62 @@ int cs2d_dynobj_can_build(const cs2d_dynobj_world_t *w, const cs2d_player_t *pla
     if (cs2d_map_prop_class(cs2d_map_get_tile_mode(map, (uint32_t)tx, (uint32_t)ty)) != 1) return 0;
     if (entity_blocks(map, tx, ty) || area_blocks(map, tx, ty, own_tile_ok)) return 0;
     if (cs2d_dynobj_at_tile((cs2d_dynobj_world_t *)w, tx, ty)) return 0;
-    if (players) {
-        float cx = (float)(tx * 32 + 16), cy = (float)(ty * 32 + 16);
-        for (int i = 1; i <= CS2D_MAX_PLAYERS; i++) {
-            const cs2d_player_t *p = &players[i];
-            if (i == self_id || !p->alive || p->team == CS2D_TEAM_SPEC || p->health < 1) continue;
-            if (fabsf(p->pos.x - cx) < 32.0f && fabsf(p->pos.y - cy) < 32.0f) return -1;
-        }
-    }
     return 1;
+}
+
+int cs2d_dynobj_count_type(const cs2d_dynobj_world_t *w, int player, int team, int typ, bool all_teams)
+{
+    /* Tdo.counttype clamps the player's team to 2 before the comparison */
+    int want = team < 0 ? 0 : (team > 2 ? 2 : team);
+    int n = 0;
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *o = &w->objs[i];
+        if (!o->active || o->player != player || o->typ != typ) continue;
+        if (all_teams || o->team == want) n++;
+    }
+    return n;
+}
+
+bool cs2d_dynobj_same_type_close(const cs2d_dynobj_world_t *w, int typ, float x, float y, float radius, int team)
+{
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *o = &w->objs[i];
+        if (!o->active || (o->typ != typ && o->typ != CS2D_DO_SITE)) continue;
+        float dx = x - o->x, dy = y - o->y;
+        if (sqrtf(dx * dx + dy * dy) > radius) continue;
+        if (team == 0) return true;
+        if (team == 1) { if (o->team == 1) return true; }
+        else if (o->team > 1) return true;
+    }
+    return false;
+}
+
+void cs2d_dynobj_refresh(cs2d_dynobj_world_t *w, cs2d_dynobj_t *o)
+{
+    if (o) touch(w, o);
+}
+
+int cs2d_dynobj_health_percent(const cs2d_dynobj_t *o)
+{
+    int p = o->health;
+    if (p > 100) p = 100;
+    if (p < 0) p = 0;
+    return p;
+}
+
+int cs2d_dynobj_hpup_net_value(const cs2d_dynobj_t *o)
+{
+    const cs2d_dynobj_def_t *d = cs2d_dynobj_def(o->typ);
+    int maxhp = (d && d->max_health > 0) ? d->max_health : 100;
+    int v = (int)(((float)o->health / (float)maxhp) * 100.0f);
+    if (v < 0) return 0;
+    if (v >= 100 && d && d->upgrade_points > 0) {
+        int u = (int)(((float)o->upgrade / (float)d->upgrade_points) * 100.0f);
+        if (u > 100) u = 100;
+        if (u < 0) u = 0;
+        v = 100 + u;
+    }
+    return v;
 }
 
 bool cs2d_dynobj_portal_tile(const cs2d_dynobj_world_t *w, int tx, int ty)
@@ -748,8 +808,10 @@ cs2d_dynobj_t *cs2d_dynobj_place_portal(cs2d_dynobj_world_t *w, int player, int 
     return cs2d_dynobj_spawn(w, -1, typ, tx << 5, ty << 5, (float)(1 + rand() % 360), 0, team, player);
 }
 
-int cs2d_dynobj_teleport(cs2d_dynobj_world_t *w, int tx, int ty, int team, bool team_game, float *dx, float *dy)
+int cs2d_dynobj_teleport(cs2d_dynobj_world_t *w, int tx, int ty, int team, bool team_game, float *dx, float *dy,
+                         int *used_id)
 {
+    if (used_id) *used_id = 0;
     for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
         const cs2d_dynobj_t *o = &w->objs[i];
         if (!o->active || (int)(o->x * 0.03125f) != tx || (int)(o->y * 0.03125f) != ty) continue;
@@ -784,6 +846,7 @@ int cs2d_dynobj_teleport(cs2d_dynobj_world_t *w, int tx, int ty, int team, bool 
         /* FUN_14014ccc0 (setpos): the tile centre of the destination */
         *dx = dest->x + 16.0f;
         *dy = dest->y + 16.0f;
+        if (used_id) *used_id = o->id; /* the entrance that has to recharge ([36,id,6]) */
         return 1;
     }
     return 0;

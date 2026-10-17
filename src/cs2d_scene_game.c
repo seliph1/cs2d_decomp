@@ -1608,7 +1608,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
                     if (o->active && o->typ == CS2D_DO_TELE_ENTRANCE && o->mode == 0) o->mode = 1;
                 }
                 float dx, dy;
-                if (cs2d_dynobj_teleport(&client->dynobj, tx, ty, (int)pl->team, team_game(client), &dx, &dy) == 1) {
+                if (cs2d_dynobj_teleport(&client->dynobj, tx, ty, (int)pl->team, team_game(client), &dx, &dy, NULL) == 1) {
                     /* FUN_14014ccc0: setpos; the destination tile does not fire again (tilepos param 0) */
                     pl->pos.x = dx;
                     pl->pos.y = dy;

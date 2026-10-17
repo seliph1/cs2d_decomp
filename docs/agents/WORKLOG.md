@@ -10,94 +10,85 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
-## 2026-10-16 — Cline — o check de vitória do standard mode é por evento, não por frame (timer do round com 0/1 jogadores)
-- Sintoma (relato do usuário): com o servidor vazio ou com um jogador só, o nosso dedicated reiniciava o
-  round quase que imediatamente, enquanto o original deixa o round correr.
-- Medição no original (`cs2d_dedicated.exe`, `tools/agent/round_timing.py` + `tools/agent/lua/round_probe.lua`,
-  `round_probe_kill.lua`): com 0 jogadores nenhum round termina/inicia por 18 s; com 1 jogador (espectador
-  ou CT vivo) também não; o round de um jogador só termina **quando ele morre** (`killplayer 1` → draw 3,
-  3000 ms) e depois segue rodando. Nosso dedicated fazia o mesmo draw a cada 3 s (o round durava ~20 ms).
-- Causa (objdump/Ghidra do dedicated, `tools/agent/dedscan.py`): o check `FUN_14015ce30(0)` é chamado só de
-  eventos de jogador — o call em `0x14015085b` está dentro de `FUN_1401502a0` (o removedor/kick de jogador,
-  gateado por `DAT_1407dfe6c == 0`) e o de `0x140164da3` na função de time; além deles há tail calls em
-  `0x140160526` (morte, `cmp [pid+0x230], 3`), `0x1401647c4`, `0x1401840d1`, `0x14015d200/220/266`.
-  Nenhuma no tick por frame (`0x1401a2xxx`), que só cuida de freezetime, C4, VIP e do time out.
-- `src/cs2d_sv_game.c`: as regras de eliminação saíram do `cs2d_sv_step_round` para `cs2d_sv_check_win`
-  (FUN_14015ce30(0)) e passaram a ser chamadas das mortes (`cs2d_sv_kill`, com `cs2d_sv_vip_check` antes
-  para o motivo 10), das remoções (`sv_remove_player` / `cs2d_sv_kick`, `FUN_1401502a0`) e do "Game
-  Commencing" do time, agora fiel ao dump (`t+ct == 0`, `t+ct == 1` com o único jogador **morto**, 1v1 e
-  2v0/0v2). A explosão do C4 agora encerra o round (20) antes do dano de área, senão as mortes do blast
-  decidiriam o round primeiro.
-- Testes: `test_cs2d.c` passa a dirigi-lo por evento (`cs2d_sv_kill` para a morte do jogador solitário,
-  `cs2d_sv_check_win` nos casos de eliminação) e ganhou dois casos novos: "uma equipe sem jogadores empata"
-  e "jogador sozinho não perde o round sem evento". `build.bat` limpo, `test_cs2d.exe` **72 / 72**.
-- Verificado lado a lado: nosso dedicated agora não termina round com 0/1 jogadores e encerra com draw na
-  morte, com o mesmo atraso de 3000 ms do original.
+## 2026-10-17 — Antigravity — Construction: cadência de 1 Hz no Dispenser e Supply
+
+- **Dispenser & Supply cadence throttle**: corrigido o bug em que `sv_step_dispenser_supply` era executado
+  em cada frame do servidor (50/60 Hz), causando spam descontrolado de cura (+600 HP/s), dinheiro (+$30.000/s)
+  e spawn excessivo de munições e itens no chão em frações de segundo.
+- Em `cs2d_dedicated.exe` (`FUN_1401b5890`, `FUN_1401b7380`) e `CS2D.exe` (`FUN_14028b980`, `FUN_14028dba0`),
+  o loop de step dos edifícios e seus contadores operam em **segundos (1 Hz)** via timer de 1000 ms.
+- Regulado o step em `cs2d_sv_step_buildings` (`src/cs2d_sv_game.c`) usando `o->scan_ms` como temporizador de 1000 ms:
+  - **Dispenser**: cura `mp_dispenser_health` (10 HP/s) e paga `mp_dispenser_money` ($500/s) uma vez por segundo;
+    contador de segundos avança a 1 Hz, spawnando munição secundária no segundo 5 e primária no segundo 10.
+  - **Supply**: contador de segundos avança a 1 Hz, spawnando item do slot configurado a cada 7 segundos.
+- Verificado: `build.bat` compilou limpo e `test_cs2d.exe` **80 / 80** passou, com novo teste de regressão
+  validando que passos adicionais dentro de 1000 ms não curam nem pagam repetidamente.
+- Falta (OPEN_ISSUES): simulação de `Tpro` no servidor para granadas/rockets, feixe da Laser Mine (21),
+  `mp_building_*` como cvars, e proxy capture das constantes de construção.
+
+## 2026-10-16 — Cline — Construction part 5: Gate Field, arame farpado e minas ao pisar o tile
+
+- **`sv_tile_object_effect`** (chamado do `cs2d_sv_validate_move` na mudança de tile, antes do teleporte) porta
+  o switch de `Tpl.tilepos` (`Tpl.c:3443..3604`):
+  - **Arame farpado (2)**: 20 de dano (arma `0xff`) creditado ao dono, o arame leva 60 (`Tdo.damage`) e manda
+    `[36,id,5]` (o wobble). Sem teste de team — fere também o próprio lado.
+  - **Gate Field (6)**: o outro lado leva **20** (arma `0xfe`, `mov r8d,0x14` em `0x140210459`) e o campo leva
+    **100** (`edx=0x64`); em DM qualquer um menos o construtor, `team 0` fere todos com atacante 0.
+  - **Mina (20)**: dispara para o outro lado e `Tdo.kill` explode-a com a entrada 77 da tabela de armas
+    (`range` = 96, `damage` = 150) via `FUN_1401f1130` com atacante 0 — jogadores e prédios com a queda
+    linear.
+- As quatro cvars do Construction (`mp_teleportreload`, `mp_dispenser_health`, `mp_dispenser_money`,
+  `mp_dmspawnmoney`) entraram no `cs2d_sv_settings_set` / `_get`, portanto `server.cfg`, a consola e o
+  `game("...")` do Lua chegam a elas (não fazem parte do broadcast `[237]` do original).
+- Verificado: `build.bat` limpo e `test_cs2d.exe` **80 / 80** (teste novo: gate field 20/100 com o time
+  próprio ileso, arame 20/60 com `[36,id,5]`, e a mina que mata um jogador de 100 hp). O teste do dinheiro de
+  spawn passou a verificar também o `mp_dmspawnmoney` configurado por cvar.
+- Falta (OPEN_ISSUES): granadas/rockets (precisam da simulação de `Tpro` no servidor), o feixe da Laser Mine
+  (21), `mp_building_*` como cvars, e o alvo da chave inglesa num proxy capture.
 
 
-## 2026-10-16 — Cline — standard game mode (sv_gamemode 0) reconstructed from cs2d_dedicated.exe
+## 2026-10-16 — Cline — Construction part 4: explosões nos prédios e o gate `0x140ddf540` identificado
 
-- New `docs/agents/knowledge/standard-gamemode.md`: the round end model of `FUN_14015c840` +
-  `FUN_14015c080` (`type` → winner/MVP, `mode` = the reason byte of `[226]`), the 19 reason ↔ language
-  message pairs (0576..0594), the win conditions of `FUN_14015ce30` (a team without players draws), the
-  per-mission time out (`0x1401a3128`: vips → 12, hostages → 30, bombspots → 22, else draw; skipped
-  while the C4 ticks), the round phases `DAT_1407dfea0` (0 = freezetime rejects movement at `0x1401c9a02`
-  for `mp_freezetime` seconds, then 1 = playing, 2 = decided), the V.I.P. (team 3, 200 armor, cannot
-  buy; death 10 / escape 11 / time out 12) and the hostage rule (>50 % of the map's hostages → 31, the
-  float 0.5f at `0x1406da614`).
-- `src/cs2d_sv_game.c` + `include/cs2d_server.h`: `cs2d_sv_round_end_ex(type, mode, delay, player)` with
-  the winner/MVP table and the per-type MVP (`[42, id, 10, n]`), `cs2d_sv_count_missions`,
-  `cs2d_sv_assign_vip` / `cs2d_sv_vip_check` / `cs2d_sv_hostage_escaped`, the freezetime phase
-  (`sv_step_phase`), the mission-based time out, the VIP objective check every tick, and the bomb
-  explode/defuse round ends now carry the planter/defuser as the MVP. The VIP cannot buy, movement and
-  attacks are rejected while frozen, and `sv_count_side` counts team > 1 as the CT side (VIP included).
-- Tests: `test_standard_gamemode` (missions, VIP 200 armor + no buy, freezetime gate, VIP 10/11, the
-  `[226]` shape, the winner table, the 50 % hostage rule, the elimination cases) and the updated time out
-  and hostage expectations. `build.bat` clean, `test_cs2d.exe` **72 / 72**.
-- Left (OPEN_ISSUES): the MVP ranking stands in `score * 2 + assists` (no separate `kills` counter), and
-  the `[20, id, 3, look]` VIP announcement plus the round start sound are not proxy-verified.
-- **Bug found and fixed on the way (planted C4 invisible):** the user reported that a planted bomb never
-  showed on the ground and could not be defused. Reproduced with our client against our dedicated
-  (`tools/agent/out/bomb_shot.sh`: walk to the de_dust2 bomb spot (25,22), `slot5`, attack, walk away,
-  `!shot`) and measured rather than guessed: temporary prints showed the client *did* receive `[30,3]`
-  and add the ground item, so the server was the culprit - `cs2d_sv_step_items`' generic pickup fallback
-  matched item 63 (`CS2D_SLOT_ITEM` hits no branch) and the planter, standing on the tile, collected the
-  C4 on the next tick; the `[25]` then removed the item on every client. Fixed by skipping
-  `CS2D_WEP_PLANTEDBOMB` in the pickup loop; a regression check was added to
-  `test_server_phase5_bomb_hostages_bots` and the screenshot now shows the C4 sprite. Details in
-  `knowledge/hostages-bomb.md`.
+- **Explosões**: encontrei o modelo em `CS2D.exe FUN_1401f1130`
+  (`docs/dump/cs2d/_global/1401f0000.c:1..169`) — três ciclos (jogadores, breakables `0x19`, e os Tdo pelo
+  **centro** `x+16/y+16`) com queda linear `(raio - distância) * dano / raio` e `Tdo.damage` pelo slot de
+  vtable `+0xb8`. Novo `cs2d_sv_explosion_objects` (o ciclo dos objetos) ligado à explosão do **C4**
+  (350 px / 500), que antes só magoava jogadores. As granadas/rockets precisam de uma simulação de `Tpro`
+  no servidor primeiro (`cs2d_sv_projectile` só relayа) — ficou anotado com os raios do `Tpro.c`
+  (granada 40, rocket 45, mina 100).
+- **`0x140ddf540`** (o gate que o Dispenser/Supply partilham): está numa secção **sem imagem de ficheiro**
+  (a `0x140dde000`, raw size 0), ou seja é um flag de *runtime* — não um setting que eu pudesse ler.
+  Aparece no `Titem.c` (pickups), `Tpro.c` (projéteis), `Te.c` (triggers), `Thostage.c` e no decaimento do
+  `rsarmor` (`Tpl.c:3893`), sempre como "`DAT_140ddf540 != 0 && in game`": é o "o jogo está a correr" e
+  tratá-lo como ligado no nosso servidor (que não tem pausa) está certo. `pevalue.py` passou a dizer
+  "no file bytes" em vez de ler o cabeçalho quando a secção não tem raw data.
+- **Modelo de rounds do `sv_gamemode 3`**: verificado que já é inerte (`cs2d_sv_check_win` sai cedo com
+  `respawn != 0`; `cs2d_sv_step_round` só corre os objetivos para `respawn == 0 && balance == 1`) e
+  travado por um teste novo.
+- Verificado: `build.bat` limpo e `test_cs2d.exe` **79 / 79** (teste novo: sem fim de round num modo com
+  respawn + a queda do dano da explosão nos prédios, com a recompensa de kill). Smoke test em
+  `sv_gamemode 3` sem erros.
+- Falta (OPEN_ISSUES): Gate Field (o "hurt" está no passo de tile `Tpl.tilepos`, 0x14020f7d0, precisa de um
+  passe `dedscan.py refs` no dedicated) e a simulação de `Tpro` para granadas/rockets/minas.
 
 
-## 2026-10-16 — Cline — protocol: no message opcode 0; the disconnect packet is [253, reason]
-- Question answered from the shipped dumps (no source change). The `Code 0` in the client's own `Disconnect Reason:` line (`sys/logs/*.txt`) is the *reason* byte of the reliable leave packet `[253, reason]`, not a message opcode.
-- `FUN_1401c7500` (`0x1401c7970`) writes `0xfd` + `param_2`; "Disconnect / Quit" (`Tgui_hudmen.c:2246/2273`) passes 0, so the original sends `fd 00` - identical to ours (`[net out 4] 0e 00 fd 00`, `tools/agent/out/cli_ba.log:110`). Reason >= 0x10 appends a u8 string; reason 4 makes the dedicated drop the datagram (`docs/dump/dedicated/FUN_1401e3790_leave.c`).
-- A message opcode 0 does not exist: the dedicated receive jump table `0x1406cdb14` is indexed by `opcode - 7` (7..253).
-- Docs: `knowledge/net-messages.md` gained the `[253]` row and the code-table note; the `OPEN_ISSUES.md` item "Not checked: what the original sends on Disconnect" is verified and narrowed to the server-side `[253,pid,reason]`.
+## 2026-10-16 — Cline — Construction part 3: Dispenser/Supply, melee nos prédios e mp_dmspawnmoney
 
-## 2026-10-16 — Claude — Phase 8: two-client session (original + ours) on one original dedicated
-- New `tools/agent/capture_two.sh` + `tools/agent/lua/twoclient_fire_probe.lua`: one original dedicated, the
-  original `CS2D.exe` behind proxy 36980 and our `cs2d_client.exe --capture` behind proxy 36981 (each client needs
-  its own `udp_proxy.py`, which replies to a single address), the original driven by `drive_orig.ps1`. The script
-  prints an opcode histogram per direction and restores `sys/server.cfg` / `sys/recentlyjoined.lst`.
-- Recorded session `two2` (prison_funst3r, 45 s): both clients joined (ids 1 and 2), the probe placed and armed
-  both, and both fired. Verified the multi-client relays in both directions, and that our `[7]` / `[10]` / `[70]`
-  shapes match the original's `[7]` / `[10]` / `[71]` (byte examples in `knowledge/net-messages.md`).
-- Only byte-level difference found: the original's first datagram is `02 00 03 32 00 fc 00` (control triple
-  `03 32 00`), ours is `02 00 fc 00`. Recorded in `OPEN_ISSUES.md`, not implemented (the type-3 semantics are not
-  decompiled and the original dedicated accepts both).
-- No source change this session: `build.bat` and `test_cs2d.exe` re-run clean (71/71).
-
-## 2026-10-16 — Claude — dedicated: Lua hook connect_attempt bound in [252,1] (status 4 + ban reason)
-- Found the call site in `cs2d_dedicated.exe` with `objdump -d -M intel` plus a scan of the BlitzMax string objects
-  in `.data` (REA `open_binary` worked, but the Ghidra analysis was still running and every call hit the 60 s MCP
-  timeout): the hook list of slot `+0xc8` runs at `0x1401de995`, reached from `0x1401dcd41` right after the per-IP
-  flood guard `FUN_1400d4c90(ip, 0xfc, 200, 60000)` (`0x1401dcd12`) and **before every sanity check**, with the 7
-  documented arguments (steam id pushed as a string, `bbStringFromLong`). A non-empty returned string logs the
-  `Lua connect_attempt returned:` line (`0x1405ee540`) and answers `[252,2,4,<value>]`: status **4** (ban) plus the
-  string as ban reason (`0x1401dce77`, `0x1401dcec7`). Details in `knowledge/dedicated-server.md`.
-- `cs2d_sv_lua_hook_connect_attempt` now takes the 7 arguments and an `out_reason` buffer (`include/cs2d_sv_lua.h`,
-  `push_connect_attempt` in `src/cs2d_sv_lua.c`); `sv_recv_join1` (`src/cs2d_server.c`) calls it after the parse and
-  before the checks, and the old 2-argument stub is gone. New `test_server_connect_attempt_hook` locks the argument
-  order, the empty return and the cancel with status 4 (71/71).
-- Left: where `connect` / `connect_initplayer` run (both documented as "no return value", so each needs its own
-  evidence); the remaining Phase 1 gaps stay in OPEN_ISSUES.
+- **Dispenser** (`CS2D.exe FUN_14028b980`) e **Supply** (`FUN_14028dba0`) portados para
+  `sv_step_dispenser_supply` em `src/cs2d_sv_game.c`: cura `mp_dispenser_health` (DAT_140a14dac = **10**)
+  e paga `mp_dispenser_money` (DAT_140a14db0 = **500**) a quem do lado servido estiver a <48 px, e o
+  contador de frames (Tdo +0x58 = o nosso `countdown`) gera munição 62 (frame 5) / 61 (frame 10) com
+  `mp_infammo` desligado; o Supply gera `mp_supply_items[mode-1]` a cada 7 frames (máx. 3 por perto). Novos
+  helpers `sv_spawn_item` (`[33]`), `sv_spawn_item_near` (as 8 casas da tabela 0x140bc8a00/0x140bc8a20),
+  `sv_items_near`, `sv_supply_item_at`, `sv_building_serves`.
+- **Corpo a corpo também fere prédios**: `cs2d_sv_shot_at_building` passou a correr para todas as armas
+  menos a chave inglesa (o `Tshoot.Shoot` é agnóstico da arma), com o alcance de `cs2d_weapon_shot_reach`.
+- **Dinheiro de spawn** (`FUN_140160740`): modos com respawn (DM/TeamDM/Construction/Zombies) dão
+  `mp_dmspawnmoney` (DAT_1405a6554 = **2000**) em cada spawn quando o contador de segundos por jogador
+  (Tpl +0x3fc, teto 499, incrementado no `sv_second`) passou de 14 — o "max every 15 sec" do Changelog; o
+  primeiro spawn continua a usar `mp_startmoney`.
+- Constantes lidas do `.data` com o novo `tools/agent/pevalue.py` (documentado em `TOOLS.md`).
+- Verificado: `build.bat` limpo e `test_cs2d.exe` **78 / 78** (dois testes novos: dispenser/supply e o
+  dinheiro de spawn). Smoke test do `cs2d_server.exe -offline` em `sv_gamemode 3` sem erros.
+- Falta (OPEN_ISSUES): Gate Field (a lógica está no `Tpl.tilepos`, 0x14020f7d0) e o dano de explosão nos
+  prédios; `0x140ddf540` (o gate do Dispenser/Supply) não foi identificado - tratamo-lo como ligado.

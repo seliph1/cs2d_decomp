@@ -40,3 +40,5 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
   game) and mode 1 (charged) → the owner's exit of the same team if any, else Rand among exits of the entrance's team;
   messages g_lang 0xb3 (no exit / not charged). After use `getdata 6` (mode 0) only when mp_teleportreload
   (`DAT_140a14d48`) > 0; Tdo.draw_ground 0xd recharges (getdata 5) after reload × 1000 ms. Client online only applies `[15]`.
+  The dedicated side is now ported (`cs2d_sv_validate_move` + `cs2d_sv_step_buildings`, settings
+  `mp_teleportreload` = `DAT_140a14d48`, CS2D.exe .data = 5).

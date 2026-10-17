@@ -73,7 +73,11 @@ typedef struct {
     int      target;     /* Turret target player ([36,id,0,target]) */
     int      countdown;  /* Turret: frames left of the shooting burst */
     int      shots;      /* Turret bursts fired since the client last read it (each fires every barrel) */
-    int      upgrade;    /* NPC Vortigaunt: ranged attack charge frames 1..89 (+0x6c), 0 idle */
+    int      upgrade;    /* Building: Wrench upgrade points (Tdo.upgrade, +0x6c); NPC Vortigaunt: charge 1..89 */
+    /* Server-side timers (Tdo.t1 / Tdo.t2, absolute ms of cs2d_server_t). 0 = inactive */
+    uint32_t t1_ms;      /* Construction Site: the moment it becomes the building stored in mode */
+    uint32_t t2_ms;      /* Teleporter Entrance: [36,id,5] + mode 1 five seconds after the build */
+    uint32_t scan_ms;    /* Turret: next target scan (cs2d_sv_step_buildings) */
 
     /* NPC (typ 30): player holds the NPC type 1 zombie, 2 headcrab, 3 snark, 4 vortigaunt, 5 soldier */
     float    m_x, m_y;   /* Movement target (+0x104 / +0x108, [36,id,7]); Tdo.add sets it to the spawn point */
@@ -191,6 +195,30 @@ void cs2d_dynobj_update(cs2d_dynobj_world_t *w, const cs2d_player_t *players, fl
 int cs2d_dynobj_can_build(const cs2d_dynobj_world_t *w, const cs2d_player_t *players, int self_id,
                           int ptx, int pty, int tx, int ty, bool own_tile_ok);
 
+/* The same test without the player proximity part: 1 free, 0 not (the dedicated has no cs2d_player_t) */
+int cs2d_dynobj_can_build_at(const cs2d_dynobj_world_t *w, int ptx, int pty, int tx, int ty, bool own_tile_ok);
+
+/* Tdo.counttype (0x140035680): objects of `typ` owned by `player`, with the same team unless all_teams */
+int cs2d_dynobj_count_type(const cs2d_dynobj_world_t *w, int player, int team, int typ, bool all_teams);
+
+/*
+ * Tdo.sametypetoclose (0x14004a2b0): is an object of `typ`, or a Construction Site (10), within `radius` px of
+ * (x, y)? team 0 counts every team, 1 only team 1, > 1 only team > 1 (the CT side). Buildings do not count.
+ */
+bool cs2d_dynobj_same_type_close(const cs2d_dynobj_world_t *w, int typ, float x, float y, float radius, int team);
+
+/* Re-applies the tile collision and the object pass after a type / position change (the server's update_mapdata) */
+void cs2d_dynobj_refresh(cs2d_dynobj_world_t *w, cs2d_dynobj_t *o);
+
+/* Tdo.healthpercent (0x1400052f0): the health as a 0..100 percent (the join snapshot and the hover text) */
+int cs2d_dynobj_health_percent(const cs2d_dynobj_t *o);
+/*
+ * Tdo.hpupnetvalue (0x140005350): the byte of [37]: the health percent, or 100 + the upgrade progress.
+ * It divides by the type's max health, so it belongs to the dedicated, which keeps Tdo.health in points
+ * (the client keeps the percent and stores the [37] byte as it is).
+ */
+int cs2d_dynobj_hpup_net_value(const cs2d_dynobj_t *o);
+
 /*
  * FUN_1401fc9f0 (server side): may a portal open on tile (tx, ty)? A free floor tile (not tile property 15) with no
  * object, Tdo.checkentity / Tdo.checkareaentity(.., 1).
@@ -207,9 +235,10 @@ cs2d_dynobj_t *cs2d_dynobj_place_portal(cs2d_dynobj_world_t *w, int player, int 
  * Tpl.tilepos (server side, cases 0xd / 0x16 / 0x17): a player of team entered tile (tx, ty). A portal leads to its
  * owner's other portal; a charged (mode 1) Teleporter Entrance of the player's team to the owner's exit, else a
  * random exit of its team. Returns 1 with the destination (tile centre) in dx / dy, 0 nothing, -1 entrance not
- * charged, -2 no exit.
+ * charged, -2 no exit. used_id (may be NULL) gets the id of the entrance that has to recharge ([36,id,6]).
  */
-int cs2d_dynobj_teleport(cs2d_dynobj_world_t *w, int tx, int ty, int team, bool team_game, float *dx, float *dy);
+int cs2d_dynobj_teleport(cs2d_dynobj_world_t *w, int tx, int ty, int team, bool team_game, float *dx, float *dy,
+                         int *used_id);
 
 /*
  * Lua images [51, sub, ...] (FUN_140182240): 0 create {path str, id u16, x u16 + 32768, y u16 + 32768, mode, player},

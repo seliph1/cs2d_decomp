@@ -98,6 +98,10 @@ void cs2d_sv_settings_default(cs2d_sv_settings_t *s)
     s->leaderboard        = 1;
     s->mp_luamap          = 1;
     s->mp_zombiespeedmod  = 100;
+    s->mp_teleportreload  = 5;   /* DAT_140a14d48 in CS2D.exe .data: the 5 s the captures show */
+    s->mp_dispenser_health = 10; /* DAT_140a14dac in CS2D.exe .data */
+    s->mp_dispenser_money  = 500;/* DAT_140a14db0 in CS2D.exe .data (Changelog: "defaults to 500") */
+    s->mp_dmspawnmoney     = 2000;/* DAT_1405a6554 in cs2d_dedicated.exe .data (Changelog: "2000$ by default") */
     s->cvar_count         = 0;
 }
 
@@ -129,6 +133,8 @@ void cs2d_sv_settings_set(cs2d_sv_settings_t *s, const char *key, const char *va
     SV_INT(sv_spraytransfer) SV_INT(sv_maptransfer) SV_INT(mp_startmoney) SV_INT(mp_postspawn) SV_INT(mp_autoteambalance)
     SV_INT(lagcompensation) SV_INT(ticks) SV_INT(leaderboard) SV_INT(physics)
     SV_INT(mp_luamap) SV_INT(mp_randomspawn) SV_INT(mp_curtailedexplosions) SV_INT(mp_zombiespeedmod) SV_INT(mp_kevlar)
+    /* Construction (read from the CS2D.exe .data defaults; not in the [237] live broadcast of the original) */
+    SV_INT(mp_teleportreload) SV_INT(mp_dispenser_health) SV_INT(mp_dispenser_money) SV_INT(mp_dmspawnmoney)
 #undef SV_INT
 #undef SV_STR
 
@@ -167,6 +173,8 @@ const char *cs2d_sv_settings_get(const cs2d_sv_settings_t *s, const char *key)
     SV_GET_INT(mp_flashlight) SV_GET_INT(mp_hovertext) SV_GET_INT(sv_maxplayers) SV_GET_INT(sv_friendlyfire)
     SV_GET_INT(sv_forcelight) SV_GET_INT(sv_daylighttime) SV_GET_INT(mp_hudscale) SV_GET_INT(sv_voicechat)
     SV_GET_INT(sv_offscreendamage)
+    SV_GET_INT(mp_teleportreload) SV_GET_INT(mp_dispenser_health) SV_GET_INT(mp_dispenser_money)
+    SV_GET_INT(mp_dmspawnmoney)
 #undef SV_GET_INT
     return NULL;
 }
@@ -675,7 +683,7 @@ static void sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
             ok++;
             cs2d_pkt_w_short(&c->out, (uint16_t)o->id);
             cs2d_pkt_w_byte(&c->out, (uint8_t)o->typ);
-            cs2d_pkt_w_byte(&c->out, (uint8_t)o->health);
+            cs2d_pkt_w_byte(&c->out, (uint8_t)cs2d_dynobj_health_percent(o));
             cs2d_pkt_w_byte(&c->out, (uint8_t)o->mode);
             cs2d_pkt_w_short(&c->out, (uint16_t)(int)(o->x + 0x8000));
             cs2d_pkt_w_short(&c->out, (uint16_t)(int)(o->y + 0x8000));
@@ -2002,8 +2010,30 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
                              (const uint8_t *)enc_cmd, cmd_len);
         return true;
     }
+    case 34: { /* build: [34, typ u8, tx u16, ty u16, mode u8, rot + 1000 u16] (FUN_1401cf0c0 ->
+                * FUN_140175550). The original rate-limits the opcode to 20 requests per 3000 ms
+                * (FUN_1400d4f80(player, ip, 0x22, 0x14, 0xbb8) at 0x1401cf2b9) and then calls the place
+                * function with (player, 0, typ, tx, ty, mode, rot, 0, 0, 1). */
+        if (rd_left(r) < 8) return false;
+        int typ = rd_byte(r);
+        int bx = rd_short(r), by = rd_short(r);
+        int mode = rd_byte(r);
+        int rot = rd_short(r) - 1000;
+        if (pl) {
+            cs2d_sv_player_t *me = &sv->players[c->player];
+            uint32_t now = sv_now();
+            if (me->build_ctr == 0 || now - me->build_window_ms > 3000) {
+                me->build_ctr = 0;
+                me->build_window_ms = now;
+            }
+            if (++me->build_ctr <= 20) {
+                cs2d_sv_build(sv, c->player, typ, bx, by, mode, (float)rot);
+            }
+        }
+        return true;
+    }
     default:
-        /* Opcodes without a port yet (e.g. 34, 43, 53, 230). The original runs a handler per opcode and drops the
+        /* Opcodes without a port yet (e.g. 43, 53, 230). The original runs a handler per opcode and drops the
          * rest of the datagram when it returns > 0 (FUN_1401e3cf0); [40] is one of those drops: 0x1401cfba0 returns
          * 3 or 4 without reading anything on a dedicated. Report them on stderr (not the game console) so longer
          * capture_server.sh sessions show which handlers are still missing. */
@@ -2093,6 +2123,12 @@ static void sv_second(cs2d_server_t *sv)
     sv->bytes_in_sec = sv->bytes_in_acc * 8;
     sv->bytes_out_sec = sv->bytes_out_acc * 8;
     sv->bytes_in_acc = sv->bytes_out_acc = 0;
+
+    /* The per-player seconds counter at Tpl +0x3fc (capped at 499) drives the mp_dmspawnmoney limit */
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (!sv->players[i].used) continue;
+        if (sv->players[i].money_secs < 499) sv->players[i].money_secs++;
+    }
 
     /* Every 2nd second: [229, ms since start] (sv_antiaccel > 0) or [249, ...] to every connection */
     sv->ping_ctr++;
@@ -2225,6 +2261,7 @@ bool cs2d_server_start(cs2d_server_t *sv, const char *map, int port, bool offlin
     sv_load_maplist(sv);
     cs2d_dynobj_init(&sv->dynobj, &sv->map);
     cs2d_dynobj_spawn_map_buildings(&sv->dynobj);
+    cs2d_sv_fix_building_health(sv);
     s_active_sv = sv;
     cs2d_sv_lua_init(sv);
     cs2d_server_print("----- Server started -----");
@@ -2267,6 +2304,7 @@ void cs2d_server_frame(cs2d_server_t *sv)
     cs2d_sv_step_items(sv);
     cs2d_sv_step_reloads(sv);
     cs2d_sv_step_respawns(sv);
+    cs2d_sv_step_buildings(sv);
     cs2d_sv_lua_frame(sv);
 
     sv->frames++;

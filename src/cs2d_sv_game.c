@@ -50,6 +50,14 @@ int cs2d_sv_rand(int lo, int hi)
     return lo + rand() % (hi - lo + 1);
 }
 
+/*
+ * The Construction helpers live in the section at the end of this file; the movement validation (which
+ * teleports a player who steps onto a charged entrance) needs one of them, so it is forward declared.
+ */
+static void sv_broadcast_obj_data(cs2d_server_t *sv, const cs2d_dynobj_t *o, int sub, int value, bool has_value);
+/* The building on the tile a player just entered (barbed wire, gate field, mine) */
+static bool sv_tile_object_effect(cs2d_server_t *sv, int id, int tx, int ty);
+
 /* FUN_140026150 (T) / FUN_140026210 (CT): players in a team (bots included) */
 int cs2d_sv_count_team(const cs2d_server_t *sv, int team)
 {
@@ -254,8 +262,20 @@ void cs2d_sv_spawn_at(cs2d_server_t *sv, int id, float custom_x, float custom_y)
     }
     sv_best_weapon(sv, pl);
 
-    /* Money: the start money on the first spawn (score and deaths 0); clamped to 0..16000 */
-    if (pl->score == 0 && pl->deaths == 0) pl->money = sv->set.mp_startmoney;
+    /*
+     * Money (FUN_140160740 0x1401618xx): the first spawn (no spawns, no deaths) sets mp_startmoney and
+     * clears the seconds counter at player +0x3fc; every later spawn of a respawn mode (DM / TeamDM /
+     * Construction / Zombies) adds mp_dmspawnmoney (DAT_1405a6554, default 2000 - the Changelog: "money
+     * each spawn, DM/TeamDM/Construction, 2000$ by default") when the counter passed 14, i.e. at most
+     * every 15 seconds ("Player spawnmoney time limit (max every 15 sec)"). Clamped to 0..16000.
+     */
+    if (pl->score == 0 && pl->deaths == 0) {
+        pl->money = sv->set.mp_startmoney;
+        pl->money_secs = 0;
+    } else if (sv_mode(sv)->respawn == 1 && sv->set.mp_dmspawnmoney > 0 && pl->money_secs > 14) {
+        pl->money_secs = 0;
+        pl->money += sv->set.mp_dmspawnmoney;
+    }
     if (pl->money > 16000) pl->money = 16000;
     if (pl->money < 0) pl->money = 0;
 
@@ -1016,6 +1036,16 @@ void cs2d_sv_fire(cs2d_server_t *sv, int id, int seed)
 
     cs2d_sv_lua_hook_attack(sv, id);
 
+    /* Construction: the Wrench's primary attack repairs (or upgrades) an own building in reach instead
+     * of shooting (Tshoot.Shoot weapon 0x4a). Every other weapon - bullets and melee alike - damages the
+     * building the swing reaches. */
+    if (pl->weapon == CS2D_WEP_WRENCH) {
+        cs2d_sv_wrench_hit(sv, id);
+    } else {
+        const cs2d_weapon_def_t *wdef = cs2d_weapon_get((uint8_t)pl->weapon);
+        if (wdef) cs2d_sv_shot_at_building(sv, id, wdef);
+    }
+
     /* Broadcast [7, id, seed] unreliable to other joined players */
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
         if (i == id) continue;
@@ -1696,6 +1726,38 @@ bool cs2d_sv_validate_move(cs2d_server_t *sv, int id, float new_x, float new_y, 
     pl->last_valid_y = new_y;
     pl->last_move_ms = now;
     pl->move_flag = (op == 10) ? 1 : 2;
+
+    /*
+     * Teleport (Tpl.tilepos 0x14020f7d0, server side; the client only applies [15]): stepping onto one of
+     * the owner's portal tiles (22 / 23) moves him to the other colour's centre, a charged (mode 1)
+     * Teleporter Entrance of his side to the owner's exit of that team (a random exit otherwise). The
+     * entrance recharges when mp_teleportreload > 0: [36,id,6] (mode 0) now and [36,id,5] (mode 1) after
+     * reload x 1000 ms; with 0 it stays charged, like our client's assumption.
+     * "Teleport failed! No exit found!" / "Teleporter is not charged! Please wait!" are g_lang 0806 / 0807.
+     */
+    if (new_tx != old_tx || new_ty != old_ty) {
+        /* The building on the tile first (barbed wire, gate field, mine); one object per tile, so when
+         * one of those handled the step the teleporter of the same tile cannot apply. */
+        if (sv_tile_object_effect(sv, id, new_tx, new_ty)) return true;
+
+        float dx = 0.0f, dy = 0.0f;
+        int used_id = 0;
+        int r = cs2d_dynobj_teleport(&sv->dynobj, new_tx, new_ty, pl->team, sv->set.sv_gamemode != 1,
+                                     &dx, &dy, &used_id);
+        if (r == 1) {
+            cs2d_sv_set_pos(sv, id, dx, dy);
+            cs2d_dynobj_t *e = used_id ? cs2d_dynobj_get(&sv->dynobj, used_id) : NULL;
+            if (e && e->typ == CS2D_DO_TELE_ENTRANCE && sv->set.mp_teleportreload > 0) {
+                e->mode  = 0;
+                e->t2_ms = now + (uint32_t)sv->set.mp_teleportreload * 1000u;
+                sv_broadcast_obj_data(sv, e, 6, 0, false); /* [36,id,6] used: recharging */
+            }
+        } else if (r == -1) {
+            cs2d_sv_msg(sv, "Teleporter is not charged! Please wait!", id);
+        } else if (r == -2) {
+            cs2d_sv_msg(sv, "Teleport failed! No exit found!", id);
+        }
+    }
     return true;
 }
 
@@ -2208,6 +2270,10 @@ void cs2d_sv_bomb_explode(cs2d_server_t *sv)
             if (dmg > 0) cs2d_sv_damage(sv, i, sv->bomb_planter, dmg, CS2D_WEP_PLANTEDBOMB);
         }
     }
+
+    /* ... and the buildings: the same 350 px / 500 falloff through Tdo.damage (FUN_1401f1130), so the C4
+     * levels the walls, turrets and dispensers it reaches. */
+    cs2d_sv_explosion_objects(sv, bx, by, 350.0f, 500, sv->bomb_planter);
 }
 
 void cs2d_sv_step_bomb(cs2d_server_t *sv)
@@ -2751,6 +2817,7 @@ bool cs2d_sv_change_map(cs2d_server_t *sv, const char *mapname)
     cs2d_sv_init_hostages(sv);
     cs2d_dynobj_init(&sv->dynobj, &sv->map);
     cs2d_dynobj_spawn_map_buildings(&sv->dynobj);
+    cs2d_sv_fix_building_health(sv);
     if (sv->lua && sv->set.mp_luamap) {
         cs2d_sv_lua_load_map(sv, mapname);
     }
@@ -2761,5 +2828,839 @@ bool cs2d_sv_change_map(cs2d_server_t *sv, const char *mapname)
     cs2d_sv_lua_hook_mapchange(sv, mapname);
     cs2d_server_print("Map changed to '%s'", mapname);
     return true;
+}
+
+
+/* ------------------------------------------------------------------------------------------------ */
+/* Construction (sv_gamemode 3): buildings and the Wrench                                            */
+/*                                                                                                   */
+/* Sources (cs2d_dedicated.exe unless marked CS2D.exe):                                              */
+/*   FUN_140175550  "place object", called by the [34] receive handler 0x1401cf0c0                   */
+/*   CS2D.exe FUN_1401fab30 (docs/dump/cs2d/_global/1401f0000.c:1202): the same code, decompiled      */
+/*   Tdo.inibuilding 0x140142e00, Tdo.damage 0x140035110, Tdo.doupgrade 0x140143d60,                  */
+/*   Tdo.counttype 0x140035680, Tdo.sametypetoclose 0x14004a2b0, Tdo.hpupnetvalue 0x140005350         */
+/*   Tdo.draw_wall turret branch (CS2D.exe 0x14028c630, docs/dump/cs2d/_global/140280000.c:1971)      */
+/*   Tshoot.Shoot wrench branch (CS2D.exe, docs/dump/cs2d/Tshoot.c:540..650)                          */
+/* ------------------------------------------------------------------------------------------------ */
+
+/*
+ * Refusal codes: byte 3 of the 15 byte [34] answer when it is >= 0xf8 (the client then shows the
+ * localized line, for the local player only). The switch of FUN_1401fab30 at 0x1401fbece reads
+ * g_lang[0x9d..0x9f] / g_lang[0x7c] (element size 0x24); the ids are the sys/language text numbers.
+ */
+enum {
+    SV_BUILD_SITE_UNFINISHED = 0xf8, /* 0716 Your last building has not been finished yet */
+    SV_BUILD_NOT_ON_SERVER   = 0xf9, /* 0715 It's not allowed to build that on this server */
+    SV_BUILD_TOO_CLOSE       = 0xfa, /* 0714 You can't build here - buildings of same type are too close */
+    SV_BUILD_LIMIT           = 0xfb, /* 0713 You can't build more buildings of this type */
+    SV_BUILD_PLAYERS_CLOSE   = 0xfc, /* 0712 You can't build here - other players are too close */
+    SV_BUILD_NOT_ALLOWED     = 0xfd, /* 0711 You are not allowed to build this */
+    SV_BUILD_INSUFFICIENT    = 0xfe, /* 0562 You have insufficient funds */
+    SV_BUILD_CANT_HERE       = 0xff  /* 0710 You can't build here */
+};
+
+/*
+ * How long a Construction Site needs (FUN_1401fab30: the Ttimer of the site, ms). Barbed Wire (2) is
+ * built at once; everything else first becomes a Construction Site (typ 10) whose mode is the wanted
+ * type. On the dedicated the switch is compiled as a table load; the values come from the CS2D.exe copy
+ * of the same function (docs/dump/cs2d/_global/1401f0000.c:1572).
+ */
+static int sv_build_time(int typ)
+{
+    switch (typ) {
+        case 1:                           return 1000; /* Barricade */
+        case 3:                           return 2000; /* Wall I */
+        case 4: case 6: case 13: case 14: return 3000; /* Wall II, Gate Field, teleporters */
+        case 5:                           return 4000; /* Wall III */
+        case 7: case 8: case 9:           return 5000; /* Dispenser, Turret, Supply */
+        default:                          return 0;
+    }
+}
+
+/* [37, id u16, value u8]: unreliable health / upgrade percent (Tdo.damage 0x140035245) */
+static void sv_broadcast_obj_health(cs2d_server_t *sv, const cs2d_dynobj_t *o)
+{
+    uint8_t msg[4];
+    msg[0] = 37;
+    msg[1] = (uint8_t)(o->id & 0xff);
+    msg[2] = (uint8_t)(o->id >> 8);
+    msg[3] = (uint8_t)cs2d_dynobj_hpup_net_value(o);
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
+        if (!c || !sv->players[i].joined) continue;
+        cs2d_pkt_t *p = cs2d_sv_packet(sv, c, false, false);
+        for (int k = 0; k < 4; k++) cs2d_pkt_w_byte(p, msg[k]);
+    }
+}
+
+/* [36, id u16, sub, ...]: reliable dynamic object mode / data (Tdo.getdata) */
+static void sv_broadcast_obj_data(cs2d_server_t *sv, const cs2d_dynobj_t *o, int sub, int value, bool has_value)
+{
+    uint8_t msg[5];
+    int n = 4;
+    msg[0] = 36;
+    msg[1] = (uint8_t)(o->id & 0xff);
+    msg[2] = (uint8_t)(o->id >> 8);
+    msg[3] = (uint8_t)sub;
+    if (has_value) { msg[4] = (uint8_t)value; n = 5; }
+    sv_broadcast_joined(sv, msg, n);
+}
+
+/* [35, id u16] (Tdo.kill) */
+static void sv_broadcast_obj_remove(cs2d_server_t *sv, int obj_id)
+{
+    uint8_t msg[3] = { 35, (uint8_t)(obj_id & 0xff), (uint8_t)((obj_id >> 8) & 0xff) };
+    sv_broadcast_joined(sv, msg, 3);
+}
+
+/*
+ * [34, pid, team, typ, tx u16, ty u16, mode, rot + 1000 u16, money u16, id u16] (15 bytes): the build
+ * result. The client (cs2d_client.c net_build_result) reads b[0] pid, b[1] team, b[2] typ, b[3..6] tx/ty,
+ * b[7] mode, b[8..9] rot + 1000, b[10..11] money, b[12..13] the object id; typ >= 0xf8 is a refusal.
+ */
+static void sv_build_result(cs2d_server_t *sv, int pid, int team, int typ, int tx, int ty, int mode,
+                            float rot, int money, int obj_id)
+{
+    uint8_t msg[15];
+    int r = (int)(rot + 1000.0f) & 0xffff;
+    msg[0]  = 34;
+    msg[1]  = (uint8_t)pid;
+    msg[2]  = (uint8_t)team;
+    msg[3]  = (uint8_t)typ;
+    msg[4]  = (uint8_t)(tx & 0xff);    msg[5]  = (uint8_t)((tx >> 8) & 0xff);
+    msg[6]  = (uint8_t)(ty & 0xff);    msg[7]  = (uint8_t)((ty >> 8) & 0xff);
+    msg[8]  = (uint8_t)mode;
+    msg[9]  = (uint8_t)(r & 0xff);     msg[10] = (uint8_t)(r >> 8);
+    msg[11] = (uint8_t)(money & 0xff); msg[12] = (uint8_t)((money >> 8) & 0xff);
+    msg[13] = (uint8_t)(obj_id & 0xff); msg[14] = (uint8_t)((obj_id >> 8) & 0xff);
+    sv_broadcast_joined(sv, msg, 15);
+}
+
+/* A refused build: only the client of `id` shows the message (pid field) */
+static void sv_build_refuse(cs2d_server_t *sv, int id, int team, int tx, int ty, int code)
+{
+    sv_build_result(sv, id, team, code, tx, ty, 0, 0.0f, 0, 0);
+}
+
+/*
+ * The dedicated keeps Tdo.health in points while the client keeps the percent of Tdo.healthpercent
+ * (Tdo.inibuilding sets max_health[typ] on the server, 100 in a client). The map's Env_Building entities
+ * go through cs2d_dynobj_spawn, which sets the client's 100, so the server raises them to their maximum
+ * after a map load. Called from cs2d_sv_change_map and the map load of cs2d_server.c.
+ */
+void cs2d_sv_fix_building_health(cs2d_server_t *sv)
+{
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+        if (!o->active) continue;
+        const cs2d_dynobj_def_t *d = cs2d_dynobj_def(o->typ);
+        if (!d || d->category != 1) continue;
+        if (o->health < d->max_health) o->health = d->max_health;
+    }
+}
+
+
+/* [34, typ, tx u16, ty u16, mode, rot + 1000 u16]: the client asked to build */
+void cs2d_sv_build(cs2d_server_t *sv, int id, int typ, int tx, int ty, int mode, float rot)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team < 1) return;
+
+    /* The "X" buttons of the Construct menu send tile 0xffff / 0xffff; the dedicated returns right there
+     * (FUN_140175550 0x1401758f0..0x1401758ff -> 0x140175787, the epilogue), so nothing happens. */
+    if (tx == 0xffff && ty == 0xffff) return;
+    if (tx < 0 || ty < 0) return;
+
+    const cs2d_dynobj_def_t *def = cs2d_dynobj_def(typ);
+    if (!def || def->category != 1 || typ == CS2D_DO_SITE) return;
+
+    /* 1. funds: money < price refuses with 0562 (category 2 - mines, portals - is exempt) */
+    if (def->category != 2 && pl->money < def->price) {
+        sv_build_refuse(sv, id, pl->team, tx, ty, SV_BUILD_INSUFFICIENT);
+        return;
+    }
+
+    /* 2. the builder needs the Wrench (item 74): the original only logs the attempt */
+    if (!sv_has_item(pl, CS2D_WEP_WRENCH)) {
+        cs2d_server_print("ERROR: %s tries to build without having a wrench!", pl->name);
+        return;
+    }
+
+    /* 3. one own Construction Site that is not finished yet (0716) */
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+        if (o->active && o->typ == CS2D_DO_SITE && o->player == id) {
+            sv_build_refuse(sv, id, pl->team, tx, ty, SV_BUILD_SITE_UNFINISHED);
+            return;
+        }
+    }
+
+    /* 4. FUN_14014ef60: the tile must be free. -1 is "another living player is within 32 px" (0712). */
+    int ptx = (int)(pl->x * 0.03125f), pty = (int)(pl->y * 0.03125f);
+    int can = cs2d_dynobj_can_build_at(&sv->dynobj, ptx, pty, tx, ty, false);
+    if (can == 1) {
+        float cx = (float)(tx * 32 + 16), cy = (float)(ty * 32 + 16);
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            const cs2d_sv_player_t *p = &sv->players[i];
+            if (i == id || !p->used || !p->alive || p->team < 1) continue;
+            if (fabsf(p->x - cx) < 32.0f && fabsf(p->y - cy) < 32.0f) { can = -1; break; }
+        }
+    }
+    if (can == 0) { sv_build_refuse(sv, id, pl->team, tx, ty, SV_BUILD_CANT_HERE); return; }
+    if (can < 0) { sv_build_refuse(sv, id, pl->team, tx, ty, SV_BUILD_PLAYERS_CLOSE); return; }
+
+    /* 5. price sanity / the Site itself: 0711 ("you are not allowed to build this") */
+    if (def->price > 16000 || def->price < 0 || typ == CS2D_DO_SITE) {
+        sv_build_refuse(sv, id, pl->team, tx, ty, SV_BUILD_NOT_ALLOWED);
+        return;
+    }
+
+    /* 6. per player limit (0713). A Turret counts its Dual / Triple upgrades too (limit = limit[8]). */
+    if (typ == CS2D_DO_TURRET) {
+        int n = cs2d_dynobj_count_type(&sv->dynobj, id, pl->team, CS2D_DO_TURRET, false) +
+                cs2d_dynobj_count_type(&sv->dynobj, id, pl->team, CS2D_DO_DUAL_TURRET, false) +
+                cs2d_dynobj_count_type(&sv->dynobj, id, pl->team, CS2D_DO_TRIPLE_TURRET, false);
+        if (def->limit <= n) { sv_build_refuse(sv, id, pl->team, tx, ty, SV_BUILD_LIMIT); return; }
+    } else if (cs2d_dynobj_count_type(&sv->dynobj, id, pl->team, typ, false) >= def->limit) {
+        sv_build_refuse(sv, id, pl->team, tx, ty, SV_BUILD_LIMIT);
+        return;
+    }
+
+    /* 7. only a Dispenser refuses a same-type building within 192 px (0714): FUN_1401fab30 0x1401fc290
+     * calls Tdo.sametypetoclose(7, x, y, 0xc0, team) and nothing else uses the 0714 line. */
+    if (typ == CS2D_DO_DISPENSER &&
+        cs2d_dynobj_same_type_close(&sv->dynobj, typ, (float)(tx * 32), (float)(ty * 32), 192.0f, pl->team)) {
+        sv_build_refuse(sv, id, pl->team, tx, ty, SV_BUILD_TOO_CLOSE);
+        return;
+    }
+
+    /* 8. the Lua "buildattempt" hook may cancel the build (the original reads its int result) */
+    if (cs2d_sv_lua_hook_buildattempt(sv, id, typ, tx, ty, mode) == 1) return;
+
+    /* 9. pay (FUN_1401fab30 0x1401fb494: Tpl.money.Inc(-price), clamped at 0) */
+    pl->money -= def->price;
+    if (pl->money < 0) pl->money = 0;
+
+    /* 10. place: Barbed Wire directly (mode 60 = the hit wobble), the rest as a Construction Site whose
+     * mode is the wanted type (Tdo.inibuilding(-1, player, 10, typ, tx, ty) + a Ttimer). */
+    int site_typ  = (typ == CS2D_DO_BARBED_WIRE) ? CS2D_DO_BARBED_WIRE : CS2D_DO_SITE;
+    int site_mode = (typ == CS2D_DO_BARBED_WIRE) ? 60 : typ;
+    cs2d_dynobj_t *o = cs2d_dynobj_spawn(&sv->dynobj, -1, site_typ, tx * 32, ty * 32, rot, site_mode,
+                                         pl->team, id);
+    if (!o) return; /* the 1024 object pool is full */
+    const cs2d_dynobj_def_t *sitedef = cs2d_dynobj_def(site_typ);
+    o->health = sitedef ? sitedef->max_health : 100; /* Tdo.inibuilding: max_health of the placed type */
+    if (site_typ == CS2D_DO_SITE) o->t1_ms = cs2d_sv_now() + (uint32_t)sv_build_time(typ);
+
+    /* 11. [34] to everyone: the Site (or the Barbed Wire) with the requested type in the mode byte */
+    sv_build_result(sv, id, pl->team, site_typ, tx, ty, site_mode, rot, pl->money, o->id);
+
+    /* 12. the "build" Lua hook sees the placed object */
+    cs2d_sv_lua_hook_build(sv, id, typ, tx, ty, site_mode, o->id);
+}
+
+
+/* Tdo.sameteam (0x140005460): in a team game both T, or both "not T"; in deathmatch (no teams) only the
+ * object's owner. The gate is 0x140a015d0[sv_gamemode], which is 0 for Deathmatch (sv_gamemode 1). */
+static bool sv_obj_same_team(const cs2d_server_t *sv, const cs2d_dynobj_t *o, const cs2d_sv_player_t *pl,
+                             int player_id)
+{
+    if (sv->set.sv_gamemode == 1) return o->player == player_id;
+    if (pl->team == 1) return o->team == 1;
+    if (pl->team > 1) return o->team > 1;
+    return false;
+}
+
+/* The kill reward and [35] of a destroyed object (Tdo.kill / Tdo.killfromplayer) */
+static void sv_object_kill(cs2d_server_t *sv, cs2d_dynobj_t *o, int player)
+{
+    const cs2d_dynobj_def_t *def = cs2d_dynobj_def(o->typ);
+    int obj_id = o->id;
+    int typ = o->typ;
+    (void)typ;
+    cs2d_sv_lua_hook_objectkill(sv, obj_id, player);
+    if (player >= 1 && player <= CS2D_SV_MAX_PLAYERS && sv->players[player].used && def && def->kill_reward > 0) {
+        cs2d_sv_set_playerdata(sv, player, 2, sv->players[player].money + def->kill_reward);
+    }
+    if (o->typ == CS2D_DO_SITE && o->t1_ms) o->t1_ms = 0;
+    cs2d_dynobj_kill(&sv->dynobj, obj_id, NULL); /* Tdo.kill: the explosion of the client is a Tp */
+    sv_broadcast_obj_remove(sv, obj_id);
+}
+
+/*
+ * Tdo.damage (0x140035110): damage > 0 hurts, damage < 0 repairs. `player` is the attacker (0 = none).
+ * The portals (22 / 23) and the Lua images (40) never take damage. A building of the attacker's own team
+ * that he does not own is left alone while friendly fire is off (DAT_140a14d98 == 0; == 2 would allow it
+ * after five team building kills). Losing health drops the Wrench upgrade progress.
+ */
+void cs2d_sv_object_damage(cs2d_server_t *sv, int obj_id, int damage, int player)
+{
+    cs2d_dynobj_t *o = cs2d_dynobj_get(&sv->dynobj, obj_id);
+    if (!o) return;
+    const cs2d_dynobj_def_t *def = cs2d_dynobj_def(o->typ);
+    if (!def) return;
+    if (o->typ == CS2D_DO_ORANGE_PORTAL || o->typ == CS2D_DO_BLUE_PORTAL || o->typ == CS2D_DO_IMAGE) return;
+    if (cs2d_sv_lua_hook_objectdamage(sv, obj_id, damage, player) == 1) return;
+
+    if (player >= 1 && player <= CS2D_SV_MAX_PLAYERS && def->category == 1 && damage > 0) {
+        const cs2d_sv_player_t *a = &sv->players[player];
+        if (a->used && sv->set.sv_friendlyfire == 0 && o->player != player &&
+            sv_obj_same_team(sv, o, a, player)) {
+            return; /* friendly building: no damage */
+        }
+    }
+
+    o->health -= damage;
+    if (o->health != def->max_health) o->upgrade = 0;
+    if (o->health <= 0) {
+        o->health = 0;
+        sv_object_kill(sv, o, player);
+        return;
+    }
+    if (o->health > def->max_health) o->health = def->max_health;
+    cs2d_dynobj_refresh(&sv->dynobj, o);
+    sv_broadcast_obj_health(sv, o); /* [37] */
+}
+
+/*
+ * The object half of an explosion (FUN_1401f1130, the last loop of
+ * docs/dump/cs2d/_global/1401f0000.c:144): every dynamic object whose centre (x + 16, y + 16) is within
+ * `radius` of (x, y) takes `(radius - distance) * damage / radius` through Tdo.damage (the vtable slot
+ * +0xb8) - the full damage at the centre, 0 at the rim. The Te breakables (type 0x19) and the players of
+ * the same function are handled elsewhere; the line of sight test (its param_8) is skipped.
+ */
+void cs2d_sv_explosion_objects(cs2d_server_t *sv, float x, float y, float radius, int damage, int attacker)
+{
+    if (radius <= 0.0f || damage <= 0) return;
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+        if (!o->active) continue;
+        float dx = x - (o->x + 16.0f), dy = y - (o->y + 16.0f);
+        float dist = sqrtf(dx * dx + dy * dy);
+        if (dist > radius) continue;
+        int dmg = (int)((radius - dist) * (float)damage / radius);
+        if (dmg > 0) cs2d_sv_object_damage(sv, o->id, dmg, attacker);
+    }
+}
+
+/*
+ * Tdo.doupgrade (0x140143d60): `points` Wrench hits. Below upgrade_points the [37] percent moves into
+ * the 100 + n range; at upgrade_points the type becomes upgrade_to with the new max health ([36,id,4]).
+ * Returns 1 like the original (the caller charges the money).
+ */
+int cs2d_sv_object_upgrade(cs2d_server_t *sv, int obj_id, int player, int points)
+{
+    cs2d_dynobj_t *o = cs2d_dynobj_get(&sv->dynobj, obj_id);
+    if (!o) return 0;
+    const cs2d_dynobj_def_t *def = cs2d_dynobj_def(o->typ);
+    if (!def) return 0;
+    (void)player;
+    if (def->upgrade_points <= 0 || def->upgrade_to <= 0) return 1;
+
+    if (o->upgrade < def->upgrade_points) {
+        o->upgrade += points;
+        sv_broadcast_obj_health(sv, o);
+    }
+    if (o->upgrade >= def->upgrade_points) {
+        const cs2d_dynobj_def_t *nd = cs2d_dynobj_def(def->upgrade_to);
+        o->typ = (uint8_t)def->upgrade_to;
+        o->upgrade = 0;
+        o->health = nd ? nd->max_health : 100;
+        cs2d_dynobj_refresh(&sv->dynobj, o); /* cs2d_update_mapdata */
+        sv_broadcast_obj_data(sv, o, 4, def->upgrade_to, true);
+    }
+    return 1;
+}
+
+
+/* The turret's bullet damage: Tdo.shoot sets c_dmg from its 5th argument; the turret passes -1, which
+ * falls back to the global at CS2D.exe 0x140a14da8 = 5 (tools/agent/extracted_api.json lists the
+ * mp_turretdamage cvar that defaults to it). */
+#define SV_TURRET_DAMAGE 5
+
+/*
+ * What a building on the tile the player just entered does to him (Tpl.tilepos, CS2D.exe 0x14020f7d0,
+ * docs/dump/cs2d/Tpl.c:3443..3604). The function walks the Tdo list, handles every Barbed Wire and then
+ * switches on the first other object of the tile; one object per tile, so the cases are exclusive:
+ *   2  Barbed Wire: 20 damage (weapon 0xff) credited to its owner, the wire takes 60 and wobbles
+ *      ([36,id,5]) - no team test, a wire hurts its own side too;
+ *   6  Gate Field: the other side (in deathmatch anyone but the builder; a team 0 field hurts everyone,
+ *      attacker 0) takes 20 damage (weapon 0xfe), the field takes 100;
+ *   20 Mine / 21 Laser Mine: the mine explodes (Tdo.kill), see OPEN_ISSUES for its blast;
+ *   13 / 14 / 22 / 23 are the teleporters, handled by cs2d_dynobj_teleport.
+ * Returns true when the tile object was one of the damaging kinds (the caller then skips the teleport).
+ */
+static bool sv_tile_object_effect(cs2d_server_t *sv, int id, int tx, int ty)
+{
+    cs2d_sv_player_t *pl = &sv->players[id];
+    bool handled = false;
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+        if (!o->active) continue;
+        if ((int)(o->x * 0.03125f) != tx || (int)(o->y * 0.03125f) != ty) continue;
+
+        if (o->typ == CS2D_DO_BARBED_WIRE) {
+            cs2d_sv_damage(sv, id, o->player, 20, 0xff);
+            cs2d_sv_object_damage(sv, o->id, 60, 0);
+            sv_broadcast_obj_data(sv, o, 5, 0, false); /* [36,id,5]: the wobble */
+            handled = true;
+            continue;
+        }
+        if (o->typ == CS2D_DO_GATE_FIELD) {
+            bool other_side;
+            if (sv->set.sv_gamemode == 1) other_side = (o->player != id);
+            else other_side = (pl->team == 1 && o->team == 2) || (pl->team > 1 && o->team == 1);
+            if (!other_side && o->team != 0) return true;
+            cs2d_sv_damage(sv, id, other_side ? o->player : 0, 20, 0xfe);
+            cs2d_sv_object_damage(sv, o->id, 100, 0);
+            return true;
+        }
+        if (o->typ == CS2D_DO_MINE) {
+            /* Tpl.tilepos case 0x14: everyone but the builder (a team 0 mine: everyone) triggers it, and
+             * Tdo.kill (case 0x14) explodes it with the Mine's own weapon entry (77: range 96, damage 150)
+             * through FUN_1401f1130 with attacker 0. */
+            bool other_side;
+            if (sv->set.sv_gamemode == 1) other_side = (o->player != id);
+            else other_side = (pl->team == 1 && o->team == 2) || (pl->team > 1 && o->team == 1);
+            if (!other_side && o->team != 0) return true;
+            const cs2d_weapon_def_t *w = cs2d_weapon_get(77);
+            float mx = o->x + 16.0f, my = o->y + 16.0f;
+            float radius = (w && w->range > 0) ? (float)w->range : 96.0f;
+            int dmg = (w && w->damage > 0) ? w->damage : 150;
+            sv_object_kill(sv, o, 0);   /* Tdo.kill(obj, 0): the client shows the Tp.explosion */
+            for (int p = 1; p <= CS2D_SV_MAX_PLAYERS; p++) {
+                cs2d_sv_player_t *pp = &sv->players[p];
+                if (!pp->used || !pp->alive) continue;
+                float ddx = pp->x - mx, ddy = pp->y - my;
+                float dist = sqrtf(ddx * ddx + ddy * ddy);
+                if (dist > radius) continue;
+                int d = (int)((radius - dist) * (float)dmg / radius);
+                if (d > 0) cs2d_sv_damage(sv, p, 0, d, CS2D_WEP_MINE);
+            }
+            cs2d_sv_explosion_objects(sv, mx, my, radius, dmg, 0);
+            return true;
+        }
+        return handled;
+    }
+    return handled;
+}
+
+static bool sv_tile_blocks(const cs2d_server_t *sv, int tx, int ty)
+{
+    const cs2d_map_t *map = &sv->map;
+    if (tx < 0 || ty < 0 || (uint32_t)tx >= map->width || (uint32_t)ty >= map->height) return true;
+    if (cs2d_map_prop_class(cs2d_map_get_tile_mode(map, (uint32_t)tx, (uint32_t)ty)) != 1) return true;
+    if (map->object_collision && map->object_collision[(size_t)ty * map->width + tx]) return true;
+    return false;
+}
+
+/* A bullet from (x, y) along `rot` up to `dist` px (Tshoot.Shoot): the first player hit, else 0. A player
+ * is a 12 px box (the Lua "freeline" help: "mode 2+ checks player hitboxes (12px radius)"). obj_out (may
+ * be NULL) gets the object that stopped the bullet, 0 for a bare wall. */
+static int sv_trace_shot(cs2d_server_t *sv, float x, float y, float rot, float dist, int skip, int *obj_out)
+{
+    double a = (double)rot * 0.017453292519943295;
+    float dx = (float)sin(a), dy = -(float)cos(a);
+    int sx = (int)(x * 0.03125f), sy = (int)(y * 0.03125f);
+    if (obj_out) *obj_out = 0;
+    for (float d = 4.0f; d <= dist; d += 4.0f) {
+        float px = x + dx * d, py = y + dy * d;
+        int tx = (int)(px * 0.03125f), ty = (int)(py * 0.03125f);
+        /* the muzzle sits inside the shooting building's own tile: that tile never blocks the bullet */
+        if (!(tx == sx && ty == sy) && sv_tile_blocks(sv, tx, ty)) {
+            if (obj_out) {
+                const cs2d_dynobj_t *o = cs2d_dynobj_at_tile(&sv->dynobj, tx, ty);
+                if (o) *obj_out = o->id;
+            }
+            break;
+        }
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            const cs2d_sv_player_t *p = &sv->players[i];
+            if (i == skip || !p->used || !p->alive || p->team < 1) continue;
+            if (fabsf(p->x - px) < 12.0f && fabsf(p->y - py) < 12.0f) return i;
+        }
+    }
+    return 0;
+}
+
+/* FUN_14011c3a0: a clear straight line between two points (the turret only shoots what it can see) */
+static bool sv_line_clear(const cs2d_server_t *sv, float x1, float y1, float x2, float y2)
+{
+    float dx = x2 - x1, dy = y2 - y1;
+    float len = sqrtf(dx * dx + dy * dy);
+    if (len < 1.0f) return true;
+    int sx = (int)(x1 * 0.03125f), sy = (int)(y1 * 0.03125f);
+    int steps = (int)(len / 8.0f) + 1;
+    for (int i = 1; i < steps; i++) {
+        float t = (float)i / (float)steps;
+        int tx = (int)((x1 + dx * t) * 0.03125f), ty = (int)((y1 + dy * t) * 0.03125f);
+        if (tx == sx && ty == sy) continue; /* the turret's own tile */
+        if (sv_tile_blocks(sv, tx, ty)) return false;
+    }
+    return true;
+}
+
+/* One turret burst frame: Tdo.shoot once per barrel (the method at Tdo vtable +0x120). Type 8 fires from
+ * the centre, 11 from +-6 px beside it, 12 from the centre and +-8 px (FUN_14028c630). */
+static void sv_turret_fire(cs2d_server_t *sv, cs2d_dynobj_t *o)
+{
+    int barrels = (o->typ == CS2D_DO_TRIPLE_TURRET) ? 3 : (o->typ == CS2D_DO_DUAL_TURRET ? 2 : 1);
+    float cx = o->x + 16.0f, cy = o->y + 16.0f;
+    double a = ((double)o->rot + 90.0) * 0.017453292519943295;
+    for (int b = 0; b < barrels; b++) {
+        float side = (barrels == 2) ? (b ? -6.0f : 6.0f)
+                                   : (barrels == 3 ? (b == 0 ? 0.0f : (b == 1 ? 8.0f : -8.0f)) : 0.0f);
+        float bx = cx + (float)sin(a) * side, by = cy - (float)cos(a) * side;
+        /* Tdo.shoot: the angle is rot + Rand(-3, 3), c_dist 400 */
+        float rot = o->rot + (float)cs2d_sv_rand(-3, 3);
+        int hit = sv_trace_shot(sv, bx, by, rot, 400.0f, o->player, NULL);
+        if (hit == 0) continue;
+        /* Do not shoot your own team (the scan only picks enemies, a bystander can still be in the way) */
+        const cs2d_sv_player_t *t = &sv->players[hit];
+        bool enemy = (sv->set.sv_gamemode == 1) || (o->team == 1 && t->team > 1) || (o->team > 1 && t->team == 1);
+        if (!enemy) continue;
+        cs2d_sv_damage(sv, hit, o->player, SV_TURRET_DAMAGE, 0xfd);
+    }
+}
+
+/*
+ * A player's bullet that reaches a building (Tshoot.Shoot 0x1402073ed and the server branch at
+ * docs/dump/cs2d/Tshoot.c:581..592): the ray runs from the shooter along its aim up to the weapon's reach
+ * (cs2d_weapon_shot_reach), stops on the tile of a solid object and calls Tdo.damage(object, weapon
+ * damage, shooter, 0). Only the types whose bullets throw debris are hit (cs2d_dynobj_hit_debris) - a
+ * Barricade is an obstacle and takes "close combat / explosions only" (Changelog), so it is skipped.
+ * Damage to *players* stays the client's [17] report, otherwise the server would apply it twice.
+ */
+void cs2d_sv_shot_at_building(cs2d_server_t *sv, int id, const cs2d_weapon_def_t *wep)
+{
+    if (!wep || wep->damage <= 0) return;
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    const cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team < 1) return;
+
+    int obj_id = 0;
+    (void)sv_trace_shot(sv, pl->x, pl->y, pl->rot, cs2d_weapon_shot_reach(wep), id, &obj_id);
+    if (obj_id == 0) return;               /* the bullet flew into a bare wall (or a player stopped it) */
+    const cs2d_dynobj_t *o = cs2d_dynobj_get(&sv->dynobj, obj_id);
+    if (!o || !cs2d_dynobj_hit_debris(o->typ) || o->typ == CS2D_DO_BARRICADE) return;
+    cs2d_sv_object_damage(sv, obj_id, wep->damage, id);
+}
+
+/*
+ * FUN_14011ba70(type, tx, ty, clip, sub, reserve, ...): the server puts a ground item on a tile and sends
+ * [33, type u8, item id u16, tile x u16, tile y u16, clip + 1 u16, reserve + 1 u16] (12 bytes). The binder
+ * passes clip / reserve -1, which the wire shows as 0 and the client turns into the type's defaults.
+ * Returns the new item id (0 when the table is full).
+ */
+static int sv_spawn_item(cs2d_server_t *sv, int type, int tx, int ty)
+{
+    int slot = -1;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (!sv->items[i].active) { slot = i; break; }
+    }
+    if (slot < 0) return 0;
+    if (sv->next_item_id == 0) sv->next_item_id = 1;
+    uint16_t item_id = (uint16_t)sv->next_item_id++;
+    cs2d_sv_item_t *it = &sv->items[slot];
+    it->active = true;
+    it->id = item_id;
+    it->type = (uint8_t)type;
+    it->clip = it->reserve = 0;   /* -1: the type's defaults */
+    it->sub = 0;
+    it->tile_x = (uint16_t)tx;
+    it->tile_y = (uint16_t)ty;
+    it->dropped = false;
+    it->dropped_by = 0;
+    it->drop_time_ms = cs2d_sv_now();
+
+    uint8_t msg[12];
+    msg[0] = 33;
+    msg[1] = (uint8_t)type;
+    msg[2] = (uint8_t)(item_id & 0xff); msg[3] = (uint8_t)(item_id >> 8);
+    msg[4] = (uint8_t)(tx & 0xff);      msg[5] = (uint8_t)((tx >> 8) & 0xff);
+    msg[6] = (uint8_t)(ty & 0xff);      msg[7] = (uint8_t)((ty >> 8) & 0xff);
+    msg[8] = 0; msg[9] = 0;             /* clip -1 */
+    msg[10] = 0; msg[11] = 0;           /* reserve -1 */
+    sv_broadcast_joined(sv, msg, 12);
+    return item_id;
+}
+
+/* A free floor tile within one tile of the object, at most 8 tries (FUN_14028b980 / FUN_14028dba0): the
+ * candidate list is the 8 neighbours, (-1,-1) first and the rest from the two tables 0x140bc8a00 (y) and
+ * 0x140bc8a20 (x): (0,-1) (1,-1) (-1,0) (1,0) (-1,1) (0,1) (1,1). */
+static void sv_spawn_item_near(cs2d_server_t *sv, const cs2d_dynobj_t *o, int type)
+{
+    static const int s_dx[8] = { -1, 0, 1, -1, 1, -1, 0, 1 };
+    static const int s_dy[8] = { -1, -1, -1, 0, 0, 1, 1, 1 };
+    bool used[8] = { false };
+    int cx = (int)(o->x * 0.03125f), cy = (int)(o->y * 0.03125f);
+    for (int n = 0; n < 8; n++) {
+        int pick;
+        do { pick = cs2d_sv_rand(0, 7); } while (used[pick]);
+        used[pick] = true;
+        int tx = cx + s_dx[pick], ty = cy + s_dy[pick];
+        if (tx < 0 || ty < 0 || (uint32_t)tx >= sv->map.width || (uint32_t)ty >= sv->map.height) continue;
+        if (cs2d_map_prop_class(cs2d_map_get_tile_mode(&sv->map, (uint32_t)tx, (uint32_t)ty)) != 1) continue;
+        sv_spawn_item(sv, type, tx, ty);
+        return;
+    }
+}
+
+/* Ground items of `type` within one tile of the object (the "already there" test of both effects) */
+static int sv_items_near(const cs2d_server_t *sv, const cs2d_dynobj_t *o, int type)
+{
+    int n = 0;
+    float cx = o->x * 0.03125f, cy = o->y * 0.03125f;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        const cs2d_sv_item_t *it = &sv->items[i];
+        if (!it->active || it->type != type) continue;
+        if (fabsf(cx - (float)it->tile_x) <= 1.0f && fabsf(cy - (float)it->tile_y) <= 1.0f) n++;
+    }
+    return n;
+}
+
+/* mp_supply_items is the comma list of the server settings; the supply mode (1..) indexes it (0 = none) */
+static int sv_supply_item_at(const cs2d_server_t *sv, int mode)
+{
+    if (mode < 1) return 0;
+    const char *s = sv->set.mp_supply_items;
+    for (int i = 1; i < mode; i++) {
+        s = strchr(s, ',');
+        if (!s) return 0;
+        s++;
+    }
+    return atoi(s);
+}
+
+/* A building serves a player: everyone in deathmatch, its own side otherwise (FUN_14028b980 0x14028ba0x) */
+static bool sv_building_serves(const cs2d_server_t *sv, const cs2d_dynobj_t *o, int team)
+{
+    if (sv->set.sv_gamemode == 1) return true;
+    if (o->team == 0) return true;
+    if (o->team == 1) return team == 1;
+    return team > 1;
+}
+
+
+
+/*
+ * Dispenser (type 7, CS2D.exe FUN_14028b980, dedicated FUN_1401b5890) and Supply (type 9,
+ * FUN_14028dba0, dedicated FUN_1401b7380).
+ * Both operate on a 1-second cadence (1 Hz, regulated by scan_ms):
+ *   Dispenser: every living player of the served side within 48 px of its centre is healed by
+ *   mp_dispenser_health (DAT_140a14dac = 10) up to maxhealth and gets mp_dispenser_money
+ *   (DAT_140a14db0 = 500, the Changelog default) money up to 16000 once per second.
+ *   The seconds counter at Tdo +0x58 (our obj->countdown) increments every second; it spawns a secondary
+ *   ammo item (62) at second 5 and a primary ammo one (61) at second 10 (then wraps), only while
+ *   mp_infammo is off and no such item lies within one tile.
+ *   Supply: the same counter spawns the item mp_supply_items[mode - 1] every 7 seconds when fewer than
+ *   three of them lie within one tile.
+ */
+static void sv_step_dispenser_supply(cs2d_server_t *sv, cs2d_dynobj_t *o)
+{
+    if (o->typ == CS2D_DO_SUPPLY || o->typ == CS2D_DO_SUPER_SUPPLY) {
+        if (++o->countdown <= 6) return;
+        o->countdown = 0;
+        int type = sv_supply_item_at(sv, o->mode);
+        if (type <= 0) return;
+        if (sv_items_near(sv, o, type) < 3) sv_spawn_item_near(sv, o, type);
+        return;
+    }
+
+    /* Dispenser */
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_player_t *p = &sv->players[i];
+        if (!p->used || !p->alive || p->team < 1) continue;
+        if (fabsf((o->x + 16.0f) - p->x) >= 48.0f || fabsf((o->y + 16.0f) - p->y) >= 48.0f) continue;
+        if (!sv_building_serves(sv, o, p->team)) continue;
+        if (sv->set.mp_dispenser_health > 0 && p->health < p->maxhealth) {
+            cs2d_sv_set_playerdata(sv, i, 0, p->health + sv->set.mp_dispenser_health); /* [42,id,0,health] */
+        }
+        if (sv->set.mp_dispenser_money > 0 && p->money < 16000) {
+            int v = p->money + sv->set.mp_dispenser_money;
+            if (v > 16000) v = 16000;
+            cs2d_sv_set_playerdata(sv, i, 2, v);                /* [42,id,2,money] */
+        }
+    }
+    o->countdown++;
+    if (o->countdown != 5 && o->countdown <= 9) return;
+    if (o->countdown > 9) o->countdown = 0;
+    int type = (o->countdown == 5) ? CS2D_WEP_SECONDARYAMMO : CS2D_WEP_PRIMARYAMMO;
+    if (sv->set.mp_infammo != 0) return;   /* "no ammo from dispensers with mp_infammo" (Changelog) */
+    if (sv_items_near(sv, o, type) == 0) sv_spawn_item_near(sv, o, type);
+}
+
+
+
+
+/*
+ * Per frame: Construction Sites finish, Teleporter Entrances charge, turrets scan and fire.
+ *
+ * Turret (CS2D.exe FUN_14028c630, docs/dump/cs2d/_global/140280000.c:1971..2150): at most one scan per
+ * 1000 ms (the Ttimer at +0x48 -> scan_ms), enemies only (no teams -> anyone, else the other side), the
+ * builder is skipped, |dx| < 440 and |dy| < 255 of the turret centre, the nearest with a clear line wins;
+ * then target = id, countdown = 15 and a reliable [36,id,0,target]. While countdown runs the turret aims
+ * within 445 x 260 and fires at most every 100 ms (the Ttimer at +0x50 -> t2_ms) while countdown > 10.
+ */
+void cs2d_sv_step_buildings(cs2d_server_t *sv)
+{
+    uint32_t now = cs2d_sv_now();
+    bool team_game = sv->set.sv_gamemode != 1;
+
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+        if (!o->active) continue;
+
+        /* Construction Site finished: the object becomes the type in its mode byte (Tdo.getdata case 1) */
+        if (o->typ == CS2D_DO_SITE && o->t1_ms != 0 && (int32_t)(now - o->t1_ms) >= 0) {
+            int typ = o->mode;
+            const cs2d_dynobj_def_t *def = cs2d_dynobj_def(typ);
+            o->t1_ms = 0;
+            if (def && def->category == 1 && typ != CS2D_DO_SITE) {
+                o->typ    = (uint8_t)typ;
+                o->mode   = (typ == CS2D_DO_SUPPLY) ? 1 : 0; /* Tdo.inibuilding case 9 */
+                o->health = def->max_health;
+                if (typ == CS2D_DO_TURRET) { /* ini_building: a random rest angle */
+                    o->rot = (float)cs2d_sv_rand(1, 360);
+                    o->rrot = o->rot;
+                    o->rotvar = 0.0f;
+                    o->target = 0;
+                    o->countdown = 0;
+                    o->scan_ms = now;
+                }
+                if (typ == CS2D_DO_DISPENSER || typ == CS2D_DO_SUPPLY || typ == CS2D_DO_SUPER_SUPPLY) {
+                    o->countdown = 0;
+                    o->scan_ms = now + 1000;
+                }
+                if (typ == CS2D_DO_TELE_ENTRANCE) {
+                    /* Tdo.draw_ground 0xd: charged after mp_teleportreload (DAT_140a14d48) seconds */
+                    o->t2_ms = now + (uint32_t)(sv->set.mp_teleportreload > 0 ? sv->set.mp_teleportreload : 5) * 1000u;
+                }
+                cs2d_dynobj_refresh(&sv->dynobj, o);
+                sv_broadcast_obj_data(sv, o, 1, 0, false); /* [36,id,1] */
+            }
+            continue;
+        }
+
+        /* A Teleporter Entrance is charged five seconds after it stands ([36,id,5], mode 1) */
+        if (o->typ == CS2D_DO_TELE_ENTRANCE && o->t2_ms != 0 && (int32_t)(now - o->t2_ms) >= 0) {
+            o->t2_ms = 0;
+            o->mode  = 1;
+            sv_broadcast_obj_data(sv, o, 5, 0, false);
+            continue;
+        }
+
+        /* A Dispenser or Supply runs at 1 Hz (1 second interval) */
+        if (o->typ == CS2D_DO_DISPENSER || o->typ == CS2D_DO_SUPPLY || o->typ == CS2D_DO_SUPER_SUPPLY) {
+            if (o->scan_ms != 0 && (int32_t)(now - o->scan_ms) < 0) continue;
+            o->scan_ms = now + 1000;
+            sv_step_dispenser_supply(sv, o);
+            continue;
+        }
+
+        if (o->typ != CS2D_DO_TURRET && o->typ != CS2D_DO_DUAL_TURRET && o->typ != CS2D_DO_TRIPLE_TURRET) continue;
+
+        if (o->countdown > 0) {
+            /* Aim at the target while it is alive and within 445 x 260 px */
+            const cs2d_sv_player_t *t = (o->target >= 1 && o->target <= CS2D_SV_MAX_PLAYERS)
+                                        ? &sv->players[o->target] : NULL;
+            if (t && t->used && t->alive && t->team >= 1 &&
+                fabsf((o->x + 16.0f) - t->x) < 445.0f && fabsf((o->y + 16.0f) - t->y) < 260.0f) {
+                o->rot = (float)(atan2((double)((t->x - 16.0f) - o->x),
+                                       (double)((o->y + 16.0f) - t->y)) * 57.29577951308232);
+            }
+            if (o->countdown > 10 && (o->t2_ms == 0 || (int32_t)(now - o->t2_ms) >= 100)) {
+                o->t2_ms = now; /* the 100 ms shot throttle */
+                sv_turret_fire(sv, o);
+            }
+            o->countdown--;
+            if (o->countdown <= 0) { /* the burst ended: the idle sweep restarts from the aim angle */
+                o->countdown = 0;
+                o->rrot = o->rot;
+                o->rotvar = 0.0f;
+                o->scan_ms = now + 1000;
+            }
+            continue;
+        }
+
+        if (o->scan_ms != 0 && (int32_t)(now - o->scan_ms) < 0) continue;
+        o->scan_ms = now + 1000;
+        int best = 0;
+        float best_d = 0.0f;
+        /* A Lua "turretscan" hook may name the target itself (FUN_14028c630: the returned id wins). */
+        int hooked = cs2d_sv_lua_hook_turretscan(sv, o->id, o->team, (int)(o->x + 16.0f), (int)(o->y + 16.0f));
+        if (hooked > 0) {
+            best = hooked;
+        } else {
+            for (int k = 1; k <= CS2D_SV_MAX_PLAYERS; k++) {
+                const cs2d_sv_player_t *p = &sv->players[k];
+                if (!p->used || !p->alive || p->team < 1) continue;
+                if (o->player != 0 && k == o->player) continue;
+                bool enemy = !team_game || (o->team == 1 && p->team > 1) || (o->team > 1 && p->team == 1);
+                if (!enemy) continue;
+                float dx = (o->x + 16.0f) - p->x, dy = (o->y + 16.0f) - p->y;
+                if (fabsf(dx) >= 440.0f || fabsf(dy) >= 255.0f) continue;
+                float d = dx * dx + dy * dy;
+                if (best != 0 && d >= best_d) continue;
+                if (!sv_line_clear(sv, o->x + 16.0f, o->y + 16.0f, p->x, p->y)) continue;
+                best = k;
+                best_d = d;
+            }
+        }
+        if (best != 0) {
+            o->target = best;
+            o->countdown = 15;
+            o->t2_ms = now;
+            sv_broadcast_obj_data(sv, o, 0, best, true); /* [36,id,0,target] */
+        }
+    }
+}
+
+
+/*
+ * The Wrench primary attack on an own building (Tshoot.Shoot, docs/dump/cs2d/Tshoot.c:594..650):
+ *   health < max health -> repair: damage -15 (a negative amount heals), needs $50, and the health
+ *                         message drops the upgrade progress with it;
+ *   else, upgrade_points > 0 -> one upgrade point (Tdo.doupgrade), needs $100.
+ * The target is the object on the tile where the swing ends (Tdo.getatpos at the end of the shot ray;
+ * the Wrench's range is 15 px in the weapon table set_wep(74, ...)).
+ */
+static cs2d_dynobj_t *sv_wrench_target(const cs2d_server_t *sv, const cs2d_sv_player_t *pl)
+{
+    const cs2d_weapon_def_t *w = cs2d_weapon_get(CS2D_WEP_WRENCH);
+    float reach = (w && w->range > 0) ? (float)w->range : 15.0f;
+    double a = (double)pl->rot * 0.017453292519943295;
+    float ex = pl->x + (float)sin(a) * reach, ey = pl->y - (float)cos(a) * reach;
+    return cs2d_dynobj_at_tile((cs2d_dynobj_world_t *)&sv->dynobj, (int)(ex * 0.03125f), (int)(ey * 0.03125f));
+}
+
+void cs2d_sv_wrench_hit(cs2d_server_t *sv, int id)
+{
+    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team < 1) return;
+
+    cs2d_dynobj_t *o = sv_wrench_target(sv, pl);
+    if (!o) return;
+    const cs2d_dynobj_def_t *def = cs2d_dynobj_def(o->typ);
+    if (!def || def->category != 1) return;
+    /* Tshoot.Shoot: only a same team building is repaired / upgraded */
+    if (!sv_obj_same_team(sv, o, pl, id)) return;
+
+    if (o->health < def->max_health) {
+        if (pl->money <= 49) return;                 /* needs $50 */
+        o->health += 15;                             /* Tdo.damage(-15, player, 0) */
+        if (o->health != def->max_health) o->upgrade = 0;
+        if (o->health > def->max_health) o->health = def->max_health;
+        cs2d_dynobj_refresh(&sv->dynobj, o);
+        sv_broadcast_obj_health(sv, o);
+        cs2d_sv_set_playerdata(sv, id, 2, pl->money - 50);   /* [42,id,2,money] */
+    } else if (def->upgrade_points > 0) {
+        if (pl->money <= 99) return;                 /* needs $100 */
+        if (cs2d_sv_object_upgrade(sv, o->id, id, 1) == 1) {
+            cs2d_sv_set_playerdata(sv, id, 2, pl->money - 100);
+        }
+    }
 }
 

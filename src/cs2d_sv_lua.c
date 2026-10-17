@@ -2521,22 +2521,22 @@ void cs2d_sv_lua_hook_flagcapture(cs2d_server_t *sv, int id, int team, int x, in
     dispatch_hook(sv, "flagcapture", 4, push_4int_vals, &a, NULL, 0);
 }
 
-void cs2d_sv_lua_hook_build(cs2d_server_t *sv, int id, int type, int x, int y, int mode, int objectid)
+int cs2d_sv_lua_hook_build(cs2d_server_t *sv, int id, int type, int x, int y, int mode, int objectid)
 {
     hook_args_t a = { .a = id, .b = type, .c = x, .d = y, .e = mode, .f = objectid };
-    dispatch_hook(sv, "build", 6, push_6int_vals, &a, NULL, 0);
+    return dispatch_hook(sv, "build", 6, push_6int_vals, &a, NULL, 0);
 }
 
-void cs2d_sv_lua_hook_buildattempt(cs2d_server_t *sv, int id, int type, int x, int y, int mode)
+int cs2d_sv_lua_hook_buildattempt(cs2d_server_t *sv, int id, int type, int x, int y, int mode)
 {
     hook_args_t a = { .a = id, .b = type, .c = x, .d = y, .e = mode };
-    dispatch_hook(sv, "buildattempt", 5, push_5int_vals, &a, NULL, 0);
+    return dispatch_hook(sv, "buildattempt", 5, push_5int_vals, &a, NULL, 0);
 }
 
-void cs2d_sv_lua_hook_objectdamage(cs2d_server_t *sv, int id, int damage, int player)
+int cs2d_sv_lua_hook_objectdamage(cs2d_server_t *sv, int id, int damage, int player)
 {
     hook_args_t a = { .a = id, .b = damage, .c = player };
-    dispatch_hook(sv, "objectdamage", 3, push_3int, &a, NULL, 0);
+    return dispatch_hook(sv, "objectdamage", 3, push_3int, &a, NULL, 0);
 }
 
 void cs2d_sv_lua_hook_objectkill(cs2d_server_t *sv, int id, int player)
@@ -2690,10 +2690,10 @@ void cs2d_sv_lua_hook_shieldhit(cs2d_server_t *sv, int id, int weapon, int damag
     dispatch_hook(sv, "shieldhit", 4, push_4int_vals, &a, NULL, 0);
 }
 
-int cs2d_sv_lua_hook_turretscan(cs2d_server_t *sv, int object_id, int target)
+int cs2d_sv_lua_hook_turretscan(cs2d_server_t *sv, int object_id, int team, int x, int y)
 {
-    hook_args_t a = { .a = object_id, .b = target };
-    return dispatch_hook(sv, "turretscan", 2, push_2int, &a, NULL, 0);
+    hook_args_t a = { .a = object_id, .b = team, .c = x, .d = y };
+    return dispatch_hook(sv, "turretscan", 4, push_4int_vals, &a, NULL, 0);
 }
 
 /* ---------------------------------------------------------------------------

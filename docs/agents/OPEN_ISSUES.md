@@ -23,6 +23,33 @@ the same one.
   `cs2d_game_start_plant` / `cs2d_game_tick_plant` are dead code: offline (`cs2d_client.exe` without a
   server) a plant never completes and no planted-bomb ground item is created, so the C4 stays invisible
   and cannot be defused there (the online path is fixed - see `knowledge/hostages-bomb.md`).
+- **Construction mode (2026-10-16, `docs/agents/knowledge/dynobj.md` "Construction mode, server side"):**
+  the dedicated builds (`[34]` + `FUN_140175550` rules), finishes Construction Sites, runs the turret scan /
+  burst and the Wrench, damages buildings with bullets, melee and explosions (the C4 blast and the mines),
+  honours the `turretscan` hook, teleports players onto charged entrances, applies the barbed wire /
+  gate field / mine tile effects, and runs the Dispenser / Supply effects and the respawn-mode spawn money
+  (`src/cs2d_sv_game.c`). Still open:
+  - **Grenades / rockets on buildings** (and on players): `cs2d_sv_projectile` (`[27]`) only relays, so a
+    server-side `Tpro` flight + impact simulation is needed before `cs2d_sv_explosion_objects` can be fed
+    the `Tpro.c` radii (grenade 40, rocket 45) and the `damage_table[typ] * DAT_140a14dcc` damage. The
+    model itself is done (C4 350/500, Mine 96/150).
+  - **Laser Mine (21) beam**: only the step-on trigger of the Mine (20) is ported; `Tdo.inlasermine`
+    (the beam that cuts a crossing player) is not.
+  - **`mp_building_price` / `mp_building_limit` / `mp_building_health`** are not cvars (the type table
+    values are used); the four Construction cvars (`mp_teleportreload`, `mp_dispenser_health`,
+    `mp_dispenser_money`, `mp_dmspawnmoney`) are settable from `server.cfg` / the console / Lua but are not
+    part of the original's `[237]` live broadcast.
+  - **Wrench target**: the swing target is the building on the tile 15 px (`weapon.range`) along the facing
+    direction - the original uses the end of the shot ray (`Tdo.getatpos`). Not compared on a proxy capture.
+  - **Not verified against the original**: no proxy capture of the original building next to ours (the bytes
+    are only checked against the client's own parsers in the test suite); the "X" buttons
+    (`tx == ty == 0xffff`) do nothing, matching the dedicated's jump to its epilogue; the turret shot
+    throttle (100 ms), the burst damage (5), the Dispenser / Supply 1 Hz cadence (10 HP/s, $500/s, ammo
+    at 5s/10s, supply at 7s), the C4 blast radius (350 / 500), the gate field 20/100 and the barbed wire
+    20/60 are read from the code, not measured on a capture.
+  - **`sv_gamemode 3` mode rules**: verified inert (`cs2d_sv_check_win` skips `respawn != 0` and
+    `cs2d_sv_step_round` only ticks the objectives for round modes - locked by
+    `test_construction_rounds_and_explosion`).
 - **Special weapons / items (2026-10-14):** none checked against a proxy capture. The client `[33]` handler is
   `FUN_14011c0b0` (clip / reserve sent + 1, then FUN_14011ba70). Missing: money indicator `Thud_msg.add_money` on Coins/Money/Gold, laser / flame
   lights and TSparkle details, Tp 23 / Tp 0x1d sprites (approximated with glowdot), Satchel Charge attack / attack2
@@ -335,6 +362,10 @@ All three phases are done (details in KNOWLEDGE "Image decoding is portable", "T
 - **Fonts:** CJK / Thai text has no fallback face in either backend (unchanged).
 
 ## Verification debt
+- **Flaky Lua timer test (2026-10-16):** `test_server_phase4_lua` ("timer 1st step" / "hook log verification")
+  failed once in ~7 runs while the machine was busy right after a build, then passed 5 runs in a row. The test
+  drives a Lua `timer()` with wall-clock time, so it is load sensitive - not a behaviour difference. Worth
+  giving it a fake clock if it keeps biting.
 - **Harness `!mouse` clicks do not reach UI windows (2026-10-15):** with the Select Team window open
   (`team_menu_open`, set on the join ACK) six `!mouse <x> <y> down/up` steps on the documented button
   rectangles (`knowledge/team-menu.md`: 240x25 at (205, 120) with 5 px gaps) changed nothing - the

@@ -2559,27 +2559,27 @@ static bool test_construction(void)
     if (cs2d_dynobj_place_portal(&w, 1, 1, 1, ppx, ppy, 27 * 32 + 470, 33 * 32, &pfx)) TEST_FAIL("Portal", "out of range");
     cs2d_dynobj_t *po = cs2d_dynobj_place_portal(&w, 1, 1, 1, ppx, ppy, 27 * 32 + 5, 33 * 32 + 5, &pfx);
     if (!po || po->typ != CS2D_DO_ORANGE_PORTAL || po->x != 27 * 32 || po->y != 33 * 32) TEST_FAIL("Portal", "orange");
-    if (cs2d_dynobj_teleport(&w, 27, 33, 1, true, &dx, &dy) != 0) TEST_FAIL("Portal", "no blue portal yet");
+    if (cs2d_dynobj_teleport(&w, 27, 33, 1, true, &dx, &dy, NULL) != 0) TEST_FAIL("Portal", "no blue portal yet");
     cs2d_dynobj_t *pb = cs2d_dynobj_place_portal(&w, 1, 1, 2, ppx, ppy, 28 * 32, 33 * 32, &pfx);
     if (!pb || pb->typ != CS2D_DO_BLUE_PORTAL) TEST_FAIL("Portal", "blue");
-    if (cs2d_dynobj_teleport(&w, 27, 33, 2, true, &dx, &dy) != 1 || dx != 28 * 32 + 16 || dy != ppy) TEST_FAIL("Portal", "orange -> blue");
+    if (cs2d_dynobj_teleport(&w, 27, 33, 2, true, &dx, &dy, NULL) != 1 || dx != 28 * 32 + 16 || dy != ppy) TEST_FAIL("Portal", "orange -> blue");
     pfx.kind = 0;
     if (cs2d_dynobj_place_portal(&w, 1, 1, 1, ppx, ppy, 19 * 32, 15 * 32, &pfx) || po->active || pfx.kind != 3)
         TEST_FAIL("Portal", "a failed shot still closes the old one");
-    if (cs2d_dynobj_teleport(&w, 28, 33, 1, true, &dx, &dy) != 0) TEST_FAIL("Portal", "blue alone");
+    if (cs2d_dynobj_teleport(&w, 28, 33, 1, true, &dx, &dy, NULL) != 0) TEST_FAIL("Portal", "blue alone");
     cs2d_dynobj_kill(&w, pb->id, NULL);
 
     /* Teleporters (Tpl.tilepos 0xd): charged entrance of the player's team -> the owner's exit */
     cs2d_dynobj_t *te = cs2d_dynobj_spawn(&w, -1, CS2D_DO_TELE_ENTRANCE, 27 * 32, 33 * 32, 0, 0, 1, 1);
-    if (cs2d_dynobj_teleport(&w, 27, 33, 1, true, &dx, &dy) != -1) TEST_FAIL("Teleporter", "not charged");
+    if (cs2d_dynobj_teleport(&w, 27, 33, 1, true, &dx, &dy, NULL) != -1) TEST_FAIL("Teleporter", "not charged");
     te->mode = 1;
-    if (cs2d_dynobj_teleport(&w, 27, 33, 1, true, &dx, &dy) != -2) TEST_FAIL("Teleporter", "no exit");
+    if (cs2d_dynobj_teleport(&w, 27, 33, 1, true, &dx, &dy, NULL) != -2) TEST_FAIL("Teleporter", "no exit");
     cs2d_dynobj_spawn(&w, -1, CS2D_DO_TELE_EXIT, 26 * 32, 34 * 32, 0, 0, 2, 2);  /* other team */
     cs2d_dynobj_spawn(&w, -1, CS2D_DO_TELE_EXIT, 25 * 32, 34 * 32, 0, 0, 1, 1);
-    if (cs2d_dynobj_teleport(&w, 27, 33, 1, true, &dx, &dy) != 1 || dx != 25 * 32 + 16 || dy != 34 * 32 + 16)
+    if (cs2d_dynobj_teleport(&w, 27, 33, 1, true, &dx, &dy, NULL) != 1 || dx != 25 * 32 + 16 || dy != 34 * 32 + 16)
         TEST_FAIL("Teleporter", "own exit");
-    if (cs2d_dynobj_teleport(&w, 27, 33, 2, true, &dx, &dy) != 0) TEST_FAIL("Teleporter", "enemy entrance");
-    if (cs2d_dynobj_teleport(&w, 27, 33, 2, false, &dx, &dy) != 1) TEST_FAIL("Teleporter", "any team outside team games");
+    if (cs2d_dynobj_teleport(&w, 27, 33, 2, true, &dx, &dy, NULL) != 0) TEST_FAIL("Teleporter", "enemy entrance");
+    if (cs2d_dynobj_teleport(&w, 27, 33, 2, false, &dx, &dy, NULL) != 1) TEST_FAIL("Teleporter", "any team outside team games");
 
     cs2d_dynobj_clear(&w);
     if (cs2d_dynobj_count(&w) != 0 || map.collision[17 * map.width + 19] != 0) TEST_FAIL("Clear", "Tdo.freeall");
@@ -7671,6 +7671,695 @@ static bool test_standard_gamemode(void)
     return true;
 }
 
+/* =========================================================================
+ * Construction (sv_gamemode 3): the [34] build pipeline, the Construction Site timer,
+ * the Wrench (Tdo.damage / Tdo.doupgrade) and the turret (FUN_14028c630)
+ * ========================================================================= */
+static void construction_setup(cs2d_server_t *sv)
+{
+    memset(sv, 0, sizeof(*sv));
+    cs2d_sv_settings_default(&sv->set);
+    sv->set.sv_gamemode = 3;              /* Construction */
+    if (!cs2d_map_load_file(&sv->map, "maps/de_dust2.map")) return;
+    cs2d_dynobj_init(&sv->dynobj, &sv->map);
+    for (int i = 0; i < 2; i++) {
+        sv->conns[i].active = true;
+        sv->conns[i].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+        sv->conns[i].player = i + 1;
+        sv->players[i + 1].used = true;
+        sv->players[i + 1].joined = true;
+        sv->players[i + 1].alive = true;
+        sv->players[i + 1].conn = i;
+        sv->players[i + 1].health = 100;
+    }
+    sv->players[1].team = 1;              /* the builder is a terrorist */
+    sv->players[2].team = 2;              /* the turret target is a counter-terrorist */
+    sv->players[1].money = 16000;
+    /* Construction gives the Wrench (74) as the melee weapon (the mode table of cs2d_sv_game.c) */
+    sv->players[1].items[0] = CS2D_WEP_WRENCH;
+    sv->players[1].item_count = 1;
+    sv->players[1].weapon = CS2D_WEP_WRENCH;
+    snprintf(sv->players[1].name, sizeof(sv->players[1].name), "Builder");
+}
+
+/* A free floor tile the builder can stand on, with a buildable tile to its east */
+static bool construction_find_tiles(cs2d_server_t *sv, int *px, int *py, int *bx, int *by)
+{
+    for (int y = 2; y < (int)sv->map.height - 2; y++) {
+        for (int x = 2; x < (int)sv->map.width - 3; x++) {
+            if (cs2d_dynobj_can_build_at(&sv->dynobj, x, y, x, y, true) != 1) continue;
+            if (cs2d_dynobj_can_build_at(&sv->dynobj, x, y, x + 1, y, false) != 1) continue;
+            *px = x; *py = y; *bx = x + 1; *by = y;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void construction_clear_out(cs2d_server_t *sv)
+{
+    for (int i = 0; i < 2; i++) { sv->conns[i].out.pos = 0; sv->conns[i].out_open = false; }
+}
+
+/* The last [34] queued on the builder's connection */
+static const uint8_t *construction_last_build(cs2d_server_t *sv)
+{
+    const uint8_t *b = sv->conns[0].out.buf;
+    if (sv->conns[0].out.pos < 15 || b[0] != 34) return NULL;
+    return b + sv->conns[0].out.pos - 15;
+}
+
+/* The last [36, id, sub, ...] queued on the builder's connection (subs 0 / 1 / 4 / 5) */
+static const uint8_t *construction_last_obj_data(cs2d_server_t *sv, int *sub)
+{
+    const uint8_t *b = sv->conns[0].out.buf;
+    for (int i = sv->conns[0].out.pos - 4; i >= 0; i--) {
+        if (b[i] == 36) { *sub = b[i + 3]; return b + i; }
+    }
+    return NULL;
+}
+
+static bool test_construction_mode(void)
+{
+    printf("\n=== Testing Construction mode ([34] build, Wrench, turret) ===\n");
+    static cs2d_server_t sv;
+    construction_setup(&sv);
+    if (sv.players[1].used == false || sv.map.width == 0) TEST_FAIL("Construction", "maps/de_dust2.map missing");
+
+    int px, py, bx, by;
+    if (!construction_find_tiles(&sv, &px, &py, &bx, &by)) TEST_FAIL("Construction", "no free build tile on de_dust2");
+    sv.players[1].x = (float)(px * 32 + 16);
+    sv.players[1].y = (float)(py * 32 + 16);
+    sv.players[1].rot = 90.0f;
+
+    /* 1. Build a Turret (type 8, $5000): the answer is a Construction Site (typ 10) with mode 8 */
+    construction_clear_out(&sv);
+    cs2d_sv_build(&sv, 1, CS2D_DO_TURRET, bx, by, 0, 0.0f);
+    const uint8_t *b = construction_last_build(&sv);
+    if (!b || b[1] != 1 || b[2] != 1 || b[3] != 10) {
+        TEST_FAIL("Construction [34]", "the build answer is not [34, 1, team 1, Construction Site]");
+    }
+    if (b[4] != (uint8_t)(bx & 0xff) || b[6] != (uint8_t)(by & 0xff) || b[8] != CS2D_DO_TURRET) {
+        TEST_FAIL("Construction [34]", "tile or mode byte of the build answer is wrong");
+    }
+    if (b[9] != 232 || b[10] != 3 || b[11] != 248 || b[12] != 42) {
+        TEST_FAIL("Construction [34]", "rot + 1000 (1000) or the money after the payment (11000) is wrong");
+    }
+    if (sv.players[1].money != 11000) TEST_FAIL("Construction price", "the Turret did not cost $5000");
+    cs2d_dynobj_t *site = cs2d_dynobj_at_tile(&sv.dynobj, bx, by);
+    if (!site || site->typ != CS2D_DO_SITE || site->mode != CS2D_DO_TURRET || site->player != 1 || site->team != 1) {
+        TEST_FAIL("Construction site", "the build did not create a Construction Site with mode 8");
+    }
+    int site_id = site->id;
+
+    /* 2. A second build while the own site is unfinished is refused with 0xf8 (0716) */
+    construction_clear_out(&sv);
+    cs2d_sv_build(&sv, 1, CS2D_DO_WALL_1, bx, by, 0, 0.0f);
+    b = construction_last_build(&sv);
+    if (!b || b[3] != 0xf8) TEST_FAIL("Construction 0716", "a second own build was not refused with 0xf8");
+    if (sv.players[1].money != 11000) TEST_FAIL("Construction 0716", "the refused build was charged");
+
+    /* 3. Without the Wrench the request is dropped without an answer (Titem.counttypeatplayer) */
+    construction_clear_out(&sv);
+    sv.players[1].item_count = 0;
+    cs2d_sv_build(&sv, 1, CS2D_DO_WALL_1, bx, by, 0, 0.0f);
+    if (construction_last_build(&sv) != NULL) TEST_FAIL("Construction wrench", "a build without the Wrench answered");
+    sv.players[1].items[0] = CS2D_WEP_WRENCH;
+    sv.players[1].item_count = 1;
+
+    /* 4. Too little money -> 0xfe (0562) */
+    sv.players[1].money = 100;
+    construction_clear_out(&sv);
+    cs2d_sv_build(&sv, 1, CS2D_DO_WALL_1, bx, by, 0, 0.0f);
+    b = construction_last_build(&sv);
+    if (!b || b[3] != 0xfe) TEST_FAIL("Construction 0562", "an unaffordable build was not refused with 0xfe");
+    sv.players[1].money = 11000;
+
+    /* 5. The Construction Site timer turns it into the Turret: [36,id,1] and the max health 500 */
+    site = cs2d_dynobj_get(&sv.dynobj, site_id);
+    if (!site) TEST_FAIL("Construction site", "the site vanished");
+    site->t1_ms = cs2d_sv_now() - 1;
+    construction_clear_out(&sv);
+    cs2d_sv_step_buildings(&sv);
+    cs2d_dynobj_t *turret = cs2d_dynobj_get(&sv.dynobj, site_id);
+    if (!turret || turret->typ != CS2D_DO_TURRET || turret->health != 500) {
+        TEST_FAIL("Construction finish", "the site did not become a Turret with max health 500");
+    }
+    int sub = -1;
+    const uint8_t *od = construction_last_obj_data(&sv, &sub);
+    if (!od || sub != 1) TEST_FAIL("Construction finish", "[36,id,1] was not sent when the site finished");
+
+    /* 7. An occupied tile is refused again now that the site is a finished building */
+    construction_clear_out(&sv);
+    cs2d_sv_build(&sv, 1, CS2D_DO_WALL_1, bx, by, 0, 0.0f);
+    b = construction_last_build(&sv);
+    if (!b || b[3] != 0xff) TEST_FAIL("Construction 0710", "a tile with a building was not refused with 0xff");
+
+    /* 8. The wire format through the receive parser: [34, typ, tx u16, ty u16, mode, rot + 1000 u16]
+     * (9 bytes; the dedicated's handler 0x1401cf0c0 reads exactly 8 payload bytes) */
+    construction_clear_out(&sv);
+    uint8_t pkt[9] = { 34, CS2D_DO_BARRICADE,
+                       (uint8_t)(bx & 0xff), (uint8_t)((bx >> 8) & 0xff),
+                       (uint8_t)(by & 0xff), (uint8_t)((by >> 8) & 0xff), 0, 232, 3 };
+    if (cs2d_sv_recv_payload(&sv, &sv.conns[0], pkt, (int)sizeof(pkt)) != 0) {
+        TEST_FAIL("Construction [34] wire", "the receive parser did not consume the 9 byte build message");
+    }
+    b = construction_last_build(&sv);
+    if (!b || b[1] != 1 || b[2] != 1 || b[3] != 0xff) {
+        TEST_FAIL("Construction [34] wire", "the [34] payload did not reach cs2d_sv_build");
+    }
+
+    for (int i = 0; i < 2; i++) free(sv.conns[i].pending);
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Construction: the [34] pipeline, site timer, refusals 0xf8/0xfe/0xff and the Wrench rule");
+    return true;
+}
+
+
+static bool test_construction_wrench_and_turret(void)
+{
+    printf("\n=== Testing Construction: Wrench repair/upgrade and the turret ===\n");
+    static cs2d_server_t sv;
+    construction_setup(&sv);
+    if (sv.players[1].used == false || sv.map.width == 0) TEST_FAIL("Construction", "maps/de_dust2.map missing");
+    int px, py, bx, by;
+    if (!construction_find_tiles(&sv, &px, &py, &bx, &by)) TEST_FAIL("Construction", "no free build tile on de_dust2");
+    sv.players[1].x = (float)(px * 32 + 16);
+    sv.players[1].y = (float)(py * 32 + 16);
+    sv.players[1].rot = 90.0f;
+
+    /* 1. Build and finish a Wall I (type 3, $1000, max health 500, 10 upgrade points -> Wall II) */
+    cs2d_sv_build(&sv, 1, CS2D_DO_WALL_1, bx, by, 0, 0.0f);
+    cs2d_dynobj_t *wall = cs2d_dynobj_at_tile(&sv.dynobj, bx, by);
+    if (!wall) TEST_FAIL("Wrench", "the Wall I site was not created");
+    int wall_id = wall->id;
+    wall->t1_ms = cs2d_sv_now() - 1;
+    cs2d_sv_step_buildings(&sv);
+    wall = cs2d_dynobj_get(&sv.dynobj, wall_id);
+    if (!wall || wall->typ != CS2D_DO_WALL_1 || wall->health != 500) {
+        TEST_FAIL("Wrench", "the Wall I site did not finish at max health 500");
+    }
+
+    /* 2. Tdo.damage: 100 damage drops it to 400 (80 %), the [37] byte reflects it */
+    construction_clear_out(&sv);
+    cs2d_sv_object_damage(&sv, wall_id, 100, 2);   /* the CT hits it */
+    wall = cs2d_dynobj_get(&sv.dynobj, wall_id);
+    if (!wall || wall->health != 400) TEST_FAIL("Tdo.damage", "100 damage did not leave 400 health");
+    const uint8_t *h = sv.conns[0].out.buf;
+    if (sv.conns[0].out.pos < 4 || h[0] != 37 || h[3] != 80) {
+        TEST_FAIL("Tdo.damage [37]", "the health percent of the [37] message is not 80");
+    }
+
+    /* 3. The Wrench repairs +15 health for $50 (Tshoot.Shoot 0x14020745f with damage -15) */
+    sv.players[1].x = (float)((bx - 1) * 32 + 30);
+    sv.players[1].y = (float)(by * 32 + 16);
+    sv.players[1].rot = 90.0f;
+    construction_clear_out(&sv);
+    cs2d_sv_wrench_hit(&sv, 1);
+    wall = cs2d_dynobj_get(&sv.dynobj, wall_id);
+    if (!wall || wall->health != 415) TEST_FAIL("Wrench repair", "the repair did not restore 15 health");
+    if (sv.players[1].money != 14950) TEST_FAIL("Wrench repair", "the repair did not cost $50 (16000 - 1000 - 50)");
+
+    /* 4. Tdo.doupgrade: ten points turn the Wall I into a Wall II at its max health ([36,id,4]) */
+    construction_clear_out(&sv);
+    cs2d_sv_object_upgrade(&sv, wall_id, 1, 10);
+    wall = cs2d_dynobj_get(&sv.dynobj, wall_id);
+    if (!wall || wall->typ != CS2D_DO_WALL_2 || wall->health != 1000 || wall->upgrade != 0) {
+        TEST_FAIL("Tdo.doupgrade", "10 points did not upgrade the Wall I to a Wall II at 1000 health");
+    }
+    int sub = -1;
+    const uint8_t *od = construction_last_obj_data(&sv, &sub);
+    if (!od || sub != 4 || od[4] != CS2D_DO_WALL_2) {
+        TEST_FAIL("Tdo.doupgrade", "[36,id,4,Wall II] was not sent");
+    }
+
+    /* 5. The turret: a scan within 440 x 255 finds the enemy, [36,id,0,target] and countdown 15 */
+    sv.players[1].money = 16000;
+    int tx2, ty2, tb_x, tb_y;
+    if (!construction_find_tiles(&sv, &tx2, &ty2, &tb_x, &tb_y)) TEST_FAIL("Turret", "no free tile");
+    sv.players[1].x = (float)(tx2 * 32 + 16);
+    sv.players[1].y = (float)(ty2 * 32 + 16);
+    cs2d_sv_build(&sv, 1, CS2D_DO_TURRET, tb_x, tb_y, 0, 0.0f);
+    cs2d_dynobj_t *t = cs2d_dynobj_at_tile(&sv.dynobj, tb_x, tb_y);
+    if (!t) TEST_FAIL("Turret", "the turret site was not created");
+    int turret_id = t->id;
+    t->t1_ms = cs2d_sv_now() - 1;
+    cs2d_sv_step_buildings(&sv);
+    /* the target stands right next to the turret (the turret tile is a wall, so use the builder's tile) */
+    sv.players[2].x = (float)(tx2 * 32 + 16);
+    sv.players[2].y = (float)(ty2 * 32 + 16);
+    sv.players[1].x = 0.0f;
+    sv.players[1].y = 0.0f;
+    construction_clear_out(&sv);
+    t = cs2d_dynobj_get(&sv.dynobj, turret_id);
+    t->scan_ms = 0;
+    t->countdown = 0;
+    cs2d_sv_step_buildings(&sv);
+    od = construction_last_obj_data(&sv, &sub);
+    if (!od || sub != 0 || od[4] != 2) TEST_FAIL("Turret scan", "[36,id,0,2] was not sent to the clients");
+    t = cs2d_dynobj_get(&sv.dynobj, turret_id);
+    if (t->target != 2 || t->countdown != 15) TEST_FAIL("Turret scan", "the turret did not lock the enemy");
+
+    /* 6. The burst hurts the enemy with the turret damage (5) while countdown > 10, not on the first frame */
+    int hp = sv.players[2].health;
+    t->rot = (float)(atan2((double)((sv.players[2].x - 16.0f) - t->x),
+                           (double)((t->y + 16.0f) - sv.players[2].y)) * 57.29577951308232);
+    t->t2_ms = cs2d_sv_now() - 1000;
+    cs2d_sv_step_buildings(&sv);
+    if (sv.players[2].health >= hp) {
+        TEST_FAIL("Turret fire", "the turret burst did not hurt the target (weapon 0xfd, damage 5)");
+    }
+
+    for (int i = 0; i < 2; i++) free(sv.conns[i].pending);
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Construction: Wrench repair ($50/+15), upgrade ([36,id,4]), turret scan and burst damage");
+    return true;
+}
+
+
+static bool test_construction_bullets_and_teleport(void)
+{
+    printf("\n=== Testing Construction: bullets on buildings, turretscan hook, teleport ===\n");
+    static cs2d_server_t sv;
+    construction_setup(&sv);
+    if (sv.players[1].used == false || sv.map.width == 0) TEST_FAIL("Construction", "maps/de_dust2.map missing");
+    int px, py, bx, by;
+    if (!construction_find_tiles(&sv, &px, &py, &bx, &by)) TEST_FAIL("Construction", "no free build tile");
+
+    /* 1. A bullet that stops on a building takes the weapon's damage off it (Tshoot.Shoot) */
+    sv.players[1].x = (float)(px * 32 + 16);
+    sv.players[1].y = (float)(py * 32 + 16);
+    sv.players[1].rot = 90.0f;                        /* east, towards the built tile */
+    cs2d_sv_build(&sv, 1, CS2D_DO_WALL_1, bx, by, 0, 0.0f);
+    cs2d_dynobj_t *wall = cs2d_dynobj_at_tile(&sv.dynobj, bx, by);
+    if (!wall) TEST_FAIL("Bullet", "the wall site was not created");
+    int wall_id = wall->id;
+    wall->t1_ms = cs2d_sv_now() - 1;
+    cs2d_sv_step_buildings(&sv);
+    wall = cs2d_dynobj_get(&sv.dynobj, wall_id);
+    if (!wall || wall->typ != CS2D_DO_WALL_1 || wall->health != 500) TEST_FAIL("Bullet", "the wall did not finish");
+
+    const cs2d_weapon_def_t *m4 = cs2d_weapon_get(32);
+    if (!m4 || m4->damage <= 0) TEST_FAIL("Bullet", "weapon 32 has no damage");
+    sv.players[1].weapon = 32;
+    sv.players[1].clip[32] = 30;
+    int before = wall->health;
+    cs2d_sv_fire(&sv, 1, 7);
+    wall = cs2d_dynobj_get(&sv.dynobj, wall_id);
+    if (!wall || wall->health != before - m4->damage) {
+        TEST_FAIL("Bullet", "the bullet did not take the weapon damage off the wall");
+    }
+    /* ... and doing it again kills it: [35,id] and the kill reward */
+    sv.players[1].money = 0;
+    while (cs2d_dynobj_get(&sv.dynobj, wall_id)) {
+        cs2d_sv_fire(&sv, 1, 7);
+        if (sv.players[1].clip[32] <= 0) sv.players[1].clip[32] = 30;
+    }
+    if (sv.players[1].money != 100) TEST_FAIL("Bullet", "the Wall I kill reward (100) was not paid");
+    construction_clear_out(&sv);
+
+    /* 2. The Lua "turretscan" hook names the target itself (FUN_14028c630 slot +0x318) */
+    if (!cs2d_sv_lua_init(&sv)) TEST_FAIL("turretscan", "Lua init failed");
+    if (!cs2d_sv_lua_dostring(&sv, "addhook('turretscan','ts')\nfunction ts(id,team,x,y) return 2 end\n")) {
+        TEST_FAIL("turretscan", "the hook script failed");
+    }
+    cs2d_dynobj_t *t = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_TURRET, bx * 32, by * 32, 90.0f, 0, 1, 1);
+    if (!t) TEST_FAIL("turretscan", "no turret");
+    int turret_id = t->id;
+    sv.players[2].x = 0.0f;                           /* the enemy is far away: only the hook can pick him */
+    sv.players[2].y = 0.0f;
+    sv.players[1].x = 2000.0f;
+    construction_clear_out(&sv);
+    t->scan_ms = 0;
+    cs2d_sv_step_buildings(&sv);
+    t = cs2d_dynobj_get(&sv.dynobj, turret_id);
+    if (t->target != 2 || t->countdown != 15) TEST_FAIL("turretscan", "the hook's target was not used");
+    int sub = -1;
+    const uint8_t *od = construction_last_obj_data(&sv, &sub);
+    if (!od || sub != 0 || od[4] != 2) TEST_FAIL("turretscan", "[36,id,0,2] was not sent");
+    cs2d_sv_lua_close(&sv);
+
+    for (int i = 0; i < 2; i++) free(sv.conns[i].pending);
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Construction: bullets damage buildings (weapon damage, kill reward) and turretscan picks the target");
+    return true;
+}
+
+
+static bool test_construction_teleport(void)
+{
+    printf("\n=== Testing Construction: teleport on tile entry (Tpl.tilepos 0xd) ===\n");
+    static cs2d_server_t sv;
+    construction_setup(&sv);
+    if (sv.players[1].used == false || sv.map.width == 0) TEST_FAIL("Construction", "maps/de_dust2.map missing");
+
+    /* Entrance of team 1 on a free tile, its exit on another one */
+    int px, py, ex, ey;
+    if (!construction_find_tiles(&sv, &px, &py, &ex, &ey)) TEST_FAIL("Teleport", "no free tile for the entrance");
+    cs2d_dynobj_t *ent = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_TELE_ENTRANCE, ex * 32, ey * 32, 0, 0, 1, 1);
+    if (!ent) TEST_FAIL("Teleport", "the entrance was not created");
+    int ent_id = ent->id;
+    int x2, y2, xx, xy;
+    if (!construction_find_tiles(&sv, &x2, &y2, &xx, &xy)) TEST_FAIL("Teleport", "no free tile for the exit");
+    if (!cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_TELE_EXIT, xx * 32, xy * 32, 0, 0, 1, 1)) {
+        TEST_FAIL("Teleport", "the exit was not created");
+    }
+
+    /* 1. The player stands next to the uncharged entrance, the step onto it is refused with 0807 */
+    sv.players[1].x = (float)(px * 32 + 16);
+    sv.players[1].y = (float)(py * 32 + 16);
+    sv.players[1].last_valid_x = sv.players[1].x;
+    sv.players[1].last_valid_y = sv.players[1].y;
+    construction_clear_out(&sv);
+    cs2d_sv_validate_move(&sv, 1, (float)(ex * 32 + 16), (float)(ey * 32 + 16), 10);
+    if ((int)sv.players[1].x != ex * 32 + 16) TEST_FAIL("Teleport", "the player did not walk onto the entrance");
+
+    /* 2. Charged: the step teleports him to the exit centre, the entrance recharges ([36,id,6]) */
+    ent = cs2d_dynobj_get(&sv.dynobj, ent_id);
+    ent->mode = 1;
+    cs2d_sv_validate_move(&sv, 1, (float)(px * 32 + 16), (float)(py * 32 + 16), 10);   /* step off */
+    construction_clear_out(&sv);
+    cs2d_sv_validate_move(&sv, 1, (float)(ex * 32 + 16), (float)(ey * 32 + 16), 10);   /* step on */
+    if ((int)sv.players[1].x != xx * 32 + 16 || (int)sv.players[1].y != xy * 32 + 16) {
+        TEST_FAIL("Teleport", "the player did not arrive at the exit tile centre");
+    }
+    ent = cs2d_dynobj_get(&sv.dynobj, ent_id);
+    if (ent->mode != 0 || ent->t2_ms == 0) TEST_FAIL("Teleport", "the entrance did not start to recharge");
+    int sub = -1;
+    const uint8_t *od = construction_last_obj_data(&sv, &sub);
+    if (!od || sub != 6) TEST_FAIL("Teleport", "[36,id,6] was not sent");
+
+    /* 3. mp_teleportreload seconds later it is charged again ([36,id,5], mode 1) */
+    ent->t2_ms = cs2d_sv_now() - 1;
+    construction_clear_out(&sv);
+    cs2d_sv_step_buildings(&sv);
+    ent = cs2d_dynobj_get(&sv.dynobj, ent_id);
+    if (ent->mode != 1) TEST_FAIL("Teleport", "the entrance did not charge again");
+    od = construction_last_obj_data(&sv, &sub);
+    if (!od || sub != 5) TEST_FAIL("Teleport", "[36,id,5] was not sent on the recharge");
+
+    for (int i = 0; i < 2; i++) free(sv.conns[i].pending);
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Construction: teleporter entrance charge, teleport on entry, [36,id,6] and the recharge");
+    return true;
+}
+static bool test_construction_dispenser_and_supply(void)
+{
+    printf("\n=== Testing Construction: Dispenser heal/money/ammo and Supply spawn ===\n");
+    static cs2d_server_t sv;
+    construction_setup(&sv);
+    if (sv.players[1].used == false || sv.map.width == 0) TEST_FAIL("Construction", "maps/de_dust2.map missing");
+    snprintf(sv.set.mp_supply_items, sizeof(sv.set.mp_supply_items), "51,58");
+
+    int px, py, bx, by;
+    if (!construction_find_tiles(&sv, &px, &py, &bx, &by)) TEST_FAIL("Construction", "no free build tile");
+
+    /* 1. The Dispenser heals +10 (mp_dispenser_health) and pays 500 (mp_dispenser_money) within 48 px */
+    cs2d_dynobj_t *disp = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_DISPENSER, bx * 32, by * 32, 0, 0, 1, 1);
+    if (!disp) TEST_FAIL("Dispenser", "the dispenser was not created");
+    sv.players[1].health = 50;
+    sv.players[1].maxhealth = 100;
+    sv.players[1].money = 1000;
+    sv.players[1].x = (float)(bx * 32 + 16);      /* right on the dispenser centre */
+    sv.players[1].y = (float)(by * 32 + 16);
+    cs2d_sv_step_buildings(&sv);
+    if (sv.players[1].health != 60) TEST_FAIL("Dispenser", "the dispenser did not heal 10 health");
+    if (sv.players[1].money != 1500) TEST_FAIL("Dispenser", "the dispenser did not pay 500 money");
+
+    /* 1 Hz throttle: subsequent steps within 1000 ms must NOT heal or pay again */
+    cs2d_sv_step_buildings(&sv);
+    if (sv.players[1].health != 60 || sv.players[1].money != 1500) {
+        TEST_FAIL("Dispenser", "the dispenser healed or paid repeatedly without waiting 1000 ms");
+    }
+
+    /* an enemy is not served in a team game */
+    disp->scan_ms = 0;
+    sv.players[2].health = 50;
+    sv.players[2].maxhealth = 100;
+    sv.players[2].money = 1000;
+    sv.players[2].x = sv.players[1].x;
+    sv.players[2].y = sv.players[1].y;
+    cs2d_sv_step_buildings(&sv);
+    if (sv.players[2].health != 50 || sv.players[2].money != 1000) {
+        TEST_FAIL("Dispenser", "the enemy team was served by the dispenser");
+    }
+    /* out of the 48 px range nothing happens either */
+    disp->scan_ms = 0;
+    sv.players[1].x += 200.0f;
+    int hp = sv.players[1].health, mo = sv.players[1].money;
+    cs2d_sv_step_buildings(&sv);
+    if (sv.players[1].health != hp || sv.players[1].money != mo) {
+        TEST_FAIL("Dispenser", "the dispenser served a player 200 px away");
+    }
+
+    /* 2. The 1 Hz seconds counter spawns ammo (62 at second 5, 61 at second 10) as [33] while mp_infammo is off.
+     * Both players stand away from it, so the [33] is the only message of the tick. */
+    sv.players[1].x = 0.0f;
+    sv.players[1].y = 0.0f;
+    sv.players[2].x = 0.0f;
+    sv.players[2].y = 0.0f;
+    disp->scan_ms = 0;
+    disp->countdown = 4;
+    construction_clear_out(&sv);
+    cs2d_sv_step_buildings(&sv);
+    const uint8_t *b = sv.conns[0].out.buf;
+    if (sv.conns[0].out.pos < 12 || b[0] != 33 || b[1] != CS2D_WEP_SECONDARYAMMO) {
+        TEST_FAIL("Dispenser ammo", "no [33, secondary ammo] at second 5");
+    }
+    /* the item is there now, so the next wrap does not add a second one of the same type */
+    disp->scan_ms = 0;
+    disp->countdown = 9;
+    construction_clear_out(&sv);
+    cs2d_sv_step_buildings(&sv);
+    b = sv.conns[0].out.buf;
+    if (sv.conns[0].out.pos < 12 || b[0] != 33 || b[1] != CS2D_WEP_PRIMARYAMMO) {
+        TEST_FAIL("Dispenser ammo", "no [33, primary ammo] at second 10");
+    }
+    disp->scan_ms = 0;
+    disp->countdown = 4;
+    sv.set.mp_infammo = 1;
+    construction_clear_out(&sv);
+    cs2d_sv_step_buildings(&sv);
+    if (sv.conns[0].out.pos != 0) TEST_FAIL("Dispenser ammo", "mp_infammo did not stop the ammo spawn");
+    sv.set.mp_infammo = 0;
+
+    /* 3. A Supply spawns its mp_supply_items slot every 7 seconds (mode 1 -> the first entry) */
+    int px2, py2, sx, sy;
+    if (!construction_find_tiles(&sv, &px2, &py2, &sx, &sy)) TEST_FAIL("Supply", "no free tile");
+    cs2d_dynobj_t *sup = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_SUPPLY, sx * 32, sy * 32, 0, 1, 1, 1);
+    if (!sup) TEST_FAIL("Supply", "the supply was not created");
+    construction_clear_out(&sv);
+    for (int i = 0; i < 7; i++) {
+        sup->scan_ms = 0;
+        cs2d_sv_step_buildings(&sv);
+    }
+    b = sv.conns[0].out.buf;
+    if (sv.conns[0].out.pos < 12 || b[0] != 33 || b[1] != 51) {
+        TEST_FAIL("Supply", "the supply did not spawn its first mp_supply_items entry (51)");
+    }
+    /* mode 2 picks the second entry; the three items already there stop a fourth */
+    sup = cs2d_dynobj_get(&sv.dynobj, sup->id);
+    sup->mode = 2;
+    sup->countdown = 0;
+    for (int i = 0; i < 7; i++) {
+        sup->scan_ms = 0;
+        cs2d_sv_step_buildings(&sv);
+    }
+    int n58 = 0;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (sv.items[i].active && sv.items[i].type == 58) n58++;
+    }
+    if (n58 != 1) TEST_FAIL("Supply", "mode 2 did not spawn exactly one entry 58 item");
+
+    for (int i = 0; i < 2; i++) free(sv.conns[i].pending);
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Construction: dispenser heal/range/team, ammo [33] cycle, mp_infammo gate, supply spawn");
+    return true;
+}
+
+
+
+
+
+static bool test_construction_spawn_money(void)
+{
+    printf("\n=== Testing Construction: spawn money (mp_dmspawnmoney, max every 15 s) ===\n");
+    static cs2d_server_t sv;
+    construction_setup(&sv);
+    if (sv.players[1].used == false || sv.map.width == 0) TEST_FAIL("Construction", "maps/de_dust2.map missing");
+    if (sv.set.mp_dmspawnmoney != 2000) TEST_FAIL("Spawn money", "the default is not the 2000 of DAT_1405a6554");
+
+    /* Construction pays mp_dmspawnmoney only once the 15 s counter (Tpl +0x3fc) passed 14 */
+    sv.players[1].score = 5;
+    sv.players[1].deaths = 1;
+    sv.players[1].money = 100;
+    sv.players[1].money_secs = 14;
+    cs2d_sv_spawn(&sv, 1);
+    if (sv.players[1].money != 100) TEST_FAIL("Spawn money", "money was paid before the 15 seconds");
+
+    sv.players[1].money_secs = 15;
+    cs2d_sv_spawn(&sv, 1);
+    if (sv.players[1].money != 2100) TEST_FAIL("Spawn money", "the 2000 of mp_dmspawnmoney were not added");
+    if (sv.players[1].money_secs != 0) TEST_FAIL("Spawn money", "the seconds counter was not reset");
+
+    /* the first spawn sets mp_startmoney instead */
+    sv.players[1].score = 0;
+    sv.players[1].deaths = 0;
+    sv.players[1].money_secs = 99;
+    cs2d_sv_spawn(&sv, 1);
+    if (sv.players[1].money != sv.set.mp_startmoney) TEST_FAIL("Spawn money", "the first spawn skipped mp_startmoney");
+
+    /* a round mode (standard) never pays it */
+    sv.set.sv_gamemode = 0;
+    sv.players[1].score = 5;
+    sv.players[1].deaths = 2;
+    sv.players[1].money = 100;
+    sv.players[1].money_secs = 99;
+    cs2d_sv_spawn(&sv, 1);
+    if (sv.players[1].money != 100) TEST_FAIL("Spawn money", "a standard mode spawn paid mp_dmspawnmoney");
+
+    /* the cvar is settable (server.cfg / console) and reaches the typed field */
+    sv.set.sv_gamemode = 3;
+    cs2d_sv_settings_set(&sv.set, "mp_dmspawnmoney", "1000");
+    if (sv.set.mp_dmspawnmoney != 1000) TEST_FAIL("Spawn money", "mp_dmspawnmoney is not settable");
+    sv.players[1].score = 5;
+    sv.players[1].deaths = 2;
+    sv.players[1].money = 100;
+    sv.players[1].money_secs = 15;
+    cs2d_sv_spawn(&sv, 1);
+    if (sv.players[1].money != 1100) TEST_FAIL("Spawn money", "the configured 1000 was not paid");
+
+    for (int i = 0; i < 2; i++) free(sv.conns[i].pending);
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Construction: mp_dmspawnmoney (2000) on respawn-mode spawns, at most every 15 seconds");
+    return true;
+}
+
+
+static bool test_construction_rounds_and_explosion(void)
+{
+    printf("\n=== Testing Construction: no rounds, explosion damage on buildings ===\n");
+    static cs2d_server_t sv;
+    construction_setup(&sv);
+    if (sv.players[1].used == false || sv.map.width == 0) TEST_FAIL("Construction", "maps/de_dust2.map missing");
+    int px, py, bx, by;
+    if (!construction_find_tiles(&sv, &px, &py, &bx, &by)) TEST_FAIL("Construction", "no free build tile");
+
+    /* 1. sv_gamemode 3 has no rounds: the win check and the round tick stay inert with an empty server */
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) { sv.players[i].used = false; sv.players[i].alive = false; }
+    cs2d_sv_check_win(&sv);
+    if (sv.round_end != 0) TEST_FAIL("Construction rounds", "the win check ended a round in a respawn mode");
+    cs2d_sv_step_round(&sv);
+    if (sv.round_end != 0) TEST_FAIL("Construction rounds", "the round tick ended a round in a respawn mode");
+    construction_setup(&sv);   /* players back for the rest */
+
+    /* 2. A Wall I (500 health) dies at the centre of a 350 px / 500 explosion (FUN_1401f1130) */
+    sv.players[1].x = (float)(px * 32 + 16);
+    sv.players[1].y = (float)(py * 32 + 16);
+    sv.players[1].rot = 90.0f;
+    cs2d_sv_build(&sv, 1, CS2D_DO_WALL_1, bx, by, 0, 0.0f);
+    cs2d_dynobj_t *wall = cs2d_dynobj_at_tile(&sv.dynobj, bx, by);
+    if (!wall) TEST_FAIL("Explosion", "the wall site was not created");
+    int wall_id = wall->id;
+    wall->t1_ms = cs2d_sv_now() - 1;
+    cs2d_sv_step_buildings(&sv);
+    float cx = bx * 32 + 16.0f, cy = by * 32 + 16.0f;
+    construction_clear_out(&sv);
+    cs2d_sv_explosion_objects(&sv, cx, cy, 350.0f, 500, 2);   /* the CT blows the T wall up */
+    if (cs2d_dynobj_get(&sv.dynobj, wall_id) != NULL) {
+        TEST_FAIL("Explosion", "the wall survived an explosion at its centre");
+    }
+    if (sv.players[2].money != 100) TEST_FAIL("Explosion", "the kill reward of the destroyed wall was not paid");
+
+    /* 3. Half the radius away it takes half the damage (the linear falloff) */
+    construction_clear_out(&sv);
+    cs2d_sv_build(&sv, 1, CS2D_DO_WALL_1, bx, by, 0, 0.0f);
+    wall = cs2d_dynobj_at_tile(&sv.dynobj, bx, by);
+    if (!wall) TEST_FAIL("Explosion", "the second wall site was not created");
+    wall_id = wall->id;
+    wall->t1_ms = cs2d_sv_now() - 1;
+    cs2d_sv_step_buildings(&sv);
+    cs2d_sv_explosion_objects(&sv, cx + 175.0f, cy, 350.0f, 500, 2);
+    wall = cs2d_dynobj_get(&sv.dynobj, wall_id);
+    if (!wall || wall->health != 250) TEST_FAIL("Explosion", "the falloff did not take half the damage at half the radius");
+
+    for (int i = 0; i < 2; i++) free(sv.conns[i].pending);
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Construction: no round end in a respawn mode, explosion falloff on buildings + kill reward");
+    return true;
+}
+
+
+static bool test_construction_tile_effects(void)
+{
+    printf("\n=== Testing Construction: Gate Field and Barbed Wire on tile entry ===\n");
+    static cs2d_server_t sv;
+    construction_setup(&sv);
+    if (sv.players[1].used == false || sv.map.width == 0) TEST_FAIL("Construction", "maps/de_dust2.map missing");
+    int px, py, bx, by;
+    if (!construction_find_tiles(&sv, &px, &py, &bx, &by)) TEST_FAIL("Construction", "no free build tile");
+
+    /* 1. A Gate Field of team 1: an enemy stepping on it takes 20 (weapon 0xfe), the field 100 */
+    cs2d_dynobj_t *gate = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_GATE_FIELD, bx * 32, by * 32, 0, 0, 1, 1);
+    if (!gate) TEST_FAIL("Gate Field", "the field was not created");
+    int gate_id = gate->id;
+    gate->health = 1000;
+    sv.players[2].health = 100;
+    sv.players[2].x = sv.players[2].last_valid_x = (float)(px * 32 + 16);
+    sv.players[2].y = sv.players[2].last_valid_y = (float)(py * 32 + 16);
+    cs2d_sv_validate_move(&sv, 2, (float)(bx * 32 + 16), (float)(by * 32 + 16), 10);
+    gate = cs2d_dynobj_get(&sv.dynobj, gate_id);
+    if (sv.players[2].health != 80) TEST_FAIL("Gate Field", "the enemy did not take the 20 damage");
+    if (!gate || gate->health != 900) TEST_FAIL("Gate Field", "the field did not take the 100 self damage");
+
+    /* ... the owner's side walks through untouched */
+    sv.players[1].health = 100;
+    sv.players[1].x = sv.players[1].last_valid_x = (float)(px * 32 + 16);
+    sv.players[1].y = sv.players[1].last_valid_y = (float)(py * 32 + 16);
+    cs2d_sv_validate_move(&sv, 1, (float)(bx * 32 + 16), (float)(by * 32 + 16), 10);
+    if (sv.players[1].health != 100) TEST_FAIL("Gate Field", "the own team was hurt by its own field");
+
+    /* 2. A Barbed Wire: 20 damage to anyone (no team test), the wire takes 60 and sends [36,id,5] */
+    int px2, py2, wx, wy;
+    if (!construction_find_tiles(&sv, &px2, &py2, &wx, &wy)) TEST_FAIL("Barbed Wire", "no free tile");
+    cs2d_dynobj_t *wire = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_BARBED_WIRE, wx * 32, wy * 32, 0, 0, 1, 1);
+    if (!wire) TEST_FAIL("Barbed Wire", "the wire was not created");
+    int wire_id = wire->id;
+    wire->health = 300;
+    sv.players[1].health = 100;
+    sv.players[1].x = sv.players[1].last_valid_x = (float)(px2 * 32 + 16);
+    sv.players[1].y = sv.players[1].last_valid_y = (float)(py2 * 32 + 16);
+    construction_clear_out(&sv);
+    cs2d_sv_validate_move(&sv, 1, (float)(wx * 32 + 16), (float)(wy * 32 + 16), 10);
+    wire = cs2d_dynobj_get(&sv.dynobj, wire_id);
+    if (sv.players[1].health != 80) TEST_FAIL("Barbed Wire", "the wire did not hurt the player for 20");
+    if (!wire || wire->health != 240) TEST_FAIL("Barbed Wire", "the wire did not take the 60 self damage");
+    int sub = -1;
+    const uint8_t *od = construction_last_obj_data(&sv, &sub);
+    if (!od || sub != 5) TEST_FAIL("Barbed Wire", "[36,id,5] (the wobble) was not sent");
+
+    /* 3. A Mine explodes when the other side steps on it (Tdo.kill case 0x14: the Mine entry 77, range 96,
+     * damage 150) and the 150 at the centre kills the player */
+    int px3, py3, mx, my;
+    if (!construction_find_tiles(&sv, &px3, &py3, &mx, &my)) TEST_FAIL("Mine", "no free tile");
+    cs2d_dynobj_t *mine = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_MINE, mx * 32, my * 32, 0, 0, 1, 1);
+    if (!mine) TEST_FAIL("Mine", "the mine was not created");
+    int mine_id = mine->id;
+    sv.players[2].health = 100;
+    sv.players[2].alive = true;
+    sv.players[2].x = sv.players[2].last_valid_x = (float)(px3 * 32 + 16);
+    sv.players[2].y = sv.players[2].last_valid_y = (float)(py3 * 32 + 16);
+    cs2d_sv_validate_move(&sv, 2, (float)(mx * 32 + 16), (float)(my * 32 + 16), 10);
+    if (cs2d_dynobj_get(&sv.dynobj, mine_id) != NULL) TEST_FAIL("Mine", "the mine did not explode");
+    if (sv.players[2].alive) TEST_FAIL("Mine", "the blast did not kill the 100 hp player");
+
+    for (int i = 0; i < 2; i++) free(sv.conns[i].pending);
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Construction: Gate Field (20 to the other side, 100 self) and Barbed Wire (20, 60 self) on tile entry");
+    return true;
+}
+
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -7679,7 +8368,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 72;
+    int total = 80;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -7753,6 +8442,14 @@ int main(void)
     if (test_server_phase7_transfer_and_spray()) passed++;
     if (test_server_connect_attempt_hook()) passed++;
     if (test_standard_gamemode()) passed++;
+    if (test_construction_mode()) passed++;
+    if (test_construction_wrench_and_turret()) passed++;
+    if (test_construction_bullets_and_teleport()) passed++;
+    if (test_construction_teleport()) passed++;
+    if (test_construction_dispenser_and_supply()) passed++;
+    if (test_construction_spawn_money()) passed++;
+    if (test_construction_rounds_and_explosion()) passed++;
+    if (test_construction_tile_effects()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

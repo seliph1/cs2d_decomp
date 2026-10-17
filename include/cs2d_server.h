@@ -77,6 +77,10 @@ typedef struct {
     int     mp_curtailedexplosions;
     int     mp_zombiespeedmod;
     int     mp_kevlar;
+    int     mp_teleportreload;   /* DAT_140a14d48 (CS2D.exe .data = 5): seconds to charge / recharge a teleporter */
+    int     mp_dispenser_health; /* DAT_140a14dac (= 10): health a Dispenser grants per frame to a player in range */
+    int     mp_dispenser_money;  /* DAT_140a14db0 (= 500): money a Dispenser grants per frame (clamped at 16000) */
+    int     mp_dmspawnmoney;     /* DAT_1405a6554 (= 2000): money each spawn of a respawn mode, max every 15 s */
     /* Generic cvar store */
     cs2d_sv_cvar_t cvars[CS2D_SV_MAX_CVARS];
     int     cvar_count;
@@ -210,6 +214,11 @@ typedef struct {
     /* Spray logo data (sub-op 10 [28,2,...] / [28] relay) */
     uint8_t  spray_logo[1400];
     int      spray_logo_len;
+    /* Construction: the [34] rate limit (cs2d_dedicated 0x1401cf2b9: opcode 34, 20 per 3000 ms) */
+    int      build_ctr;
+    uint32_t build_window_ms;
+    /* Seconds since the last mp_dmspawnmoney grant (the Tpl +0x3fc counter, capped at 499) */
+    int      money_secs;
 } cs2d_sv_player_t;
 
 typedef struct {
@@ -348,6 +357,43 @@ void cs2d_sv_bomb_explode(cs2d_server_t *sv);                                 /*
 void cs2d_sv_step_bomb(cs2d_server_t *sv);
 void cs2d_sv_use(cs2d_server_t *sv, int id, int mode, int32_t data, uint16_t x, uint16_t y); /* FUN_140138a40: [26] */
 
+/*
+ * Construction (sv_gamemode 3): buildings (Tdo category 1) and the Wrench.
+ * The server side is built from cs2d_dedicated.exe FUN_140175550 (the [34] receive handler 0x1401cf0c0 calls
+ * it) and from the same code in CS2D.exe (docs/dump/cs2d/_global/1401f0000.c FUN_1401fab30) plus Tdo.damage
+ * (0x140035110), Tdo.doupgrade (0x140143d60), Tdo.counttype (0x140035680) and Tdo.sametypetoclose (0x14004a2b0).
+ */
+
+/* [34, typ, tx u16, ty u16, mode, rot + 1000 u16]: the client asked to build (or, tx == ty == 0xffff, to
+ * remove) `typ` on the tile under its cursor. Answers with the 15 byte build result to everyone. */
+void cs2d_sv_build(cs2d_server_t *sv, int id, int typ, int tx, int ty, int mode, float rot);
+
+/* Per frame: Construction Site timers ([36,id,1]), Teleporter Entrance charge ([36,id,5]), turret target
+ * scan ([36,id,0,target]) and the turret burst damage. */
+void cs2d_sv_step_buildings(cs2d_server_t *sv);
+
+/* Tdo.damage: subtract `damage` from object `obj_id` (player `player` gets the credit, 0 = no owner).
+ * Applies the friendly-buildings rule, the max health clamp, the [37] health message and the kill. */
+void cs2d_sv_object_damage(cs2d_server_t *sv, int obj_id, int damage, int player);
+/* Tdo.doupgrade: `points` Wrench hits on object `obj_id` by `player`. 1 when it still stands. */
+int  cs2d_sv_object_upgrade(cs2d_server_t *sv, int obj_id, int player, int points);
+
+/* The object half of an explosion (FUN_1401f1130): objects within `radius` of (x, y) take the linear
+ * falloff of `damage` through Tdo.damage. Used by the C4 blast; a full Tshoot/explosion pass would feed it
+ * the grenades and rockets too. */
+void cs2d_sv_explosion_objects(cs2d_server_t *sv, float x, float y, float radius, int damage, int attacker);
+
+/* A shot of player `id` that reaches a building: the Tshoot.Shoot server branch (an enemy wall / turret /
+ * dispenser takes the weapon's damage). Called from cs2d_sv_fire for every non-melee shot. */
+void cs2d_sv_shot_at_building(cs2d_server_t *sv, int id, const cs2d_weapon_def_t *wep);
+
+/* The Wrench primary attack (cs2d_sv_fire): repair or upgrade the own building on the player's aim tile.
+ * Costs $50 per repair and $100 per upgrade ([42,id,2,money]; Tshoot.Shoot 0x14020745f / 0x1402096xx). */
+void cs2d_sv_wrench_hit(cs2d_server_t *sv, int id);
+
+/* The dedicated keeps the building health in points: raises every category 1 object to its max health
+ * after a map load (the join snapshot and [37] send Tdo.healthpercent / Tdo.hpupnetvalue). */
+void cs2d_sv_fix_building_health(cs2d_server_t *sv);
 void cs2d_sv_init_hostages(cs2d_server_t *sv);
 void cs2d_sv_step_hostages(cs2d_server_t *sv);
 void cs2d_sv_damage_hostage(cs2d_server_t *sv, int hostage_id, int attacker_id, int dmg);

@@ -136,9 +136,12 @@ void cs2d_sv_lua_hook_vipescape(cs2d_server_t *sv, int id, int x, int y);
 void cs2d_sv_lua_hook_dominate(cs2d_server_t *sv, int id, int team, int x, int y);
 void cs2d_sv_lua_hook_flagtake(cs2d_server_t *sv, int id, int team, int x, int y);
 void cs2d_sv_lua_hook_flagcapture(cs2d_server_t *sv, int id, int team, int x, int y);
-void cs2d_sv_lua_hook_build(cs2d_server_t *sv, int id, int type, int x, int y, int mode, int objectid);
-void cs2d_sv_lua_hook_buildattempt(cs2d_server_t *sv, int id, int type, int x, int y, int mode);
-void cs2d_sv_lua_hook_objectdamage(cs2d_server_t *sv, int id, int damage, int player);
+/* "build": the object was placed. Returns 1 when a Lua hook cancelled it (the original reads an int result). */
+int  cs2d_sv_lua_hook_build(cs2d_server_t *sv, int id, int type, int x, int y, int mode, int objectid);
+/* "buildattempt": the build request passed the checks. 1 cancels it. */
+int  cs2d_sv_lua_hook_buildattempt(cs2d_server_t *sv, int id, int type, int x, int y, int mode);
+/* "objectdamage": an object is about to take damage. 1 cancels it (Tdo.damage 0x140035207 reads the int). */
+int  cs2d_sv_lua_hook_objectdamage(cs2d_server_t *sv, int id, int damage, int player);
 void cs2d_sv_lua_hook_objectkill(cs2d_server_t *sv, int id, int player);
 void cs2d_sv_lua_hook_objectupgrade(cs2d_server_t *sv, int id, int player, int progress, int total);
 void cs2d_sv_lua_hook_move(cs2d_server_t *sv, int id, int x, int y, int walk);
@@ -167,7 +170,9 @@ void cs2d_sv_lua_hook_httpdata(cs2d_server_t *sv, const char *data, int id);
 int  cs2d_sv_lua_hook_sayutf8(cs2d_server_t *sv, int id, const char *text);
 int  cs2d_sv_lua_hook_sayteamutf8(cs2d_server_t *sv, int id, const char *text);
 void cs2d_sv_lua_hook_shieldhit(cs2d_server_t *sv, int id, int weapon, int damage, int attacker);
-int  cs2d_sv_lua_hook_turretscan(cs2d_server_t *sv, int object_id, int target);
+/* "turretscan" (FUN_14028c630 slot +0x318): a turret is about to look for a target. The 4 arguments are
+ * its object id, its team, x + 16 and y + 16; a returned player id (> 0) becomes the target directly. */
+int  cs2d_sv_lua_hook_turretscan(cs2d_server_t *sv, int object_id, int team, int x, int y);
 
 /* Menu helper */
 void cs2d_sv_menu_send(cs2d_server_t *sv, int id, const char *menu_str);

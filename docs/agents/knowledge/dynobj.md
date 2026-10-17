@@ -188,3 +188,187 @@ Source: dump / REA (addresses below), proxy of our client on the offline dedicat
   >= 64 px wide; rot + rotvar (rotvar -= 5 per draw) + walking wobble sin(ms / 2 + id) * 10 (zombie) / * 15 (ms * 2 for
   headcrab and snark); idle snark sin(ms / 5 + id) * 15; shadow black at +3 with alpha shadows / 100 when
   playershadows and mapshadows (DAT_140ddf190) > 1.
+
+## Construction mode, server side (`src/cs2d_sv_game.c`, 2026-10-16)
+
+The client half (build helper, Construct menu, drawing) was already in place; this is the dedicated's half.
+`[34]` receive = `cs2d_dedicated.exe 0x1401cf0c0`, which calls **`FUN_140175550`** ("place object"); the same
+function in CS2D.exe is `FUN_1401fab30` (`docs/dump/cs2d/_global/1401f0000.c:1202`), which is what the rules
+below were read from.
+
+- **`[34]` receive (dedicated 0x1401cf0c0):** `find player by ip:port`, then
+  `FUN_1400d4f80(ip, 0x22, 0x14, 0xbb8)` = **20 requests per 3000 ms**, then place with
+  `(player, team=0, typ, tx u16, ty u16, mode u8, rot+1000 u16, 0, 0, 1)` — so the client payload is 8 bytes:
+  `typ, tx, ty, mode, rot + 1000`. A failed flood guard silently drops the message (returns 0 = next).
+- **Build times** (`FUN_1401fab30` switch at `1401f0000.c:1572`; the dedicated loads them from a table):
+  1 Barricade 1000, 3 Wall I 2000, 4 Wall II / 6 Gate Field / 13 Teleporter Entrance / 14 Exit 3000,
+  5 Wall III 4000, 7 Dispenser / 8 Turret / 9 Supply 5000 ms. Type 2 (Barbed Wire) is **instant** and is
+  created as itself with **mode 60** (the hit wobble). Everything else first becomes a **Construction Site**
+  (typ 10) whose `mode` is the wanted type.
+- **Refusal codes** (byte 3 of the 15 byte `[34]` answer when >= 0xf8; only the requesting client shows the
+  line, `FUN_1401fab30` 0x1401fbece reads `g_lang`, element size 0x24):
+  `f8` 0716 last building not finished, `f9` 0715 not allowed on this server, `fa` 0714 same type too close,
+  `fb` 0713 limit, `fc` 0712 players too close, `fd` 0711 not allowed to build this, `fe` 0562 insufficient
+  funds, `ff` 0710 can't build here. Check order: funds -> Wrench -> own unfinished Site -> `FUN_14014ef60`
+  -> price (> 16000, < 0 or typ 10) -> per-player limit -> same-type distance.
+- **Only the Dispenser (7) uses the 0714 line**: `Tdo.sametypetoclose(7, x, y, 0xc0 /*192 px*/, team)`.
+  A Turret (8) counts its Dual + Triple upgrades in the limit of id 8. Mines / portals (category 2) skip the
+  money check. Without the Wrench (item 74) the original only logs
+  `ERROR: <name> tries to build without having a wrench!`.
+- **`tx == ty == 0xffff`** (the menu "X" buttons): the dedicated jumps to the epilogue (0x1401758f0 ->
+  0x140175787) and **returns** - it does not remove anything in that path. Our server mirrors that.
+- **Wrench primary attack** (`Tshoot.Shoot` wrench branch, `docs/dump/cs2d/Tshoot.c:594..650`): the target is
+  the object at the tile where the melee ray ends (`Tdo.getatpos`, the Wrench's range is 15 px in the weapon
+  table) and it must be a **same team** building (`Tdo.sameteam` 0x140005460):
+  - `health < max_health` -> **repair**: `Tdo.damage(obj, -15, player, 0)` (a negative amount heals) for **$50**
+    (`money > 0x31`); if the damage returns 1 the money drops by 50 (`FUN_1401cc9d0(id, 2, money-50)`).
+  - else, `upgrade_points[typ] > 0` -> `Tdo.doupgrade(obj, player, 1)` for **$100** (`money > 99`).
+- **`Tdo.damage` (0x140035110):** `p3 == 0` -> the portals (22/23) and Lua images (40) ignore damage; a
+  category 1 building of the **attacker's own team** (and not his own object) is skipped while friendly fire
+  is off (`DAT_140a14d98 == 0`); losing health clears the Wrench upgrade progress; the max health clamps and
+  `[37, id, Tdo.hpupnetvalue]` is sent unreliable.
+  `Tdo.healthpercent` clamps to 0..100, `Tdo.hpupnetvalue` = the health percent, or **100 + the upgrade
+  progress** when the health is full and the type has upgrade points. The dedicated keeps the health in
+  points, the client in percent: the join snapshot section 5 sends the percent.
+- **`Tdo.doupgrade` (0x140143d60):** below the target it adds the points ([37]); at `upgrade_points` the type
+  becomes `upgrade_to`, the upgrade resets, the health becomes the new max and `[36, id, 4, typ]` goes reliable
+  to everyone (`cs2d_update_mapdata` re-runs over the tile).
+- **Turret (CS2D.exe `FUN_14028c630`, `docs/dump/cs2d/_global/140280000.c:1971..2150`):** at most one scan per
+  **1000 ms** (the Ttimer at +0x48); a Lua `turretscan` hook (slot 0x318) may return a target id, otherwise
+  every player with `team > 0`, health > 0, **not the builder**, on the other side (`no teams` -> anyone),
+  `|dx| < 440` and `|dy| < 255` of the turret centre, the nearest one with a clear line (`FUN_14011c3a0`).
+  Then `target = id`, **countdown = 15** and a reliable `[36, id, 0, target]`. While the countdown runs the
+  turret aims within **445 x 260** (`atan2((tx - 16) - x, (y + 16) - ty)`) and fires at most every **100 ms**
+  (the Ttimer at +0x50) while **countdown > 10**, one `Tdo.shoot` per barrel: type 8 one shot from the centre,
+  11 two at +-6 px, 12 three at 0 and +-8 px; `Tdo.shoot` uses `rot + Rnd(-3, 3)`, `c_dist` 400, `c_offset` 15
+  and the weapon byte 0xfd. Its damage argument is -1, which falls back to `DAT_140a14da8`
+  (**CS2D.exe .data = 5**, the default of the `mp_turretdamage` cvar). The burst ends with `rrot = rot` and
+  `rotvar = 0`, and the next scan is 1000 ms later.
+- **Ping/join:** the join snapshot section 5 lists the objects with the **health percent**; `[36, id, 1]` on a
+  finished Site and `[36, id, 5]` when a Teleporter Entrance is charged (**5 s** after the build).
+
+
+## Construction mode, server side, part 2 (2026-10-16)
+
+- **A bullet that reaches a building damages it** (`Tshoot.Shoot` 0x1402073ed and the server branch
+  `docs/dump/cs2d/Tshoot.c:581..592`): the ray runs from the shooter along its aim up to
+  `cs2d_weapon_shot_reach` (range + 15, melee range + 6), stops on the tile of a solid object and calls
+  `Tdo.damage(object, weapon damage, shooter, 0)`. Only the types whose bullets throw debris count
+  (`cs2d_dynobj_hit_debris`: Barricade, Wall I..III, Dispenser, Turret, Supply, Dual / Triple / Super
+  Supply); a Barricade is an obstacle and takes "close combat / explosions only" (Changelog), so it is
+  skipped. The player damage stays the client's `[17]` report - the server must not apply it twice.
+  Our port: `cs2d_sv_shot_at_building`, called from `cs2d_sv_fire` for every non-melee shot.
+- **`turretscan` Lua hook** (`FUN_14028c630` slot +0x318): 4 arguments (the turret's object id, its team,
+  x + 16, y + 16); a returned player id **> 0 becomes the target directly**, without the range / team test
+  (0 falls through to the normal scan). Our port: `cs2d_sv_lua_hook_turretscan`.
+- **Teleport** (`Tpl.tilepos` 0x14020f7d0, server side; the client only applies `[15]`): stepping onto one
+  of the owner's portal tiles (22 / 23) moves him to the other colour's centre; a charged (mode 1)
+  Teleporter Entrance of his side to the owner's exit of that team, a random exit of the entrance's team
+  otherwise. `-1` = not charged (0807 "Teleporter is not charged! Please wait!"), `-2` = no exit (0806
+  "Teleport failed! No exit found!"). After use `[36,id,6]` (mode 0) **only when `mp_teleportreload`
+  (`DAT_140a14d48`, CS2D.exe .data = 5) > 0**, and `Tdo.draw_ground 0xd` charges it again with `[36,id,5]`
+  (mode 1) after `reload x 1000` ms - the same timer as the first charge after the build. Our port:
+  `cs2d_sv_validate_move` (the tile change) + `cs2d_sv_step_buildings` (the charge), settings field
+  `mp_teleportreload` (not wired to the console parser yet).
+- **Not done yet**: Dispenser (health + ammo + `mp_dispenser_money`), Supply (item spawn) and Gate Field
+  (damage) have no server effect, and no explosion / melee damages buildings. Leads for the Dispenser: the
+  dedicated registers `mp_dispenser_money` / `mp_dispenser_health` / `mp_turretdamage` at 0x14021ef21 with
+  `FUN_140021be0(name, default, ...)` into a **generic cvar table** (the counter at 0x1407dffc4), and the
+  console parser compares them at 0x140141ba2..0x140141bca.
+
+
+## Construction mode, server side, part 3 (2026-10-16)
+
+- **Dispenser** (`CS2D.exe FUN_14028b980`, dedicated `FUN_1401b5890`, the type 7 draw pass; `Tdo +0x58` is our `countdown`):
+  `DAT_140ddf540 != 0 && server`. Operates on a **1 Hz cadence (1 second interval)** tracked via `scan_ms`.
+  Every **living player of the served side within 48 px** of the dispenser centre (`x + 16`, `y + 16`) is healed
+  by `mp_dispenser_health` (`DAT_140a14dac` = **10**) up to maxhealth (`[42,id,0,health]`) and gets
+  `mp_dispenser_money` (`DAT_140a14db0` = **500**, the Changelog default) money up to 16000 (`[42,id,2,money]`)
+  **once per second**. The served side: everyone in deathmatch (the `0x140a015d0[sv_gamemode]` table is 0),
+  a team 0 building, `team == 1` for T and `team > 1` for the CT.
+  The seconds counter increments every second and at **second 5** spawns a **secondary ammo (62)** and at
+  **second 10** (then it wraps to 0) a **primary ammo (61)** `[33]` item on a random free neighbour tile, but
+  only when `mp_infammo` is off and no item of that type is within one tile.
+- **Supply** (`CS2D.exe FUN_14028dba0`, dedicated `FUN_1401b7380`, type 9 and its Super Supply 15): also runs
+  on the 1 Hz cadence; the same counter spawns the item `mp_supply_items[mode - 1]` every **7 seconds** (mode =
+  the slot the owner picked with `[26,150,slot]`) when fewer than **three** of them lie within one tile.
+- **The spawn tile** (both functions): the 8 neighbours, `(-1,-1)` first and then the 7 entries of the two
+  int tables `0x140bc8a00` (y = -1 -1 0 0 1 1 1) and `0x140bc8a20` (x = 0 1 -1 1 -1 0 1) =
+  `(0,-1) (1,-1) (-1,0) (1,0) (-1,1) (0,1) (1,1)`, each tried once (random order) and only when
+  `g_prop_class[cellprop] == 1` (a free floor tile). The item itself is `FUN_14011ba70(type, tx, ty, -1, 0,
+  -1, -1)`, i.e. `[33, type, id u16, tx u16, ty u16, clip + 1 u16, reserve + 1 u16]` with clip/reserve 0
+  (the client reads them -1 and fills the type's defaults).
+- **A melee swing hits buildings too** (`Tshoot.Shoot` is weapon agnostic): the knife / machete / claw /
+  chainsaw damage the building they reach with their own damage, so `cs2d_sv_shot_at_building` is called
+  for every weapon except the Wrench (which repairs / upgrades instead).
+- **Spawn money** (`cs2d_dedicated.exe FUN_140160740` 0x1401618xx..0x140161c89): the first spawn (no
+  spawns, no deaths) sets `mp_startmoney` and clears the per-player seconds counter at `+0x3fc`; every
+  later spawn **of a respawn mode** (DM / TeamDM / Construction / Zombies, the `0x14059c098` table) adds
+  `mp_dmspawnmoney` (`DAT_1405a6554` = **2000**, the Changelog default) when that counter is **> 14** (the
+  1 Hz `add [rax+0x3fc],1` at 0x140193ea3 caps it at 499). Changelog: "Player gets money each spawn
+  (DM/TeamDM/Construction, 2000$ by default)" + "spawnmoney time limit (max every 15 sec)". Money is
+  clamped to 0..16000 right after.
+- **Gate Field (6)** is still missing: its damage lives in `Tpl.tilepos` (CS2D.exe 0x14020f7d0,
+  `docs/dump/cs2d/Tpl.c:2827..3615`), the same ~790 line tile-interaction pass that handles the
+  teleporters, the mines and the item pick-ups; `Tpl.takeDamage` is not called by name there (it goes
+  through a method pointer), so it needs its own pass with `dedscan.py refs` on the dedicated.
+
+
+## Construction mode, server side, part 4 (2026-10-16)
+
+- **Explosions damage buildings** (`FUN_1401f1130`, `docs/dump/cs2d/_global/1401f0000.c:1..169`): the
+  function at (x, y, radius, damage, player, weapon, mode, no_los) walks three lists -
+  1. every **player** with `team > 0` and health > 0 without the spawn-protection flag at +0x7b inside the
+     radius gets `FUN_1401ec180(victim, player, damage, ...)`; with an attacker only the other side (the
+     `0x140a015d0[sv_gamemode]` team table), otherwise everyone;
+  2. every **Te** of type `0x19` (the breakables) whose tile centre is inside the radius loses the damage
+     from `ints[1]` and runs its trigger at 0;
+  3. every **Tdo** whose **centre** `(x + 16, y + 16)` is inside the radius takes
+     `(radius - distance) * damage / radius` (**the full damage at the centre, 0 at the rim**) through the
+     vtable slot `+0xb8` = `Tdo.damage`.
+  `mode == 1` skips the falloff (full damage anywhere in the radius) and `no_los != 0` skips the
+  `FUN_14011c3a0` line-of-sight test. The callers pass `Tp::explosion(x, y, radius, 5.0)` for the visual at
+  the same radius (grenade 0x31 -> 40, rocket 0x28 -> 45, mine 100, ...) and the damage from
+  `damage_table[typ] * DAT_140a14dcc` (`Tpro.c` 1380..1460, 1600, 3138).
+  Our port: `cs2d_sv_explosion_objects` (the object loop only), wired to the **C4** blast (350 px, 500,
+  the same falloff the player loop already used); the Grenade / rocket path needs a server-side `Tpro`
+  simulation first - `cs2d_sv_projectile` (`[27]`) only relays today.
+- **The round model of a respawn mode is inert**: `cs2d_sv_check_win` returns early for
+  `sv_mode(sv)->respawn != 0` and `cs2d_sv_step_round` only runs the mission objectives and the time out
+  for `respawn == 0 && balance == 1`, so `sv_gamemode 3` never ends a round (the freezetime phase still
+  runs, once, at server start).
+- **`DAT_140ddf540`** (the gate the Dispenser and Supply passes share): it lives in the client's
+  zero-initialized section (`0x140dde000`, raw size 0 - no `.data` image to read, which is why
+  `pevalue.py` reports it unmapped), so it is a **runtime** flag. It gates item pick-ups (`Titem.c`),
+  projectile updates (`Tpro.c`), entity triggers (`Te.c`), the hostage logic (`Thostage.c`) and the
+  regeneration-armor decay (`Tpl.c:3893`), always as `DAT_140ddf540 != 0 && DAT_140ddf418 in {1,2}` =
+  "the game is actually running". Our server has no pause state, so treating it as enabled is right.
+- **Gate Field (6)** is still missing: its draw has no logic of its own (the ground pass only draws frame 5
+  with the pulsing alpha of `cs2d_render.c`), so the "hurt" lives in the tile-enter pass `Tpl.tilepos`
+  (0x14020f7d0, `Tpl.c:2827..3615`) next to the teleporters, the mines and the pick-ups. `Tpl.takeDamage`
+  is only reached through a method pointer there, so it needs a `dedscan.py refs` pass on the dedicated.
+
+
+## Construction mode, server side, part 5 (2026-10-16)
+
+- **The building on the tile a player enters** (`Tpl.tilepos` 0x14020f7d0, `Tpl.c:3443..3604`; the switch
+  on the first Tdo of the tile, one object per tile):
+  - **Barbed Wire (2)**: 20 damage (weapon `0xff`) credited to its owner, the wire takes
+    `Tdo.damage(wire, 60, 0)` and a `[36,id,5]` wobble. **No team test** - a wire hurts its own side too.
+  - **Gate Field (6)**: `(0x140a015d0[sv_gamemode] == 0 && field.player != self->id)` (deathmatch, not the
+    builder) or `(self->team == 1 && field.team == 2) || (self->team > 1 && field.team == 1)`; a `team == 0`
+    field hurts everyone with attacker 0. Damage **20** (weapon `0xfe`, `mov r8d,0x14` at CS2D.exe
+    `0x140210459`), credited to the field's owner, and the field takes **100** (`edx=0x64` after the call).
+  - **Mine (20)**: triggers for the other side (a team 0 mine: everyone) and `Tdo.kill` explodes it -
+    `Tp::explosion(x+16, y+16, range[77], 5.0)` plus `FUN_1401f1130(x+16, y+16, range[77], damage[77],
+    player, 0x4d (77), 0, 0)`. The weapon table (`0x1409f62a0` damage / `0x1409f62a8` range, offsets
+    0x134 = 77*4 and 0x15c = 87*4) gives **range 96 / damage 150** for both the Mine (77) and the Laser Mine
+    (87). The Laser Mine (21) adds `mode == 1 && Tdo.inlasermine()` (its beam), not ported.
+  - 13 / 14 / 22 / 23 are the teleporters (`cs2d_dynobj_teleport`).
+  Our port: `sv_tile_object_effect`, called from `cs2d_sv_validate_move` on the tile change before the
+  teleport test (the kinds are exclusive, so it returning "handled" skips the teleporter of the same tile).
+- **The four Construction settings are console cvars now**: `mp_teleportreload` (5), `mp_dispenser_health`
+  (10), `mp_dispenser_money` (500) and `mp_dmspawnmoney` (2000) are in `cs2d_sv_settings_set` /
+  `cs2d_sv_settings_get` (`SV_INT` / `SV_GET_INT`), so `server.cfg`, the console and the Lua `game("...")`
+  reach them. None of them is part of the original's `[237]` live-setting broadcast (ids 1..24).
+
