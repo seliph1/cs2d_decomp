@@ -5661,6 +5661,255 @@ static bool test_special_items(void)
     return true;
 }
 
+static bool test_consumables_and_stackables_pickup(void)
+{
+    printf("\n=== Testing Consumables & Stackable Partial Pickup ===\n");
+    cs2d_weapons_init();
+
+    /* 1. Client-side player test with cs2d_player_add_collected_ex */
+    cs2d_player_t pl;
+    cs2d_player_init(&pl, 1, "tester");
+    pl.alive = true;
+    pl.max_health = 100;
+    pl.health = 100;
+    pl.money = 16000;
+    pl.armor = 100;
+
+    int rem = -1;
+
+    /* A. Consumables rejected when full */
+    if (cs2d_player_add_collected_ex(&pl, CS2D_WEP_MEDIKIT, 0, 0, &rem))
+        TEST_FAIL("Consumables", "Medikit must NOT be collected at full health");
+    if (cs2d_player_add_collected_ex(&pl, CS2D_WEP_BANDAGE, 0, 0, &rem))
+        TEST_FAIL("Consumables", "Bandage must NOT be collected at full health");
+    if (cs2d_player_add_collected_ex(&pl, CS2D_WEP_COINS, 0, 0, &rem) ||
+        cs2d_player_add_collected_ex(&pl, CS2D_WEP_MONEY, 0, 0, &rem) ||
+        cs2d_player_add_collected_ex(&pl, CS2D_WEP_GOLD, 0, 0, &rem))
+        TEST_FAIL("Consumables", "Coins/Money/Gold must NOT be collected when money == 16000");
+
+    /* B. Consumables accepted when not full, clamp behavior, no inventory addition */
+    pl.health = 60;
+    if (!cs2d_player_add_collected_ex(&pl, CS2D_WEP_BANDAGE, 0, 0, &rem) || pl.health != 80 || rem != 0)
+        TEST_FAIL("Consumables", "Bandage should restore +20 health");
+    if (!cs2d_player_add_collected_ex(&pl, CS2D_WEP_MEDIKIT, 0, 0, &rem) || pl.health != 100 || rem != 0)
+        TEST_FAIL("Consumables", "Medikit should restore to max health (100)");
+
+    pl.money = 15950;
+    if (!cs2d_player_add_collected_ex(&pl, CS2D_WEP_COINS, 0, 0, &rem) || pl.money != 16000)
+        TEST_FAIL("Consumables", "Coins should give +100 clamped to 16000");
+    pl.money = 14500;
+    if (!cs2d_player_add_collected_ex(&pl, CS2D_WEP_MONEY, 0, 0, &rem) || pl.money != 15000)
+        TEST_FAIL("Consumables", "Money should give +500");
+    if (!cs2d_player_add_collected_ex(&pl, CS2D_WEP_GOLD, 0, 0, &rem) || pl.money != 16000)
+        TEST_FAIL("Consumables", "Gold should give +1000 clamped to 16000");
+
+    /* Verify no consumable was given to player's owned/inventory */
+    if (pl.owned[CS2D_WEP_MEDIKIT] || pl.owned[CS2D_WEP_BANDAGE] || pl.owned[CS2D_WEP_COINS] ||
+        pl.owned[CS2D_WEP_MONEY] || pl.owned[CS2D_WEP_GOLD])
+        TEST_FAIL("Consumables", "Consumables must never be marked owned in player inventory");
+
+    /* C. Primary / Secondary Ammo refills */
+    if (cs2d_player_add_collected_ex(&pl, CS2D_WEP_PRIMARYAMMO, 0, 0, &rem))
+        TEST_FAIL("Consumables", "Primary Ammo must be rejected if player has no primary weapon");
+    if (cs2d_player_add_collected_ex(&pl, CS2D_WEP_SECONDARYAMMO, 0, 0, &rem))
+        TEST_FAIL("Consumables", "Secondary Ammo must be rejected if player has no secondary weapon");
+
+    cs2d_player_give_weapon(&pl, CS2D_WEP_AK47);
+    pl.reserve_ammo[CS2D_WEP_AK47] = 90;
+    if (cs2d_player_add_collected_ex(&pl, CS2D_WEP_PRIMARYAMMO, 0, 0, &rem))
+        TEST_FAIL("Consumables", "Primary Ammo must be rejected if reserve is full");
+
+    pl.reserve_ammo[CS2D_WEP_AK47] = 10;
+    if (!cs2d_player_add_collected_ex(&pl, CS2D_WEP_PRIMARYAMMO, 0, 0, &rem) || pl.reserve_ammo[CS2D_WEP_AK47] != 90)
+        TEST_FAIL("Consumables", "Primary Ammo must refill reserve to max (90)");
+
+    cs2d_player_give_weapon(&pl, CS2D_WEP_GLOCK);
+    pl.reserve_ammo[CS2D_WEP_GLOCK] = 120;
+    if (cs2d_player_add_collected_ex(&pl, CS2D_WEP_SECONDARYAMMO, 0, 0, &rem))
+        TEST_FAIL("Consumables", "Secondary Ammo must be rejected if reserve is full");
+
+    pl.reserve_ammo[CS2D_WEP_GLOCK] = 40;
+    if (!cs2d_player_add_collected_ex(&pl, CS2D_WEP_SECONDARYAMMO, 0, 0, &rem) || pl.reserve_ammo[CS2D_WEP_GLOCK] != 120)
+        TEST_FAIL("Consumables", "Secondary Ammo must refill reserve to max (120)");
+
+    /* D. Armor rules */
+    pl.armor = 70;
+    if (cs2d_player_add_collected_ex(&pl, CS2D_WEP_KEVLAR, 0, 0, &rem))
+        TEST_FAIL("Armor", "Kevlar vest (57) must be rejected when armor > 64");
+    pl.armor = 50;
+    if (!cs2d_player_add_collected_ex(&pl, CS2D_WEP_KEVLAR, 0, 0, &rem) || pl.armor != 65)
+        TEST_FAIL("Armor", "Kevlar vest (57) gives 65 armor");
+
+    pl.armor = 100;
+    if (cs2d_player_add_collected_ex(&pl, CS2D_WEP_KEVLARHELM, 0, 0, &rem))
+        TEST_FAIL("Armor", "Kevlar+Helm (58) must be rejected when armor >= 100");
+    pl.armor = 65;
+    if (!cs2d_player_add_collected_ex(&pl, CS2D_WEP_KEVLARHELM, 0, 0, &rem) || pl.armor != 100)
+        TEST_FAIL("Armor", "Kevlar+Helm (58) gives 100 armor");
+
+    /* E. Stackables & Partial Pickup: Flashbang (cap 2) */
+    cs2d_player_init(&pl, 2, "grenadier");
+    pl.alive = true;
+
+    rem = -1;
+    bool taken = cs2d_player_add_collected_ex(&pl, CS2D_WEP_FLASHBANG, 1, 0, &rem);
+    if (!taken || rem != 0 || pl.clip_ammo[CS2D_WEP_FLASHBANG] != 1)
+        TEST_FAIL("Stackables", "Full pickup of 1st flashbang failed");
+
+    rem = -1;
+    taken = cs2d_player_add_collected_ex(&pl, CS2D_WEP_FLASHBANG, 2, 0, &rem);
+    if (taken || rem != 1 || pl.clip_ammo[CS2D_WEP_FLASHBANG] != 2)
+        TEST_FAIL("Stackables", "Partial pickup: player should take 1 (reach cap 2) and ground should keep 1");
+
+    rem = -1;
+    taken = cs2d_player_add_collected_ex(&pl, CS2D_WEP_FLASHBANG, 1, 0, &rem);
+    if (taken || rem != 1 || pl.clip_ammo[CS2D_WEP_FLASHBANG] != 2)
+        TEST_FAIL("Stackables", "Pickup must be rejected when stackable is at max capacity");
+
+    /* F. Snowball (cap 10) partial pickup */
+    cs2d_player_init(&pl, 3, "snowballer");
+    pl.alive = true;
+    pl.owned[CS2D_WEP_SNOWBALL] = true;
+    pl.inventory[CS2D_SLOT_GRENADE] = CS2D_WEP_SNOWBALL;
+    pl.clip_ammo[CS2D_WEP_SNOWBALL] = 4;
+
+    rem = -1;
+    taken = cs2d_player_add_collected_ex(&pl, CS2D_WEP_SNOWBALL, 12, 0, &rem);
+    if (taken || rem != 6 || pl.clip_ammo[CS2D_WEP_SNOWBALL] != 10)
+        TEST_FAIL("Stackables", "Snowball partial pickup: take 6 of 12, reach cap 10, 6 remain");
+
+    /* G. Mines (77, cap 3) & Satchel (89, cap 5) */
+    cs2d_player_init(&pl, 4, "engineer");
+    pl.alive = true;
+    rem = -1;
+    taken = cs2d_player_add_collected_ex(&pl, CS2D_WEP_MINE, 5, 0, &rem);
+    if (taken || rem != 2 || pl.clip_ammo[CS2D_WEP_MINE] != 3)
+        TEST_FAIL("Stackables", "Mine partial pickup: take 3 of 5, reach cap 3, 2 remain");
+
+    rem = -1;
+    taken = cs2d_player_add_collected_ex(&pl, CS2D_WEP_SATCHEL, 7, 0, &rem);
+    if (taken || rem != 2 || pl.clip_ammo[CS2D_WEP_SATCHEL] != 5)
+        TEST_FAIL("Stackables", "Satchel partial pickup: take 5 of 7, reach cap 5, 2 remain");
+
+    /* 2. Dedicated server simulation with cs2d_sv_step_items */
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].alive = true;
+    sv.players[1].team = 2; /* CT */
+    sv.players[1].x = 100.0f;
+    sv.players[1].y = 100.0f;
+    sv.players[1].maxhealth = 100;
+    sv.players[1].health = 100;
+    sv.players[1].money = 16000;
+
+    int ptx = (int)(sv.players[1].x * 0.03125f);
+    int pty = (int)(sv.players[1].y * 0.03125f);
+
+    /* Medikit rejected when full */
+    sv.items[0].active = true;
+    sv.items[0].id = 100;
+    sv.items[0].type = CS2D_WEP_MEDIKIT;
+    sv.items[0].tile_x = (uint16_t)ptx;
+    sv.items[0].tile_y = (uint16_t)pty;
+    sv.items[0].dropped = false;
+
+    cs2d_sv_step_items(&sv);
+    if (!sv.items[0].active)
+        TEST_FAIL("Server Consumables", "Medikit must remain active on ground when player has 100 HP");
+
+    /* Medikit collected when hurt */
+    sv.players[1].health = 40;
+    cs2d_sv_step_items(&sv);
+    if (sv.items[0].active || sv.players[1].health != 100)
+        TEST_FAIL("Server Consumables", "Medikit must be collected and restore 100 HP");
+
+    bool has_medikit = false;
+    for (int k = 0; k < sv.players[1].item_count; k++) {
+        if (sv.players[1].items[k] == CS2D_WEP_MEDIKIT) has_medikit = true;
+    }
+    if (has_medikit)
+        TEST_FAIL("Server Consumables", "Medikit must not enter player item inventory");
+
+    /* Server Stackable Partial Pickup: Flashbangs */
+    sv.players[1].items[0] = CS2D_WEP_FLASHBANG;
+    sv.players[1].item_count = 1;
+    sv.players[1].clip[CS2D_WEP_FLASHBANG] = 1;
+
+    sv.items[1].active = true;
+    sv.items[1].id = 101;
+    sv.items[1].type = CS2D_WEP_FLASHBANG;
+    sv.items[1].clip = 2;
+    sv.items[1].tile_x = (uint16_t)ptx;
+    sv.items[1].tile_y = (uint16_t)pty;
+    sv.items[1].dropped = false;
+
+    cs2d_sv_step_items(&sv);
+    if (sv.players[1].clip[CS2D_WEP_FLASHBANG] != 2)
+        TEST_FAIL("Server Stackables", "Player should have taken 1 flashbang to reach cap 2");
+    if (!sv.items[1].active || sv.items[1].clip != 1)
+        TEST_FAIL("Server Stackables", "Ground flashbang must remain active with 1 clip remaining");
+
+    cs2d_sv_step_items(&sv);
+    if (!sv.items[1].active || sv.items[1].clip != 1)
+        TEST_FAIL("Server Stackables", "Ground flashbang must remain active when player is at max cap");
+
+    /* Test 3: Supply HE item spawn & underflow prevention (user reported 65532 bug) */
+    sv.players[2].used = true;
+    sv.players[2].joined = true;
+    sv.players[2].alive = true;
+    sv.players[2].team = 1; /* T */
+    sv.players[2].x = 200.0f;
+    sv.players[2].y = 200.0f;
+    int p2_tx = (int)(sv.players[2].x * 0.03125f);
+    int p2_ty = (int)(sv.players[2].y * 0.03125f);
+
+    /* Clean items slot 2 */
+    memset(&sv.items[2], 0, sizeof(sv.items[2]));
+    /* Simulate a spawned HE grenade near player 2 */
+    int default_clip = -1, default_res = -1;
+    cs2d_weapon_item_ammo(CS2D_WEP_HE, &default_clip, &default_res);
+    if (default_clip != 1 || default_res != 0)
+        TEST_FAIL("Server Item Ammo", "HE grenade default clip must be 1, reserve 0");
+
+    sv.items[2].active = true;
+    sv.items[2].id = 102;
+    sv.items[2].type = CS2D_WEP_HE;
+    sv.items[2].clip = (uint16_t)default_clip; /* 1 */
+    sv.items[2].reserve = (uint16_t)default_res;
+    sv.items[2].tile_x = (uint16_t)p2_tx;
+    sv.items[2].tile_y = (uint16_t)p2_ty;
+    sv.items[2].dropped = false;
+
+    /* Player 2 steps on HE grenade -> must collect 1, ground item must DEACTIVATE, no underflow to 65535 */
+    cs2d_sv_step_items(&sv);
+    if (sv.players[2].clip[CS2D_WEP_HE] != 1)
+        TEST_FAIL("Server HE Pickup", "Player 2 should have collected 1 HE grenade");
+    if (sv.items[2].active)
+        TEST_FAIL("Server HE Pickup", "Ground HE grenade must be deactivated (clip reached 0)");
+    if (sv.items[2].clip != 0)
+        TEST_FAIL("Server HE Pickup", "Ground HE grenade clip must be 0, not underflow to 65535");
+
+    /* Test 4: Supply Menu item selection (mode 150) */
+    cs2d_dynobj_world_t *dw = &sv.dynobj;
+    memset(dw, 0, sizeof(*dw));
+    cs2d_dynobj_t *sup = cs2d_dynobj_spawn(dw, 1, CS2D_DO_SUPPLY, 10 * 32, 10 * 32, 0.0f, 1, 1, 1);
+    if (!sup) TEST_FAIL("Supply DynObj", "Failed to spawn Supply building");
+    sup->mode = 1; /* Default mode 1 = HE Grenade */
+
+    sv.players[1].x = 10.0f * 32.0f + 16.0f;
+    sv.players[1].y = 10.0f * 32.0f + 16.0f;
+
+    /* Player 1 uses Supply to change to slot 3 (e.g. Deagle) via mode 150 */
+    cs2d_sv_use(&sv, 1, 150, 3, 10, 10);
+    if (sup->mode != 3)
+        TEST_FAIL("Supply Menu 150", "Supply building mode did not change to 3 upon use [26, 150]");
+
+    TEST_PASS("Consumables & Stackable Partial Pickup (ammo, medikit, money, supply HE underflow fix, mode 150)");
+    return true;
+}
+
 static bool test_sound(void)
 {
     printf("\n--- Testing sound attenuation ---\n");
@@ -8788,7 +9037,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 84;
+    int total = 85;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -8847,6 +9096,7 @@ int main(void)
     if (test_sound()) passed++;
     if (test_weapon_modes()) passed++;
     if (test_special_items()) passed++;
+    if (test_consumables_and_stackables_pickup()) passed++;
     if (test_settile()) passed++;
     if (test_font_metrics()) passed++;
     if (test_screenshot_paths()) passed++;

@@ -1226,13 +1226,42 @@ void cs2d_sv_buy(cs2d_server_t *sv, int id, int weapon_id)
     pl->money -= def->price;
 
     /* Add item / special / armor to player */
-    if (def->slot != CS2D_SLOT_ITEM) {
-        sv_give(pl, weapon_id);
-        pl->weapon = weapon_id;
+    if (weapon_id == CS2D_WEP_PRIMARYAMMO) {
+        for (int k = 0; k < pl->item_count; k++) {
+            uint8_t t = pl->items[k];
+            if (cs2d_weapon_hud_slot(t) == 1) {
+                const cs2d_weapon_def_t *wd = cs2d_weapon_get(t);
+                if (wd) pl->reserve[t] = (int16_t)wd->max_reserve;
+            }
+        }
+    } else if (weapon_id == CS2D_WEP_SECONDARYAMMO) {
+        for (int k = 0; k < pl->item_count; k++) {
+            uint8_t t = pl->items[k];
+            if (cs2d_weapon_hud_slot(t) == 2) {
+                const cs2d_weapon_def_t *wd = cs2d_weapon_get(t);
+                if (wd) pl->reserve[t] = (int16_t)wd->max_reserve;
+            }
+        }
+    } else if (def->slot != CS2D_SLOT_ITEM) {
+        int hslot = cs2d_weapon_hud_slot((uint8_t)weapon_id);
+        bool is_stack = (hslot == 4 || weapon_id == CS2D_WEP_MINE || weapon_id == CS2D_WEP_LASERMINE || weapon_id == CS2D_WEP_SATCHEL);
+        if (is_stack) {
+            int max_cap = def->clip_size > 0 ? def->clip_size : 1;
+            if (sv_has_item(pl, weapon_id)) {
+                if (pl->clip[weapon_id] < max_cap) pl->clip[weapon_id]++;
+            } else {
+                sv_give(pl, weapon_id);
+                pl->clip[weapon_id] = 1;
+                pl->reserve[weapon_id] = 0;
+            }
+        } else {
+            sv_give(pl, weapon_id);
+            pl->weapon = weapon_id;
+        }
     } else if (weapon_id == CS2D_WEP_DEFUSEKIT && pl->team == 2) {
         pl->special |= 1;
     } else if (weapon_id == CS2D_WEP_KEVLAR) {
-        pl->armor = 100;
+        pl->armor = 65;
     } else if (weapon_id == CS2D_WEP_KEVLARHELM) {
         pl->armor = 100;
     } else if (weapon_id == CS2D_WEP_NIGHTVISION) {
@@ -1385,67 +1414,217 @@ void cs2d_sv_step_items(cs2d_server_t *sv)
             if (it->type == CS2D_WEP_PLANTEDBOMB) continue;
 
             bool can_pickup = false;
-            if (def->slot == CS2D_SLOT_PRIMARY) {
+            bool is_consumable = false;
+            int hud_slot = cs2d_weapon_hud_slot(it->type);
+            bool is_stackable = (hud_slot == 4 || it->type == CS2D_WEP_MINE || it->type == CS2D_WEP_LASERMINE || it->type == CS2D_WEP_SATCHEL);
+
+            if (it->type == CS2D_WEP_PRIMARYAMMO) {
+                is_consumable = true;
+                for (int k = 0; k < pl->item_count; k++) {
+                    uint8_t t = pl->items[k];
+                    if (cs2d_weapon_hud_slot(t) == 1) {
+                        const cs2d_weapon_def_t *wd = cs2d_weapon_get(t);
+                        if (wd && pl->reserve[t] < wd->max_reserve) { can_pickup = true; break; }
+                    }
+                }
+            } else if (it->type == CS2D_WEP_SECONDARYAMMO) {
+                is_consumable = true;
+                for (int k = 0; k < pl->item_count; k++) {
+                    uint8_t t = pl->items[k];
+                    if (cs2d_weapon_hud_slot(t) == 2) {
+                        const cs2d_weapon_def_t *wd = cs2d_weapon_get(t);
+                        if (wd && pl->reserve[t] < wd->max_reserve) { can_pickup = true; break; }
+                    }
+                }
+            } else if (it->type == CS2D_WEP_MEDIKIT || it->type == CS2D_WEP_BANDAGE) {
+                is_consumable = true;
+                if (pl->health < pl->maxhealth) can_pickup = true;
+            } else if (it->type == CS2D_WEP_COINS || it->type == CS2D_WEP_MONEY || it->type == CS2D_WEP_GOLD) {
+                is_consumable = true;
+                if (pl->money < 16000) can_pickup = true;
+            } else if (it->type == CS2D_WEP_KEVLAR) {
+                if (pl->armor <= 64) can_pickup = true;
+            } else if (it->type == CS2D_WEP_KEVLARHELM) {
+                if (pl->armor < 100) can_pickup = true;
+            } else if (it->type >= 79 && it->type <= 84) {
+                can_pickup = true;
+            } else if (it->type == CS2D_WEP_DEFUSEKIT) {
+                if (pl->team == 2 && !(pl->special & 1)) can_pickup = true;
+            } else if (it->type == CS2D_WEP_NIGHTVISION) {
+                if (!(pl->special & 2)) can_pickup = true;
+            } else if (it->type == CS2D_WEP_GASMASK) {
+                if (!(pl->special & 16)) can_pickup = true;
+            } else if (it->type == CS2D_WEP_BOMB) {
+                if (pl->team == 1 && !(pl->special & 1) && !sv_has_item(pl, CS2D_WEP_BOMB)) {
+                    can_pickup = true;
+                }
+            } else if (hud_slot == 1) {
                 bool has_primary = false;
                 for (int k = 0; k < pl->item_count; k++) {
                     if (cs2d_weapon_hud_slot(pl->items[k]) == 1) { has_primary = true; break; }
                 }
                 if (!has_primary) can_pickup = true;
-            } else if (def->slot == CS2D_SLOT_SECONDARY) {
+            } else if (hud_slot == 2) {
                 bool has_secondary = false;
                 for (int k = 0; k < pl->item_count; k++) {
                     if (cs2d_weapon_hud_slot(pl->items[k]) == 2) { has_secondary = true; break; }
                 }
                 if (!has_secondary) can_pickup = true;
-            } else if (it->type == CS2D_WEP_BOMB) {
-                if (pl->team == 1 && !sv_has_item(pl, CS2D_WEP_BOMB)) {
-                    can_pickup = true;
-                    pl->special |= 1;
-                }
-            } else if (it->type == CS2D_WEP_DEFUSEKIT) {
-                if (pl->team == 2 && !(pl->special & 1)) {
-                    can_pickup = true;
-                    pl->special |= 1;
-                }
-            } else if (it->type == CS2D_WEP_KEVLAR || it->type == CS2D_WEP_KEVLARHELM) {
-                if (pl->armor < 100) {
-                    can_pickup = true;
-                    pl->armor = 100;
-                }
-            } else if (def->slot == CS2D_SLOT_GRENADE) {
-                can_pickup = true;
+            } else if (is_stackable) {
+                int max_cap = def->clip_size > 0 ? def->clip_size : 1;
+                if (!sv_has_item(pl, it->type)) can_pickup = true;
+                else if (pl->clip[it->type] < max_cap) can_pickup = true;
             } else {
                 if (!sv_has_item(pl, it->type)) can_pickup = true;
             }
 
             if (can_pickup) {
                 if (cs2d_sv_lua_hook_collect(sv, pid, it->id, it->type, it->reserve, it->clip) == 1) continue;
-                sv_give(pl, it->type);
-                pl->clip[it->type] = (int16_t)it->clip;
-                pl->reserve[it->type] = (int16_t)it->reserve;
-                if (def->slot == CS2D_SLOT_PRIMARY || def->slot == CS2D_SLOT_SECONDARY) {
-                    pl->weapon = it->type;
-                }
-                uint16_t taken_id = it->id;
-                uint8_t type = it->type;
-                uint16_t clip = it->clip;
-                uint16_t reserve = it->reserve;
-                it->active = false;
 
-                /* Broadcast [25, player, item_id u16, type u8, clip u16, reserve u16, 0 u8] */
-                uint8_t msg[10];
-                msg[0] = 25;
-                msg[1] = (uint8_t)pid;
-                msg[2] = (uint8_t)(taken_id & 0xff);
-                msg[3] = (uint8_t)((taken_id >> 8) & 0xff);
-                msg[4] = type;
-                msg[5] = (uint8_t)(clip & 0xff);
-                msg[6] = (uint8_t)((clip >> 8) & 0xff);
-                msg[7] = (uint8_t)(reserve & 0xff);
-                msg[8] = (uint8_t)((reserve >> 8) & 0xff);
-                msg[9] = 0;
-                sv_broadcast_joined(sv, msg, sizeof(msg));
-                break;
+                if (is_consumable) {
+                    if (it->type == CS2D_WEP_PRIMARYAMMO) {
+                        for (int k = 0; k < pl->item_count; k++) {
+                            uint8_t t = pl->items[k];
+                            if (cs2d_weapon_hud_slot(t) == 1) {
+                                const cs2d_weapon_def_t *wd = cs2d_weapon_get(t);
+                                if (wd) pl->reserve[t] = (int16_t)wd->max_reserve;
+                            }
+                        }
+                    } else if (it->type == CS2D_WEP_SECONDARYAMMO) {
+                        for (int k = 0; k < pl->item_count; k++) {
+                            uint8_t t = pl->items[k];
+                            if (cs2d_weapon_hud_slot(t) == 2) {
+                                const cs2d_weapon_def_t *wd = cs2d_weapon_get(t);
+                                if (wd) pl->reserve[t] = (int16_t)wd->max_reserve;
+                            }
+                        }
+                    } else if (it->type == CS2D_WEP_MEDIKIT) {
+                        pl->health = pl->maxhealth;
+                        uint8_t hmsg[5] = { 42, (uint8_t)pid, 1, (uint8_t)(pl->health & 0xff), (uint8_t)((pl->health >> 8) & 0xff) };
+                        sv_broadcast_joined(sv, hmsg, sizeof(hmsg));
+                    } else if (it->type == CS2D_WEP_BANDAGE) {
+                        pl->health += 20;
+                        if (pl->health > pl->maxhealth) pl->health = pl->maxhealth;
+                        uint8_t hmsg[5] = { 42, (uint8_t)pid, 1, (uint8_t)(pl->health & 0xff), (uint8_t)((pl->health >> 8) & 0xff) };
+                        sv_broadcast_joined(sv, hmsg, sizeof(hmsg));
+                    } else if (it->type == CS2D_WEP_COINS || it->type == CS2D_WEP_MONEY || it->type == CS2D_WEP_GOLD) {
+                        int add_m = (it->type == CS2D_WEP_COINS) ? 100 : (it->type == CS2D_WEP_MONEY) ? 500 : 1000;
+                        pl->money += add_m;
+                        if (pl->money > 16000) pl->money = 16000;
+                        cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, pid);
+                        if (c) {
+                            cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+                            cs2d_pkt_w_byte(p, 42);
+                            cs2d_pkt_w_byte(p, (uint8_t)pid);
+                            cs2d_pkt_w_byte(p, 2);
+                            cs2d_pkt_w_short(p, (uint16_t)pl->money);
+                        }
+                    }
+
+                    uint16_t taken_id = it->id;
+                    uint8_t type = it->type;
+                    it->active = false;
+
+                    /* Broadcast [25, player, item_id u16, type u8, 0, 0, 0] */
+                    uint8_t msg[10] = { 25, (uint8_t)pid, (uint8_t)(taken_id & 0xff), (uint8_t)((taken_id >> 8) & 0xff), type, 0, 0, 0, 0, 0 };
+                    sv_broadcast_joined(sv, msg, sizeof(msg));
+                    break;
+                } else if (it->type == CS2D_WEP_KEVLAR || it->type == CS2D_WEP_KEVLARHELM || (it->type >= 79 && it->type <= 84)) {
+                    if (it->type == CS2D_WEP_KEVLAR) pl->armor = 65;
+                    else if (it->type == CS2D_WEP_KEVLARHELM) pl->armor = 100;
+                    else pl->armor = 201 + (it->type - 79);
+
+                    uint16_t taken_id = it->id;
+                    uint8_t type = it->type;
+                    it->active = false;
+
+                    uint8_t amsg[5] = { 42, (uint8_t)pid, 3, (uint8_t)(pl->armor & 0xff), (uint8_t)((pl->armor >> 8) & 0xff) };
+                    sv_broadcast_joined(sv, amsg, sizeof(amsg));
+
+                    uint8_t msg[10] = { 25, (uint8_t)pid, (uint8_t)(taken_id & 0xff), (uint8_t)((taken_id >> 8) & 0xff), type, 0, 0, 0, 0, 0 };
+                    sv_broadcast_joined(sv, msg, sizeof(msg));
+                    break;
+                } else if (it->type == CS2D_WEP_DEFUSEKIT || it->type == CS2D_WEP_NIGHTVISION || it->type == CS2D_WEP_GASMASK) {
+                    if (it->type == CS2D_WEP_DEFUSEKIT) pl->special |= 1;
+                    else if (it->type == CS2D_WEP_NIGHTVISION) pl->special |= 2;
+                    else if (it->type == CS2D_WEP_GASMASK) pl->special |= 16;
+
+                    uint16_t taken_id = it->id;
+                    uint8_t type = it->type;
+                    it->active = false;
+
+                    uint8_t msg[10] = { 25, (uint8_t)pid, (uint8_t)(taken_id & 0xff), (uint8_t)((taken_id >> 8) & 0xff), type, 0, 0, 0, 0, 0 };
+                    sv_broadcast_joined(sv, msg, sizeof(msg));
+                    break;
+                } else if (is_stackable) {
+                    int max_cap = def->clip_size > 0 ? def->clip_size : 1;
+                    int ground_count = it->clip > 0 ? (int)it->clip : 1;
+                    int have = sv_has_item(pl, it->type) ? (int)pl->clip[it->type] : 0;
+                    int space = max_cap - have;
+                    if (space > 0) {
+                        int take = ground_count <= space ? ground_count : space;
+                        if (!sv_has_item(pl, it->type)) {
+                            sv_give(pl, it->type);
+                        }
+                        pl->clip[it->type] = (int16_t)(have + take);
+                        pl->reserve[it->type] = 0;
+
+                        uint16_t taken_id = it->id;
+                        uint8_t type = it->type;
+                        uint16_t orig_ground_clip = (uint16_t)ground_count;
+
+                        if (it->clip <= (uint16_t)take) {
+                            it->clip = 0;
+                            it->active = false;
+                        } else {
+                            it->clip -= (uint16_t)take;
+                        }
+
+                        uint8_t msg[10];
+                        msg[0] = 25;
+                        msg[1] = (uint8_t)pid;
+                        msg[2] = (uint8_t)(taken_id & 0xff);
+                        msg[3] = (uint8_t)((taken_id >> 8) & 0xff);
+                        msg[4] = type;
+                        msg[5] = (uint8_t)(orig_ground_clip & 0xff);
+                        msg[6] = (uint8_t)((orig_ground_clip >> 8) & 0xff);
+                        msg[7] = 0;
+                        msg[8] = 0;
+                        msg[9] = 0;
+                        sv_broadcast_joined(sv, msg, sizeof(msg));
+                        break;
+                    }
+                } else {
+                    sv_give(pl, it->type);
+                    pl->clip[it->type] = (int16_t)it->clip;
+                    pl->reserve[it->type] = (int16_t)it->reserve;
+                    if (def->slot == CS2D_SLOT_PRIMARY || def->slot == CS2D_SLOT_SECONDARY) {
+                        pl->weapon = it->type;
+                    }
+                    if (it->type == CS2D_WEP_BOMB) {
+                        pl->special |= 1;
+                    }
+                    uint16_t taken_id = it->id;
+                    uint8_t type = it->type;
+                    uint16_t clip = it->clip;
+                    uint16_t reserve = it->reserve;
+                    it->active = false;
+
+                    /* Broadcast [25, player, item_id u16, type u8, clip u16, reserve u16, 0 u8] */
+                    uint8_t msg[10];
+                    msg[0] = 25;
+                    msg[1] = (uint8_t)pid;
+                    msg[2] = (uint8_t)(taken_id & 0xff);
+                    msg[3] = (uint8_t)((taken_id >> 8) & 0xff);
+                    msg[4] = type;
+                    msg[5] = (uint8_t)(clip & 0xff);
+                    msg[6] = (uint8_t)((clip >> 8) & 0xff);
+                    msg[7] = (uint8_t)(reserve & 0xff);
+                    msg[8] = (uint8_t)((reserve >> 8) & 0xff);
+                    msg[9] = 0;
+                    sv_broadcast_joined(sv, msg, sizeof(msg));
+                    break;
+                }
             }
         }
     }
@@ -2362,6 +2541,28 @@ void cs2d_sv_use(cs2d_server_t *sv, int id, int mode, int32_t data, uint16_t x, 
             memcpy(&pkt[7], &x, 2);
             memcpy(&pkt[9], &y, 2);
             sv_broadcast_joined(sv, pkt, 11);
+        }
+    } else if (mode == 150) {
+        /* Supply selection (CS2D.exe FUN_14028dba0, dedicated FUN_140138b32) */
+        cs2d_dynobj_t *o = cs2d_dynobj_at_tile(&sv->dynobj, (int)x, (int)y);
+        if (o && (o->typ == CS2D_DO_SUPPLY || o->typ == CS2D_DO_SUPER_SUPPLY)) {
+            int max_slot = (o->typ == CS2D_DO_SUPPLY) ? 6 : 9;
+            if (data >= 1 && data <= max_slot && o->player == id) {
+                float tx_px = (float)x * 32.0f + 16.0f;
+                float ty_px = (float)y * 32.0f + 16.0f;
+                float dx = pl->x - tx_px, dy = pl->y - ty_px;
+                if (dx * dx + dy * dy <= 60.0f * 60.0f) {
+                    o->mode = (int)data;
+                    uint8_t pkt[11];
+                    pkt[0] = 26;
+                    pkt[1] = (uint8_t)id;
+                    pkt[2] = 150;
+                    memcpy(&pkt[3], &data, 4);
+                    memcpy(&pkt[7], &x, 2);
+                    memcpy(&pkt[9], &y, 2);
+                    sv_broadcast_joined(sv, pkt, 11);
+                }
+            }
         }
     }
 }
@@ -3745,7 +3946,10 @@ static int sv_spawn_item(cs2d_server_t *sv, int type, int tx, int ty)
     it->active = true;
     it->id = item_id;
     it->type = (uint8_t)type;
-    it->clip = it->reserve = 0;   /* -1: the type's defaults */
+    int default_clip = -1, default_res = -1;
+    cs2d_weapon_item_ammo((uint8_t)type, &default_clip, &default_res);
+    it->clip = (uint16_t)(default_clip > 0 ? default_clip : 1);
+    it->reserve = (uint16_t)(default_res > 0 ? default_res : 0);
     it->sub = 0;
     it->tile_x = (uint16_t)tx;
     it->tile_y = (uint16_t)ty;

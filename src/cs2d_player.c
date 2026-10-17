@@ -175,10 +175,17 @@ bool cs2d_player_give_weapon(cs2d_player_t *player, uint8_t weapon_id)
     return true;
 }
 
-/* Bought items that stack: HE, Flashbang, Smoke, Flare and Medikit ([23] handler 0x1402008xx: 0x33..0x36, 0x59) */
+/* Stackable items: HUD slot 4 (Grenades/Snowball/etc), HUD slot 5 (Mines 77, Laser Mines 87), HUD slot 6 (Satchel 89) */
+static bool is_stackable_item(uint8_t weapon_id)
+{
+    if (weapon_id == CS2D_WEP_BOMB || weapon_id == CS2D_WEP_PLANTEDBOMB) return false;
+    int slot = cs2d_weapon_hud_slot(weapon_id);
+    return (slot == 4 || weapon_id == CS2D_WEP_MINE || weapon_id == CS2D_WEP_LASERMINE || weapon_id == CS2D_WEP_SATCHEL);
+}
+
 static bool buy_stacks(uint8_t weapon_id)
 {
-    return (weapon_id >= CS2D_WEP_HE && weapon_id <= CS2D_WEP_FLARE) || weapon_id == CS2D_WEP_SATCHEL;
+    return is_stackable_item(weapon_id);
 }
 
 void cs2d_player_add_bought(cs2d_player_t *player, uint8_t weapon_id)
@@ -209,41 +216,114 @@ static void refill_ammo(cs2d_player_t *player, int hud_slot)
     }
 }
 
+static bool can_refill_ammo(const cs2d_player_t *player, int hud_slot)
+{
+    for (int id = 1; id < CS2D_MAX_WEAPONS; id++) {
+        const cs2d_weapon_def_t *w = cs2d_weapon_get((uint8_t)id);
+        if (!player->owned[id] || !w || cs2d_weapon_hud_slot((uint8_t)id) != hud_slot) continue;
+        if (player->reserve_ammo[id] < w->max_reserve) return true;
+    }
+    return false;
+}
+
+static bool is_consumable_item(uint8_t id)
+{
+    return (id == CS2D_WEP_PRIMARYAMMO || id == CS2D_WEP_SECONDARYAMMO ||
+            id == CS2D_WEP_MEDIKIT || id == CS2D_WEP_BANDAGE ||
+            id == CS2D_WEP_COINS || id == CS2D_WEP_MONEY || id == CS2D_WEP_GOLD ||
+            id == CS2D_WEP_KEVLAR || id == CS2D_WEP_KEVLARHELM ||
+            (id >= 79 && id <= 84));
+}
+
 bool cs2d_player_consume_item(cs2d_player_t *player, uint8_t weapon_id)
 {
     if (!player) return false;
-    int money = 0;
     switch (weapon_id) {
-        case CS2D_WEP_PRIMARYAMMO:   refill_ammo(player, 1); return true;
-        case CS2D_WEP_SECONDARYAMMO: refill_ammo(player, 2); return true;
-        case CS2D_WEP_MEDIKIT:       player->health = player->max_health; return true;
+        case CS2D_WEP_PRIMARYAMMO:
+            if (!can_refill_ammo(player, 1)) return false;
+            refill_ammo(player, 1);
+            return true;
+        case CS2D_WEP_SECONDARYAMMO:
+            if (!can_refill_ammo(player, 2)) return false;
+            refill_ammo(player, 2);
+            return true;
+        case CS2D_WEP_MEDIKIT:
+            if (player->health >= player->max_health) return false;
+            player->health = player->max_health;
+            return true;
         case CS2D_WEP_BANDAGE:
+            if (player->health >= player->max_health) return false;
             player->health += 20;
             if (player->health > player->max_health) player->health = player->max_health;
             return true;
-        case CS2D_WEP_COINS: money = 100;  break;
-        case CS2D_WEP_MONEY: money = 500;  break;
-        case CS2D_WEP_GOLD:  money = 1000; break;
+        case CS2D_WEP_COINS:
+            if (player->money >= 16000) return false;
+            player->money += 100;
+            if (player->money > 16000) player->money = 16000;
+            return true;
+        case CS2D_WEP_MONEY:
+            if (player->money >= 16000) return false;
+            player->money += 500;
+            if (player->money > 16000) player->money = 16000;
+            return true;
+        case CS2D_WEP_GOLD:
+            if (player->money >= 16000) return false;
+            player->money += 1000;
+            if (player->money > 16000) player->money = 16000;
+            return true;
+        case CS2D_WEP_KEVLAR:
+            if (player->armor > 64) return false;
+            player->armor = 65;
+            return true;
+        case CS2D_WEP_KEVLARHELM:
+            if (player->armor >= 100) return false;
+            player->armor = 100;
+            return true;
+        case 79: case 80: case 81: case 82: case 83: case 84:
+            player->armor = (int16_t)(201 + (weapon_id - 79));
+            return true;
         default: return false;
     }
-    player->money += money;
-    if (player->money > 16000) player->money = 16000;
-    return true;
 }
 
-bool cs2d_player_add_collected(cs2d_player_t *player, uint8_t weapon_id, int clip, int reserve)
+bool cs2d_player_add_collected_ex(cs2d_player_t *player, uint8_t weapon_id, int clip, int reserve, int *out_remaining)
 {
+    if (out_remaining) *out_remaining = 0;
     if (!player || weapon_id == CS2D_WEP_NONE || weapon_id >= CS2D_MAX_WEAPONS) return true;
-    if (cs2d_player_consume_item(player, weapon_id)) return true;
+
+    if (is_consumable_item(weapon_id)) {
+        if (cs2d_player_consume_item(player, weapon_id)) {
+            if (out_remaining) *out_remaining = 0;
+            return true;
+        }
+        if (out_remaining) *out_remaining = clip;
+        return false;
+    }
+
     const cs2d_weapon_def_t *wep = cs2d_weapon_get(weapon_id);
-    if (wep && cs2d_weapon_hud_slot(weapon_id) == 4 && player->owned[weapon_id]) {
-        /* FUN_14020ce60 (client path): an owned grenade takes ammoin up to the max (0x140a017a8); when that is
-         * exceeded and some is left, Titem.freedropped is skipped and the ground item stays as it was */
-        int have = player->clip_ammo[weapon_id];
-        if (have + clip > wep->clip_size) {
-            int add = wep->clip_size - have;
-            player->clip_ammo[weapon_id] = (int16_t)(have + add);
-            return clip - add <= 0;
+    if (wep && is_stackable_item(weapon_id)) {
+        /* FUN_14020ce60 / 0x14020e3c0: stackable item takes count up to max capacity */
+        int max_cap = wep->clip_size > 0 ? wep->clip_size : 1;
+        int have = player->owned[weapon_id] ? (int)player->clip_ammo[weapon_id] : 0;
+        if (have >= max_cap) {
+            if (out_remaining) *out_remaining = clip;
+            return false;
+        }
+        if (!player->owned[weapon_id]) {
+            uint8_t held = player->current_weapon;
+            cs2d_player_give_weapon(player, weapon_id);
+            player->reserve_ammo[weapon_id] = 0;
+            player->current_weapon = held ? held : weapon_id;
+        }
+        if (have + clip > max_cap) {
+            int add = max_cap - have;
+            player->clip_ammo[weapon_id] = (int16_t)max_cap;
+            int rem = clip - add;
+            if (rem > 0) {
+                if (out_remaining) *out_remaining = rem;
+                return false; /* partly taken: ground item stays with remaining stack */
+            }
+            return true;
         }
         player->clip_ammo[weapon_id] = (int16_t)(have + clip);
         return true;
@@ -257,6 +337,12 @@ bool cs2d_player_add_collected(cs2d_player_t *player, uint8_t weapon_id, int cli
     return true;
 }
 
+bool cs2d_player_add_collected(cs2d_player_t *player, uint8_t weapon_id, int clip, int reserve)
+{
+    return cs2d_player_add_collected_ex(player, weapon_id, clip, reserve, NULL);
+}
+
+
 bool cs2d_player_buy_weapon(cs2d_player_t *player, uint8_t weapon_id)
 {
     if (!player || !player->alive) return false;
@@ -265,6 +351,13 @@ bool cs2d_player_buy_weapon(cs2d_player_t *player, uint8_t weapon_id)
     if (!wep) return false;
 
     if (player->money < wep->price) return false;
+
+    if (is_consumable_item(weapon_id)) {
+        if (!cs2d_player_consume_item(player, weapon_id)) return false;
+        player->money -= wep->price;
+        return true;
+    }
+
     /* Offline: a full stack (e.g. 2 Flashbangs) cannot be bought again (the server decides online) */
     if (buy_stacks(weapon_id) && player->owned[weapon_id] && wep->clip_size > 0 &&
         player->clip_ammo[weapon_id] >= wep->clip_size) return false;

@@ -26,9 +26,11 @@ void cs2d_player_add_bought(cs2d_player_t *player, uint8_t weapon_id);
  * 1 / 2, Medikit heals fully, Bandage +20 (up to max), Coins / Money / Gold +100 / +500 / +1000 money (max 16000).
  * Returns false for any other item (it goes into the inventory). */
 bool cs2d_player_consume_item(cs2d_player_t *player, uint8_t weapon_id);
-/* A picked up item ([25]): an owned grenade (HUD slot 4) adds its count up to the maximum (clip size). Returns
- * false when part of it did not fit: the ground item then stays */
+/* A picked up item ([25]): an owned grenade/stackable adds its count up to the maximum (clip size). Returns
+ * false when part of it did not fit: the ground item then stays. out_remaining receives the leftover count. */
+bool cs2d_player_add_collected_ex(cs2d_player_t *player, uint8_t weapon_id, int clip, int reserve, int *out_remaining);
 bool cs2d_player_add_collected(cs2d_player_t *player, uint8_t weapon_id, int clip, int reserve);
+
 
 /* Switch current active weapon to inventory slot */
 bool cs2d_player_switch_weapon(cs2d_player_t *player, cs2d_weapon_slot_t slot);

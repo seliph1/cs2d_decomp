@@ -24,8 +24,23 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 ## Items
 
 - Ids (init_weapons names): 64 Medikit, 65 Bandage, 66 Coins, 67 Money, 68 Gold, 89 **Satchel Charge** (not Medikit).
-- Pickup (`FUN_14020ce60`): 61 / 62 `Titem.refillammo` (reserve of HUD slot 1 / 2 to max), 64 health = max, 65 +20
-  (≤ max), 66 / 67 / 68 money +100 / +500 / +1000 (≤ 16000, `Thud_msg.add_money` for the local player). Not kept.
+- Consumables & pickup rules (`FUN_14020ce60` client / `FUN_14020ddc0` dedicated, jump table `0x140bc6104` and `0x140bc6194`):
+  - Consumables never enter the player's inventory (`pl->items` / `inventory[]`) or become owned; their effect is applied immediately and the ground item is consumed.
+  - 61 (Primary Ammo) / 62 (Secondary Ammo): `Titem.refillammo(pid, slot, 1)` verifies if any weapon in slot 1 / 2 has `reserve < max_reserve`. If none, rejected. When accepted, `refillammo(pid, slot, 0)` restores all weapons of that slot to full reserve.
+  - 64 (Medikit): only collected if `health < max_health`; restores to max_health.
+  - 65 (Bandage): only collected if `health < max_health`; restores +20 health (clamped to max_health).
+  - 66 (Coins) / 67 (Money) / 68 (Gold): only collected if `money < 16000`; awards +$100 / +$500 / +$1000 clamped to 16000.
+  - 57 (Kevlar): only collected if `armor <= 64`; sets armor to 65.
+  - 58 (Kevlar+Helm): only collected if `armor < 100`; sets armor to 100.
+  - 79..84 (Special Armors): sets armor to 201..206.
+  - 56 (Defuse Kit): CT only (`team == 2`) and `!(special & 1)`.
+  - 59 (Nightvision): only if `!(special & 2)`.
+  - 60 (Gas Mask): only if `!(special & 16)`.
+- Stackable items & partial pickup (`0x14020f380` - `0x14020f3e8`, `0x14020e3c0`):
+  - Stackable weapons: Grenades (HUD slot 4: HE 51, Flashbang 52 max 2, Smoke 53, Flare 54, Snowball 72 max 10, etc.), Mines (77 max 3), Laser Mines (87 max 3), Satchel Charge (89 max 5).
+  - If player is already at max capacity (`have >= max_cap`), pickup is rejected and item stays on ground untouched.
+  - If `have + ground_clip > max_cap`, partial pickup occurs: `take = max_cap - have`, player receives `take` (reaching `max_cap`), ground item clip is decremented (`it->clip -= take`) and remains ACTIVE on ground.
+  - Client side opcode `[25]` receives original ground clip (`r12d = clip - amount_taken`). If `r12d > 0` (`0x14020e3c0` `jg 0x14020cf85`), the client skips freeing the dropped item and retains the remaining stack active on the ground.
 - Spawned item ammo (`FUN_14011ba70`): HUD slot 4..6 except C4: ammoin clamp(1, max) (1 when < 0), ammo 0; others:
   negative = table default, else clamp(0, max). Join snapshot (case 3) keeps the raw values.
 - `[33]` spawn item (client `FUN_14011c0b0`): type u8, id u16, tile x / y u16, clip u16 + 1, reserve u16 + 1 (0 = -1 =

@@ -10,6 +10,24 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-17 — Antigravity — Itens Consumíveis, correção do bug HE (65532) e Menu da Supply Station
+
+- **Correção do bug crítico da HE (65532) / underflow de itens no chão**:
+  - Em `sv_spawn_item` (`src/cs2d_sv_game.c`), itens gerados por Supply, Dispenser ou mapa tinham `it->clip` e `it->reserve` inicializados como `0` (marcador default no wire do pacote `[33]`).
+  - Ao coletar um item stackable (como HE Grenade gerada pela Supply), a subtração `it->clip -= take` causava underflow de `uint16_t` para `65535` (`0 - 1 = 65535`).
+  - Como `it->clip` nunca chegava a zero, `it->active` permanecia `true` indefinidamente, decrementando a cada tick (`65535`, `65534`, `...`, `65532`).
+  - O cliente original recebia `orig_ground_clip = 65535` no opcode `[25]`, mantinha o item no chão com contagem de pilha gigante (`HE (65532)`) e fornecia milhares de granadas para o inventário do jogador (mostrando `655` na HUD).
+  - Corrigido chamando `cs2d_weapon_item_ammo` em `sv_spawn_item` para carregar o clip real (`default_clip = 1` para HE, `30` para fuzis) e blindando `cs2d_sv_step_items` com `if (it->clip <= take) { it->clip = 0; it->active = false; }`. O item agora é completamente removido do solo ao ser pego e a HUD do cliente mostra a contagem exata (1).
+- **Implementação do Menu de Troca da Supply Station (`[26, 150]`)**:
+  - O opcode `[26]` com `mode == 150` (`FUN_140138b32` no dedicado original e `FUN_14014f820` no cliente) não estava implementado em `cs2d_sv_use`, fazendo com que a seleção do menu da Supply fosse completamente ignorada e ficasse travada no modo padrão 1 (HE).
+  - Implementada a validação e atualização de `o->mode = data` em `cs2d_sv_use`, com checagem de propriedade (`o->player == id`), alcance (`<= 60 px`) e broadcast confiável de `[26, player, 150, data i32, tx u16, ty u16]` para todos os clientes.
+  - Implementado o handler do cliente em `src/cs2d_client.c` para sincronizar `o->mode` localmente.
+- **Consumíveis e condições de coleta fiel (`FUN_14020ce60` / `FUN_14020ddc0`)**:
+  - Consumíveis aplicam efeitos instantâneos sem entrar no inventário de armas. Rejeições fiéis implementadas em `cs2d_player.c` e `cs2d_sv_game.c` para HP cheio (Medikit/Bandage), dinheiro no teto de $16000 (Coins/Money/Gold), reservas de munição completas (Primary/Secondary Ammo) e coletes (Kevlar <= 64, Kevlar+Helm < 100).
+- **Verificação**:
+  - Testes em `tests/test_cs2d.c` expandidos para validar o spawn sem underflow de HE, a remoção completa do item do solo ao coletar, e a alteração de modo do Supply via `[26, 150]`.
+  - `build.bat` compilou limpo e todos os **85 / 85** testes passaram.
+
 ## 2026-10-17 — Antigravity — Dedicated Server: Transporte Tudp, triple inicial 03 32 00, Leave/Kick [253] e Fadeout [40]
 
 - **Transporte Tudp e retransmissão de confiáveis (`Fudp_update`)**:
@@ -82,37 +100,4 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - **Verificação**:
   - Novo teste de regressão `test_construction_laser_mine_and_cvars` adicionado em `tests/test_cs2d.c`, cobrindo geometria de rotação 0..3, cvars por nome/número, clamping de vida, detonação do feixe e raycast da Wrench.
   - Suíte completa passando: **82 / 82** testes aprovados (`test_cs2d.exe`).
-
-## 2026-10-17 — Antigravity — Dedicated Server: simulação de física e detonação de projéteis (Tpro)
-
-- **Simulação completa de voo e detonação de projéteis no servidor**: `cs2d_sv_projectile` (`[27]`) agora
-  instancia projéteis voadores no array `sv->projectiles` (`cs2d_sv_projectile_t`) do servidor dedicado
-  (port de `cs2d_dedicated.exe` `FUN_1401ce010`, `FUN_140190000`, `FUN_140095b80` e `FUN_140179060`).
-- **Física de voo e ricochete**:
-  - Armas de impacto (Rocket Launcher 48, RPG Launcher 47, Grenade Launcher 49, Molotov 73, Snowball 75,
-    Gut Bomb 86): voam em alta velocidade e detonam imediatamente no primeiro obstáculo sólido do mapa
-    (`sv_tile_blocks`), prédio ou jogador inimigo atingido (`FUN_140179060`).
-  - Granadas arremessáveis (HE 51, Flashbang 52, Smoke 53, Gas 72, Flare 54, Air Strike 76): ricocheteiam
-    ao tocar em paredes/prédios invertendo componentes de velocidade, perdendo 50% de `flydist` e 35% de
-    velocidade (`speed *= 0.65f`). Pousam no solo quando `flydist <= 0`.
-- **Temporizadores de pavio e expiração**:
-  - HE Grenade e Flashbang possuem pavio de 1800 ms (1.8s) a partir do arremesso, detonando tanto no ar
-    quanto no chão.
-  - Air Strike tem contagem de 7 segundos no solo antes de desencadear os bombardeios.
-- **Detonação e dano radial (`cs2d_sv_detonate_projectile`)**:
-  - Conecta com `cs2d_sv_explosion_objects` aplicando dano radial com queda linear aos edifícios
-    (`Tpro.c` radii: HE 40 px, Rocket/RPG 45 px, Air Strike 250 px).
-  - Conecta com `cs2d_sv_damage` aplicando dano radial com queda linear e friendly fire aos jogadores
-    (HE 160 px / 105 dano, Rocket 140 px / 100 dano, RPG 140 px / 325 dano).
-  - Danifica reféns no raio da explosão via `cs2d_sv_damage_hostage`.
-- **Correção da duplicação visual de granadas**: no servidor original (`cs2d_dedicated.exe` `FUN_140190000`),
-  o opcode `[27]` é retransmitido a todos os clientes conectados com `joined == 1` **exceto o jogador que arremessou**
-  (`plVar9 != param_1`), pois o cliente original já prediz e cria localmente o projétil visual (`Tpro.spawnprojectile`).
-  O nosso servidor enviava para todos os jogadores inclusive o autor via `sv_broadcast_joined`, duplicando a granada na tela.
-  Adicionado helper `sv_broadcast_joined_except(sv, except_id, ...)` e corrigido `[41]` (`kill_projectile`) para 3 bytes
-  (`FUN_140168ac0` `[41, proj_id u8, player_id u8]`).
-- Verificado: `build.bat` compilou limpo e `test_cs2d.exe` **81 / 81** passou (novo teste
-  `test_server_projectiles` validando voo, ricochete com redução de `flydist`, detonação por pavio e impacto
-  imediato de foguete em prédios e jogadores).
-- Falta (OPEN_ISSUES): feixe da Laser Mine (21), `mp_building_*` como cvars, e proxy capture das constantes.
 

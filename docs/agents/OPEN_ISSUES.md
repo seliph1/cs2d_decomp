@@ -39,10 +39,9 @@ the same one.
   - **`sv_gamemode 3` mode rules**: verified inert (`cs2d_sv_check_win` skips `respawn != 0` and
     `cs2d_sv_step_round` only ticks the objectives for round modes - locked by
     `test_construction_rounds_and_explosion`).
-- **Special weapons / items (2026-10-14):** none checked against a proxy capture. The client `[33]` handler is
-  `FUN_14011c0b0` (clip / reserve sent + 1, then FUN_14011ba70). Missing: money indicator `Thud_msg.add_money` on Coins/Money/Gold, laser / flame
-  lights and TSparkle details, Tp 23 / Tp 0x1d sprites (approximated with glowdot), Satchel Charge attack / attack2
-  (FUN_1401f2670), offline teleporter / portal messages (g_lang 0xb3), mp_teleportreload offline (taken as 0), Portal Gun not verified on a capture.
+- **Special weapons / items (2026-10-17, `docs/agents/knowledge/special-weapons.md`):**
+  - Consumables & stackables pickup faithfully reconstructed from `FUN_14020ce60` / `FUN_14020ddc0` (jump table `0x140bc6104` / `0x140bc6194`) and `0x14020e3c0`: Primary/Secondary Ammo reserve refills, Medikit/Bandage health thresholds, Coins/Money/Gold $16000 clamp, Kevlar 65/100 armor thresholds, and partial stack clamping (Grenades, Snowballs, Mines, Laser Mines, Satchel Charge) where residual clip remains active on the ground. Locked by `test_consumables_and_stackables_pickup` (85/85 tests).
+  - Still open: money indicator `Thud_msg.add_money` on Coins/Money/Gold, laser / flame lights and TSparkle details, Tp 23 / Tp 0x1d sprites (approximated with glowdot), Satchel Charge attack / attack2 (FUN_1401f2670), offline teleporter / portal messages (g_lang 0xb3), mp_teleportreload offline (taken as 0), Portal Gun not verified on a capture.
 - **attack2 / shotgun (2026-10-14):** the spread now uses `TRandom.SeedTable`, seeded from the settings `[252,6]`
   (`knowledge/random.md`). The accuracy table `0x1409f5d18` is fully extracted (27 ids) and locked by
   `test_weapon_modes`; only `Tpl.shoot` reads it and `Tpl.attack` calls that for the M3 / XM1014 alone, so the

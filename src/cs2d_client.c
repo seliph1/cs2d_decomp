@@ -2118,6 +2118,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 int16_t  clip = (int16_t)(buffer[pos + 5] | (buffer[pos + 6] << 8));
                 int16_t  res  = (int16_t)(buffer[pos + 7] | (buffer[pos + 8] << 8));
                 bool taken = true;
+                int rem = 0;
                 if (pid > 0 && pid <= CS2D_MAX_PLAYERS) {
                     /* Titem.give (0x1401feeb0): ammo for 60..62, kevlar for armour, else pickup */
                     const cs2d_player_t *cp = &client->game.players[pid];
@@ -2126,7 +2127,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                                     ? "sfx/items/kevlar.wav" : "sfx/items/pickup.wav";
                     cs2d_sound_play_at(snd, cp->pos.x, cp->pos.y, 1.0f, 0);
                     if (type == CS2D_WEP_REDFLAG || type == CS2D_WEP_BLUEFLAG) collect_flag(client, pid, type);
-                    else taken = cs2d_player_add_collected(&client->game.players[pid], type, clip, res);
+                    else taken = cs2d_player_add_collected_ex(&client->game.players[pid], type, clip, res, &rem);
                     /* FUN_14020ce60 tail: the local player holds a collected weapon (HUD slot != 0, 0x140a017b8)
                      * when the auto switch option (DAT_140ddf196) is on, via FUN_1401caca0(id, type, 0xff, 1),
                      * which sends [9, type, mode] */
@@ -2138,7 +2139,17 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
                     }
                 }
-                if (taken) remove_ground_item(client, iid); /* A partly taken grenade stack stays (FUN_14020ce60) */
+                if (taken) {
+                    remove_ground_item(client, iid); /* Fully taken: remove from ground */
+                } else {
+                    /* Partially taken: keep ground item and update its remaining stack */
+                    for (int i = 0; i < CS2D_MAX_GROUND_ITEMS; i++) {
+                        if (client->ground_items[i].active && client->ground_items[i].id == iid) {
+                            client->ground_items[i].clip = (int16_t)rem;
+                            break;
+                        }
+                    }
+                }
                 pos += 10;
             } else if (opcode == CS2D_NET_USE) {
                 /* Server -> Client: [26, player, mode, data i32, x u16, y u16] (11 bytes, FUN_1402d8f00 ->
@@ -2164,6 +2175,12 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         p->is_defusing     = true;
                         p->defuse_progress = 0.0f;
                         p->has_defuse_kit  = data != 0;
+                    } else if (mode == 150) {
+                        int uy = buffer[pos + 9] | (buffer[pos + 10] << 8);
+                        cs2d_dynobj_t *o = cs2d_dynobj_at_tile(&client->dynobj, ux, uy);
+                        if (o && (o->typ == CS2D_DO_SUPPLY || o->typ == CS2D_DO_SUPER_SUPPLY)) {
+                            o->mode = (int)data;
+                        }
                     }
                 }
                 pos += 11;

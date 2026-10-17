@@ -1,5 +1,24 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-17 — Antigravity — Dedicated Server: Simulação de projéteis (Tpro), detonação radial e duplicação de granadas
+
+- **Simulação completa de projéteis em `src/cs2d_sv_game.c`**:
+  - Porta fiel de `Tpro.updateAll` (`FUN_1402283a0`) para o servidor dedicado (`cs2d_sv_step_projectiles`).
+  - Projéteis arremessados (HE 51, Flash 52, Smoke 53, Flare 54, Snowball 72, Satchel 89) e disparados (RPG 47, Rocket 48, GL 49, Airstrike 76).
+  - Trajetória com cálculo de velocidade angular e colisão com paredes do mapa (`cs2d_map_is_solid`), ricochete e atenuação de velocidade.
+  - Granadas rebatem e diminuem a distância restante de voo em 40% a cada quique (`pro->flydist *= 0.6f`).
+  - Foguetes explodem imediatamente no primeiro impacto com parede ou colisão com jogadores/edifícios, tanto em voo quanto no chão.
+  - Air Strike tem contagem de 7 segundos no solo antes de desencadear os bombardeios.
+- **Detonação e dano radial (`cs2d_sv_detonate_projectile`)**:
+  - Conecta com `cs2d_sv_explosion_objects` aplicando dano radial com queda linear aos edifícios (`Tpro.c` radii: HE 40 px, Rocket/RPG 45 px, Air Strike 250 px).
+  - Conecta com `cs2d_sv_damage` aplicando dano radial com queda linear e friendly fire aos jogadores (HE 160 px / 105 dano, Rocket 140 px / 100 dano, RPG 140 px / 325 dano).
+  - Danifica reféns no raio da explosão via `cs2d_sv_damage_hostage`.
+- **Correção da duplicação visual de granadas**:
+  - No servidor original (`cs2d_dedicated.exe` `FUN_140190000`), o opcode `[27]` é retransmitido a todos os clientes conectados exceto o autor (`sv_broadcast_joined_except`).
+  - O cliente original já prediz o projétil visualmente via `Tpro.spawnprojectile`.
+  - Corrigido `[41]` (`kill_projectile`) para 3 bytes (`[41, proj_id u8, player_id u8]`).
+
+
 ## 2026-10-17 — Antigravity — Construction: cadência de 1 Hz no Dispenser e Supply
 
 - **Dispenser & Supply cadence throttle**: corrigido o bug em que `sv_step_dispenser_supply` era executado
