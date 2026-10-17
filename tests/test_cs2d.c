@@ -9029,6 +9029,263 @@ static bool test_server_network_and_protocol(void)
 }
 
 
+static bool test_sv_gamemode_and_env_items(void)
+{
+    printf("\n=== Testing Dedicated Server: Gamemode Restart, Shotgun Shell Timing & Env_Item Spawns ===\n");
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.map_loaded = true;
+    sv.map.width = 30;
+    sv.map.height = 30;
+    sv.start_ms = cs2d_sv_now();
+
+    /* Setup player 1 */
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].team = 2;
+    sv.players[1].alive = true;
+    sv.players[1].health = 100;
+
+    /* ------------------------------------------------------------- */
+    /* 1. Gamemode change automatically restarts round               */
+    /* ------------------------------------------------------------- */
+    sv.set.sv_gamemode = 0;
+    sv.round_number = 1;
+
+    /* gamemode 1 should change gamemode and restart the round */
+    cs2d_sv_exec(&sv, "gamemode 1");
+    if (sv.set.sv_gamemode != 1) TEST_FAIL("Gamemode restart", "gamemode 1 did not update sv_gamemode");
+    if (sv.round_number != 2) TEST_FAIL("Gamemode restart", "round did not restart after gamemode changed");
+
+    /* Setting to the same gamemode should not restart again */
+    cs2d_sv_exec(&sv, "gamemode 1");
+    if (sv.round_number != 2) TEST_FAIL("Gamemode restart", "round restarted when gamemode did not change");
+
+    /* sv_gamemode 2 should change gamemode and restart */
+    cs2d_sv_exec(&sv, "sv_gamemode 2");
+    if (sv.set.sv_gamemode != 2) TEST_FAIL("Gamemode restart", "sv_gamemode 2 did not update sv_gamemode");
+    if (sv.round_number != 3) TEST_FAIL("Gamemode restart", "round did not restart after sv_gamemode changed");
+
+    /* ------------------------------------------------------------- */
+    /* 2. Shotgun shell-by-shell reload timing and mode 101          */
+    /* ------------------------------------------------------------- */
+    sv.players[1].weapon = CS2D_WEP_M3;
+    sv.players[1].clip[CS2D_WEP_M3] = 5;
+    sv.players[1].reserve[CS2D_WEP_M3] = 10;
+    sv.players[1].is_reloading = false;
+    sv.players[1].reload_end_ms = 0;
+
+    /* Start shell reload */
+    cs2d_sv_reload(&sv, 1, 1);
+    if (!sv.players[1].is_reloading) TEST_FAIL("Shotgun reload", "failed to start reload");
+
+    /* Client sends mode 101 shell compensation */
+    uint32_t t_before = cs2d_sv_now();
+    cs2d_sv_reload(&sv, 1, 101);
+    if (sv.players[1].clip[CS2D_WEP_M3] != 6) TEST_FAIL("Shotgun reload", "mode 101 did not insert 1 shell");
+    if (sv.players[1].reload_end_ms <= t_before)
+        TEST_FAIL("Shotgun reload", "mode 101 did not re-arm reload_end_ms into future");
+
+    /* Immediately stepping reloads must NOT insert a second shell! */
+    cs2d_sv_step_reloads(&sv);
+    if (sv.players[1].clip[CS2D_WEP_M3] != 6)
+        TEST_FAIL("Shotgun reload", "step_reloads immediately duplicated shell after mode 101!");
+
+    /* When timer expires, next shell is loaded */
+    sv.players[1].reload_end_ms = cs2d_sv_now() - 1;
+    cs2d_sv_step_reloads(&sv);
+    if (sv.players[1].clip[CS2D_WEP_M3] != 7)
+        TEST_FAIL("Shotgun reload", "timer expiry did not load next shell");
+
+    /* ------------------------------------------------------------- */
+    /* 3. Env_Item entity spawns and maintenance                     */
+    /* ------------------------------------------------------------- */
+    sv.map.entity_count = 4;
+    /* e0: AK47, One-Time (0) at (5, 5) */
+    sv.map.entities[0].type = CS2D_ENT_ENV_ITEM;
+    sv.map.entities[0].int_settings[0] = CS2D_WEP_AK47;
+    sv.map.entities[0].int_settings[1] = 0; /* One time */
+    sv.map.entities[0].x = 5; sv.map.entities[0].y = 5;
+
+    /* e1: M4A1, Instant/Infinite (1) at (6, 6) */
+    sv.map.entities[1].type = CS2D_ENT_ENV_ITEM;
+    sv.map.entities[1].int_settings[0] = CS2D_WEP_M4A1;
+    sv.map.entities[1].int_settings[1] = 1; /* Instant */
+    sv.map.entities[1].x = 6; sv.map.entities[1].y = 6;
+
+    /* e2: AWP, Every X Sec (2) at (7, 7), delay 2s */
+    sv.map.entities[2].type = CS2D_ENT_ENV_ITEM;
+    sv.map.entities[2].int_settings[0] = CS2D_WEP_AWP;
+    sv.map.entities[2].int_settings[1] = 2; /* Every X sec */
+    sv.map.entities[2].int_settings[2] = 2;
+    sv.map.entities[2].x = 7; sv.map.entities[2].y = 7;
+
+    /* e3: Deagle, On Trigger Only (3) at (8, 8), name "spawn_deagle" */
+    sv.map.entities[3].type = CS2D_ENT_ENV_ITEM;
+    sv.map.entities[3].int_settings[0] = CS2D_WEP_DEAGLE;
+    sv.map.entities[3].int_settings[1] = 3; /* On trigger */
+    snprintf(sv.map.entities[3].name, sizeof(sv.map.entities[3].name), "spawn_deagle");
+    sv.map.entities[3].x = 8; sv.map.entities[3].y = 8;
+
+    /* Initialize Env_Item on round start */
+    cs2d_sv_init_env_items(&sv);
+
+    /* Verify items at (5,5), (6,6), (7,7) exist, and (8,8) does not yet */
+    bool has_5_5 = false, has_6_6 = false, has_7_7 = false, has_8_8 = false;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (!sv.items[i].active) continue;
+        if (sv.items[i].tile_x == 5 && sv.items[i].tile_y == 5 && sv.items[i].type == CS2D_WEP_AK47) has_5_5 = true;
+        if (sv.items[i].tile_x == 6 && sv.items[i].tile_y == 6 && sv.items[i].type == CS2D_WEP_M4A1) has_6_6 = true;
+        if (sv.items[i].tile_x == 7 && sv.items[i].tile_y == 7 && sv.items[i].type == CS2D_WEP_AWP) has_7_7 = true;
+        if (sv.items[i].tile_x == 8 && sv.items[i].tile_y == 8) has_8_8 = true;
+    }
+    if (!has_5_5) TEST_FAIL("Env_Item init", "One-time item at (5,5) not spawned");
+    if (!has_6_6) TEST_FAIL("Env_Item init", "Instant item at (6,6) not spawned");
+    if (!has_7_7) TEST_FAIL("Env_Item init", "Periodic item at (7,7) not spawned");
+    if (has_8_8)  TEST_FAIL("Env_Item init", "Trigger-only item at (8,8) was spawned prematurely");
+
+    /* Collect/clear the item at (6,6) and step: Instant mode must respawn it */
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (sv.items[i].active && sv.items[i].tile_x == 6 && sv.items[i].tile_y == 6) {
+            sv.items[i].active = false;
+        }
+    }
+    cs2d_sv_step_items(&sv);
+    bool respawned_6_6 = false;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (sv.items[i].active && sv.items[i].tile_x == 6 && sv.items[i].tile_y == 6 && sv.items[i].type == CS2D_WEP_M4A1) {
+            respawned_6_6 = true;
+        }
+    }
+    if (!respawned_6_6) TEST_FAIL("Env_Item respawn", "Instant item at (6,6) did not respawn immediately");
+
+    /* Trigger command: trigger "spawn_deagle" spawns the item at (8,8) */
+    cs2d_sv_exec(&sv, "trigger spawn_deagle");
+    bool triggered_8_8 = false;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (sv.items[i].active && sv.items[i].tile_x == 8 && sv.items[i].tile_y == 8 && sv.items[i].type == CS2D_WEP_DEAGLE) {
+            triggered_8_8 = true;
+        }
+    }
+    if (!triggered_8_8) TEST_FAIL("Env_Item trigger", "Trigger 'spawn_deagle' did not spawn item at (8,8)");
+
+    TEST_PASS("Dedicated Server: Gamemode Restart, Shotgun Shell Timing & Env_Item Spawns");
+    return true;
+}
+
+/* ========================================================================= */
+/* Deathmatch, Team Deathmatch, mp_randomspawn, mp_timelimit & Mapcycle      */
+/* ========================================================================= */
+static bool test_sv_deathmatch_and_timelimit(void)
+{
+    printf("\n=== Testing Dedicated Server: DM/TDM, mp_randomspawn & mp_timelimit ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+
+    /* Setup a small 10x10 empty walkable map */
+    sv.map_loaded = true;
+    sv.map.width = 10;
+    sv.map.height = 10;
+    sv.map.tiles = (uint8_t *)calloc(10 * 10, sizeof(uint8_t));
+    /* tile mode 0 is normal walkable floor */
+    sv.map.tile_modes[0] = 0;
+
+    /* 1. mp_randomspawn in Gamemode 1 (Deathmatch) and 2 (Team Deathmatch) */
+    sv.set.sv_gamemode = 1;
+    sv.set.mp_randomspawn = 1;
+
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].team = CS2D_TEAM_T;
+    sv.players[1].alive = false;
+
+    cs2d_sv_spawn(&sv, 1);
+    if (!sv.players[1].alive) TEST_FAIL("DM randomspawn", "Player 1 failed to spawn");
+    if (sv.players[1].x < 16.0f || sv.players[1].x > 320.0f ||
+        sv.players[1].y < 16.0f || sv.players[1].y > 320.0f) {
+        TEST_FAIL("DM randomspawn", "Player 1 spawned outside map bounds");
+    }
+
+    /* Test TDM (gamemode 2) */
+    sv.set.sv_gamemode = 2;
+    sv.players[1].alive = false;
+    cs2d_sv_spawn(&sv, 1);
+    if (!sv.players[1].alive) TEST_FAIL("TDM randomspawn", "Player 1 failed to spawn in TDM");
+
+    /* 2. Gamemode 1 (Deathmatch) spawn fallback: map has ONLY Info_T spawns, player is CT */
+    sv.set.sv_gamemode = 1;
+    sv.set.mp_randomspawn = 0;
+    sv.map.entity_count = 1;
+    sv.map.entities[0].type = CS2D_ENT_INFO_T;
+    sv.map.entities[0].x = 4;
+    sv.map.entities[0].y = 4;
+
+    sv.players[1].alive = false;
+    sv.players[1].team = CS2D_TEAM_CT; /* CT player in a map with only Info_T */
+    cs2d_sv_spawn(&sv, 1);
+    if (!sv.players[1].alive) TEST_FAIL("DM spawn fallback", "CT player failed to spawn on Info_T fallback");
+    if ((int)sv.players[1].x != (4 * 32 + 16) || (int)sv.players[1].y != (4 * 32 + 16)) {
+        TEST_FAIL("DM spawn fallback", "CT player did not spawn at Info_T coords (144, 144)");
+    }
+
+    /* 3. Mapcycle & cs2d_sv_next_map */
+    sv.mapcycle_count = 3;
+    snprintf(sv.mapcycle[0], sizeof(sv.mapcycle[0]), "de_dust");
+    snprintf(sv.mapcycle[1], sizeof(sv.mapcycle[1]), "cs_assault");
+    snprintf(sv.mapcycle[2], sizeof(sv.mapcycle[2]), "dm_arena");
+
+    snprintf(sv.set.sv_map, sizeof(sv.set.sv_map), "de_dust");
+    const char *next = cs2d_sv_next_map(&sv);
+    if (!next || strcmp(next, "cs_assault") != 0) {
+        TEST_FAIL("cs2d_sv_next_map", "next after de_dust should be cs_assault");
+    }
+
+    snprintf(sv.set.sv_map, sizeof(sv.set.sv_map), "dm_arena");
+    next = cs2d_sv_next_map(&sv);
+    if (!next || strcmp(next, "de_dust") != 0) {
+        TEST_FAIL("cs2d_sv_next_map", "next after dm_arena should wrap to de_dust");
+    }
+
+    /* 4. mp_timelimit triggering rotation */
+    sv.set.mp_timelimit = 1; /* 1 minute = 60,000 ms */
+    sv.map_start_ms = 1;     /* simulate started long ago so now - map_start_ms >= 60000 */
+    snprintf(sv.set.sv_map, sizeof(sv.set.sv_map), "de_dust");
+    /* Gamemode 1 has respawn = 1, so cs2d_sv_step_round changes map immediately */
+    cs2d_sv_step_round(&sv);
+    if (strcmp(sv.set.sv_map, "cs_assault") != 0) {
+        TEST_FAIL("mp_timelimit", "timelimit should have rotated map to cs_assault");
+    }
+
+    /* 5. Lua game('maptimeleft') and game('nextmap') */
+    cs2d_sv_lua_init(&sv);
+    if (sv.lua) {
+        /* Set timelimit = 0 -> unlimited (1000000.0) */
+        sv.set.mp_timelimit = 0;
+        bool rc = cs2d_sv_lua_dostring(&sv,
+            "assert(game('maptimeleft') == 1000000, 'unlimited maptimeleft mismatch')\n"
+            "assert(game('nextmap') == 'dm_arena', 'nextmap mismatch')\n"
+        );
+        if (!rc) TEST_FAIL("Lua game() DM extensions", "Lua assertions failed");
+
+        /* Set timelimit = 10 minutes */
+        sv.set.mp_timelimit = 10;
+        sv.map_start_ms = cs2d_sv_now();
+        rc = cs2d_sv_lua_dostring(&sv,
+            "local tl = game('maptimeleft')\n"
+            "assert(tl > 590 and tl <= 600, '10 min maptimeleft mismatch: ' .. tostring(tl))\n"
+        );
+        if (!rc) TEST_FAIL("Lua game() maptimeleft", "Lua maptimeleft numeric assertion failed");
+        cs2d_sv_lua_close(&sv);
+    }
+
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Dedicated Server: DM/TDM mp_randomspawn, Spawn Fallback, mp_timelimit & mapcycle");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -9037,7 +9294,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 85;
+    int total = 87;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -9124,6 +9381,8 @@ int main(void)
     if (test_server_projectiles()) passed++;
     if (test_server_cli_and_map_sanitize()) passed++;
     if (test_server_network_and_protocol()) passed++;
+    if (test_sv_gamemode_and_env_items()) passed++;
+    if (test_sv_deathmatch_and_timelimit()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

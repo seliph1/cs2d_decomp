@@ -10,6 +10,45 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-17 — Antigravity — Dedicated Server: Deathmatch (DM), Team Deathmatch (TDM), mp_randomspawn e Rotação mp_timelimit
+
+- **Spawns Aleatórios (`mp_randomspawn 1`) em Deathmatch (`gamemode 1`) e TDM (`gamemode 2`)**:
+  - Port de `0x140160da0` - `0x140160dae` e `0x140162313` chamando `0x1400d5650`: quando `mp_randomspawn == 1` e `gamemode` é 1 ou 2, o servidor sorteia tiles navegáveis (não sólidos e sem outro jogador ou objeto bloqueando) em até 100 tentativas, centralizando o jogador no tile (`tx * 32 + 16`, `ty * 32 + 16`).
+- **Fallback de Spawns em Deathmatch Sem Spawns Dedicados**:
+  - Em `sv_gamemode 1`, se um mapa não possui pontos de spawn do time do jogador (por exemplo, um jogador CT entrando em um mapa de DM que só tem entidades `Info_T`), `sv_pick_spawn` agora faz fallback para aceitar spawns de ambos os times (`Info_T` e `Info_CT`), garantindo que o jogador entre no jogo sem travar.
+- **Rotação Automática de Mapa com `mp_timelimit` e Ciclo `mapcycle.cfg`**:
+  - Port de `0x1401a3058` - `0x1401a30c5`: leitura de `mp_timelimit` em minutos (`* 60000 ms`) e medição de `now - sv->map_start_ms >= limit_ms`.
+  - Em modos de respawn (`respawn == 1`) ou quando há <= 1 jogador ativo no servidor, a rotação dispara imediatamente (`cs2d_sv_change_map`) para o próximo mapa retornado por `cs2d_sv_next_map`.
+  - Preservação da ordem sequencial original das entradas em `sys/mapcycle.cfg` em `sv->mapcycle` (com wrap-around para o primeiro mapa) antes da ordenação alfabética exigida pelo snapshot de join da Seção 12 (`sv->maps`).
+- **Suporte na API Lua (`src/cs2d_sv_lua.c`)**:
+  - `game("maptimeleft")`: retorna os segundos restantes até o limite do mapa como float, ou `1000000.0` se `mp_timelimit <= 0` (ilimitado), correspondendo exatamente ao comportamento original do BlitzMax.
+  - `game("nextmap")`: retorna o nome do próximo mapa do ciclo via `cs2d_sv_next_map`.
+- **Verificação**:
+  - Adicionado teste completo `test_sv_deathmatch_and_timelimit` em `tests/test_cs2d.c` validando:
+    - Spawn aleatório dentro das dimensões do mapa com `mp_randomspawn 1` em modos 1 (DM) e 2 (TDM).
+    - Fallback de spawn para jogador CT em mapa de DM que só possui `Info_T`.
+    - Resolução sequencial de `cs2d_sv_next_map` e wrap-around no fim do ciclo.
+    - Gatilho automático de `mp_timelimit` em `cs2d_sv_step_round` acionando troca para o próximo mapa.
+    - Consultas Lua `game('maptimeleft')` e `game('nextmap')`.
+  - Suíte completa de testes compilada e aprovada: **87 / 87** testes passando (`test_cs2d.exe`).
+
+## 2026-10-17 — Antigravity — Dedicated Server: Gamemode Auto-Restart, Shotgun Shell Timing e Env_Item Spawns
+
+- **Reinício Automático de Round ao Mudar Modo de Jogo (`sv_gamemode` / `gamemode`)**:
+  - Quando o modo de jogo é alterado via comando de console/RCON (`gamemode <n>`, `sv_gamemode <n>`) ou cvar genérica, se o valor for diferente do modo atual, o servidor encerra e reinicia o round imediatamente (`cs2d_sv_round_end(sv, 5, 0)` + `cs2d_sv_round_start(sv, 5)`), resetando pontuações, bomba e spawns, e transmitindo `[22, 5]` para todos os clientes conectados.
+- **Sincronização de Recarregamento de Shotguns (M3 / XM1014) e Compensação de Lag (`mode 101`)**:
+  - No cliente real `CS2D.exe`, se a animação do projétil/shell expira antes de receber a confirmação do servidor (`[16, id, 4]`), o cliente adiciona uma bala localmente e envia o pacote de compensação `[16, 101]` (`0x65`).
+  - No servidor, o `mode == 101` incrementava a bala, mas não atualizava `pl->reload_end_ms`. No frame seguinte (~16ms), `cs2d_sv_step_reloads` via o timer expirado e disparava `mode 4` imediatamente, inserindo uma segunda bala no servidor e transmitindo `[16, id, 4]` de volta ao cliente (que adicionava outra bala), dobrando a velocidade de reload.
+  - Corrigido rearmando `pl->reload_end_ms = now + (reload_ticks * 5)` ao receber `mode == 101`, sincronizando com exatidão a cadência entre cliente e servidor sem duplicar conchas.
+- **Entidades de Mapa `Env_Item` (ID 21) no Início de Round e Join**:
+  - Implementado `cs2d_sv_init_env_items` e rotina de manutenção em `cs2d_sv_step_items` cobrindo os modos de spawn das entidades do mapa: 0 (One Time), 1 (Instant/Infinite), 2 (Every X sec) e 3 (On Trigger Only).
+  - No início de round (`cs2d_sv_round_start`), os ground items do round anterior são limpos e as entidades `Env_Item` dos modos 0, 1 e 2 são instanciadas no solo em `sv->items`.
+  - No join do jogador, a Seção 3 do join snapshot (`[252, 7, 3]`) agora transmite todos os itens de `Env_Item` já instanciados, tornando-os visíveis e interativos no mapa imediatamente ao entrar no servidor.
+  - Adicionado comando de console/RCON `trigger <name>` para disparar entidades `Env_Item` com trigger configurado (`cs2d_sv_trigger_env_items`).
+- **Verificação**:
+  - Adicionado teste completo `test_sv_gamemode_and_env_items` em `tests/test_cs2d.c` validando reinício automático de round, rearm do timer da shotgun com proteção contra duplicação de concha e ciclo de vida de `Env_Item` (spawns iniciais, respawn instantâneo no modo 1 e acionamento por trigger).
+  - Suíte completa de testes compilada e aprovada: **86 / 86** testes passando (`test_cs2d.exe`).
+
 ## 2026-10-17 — Antigravity — Itens Consumíveis, correção do bug HE (65532) e Menu da Supply Station
 
 - **Correção do bug crítico da HE (65532) / underflow de itens no chão**:
@@ -69,35 +108,3 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
     - Validação de que a fórmula do MVP ignora score de objetivos (placar 15 vs 2) e prioriza `kills * 2 + assists`.
     - Validação de MVP por reféns resgatados e imunidade de VIP a MVP.
   - `build.bat` compilou sem avisos e todos os 83 testes de `test_cs2d.exe` passaram (**83 / 83**).
-
-## 2026-10-17 — Antigravity — Dedicated Server: flags de linha de comando CLI (--map, etc.) e sanitização de mapa
-
-- **Flags de CLI expandidas em `src/main_dedicated.c`**:
-  - Suporte completo a `--map <name>`, `-map <name>`, `-m <name>`, bem como sintaxe com `=` ou `:` (`--map=fun_roleplay`).
-  - Suporte uniforme a traço simples ou duplo para `--port` / `-port` / `-p`, `--offline` / `-offline` / `--off` / `-off`, `--lua` / `-lua` / `-l`, `--name`, `--pw` / `--password`, `--rcon`, `--maxplayers`, e `--help` / `-h` / `-?`.
-- **Sanitização de caminhos de mapa (`cs2d_sv_sanitize_map_name`)**:
-  - Implementado em `src/cs2d_server.c` e declarado em `include/cs2d_server.h`.
-  - Remove aspas, espaços laterais, prefixos de pasta (`maps/`, `maps\`, diretórios absolutos) e extensão `.map` insensível a maiúsculas/minúsculas.
-  - Integrado em `main_dedicated.c`, `cs2d_server_start` e `cs2d_sv_change_map`.
-- **Verificação**:
-  - Novo teste `test_server_cli_and_map_sanitize` em `tests/test_cs2d.c` validando variações de nomes, prefixos, extensões, aspas e inicialização do servidor com override de mapa.
-  - `build.bat` compilou sem nenhum aviso (0 warnings).
-  - Testes do `test_cs2d.exe` executados com sucesso total (**83 / 83**).
-  - Inicialização real de `cs2d_server.exe --map fun_roleplay -offline -port 36999` e `--map=maps/fun_roleplay.map` verificada via log de execução.
-
-## 2026-10-17 — Antigravity — Construction: Laser Mine beam, cvars dinâmicas e Wrench raycast
-
-- **Laser Mine (`0x14000aa30` no dedicated)**:
-  - Implementado `cs2d_dynobj_in_lasermine` fiel ao BlitzMax original nas 4 direções (`dir = (int)rot`: 0 down +Y, 1 left -X, 2 up -Y, 3 right +X) e `cs2d_dynobj_update_lasermine` calculando o alcance do feixe (1..6 tiles, `FUN_14028e310`) interrompido por paredes, bordas do mapa e edifícios sólidos.
-  - Detonação ao cruzar o feixe em `sv_tile_object_effect` causando 150 de dano radial em raio de 200 via arma 87 (`CS2D_WEP_LASERMINE`), creditado ao criador da mina (`sv_object_kill`).
-  - Renderização no cliente em `src/cs2d_render.c`: flare central e feixe de laser vermelho estendido até `target`.
-- **Cvars dinâmicas `mp_building_price`, `mp_building_limit`, `mp_building_health` (`0x140118060`)**:
-  - Implementados comandos de console/RCON no servidor suportando resolução por nome ("Laser Mine", "Turret", etc.) ou ID numérico (1..CS2D_DYNOBJ_TYPES).
-  - Máscaras `building_*_mask` em `cs2d_server_t` preservando os valores padrão do jogo quando não sobrescritos.
-  - Clamping automático da saúde de edifícios ativos existentes ao reduzir `mp_building_health` (`0x1401182a6`).
-- **Alvo da chave inglesa (Wrench raycast)**:
-  - Raycast probe (`sv_wrench_target`, `Tdo.getatpos`) em passos de 2px ao longo da direção de rotação até o alcance da chave inglesa (15px), parando em obstáculos sólidos.
-- **Verificação**:
-  - Novo teste de regressão `test_construction_laser_mine_and_cvars` adicionado em `tests/test_cs2d.c`, cobrindo geometria de rotação 0..3, cvars por nome/número, clamping de vida, detonação do feixe e raycast da Wrench.
-  - Suíte completa passando: **82 / 82** testes aprovados (`test_cs2d.exe`).
-

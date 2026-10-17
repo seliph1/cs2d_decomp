@@ -154,15 +154,57 @@ void cs2d_sv_write_spawn(cs2d_pkt_t *p, int id, const cs2d_sv_player_t *pl)
 
 /* The spawn point: a random active Info_T / Info_CT / Info_VIP of the player's team; when a living player
  * stands on its tile it is dropped from the candidates and another is drawn (FUN_140160740, list
- * DAT_1407dfa18). False when the map has none ("FATAL ERROR: no active spawnpoints found!") */
+ * DAT_1407dfa18). False when the map has none ("FATAL ERROR: no active spawnpoints found!")
+ *
+ * In Deathmatch (mode 1) and Team Deathmatch (mode 2) with mp_randomspawn == 1
+ * (0x140160da0 - 0x140160dae, 0x140162313 -> 0x1400d5650), players spawn on random walkable tiles. */
 static bool sv_pick_spawn(cs2d_server_t *sv, int id, float *ox, float *oy)
 {
     const cs2d_sv_player_t *pl = &sv->players[id];
+
+    /* mp_randomspawn (0x140160da0 - 0x140160dae, 0x140162313 -> 0x1400d5650):
+     * in Deathmatch (mode 1) and Team Deathmatch (mode 2) with mp_randomspawn == 1,
+     * pick a random non-solid walkable tile anywhere on the map */
+    if ((sv->set.sv_gamemode == 1 || sv->set.sv_gamemode == 2) && sv->set.mp_randomspawn == 1) {
+        if (sv->map.width > 2 && sv->map.height > 2) {
+            for (int attempt = 0; attempt < 1000; attempt++) {
+                int tx = cs2d_sv_rand(1, (int)sv->map.width - 2);
+                int ty = cs2d_sv_rand(1, (int)sv->map.height - 2);
+                if (cs2d_map_is_solid(&sv->map, tx, ty)) continue;
+
+                bool taken = false;
+                for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+                    const cs2d_sv_player_t *o = &sv->players[i];
+                    if (!o->used || o->team < 1 || !o->alive) continue;
+                    if ((int)(o->x * 0.03125f) == tx && (int)(o->y * 0.03125f) == ty) {
+                        taken = true;
+                        break;
+                    }
+                }
+                if (!taken || attempt > 900) {
+                    *ox = (float)(tx * 32 + 16);
+                    *oy = (float)(ty * 32 + 16);
+                    return true;
+                }
+            }
+        }
+    }
+
     int want = (pl->team == 1) ? CS2D_ENT_INFO_T : (pl->team == 2) ? CS2D_ENT_INFO_CT : CS2D_ENT_INFO_VIP;
     int cand[1024], n = 0;
     for (uint32_t e = 0; e < sv->map.entity_count && n < 1024; e++) {
         if ((int)sv->map.entities[e].type == want) cand[n++] = (int)e;
     }
+
+    /* Fallback in Deathmatch (sv_gamemode 1): players are not bound to team sides, so if the map only
+     * contains spawns for one team (e.g. only Info_T), allow any spawn point */
+    if (n == 0 && sv->set.sv_gamemode == 1) {
+        for (uint32_t e = 0; e < sv->map.entity_count && n < 1024; e++) {
+            int t = (int)sv->map.entities[e].type;
+            if (t == CS2D_ENT_INFO_T || t == CS2D_ENT_INFO_CT) cand[n++] = (int)e;
+        }
+    }
+
     if (n == 0) {
         cs2d_server_print("\xa9" "255000000FATAL ERROR: no active spawnpoints found!");
         return false;
@@ -763,6 +805,104 @@ static void sv_step_phase(cs2d_server_t *sv)
     sv->round_clock_ms = sv->round_phase_ms;   /* mp_roundtime counts from the end of the freeze */
 }
 
+/*
+ * FUN_14011ba70(type, tx, ty, clip, sub, reserve, ...): the server puts a ground item on a tile and sends
+ * [33, type u8, item id u16, tile x u16, tile y u16, clip + 1 u16, reserve + 1 u16] (12 bytes). The binder
+ * passes clip / reserve -1, which the wire shows as 0 and the client turns into the type's defaults.
+ * Returns the new item id (0 when the table is full).
+ */
+static int sv_spawn_item(cs2d_server_t *sv, int type, int tx, int ty)
+{
+    int slot = -1;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (!sv->items[i].active) { slot = i; break; }
+    }
+    if (slot < 0) return 0;
+    if (sv->next_item_id == 0) sv->next_item_id = 1;
+    uint16_t item_id = (uint16_t)sv->next_item_id++;
+    cs2d_sv_item_t *it = &sv->items[slot];
+    it->active = true;
+    it->id = item_id;
+    it->type = (uint8_t)type;
+    int default_clip = -1, default_res = -1;
+    cs2d_weapon_item_ammo((uint8_t)type, &default_clip, &default_res);
+    it->clip = (uint16_t)(default_clip > 0 ? default_clip : 1);
+    it->reserve = (uint16_t)(default_res > 0 ? default_res : 0);
+    it->sub = 0;
+    it->tile_x = (uint16_t)tx;
+    it->tile_y = (uint16_t)ty;
+    it->dropped = false;
+    it->dropped_by = 0;
+    it->drop_time_ms = cs2d_sv_now();
+
+    uint8_t msg[12];
+    msg[0] = 33;
+    msg[1] = (uint8_t)type;
+    msg[2] = (uint8_t)(item_id & 0xff); msg[3] = (uint8_t)(item_id >> 8);
+    msg[4] = (uint8_t)(tx & 0xff);      msg[5] = (uint8_t)((tx >> 8) & 0xff);
+    msg[6] = (uint8_t)(ty & 0xff);      msg[7] = (uint8_t)((ty >> 8) & 0xff);
+    msg[8] = 0; msg[9] = 0;             /* clip -1 */
+    msg[10] = 0; msg[11] = 0;           /* reserve -1 */
+    sv_broadcast_joined(sv, msg, 12);
+    return item_id;
+}
+
+static bool sv_has_item_at_tile(const cs2d_server_t *sv, int tx, int ty, int type)
+{
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        const cs2d_sv_item_t *it = &sv->items[i];
+        if (it->active && it->tile_x == tx && it->tile_y == ty) {
+            if (type <= 0 || it->type == type) return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * Env_Item (ID 21) map entity initialization:
+ * ints[0] = item type (1..89)
+ * ints[1] = spawn mode: 0 (one time), 1 (instant/infinite), 2 (every X sec), 3 (on trigger only)
+ * ints[2] = spawn delay in seconds (for mode 2)
+ */
+void cs2d_sv_init_env_items(cs2d_server_t *sv)
+{
+    if (!sv || !sv->map_loaded) return;
+    memset(sv->items, 0, sizeof(sv->items));
+    memset(sv->env_item_timer, 0, sizeof(sv->env_item_timer));
+    sv->next_item_id = 1;
+    uint32_t now = cs2d_sv_now();
+    for (uint32_t i = 0; i < sv->map.entity_count; i++) {
+        const cs2d_entity_t *e = &sv->map.entities[i];
+        if (e->type != CS2D_ENT_ENV_ITEM) continue;
+        int wep_type = e->int_settings[0];
+        int spawn_mode = e->int_settings[1];
+        if (wep_type <= 0 || wep_type >= CS2D_MAX_WEAPONS) continue;
+        if (spawn_mode == 0 || spawn_mode == 1 || spawn_mode == 2) {
+            if (!sv_has_item_at_tile(sv, e->x, e->y, wep_type)) {
+                sv_spawn_item(sv, wep_type, e->x, e->y);
+            }
+            if (spawn_mode == 2) sv->env_item_timer[i] = now;
+        }
+    }
+}
+
+void cs2d_sv_trigger_env_items(cs2d_server_t *sv, const char *trigger_name)
+{
+    if (!sv || !sv->map_loaded || !trigger_name || !trigger_name[0]) return;
+    for (uint32_t i = 0; i < sv->map.entity_count; i++) {
+        const cs2d_entity_t *e = &sv->map.entities[i];
+        if (e->type != CS2D_ENT_ENV_ITEM) continue;
+        if (e->name[0] && _stricmp(e->name, trigger_name) == 0) {
+            int wep_type = e->int_settings[0];
+            if (wep_type > 0 && wep_type < CS2D_MAX_WEAPONS) {
+                if (!sv_has_item_at_tile(sv, e->x, e->y, wep_type)) {
+                    sv_spawn_item(sv, wep_type, e->x, e->y);
+                }
+            }
+        }
+    }
+}
+
 /* FUN_1402520b0 / FUN_140123530: start of a new round, respawning players and sending [22] */
 void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
 {
@@ -794,13 +934,9 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
         sv->players[i].is_planting = false;
         sv->players[i].is_defusing = false;
     }
-    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
-        if (sv->items[i].active && sv->items[i].type == CS2D_WEP_PLANTEDBOMB) {
-            sv->items[i].active = false;
-        }
-    }
     memset(sv->projectiles, 0, sizeof(sv->projectiles));
     cs2d_sv_init_hostages(sv);
+    cs2d_sv_init_env_items(sv);
 
     /* Update team scores according to round end reason (FUN_1402520b0 / cs2d_game_apply_round_reason) */
     uint64_t bit = (reason >= 0 && reason <= 61) ? (1ULL << reason) : 0;
@@ -969,6 +1105,26 @@ void cs2d_sv_step_round(cs2d_server_t *sv)
             cs2d_sv_round_start(sv, sv->round_end);
         }
         return;
+    }
+
+    /* Map timelimit (0x1401a3058 - 0x1401a30c5): automatic map change when timelimit reached */
+    if (sv->set.mp_timelimit > 0) {
+        uint32_t limit_ms = (uint32_t)sv->set.mp_timelimit * 60000u;
+        uint32_t elapsed = now - sv->map_start_ms;
+        if (elapsed >= limit_ms) {
+            const sv_mode_t *mode = sv_mode(sv);
+            bool respawn_mode = (mode->respawn == 1);
+            if (respawn_mode || sv->round_end != 0 || cs2d_sv_count_team(sv, 1) + cs2d_sv_count_team(sv, 2) <= 1) {
+                cs2d_server_print("sv_timelimit reached - changing map...");
+                const char *next = cs2d_sv_next_map(sv);
+                if (next && next[0]) {
+                    cs2d_sv_change_map(sv, next);
+                } else {
+                    cs2d_sv_change_map(sv, sv->set.sv_map);
+                }
+                return;
+            }
+        }
     }
 
     sv_step_phase(sv);                      /* freezetime -> playing (DAT_1407dfea0, 0x1401a326e) */
@@ -1628,6 +1784,38 @@ void cs2d_sv_step_items(cs2d_server_t *sv)
             }
         }
     }
+
+    /* 3. Env_Item respawn maintenance (modes 1: instant, 2: every X sec) */
+    if (sv->map_loaded) {
+        for (uint32_t i = 0; i < sv->map.entity_count; i++) {
+            const cs2d_entity_t *e = &sv->map.entities[i];
+            if (e->type != CS2D_ENT_ENV_ITEM) continue;
+            int wep_type = e->int_settings[0];
+            int spawn_mode = e->int_settings[1];
+            if (wep_type <= 0 || wep_type >= CS2D_MAX_WEAPONS) continue;
+
+            if (spawn_mode == 1) {
+                /* Instant / Infinity: respawn immediately if tile is clear */
+                if (!sv_has_item_at_tile(sv, e->x, e->y, wep_type)) {
+                    sv_spawn_item(sv, wep_type, e->x, e->y);
+                }
+            } else if (spawn_mode == 2) {
+                /* Every X seconds: respawn after delay_sec if tile is clear */
+                int delay_sec = e->int_settings[2];
+                if (delay_sec <= 0) delay_sec = 10;
+                if (sv_has_item_at_tile(sv, e->x, e->y, wep_type)) {
+                    sv->env_item_timer[i] = now;
+                } else {
+                    if (sv->env_item_timer[i] == 0) {
+                        sv->env_item_timer[i] = now;
+                    } else if (now - sv->env_item_timer[i] >= (uint32_t)(delay_sec * 1000)) {
+                        sv_spawn_item(sv, wep_type, e->x, e->y);
+                        sv->env_item_timer[i] = now;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /* FUN_14018b1c0: reload message [16, id, mode] */
@@ -1711,6 +1899,11 @@ void cs2d_sv_reload(cs2d_server_t *sv, int id, int mode)
                 (sv->set.mp_infammo == 0 && pl->reserve[pl->weapon] <= 0)) {
                 pl->is_reloading = false;
                 pl->reload_end_ms = 0;
+            } else {
+                /* Re-arm the next reload cycle timer so step_reloads does NOT immediately
+                 * fire mode 4 in the next frame, which would double-load shells! */
+                uint32_t duration_ms = (uint32_t)(def->reload_ticks * 5);
+                pl->reload_end_ms = now + duration_ms;
             }
         }
         /* Mode 101 returns without broadcast (LAB_140214c10) */
@@ -3374,12 +3567,38 @@ bool cs2d_sv_change_map(cs2d_server_t *sv, const char *mapname)
         cs2d_sv_lua_load_map(sv, clean_map);
     }
     sv->score_t = sv->score_ct = 0;
+    sv->map_start_ms = cs2d_sv_now();
 
     cs2d_sv_round_start(sv, 0);
 
     cs2d_sv_lua_hook_mapchange(sv, clean_map);
     cs2d_server_print("Map changed to '%s'", clean_map);
     return true;
+}
+
+/* 0x14013b430: next map from sys/mapcycle.cfg */
+const char *cs2d_sv_next_map(const cs2d_server_t *sv)
+{
+    if (!sv) return "de_dust2";
+    if (sv->mapcycle_count > 0) {
+        for (int i = 0; i < sv->mapcycle_count; i++) {
+            if (_stricmp(sv->mapcycle[i], sv->set.sv_map) == 0) {
+                if (i + 1 < sv->mapcycle_count) return sv->mapcycle[i + 1];
+                return sv->mapcycle[0];
+            }
+        }
+        return sv->mapcycle[0];
+    }
+    if (sv->map_count > 0) {
+        for (int i = 0; i < sv->map_count; i++) {
+            if (_stricmp(sv->maps[i], sv->set.sv_map) == 0) {
+                if (i + 1 < sv->map_count) return sv->maps[i + 1];
+                return sv->maps[0];
+            }
+        }
+        return sv->maps[0];
+    }
+    return sv->set.sv_map[0] ? sv->set.sv_map : "de_dust2";
 }
 
 
@@ -3925,48 +4144,6 @@ void cs2d_sv_shot_at_building(cs2d_server_t *sv, int id, const cs2d_weapon_def_t
     const cs2d_dynobj_t *o = cs2d_dynobj_get(&sv->dynobj, obj_id);
     if (!o || !cs2d_dynobj_hit_debris(o->typ) || o->typ == CS2D_DO_BARRICADE) return;
     cs2d_sv_object_damage(sv, obj_id, wep->damage, id);
-}
-
-/*
- * FUN_14011ba70(type, tx, ty, clip, sub, reserve, ...): the server puts a ground item on a tile and sends
- * [33, type u8, item id u16, tile x u16, tile y u16, clip + 1 u16, reserve + 1 u16] (12 bytes). The binder
- * passes clip / reserve -1, which the wire shows as 0 and the client turns into the type's defaults.
- * Returns the new item id (0 when the table is full).
- */
-static int sv_spawn_item(cs2d_server_t *sv, int type, int tx, int ty)
-{
-    int slot = -1;
-    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
-        if (!sv->items[i].active) { slot = i; break; }
-    }
-    if (slot < 0) return 0;
-    if (sv->next_item_id == 0) sv->next_item_id = 1;
-    uint16_t item_id = (uint16_t)sv->next_item_id++;
-    cs2d_sv_item_t *it = &sv->items[slot];
-    it->active = true;
-    it->id = item_id;
-    it->type = (uint8_t)type;
-    int default_clip = -1, default_res = -1;
-    cs2d_weapon_item_ammo((uint8_t)type, &default_clip, &default_res);
-    it->clip = (uint16_t)(default_clip > 0 ? default_clip : 1);
-    it->reserve = (uint16_t)(default_res > 0 ? default_res : 0);
-    it->sub = 0;
-    it->tile_x = (uint16_t)tx;
-    it->tile_y = (uint16_t)ty;
-    it->dropped = false;
-    it->dropped_by = 0;
-    it->drop_time_ms = cs2d_sv_now();
-
-    uint8_t msg[12];
-    msg[0] = 33;
-    msg[1] = (uint8_t)type;
-    msg[2] = (uint8_t)(item_id & 0xff); msg[3] = (uint8_t)(item_id >> 8);
-    msg[4] = (uint8_t)(tx & 0xff);      msg[5] = (uint8_t)((tx >> 8) & 0xff);
-    msg[6] = (uint8_t)(ty & 0xff);      msg[7] = (uint8_t)((ty >> 8) & 0xff);
-    msg[8] = 0; msg[9] = 0;             /* clip -1 */
-    msg[10] = 0; msg[11] = 0;           /* reserve -1 */
-    sv_broadcast_joined(sv, msg, 12);
-    return item_id;
 }
 
 /* A free floor tile within one tile of the object, at most 8 tries (FUN_14028b980 / FUN_14028dba0): the

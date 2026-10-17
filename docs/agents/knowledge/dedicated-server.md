@@ -360,4 +360,34 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   - Dropped items (`dropped == true`) age 1 second per second on the server.
   - After 15 seconds (`drop_time_ms >= 15000`), the server deactivates the item and broadcasts reliable `[40, id u16]`. Map spawned items (`dropped == false`) never expire.
 
+## Gamemode Round Restart, Shotgun Reload Sync & Env_Item (2026-10-17)
+
+- **Gamemode Change Auto-Restart**:
+  - When `sv_gamemode` or `gamemode` is modified via console, RCON or cvar, if the new gamemode differs from the current mode, the dedicated server immediately restarts the round (`cs2d_sv_round_end(sv, 5, 0)` + `cs2d_sv_round_start(sv, 5)`), resetting scores/spawns and broadcasting `[22, 5]` to all connected clients.
+- **Shotgun Reload Lag Compensation (Mode 101 / `0x65`)**:
+  - For weapons with shell-by-shell reload (`M3`, `XM1014`), if the client's shell animation expires before receiving `[16, id, 4]`, `CS2D.exe` fires fallback opcode `[16, 101]`.
+  - When receiving mode 101, the server increments clip and decrements reserve. Crucially, the server MUST re-arm the reload timer `pl->reload_end_ms = now + (reload_ticks * 5)` so that `cs2d_sv_step_reloads` does not immediately fire `mode 4` on the very next frame, which would double-load shells and make reload 2x faster.
+- **Env_Item Map Entities (Entity ID 21)**:
+  - `Env_Item` properties: `ints[0]` = weapon/item ID (1..89); `ints[1]` = spawn mode (0 = one time, 1 = instant/infinite, 2 = every X sec, 3 = on trigger only); `ints[2]` = delay in seconds (for mode 2).
+  - On round start (`cs2d_sv_round_start`), ground items from the previous round are cleared and active `Env_Item` entities (modes 0, 1, 2) are spawned via `sv_spawn_item`, placing them in `sv->items`.
+  - During the round (`cs2d_sv_step_items`), mode 1 entities immediately respawn if the tile is clear, and mode 2 entities respawn after `delay * 1000` ms. Mode 3 entities spawn when triggered (`cs2d_sv_trigger_env_items`).
+  - When a player connects, Section 3 of the join snapshot (`[252, 7, 3, count, ...]`) sends all active ground items in `sv->items` to the client, ensuring all `Env_Item` weapons appear immediately on the ground when entering the server.
+
+## Deathmatch, Team Deathmatch, mp_randomspawn, mp_timelimit & mapcycle (2026-10-17)
+
+- **Random Spawns (`mp_randomspawn 1`) in DM (`mode 1`) and TDM (`mode 2`)**:
+  - Addresses: `0x140160da0` - `0x140160dae` checks `(gamemode - 1) <= 1` (modes 1 and 2). If `0x1407dfb98` (`mp_randomspawn`) is 1, jumps to `0x140162313`, calling `0x1400d5650`.
+  - `0x1400d5650`: performs up to 100 random probes on map tiles `(rand() % width, rand() % height)`. A tile is valid if it is non-solid (`!cs2d_map_is_solid`), has no deadly/obstacle property, and has no active player or solid building within 32 px. Player spawns at tile center: `x = tx * 32 + 16, y = ty * 32 + 16`.
+- **Deathmatch Spawn Fallback**:
+  - In `sv_gamemode 1` (Deathmatch), if a map does not contain spawn entities matching the player's team (e.g. a CT player on a map with only `Info_T` spawns), `sv_pick_spawn` falls back to any available spawn point (`Info_T` or `Info_CT`), allowing players of either team to spawn instead of failing or getting stuck.
+- **Map Timelimit (`mp_timelimit`) & Mapcycle (`sys/mapcycle.cfg`)**:
+  - Address: `0x1401a3058` reads `mp_timelimit` in minutes (`DAT_1405a6658`), multiplies by 60,000 ms (`imul eax, eax, 0xea60`).
+  - `0x1401a3082`: compares `now - sv->map_start_ms >= limit_ms`.
+  - `0x1401a3099`: if in a respawn mode (`respawn == 1`, e.g. Deathmatch / TDM / Construction) or if connected player count <= 1, branches to `0x1401a30c5`, prints `sv_timelimit reached - changing map...`, queries next map via `0x14013b430` (`cs2d_sv_next_map`), and calls `0x1401104f0` (`cs2d_sv_change_map`).
+  - `cs2d_sv_next_map` scans `sv->mapcycle` (populated in file order from `sys/mapcycle.cfg`) for the current map, returning the subsequent entry with wrap-around to index 0.
+- **Lua Extensions**:
+  - `game("maptimeleft")`: returns seconds remaining until `mp_timelimit` expires as a float. If `mp_timelimit <= 0`, returns `1000000.0` (matching original BlitzMax constant).
+  - `game("nextmap")`: returns the name of the next map in the rotation cycle.
+
+
 

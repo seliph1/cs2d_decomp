@@ -81,6 +81,7 @@ typedef struct {
     int     mp_dispenser_health; /* DAT_140a14dac (= 10): health a Dispenser grants per frame to a player in range */
     int     mp_dispenser_money;  /* DAT_140a14db0 (= 500): money a Dispenser grants per frame (clamped at 16000) */
     int     mp_dmspawnmoney;     /* DAT_1405a6554 (= 2000): money each spawn of a respawn mode, max every 15 s */
+    int     mp_timelimit;        /* 0x1405c70e8: map time limit in minutes (0 = unlimited) */
     /* Generic cvar store */
     cs2d_sv_cvar_t cvars[CS2D_SV_MAX_CVARS];
     int     cvar_count;
@@ -248,12 +249,14 @@ typedef struct {
     char               secret[16];      /* PTR_PTR_1405a6800: the join secret */
     uint32_t           start_ms;        /* DAT_1407e0184 */
     uint32_t           round_start_ms;  /* PTR_DAT_1405ac780 +8 */
+    uint32_t           map_start_ms;    /* MilliSecs when current map was loaded */
     int32_t            seed;            /* DAT_1407df3d4 */
     int                score_t, score_ct;
     cs2d_sv_conn_t     conns[CS2D_SV_MAX_PLAYERS + 8];
     cs2d_sv_player_t   players[CS2D_SV_MAX_PLAYERS + 1];
     cs2d_sv_item_t     items[CS2D_SV_MAX_GROUND_ITEMS];
     int                next_item_id;
+    uint32_t           env_item_timer[CS2D_MAX_ENTITIES];
     /* the one-second timer and its counters (0x1401e505d) */
     uint32_t           second_ms;
     int                ping_ctr, pinglist_ctr;
@@ -263,9 +266,11 @@ typedef struct {
     /* serverinfo lines (sys/serverinfo.txt) */
     char             (*info_lines)[256];
     int                info_count;
-    /* section 12 map list */
+    /* section 12 map list (sorted for snapshot; mapcycle preserves file order) */
     char               maps[CS2D_SV_MAX_MAPS][64];
     int                map_count;
+    char               mapcycle[CS2D_SV_MAX_MAPS][64];
+    int                mapcycle_count;
     /* Round state (phase 2) */
     int                round_end;       /* DAT_1407dfe6c: pending round end reason, 0 = round running */
     int                round_end_delay; /* DAT_1407dfe70 (ms) */
@@ -449,6 +454,9 @@ void cs2d_sv_ban_steam(cs2d_server_t *sv, int64_t steam_id, const char *reason);
 void cs2d_sv_unban(cs2d_server_t *sv, const char *target);
 
 bool cs2d_sv_change_map(cs2d_server_t *sv, const char *mapname);               /* FUN_1401104f0: [239] */
+const char *cs2d_sv_next_map(const cs2d_server_t *sv);                        /* 0x14013b430 */
+void cs2d_sv_init_env_items(cs2d_server_t *sv);
+void cs2d_sv_trigger_env_items(cs2d_server_t *sv, const char *trigger_name);
 
 /* cs2d_server.c: kick, RCON ([236]/[241]/[242]), server command parser (FUN_140140a00) */
 void cs2d_sv_kick(cs2d_server_t *sv, int id, const char *reason);                              /* FUN_1401502a0: [253] */

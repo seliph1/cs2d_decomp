@@ -5,6 +5,18 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **Dedicated server: Deathmatch (DM), Team Deathmatch (TDM), mp_randomspawn & mp_timelimit (2026-10-17, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - `mp_randomspawn 1` port of `0x140160da0` - `0x140160dae` / `0x140162313` calling `0x1400d5650` for gamemodes 1 (DM) and 2 (TDM)
+  probing valid map tiles; DM spawn fallback to any spawn (`Info_T` or `Info_CT`) when a map lacks the player's team spawns;
+  map rotation via `mp_timelimit` port of `0x1401a3058` - `0x1401a30c5` and `sys/mapcycle.cfg` sequential rotation via
+  `cs2d_sv_next_map` (`0x14013b430`); Lua queries `game("maptimeleft")` (returns remaining seconds or `1000000.0` if unlimited)
+  and `game("nextmap")`. Locked by `test_sv_deathmatch_and_timelimit` (87/87 tests passing).
+- **Dedicated server: Gamemode Auto-Restart, Shotgun Reload Sync & Env_Item (2026-10-17, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - changing `sv_gamemode` or `gamemode` in runtime now restarts the round automatically (`[22, 5]`);
+  shotgun shell reload lag compensation (`mode 101` / `0x65`) now re-arms `pl->reload_end_ms`, preventing double-loading
+  and 2x reload speed desync with `CS2D.exe`; `Env_Item` (ID 21) map entities are now instantiated on the ground on round
+  start, maintained across modes 0/1/2/3, and transmitted to joining players via Section 3 (`[252, 7, 3]`). Locked by
+  `test_sv_gamemode_and_env_items` (86/86 tests passing).
 - **Round restart cadence with 0/1 players (2026-10-16, `docs/agents/knowledge/standard-gamemode.md`):**
   fixed - `FUN_14015ce30(0)` is event driven in the original (death / removal / team change), so a server
   with 0 or 1 players keeps its round; ours checked every frame and restarted it every 3 s (the round

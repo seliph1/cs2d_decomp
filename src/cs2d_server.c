@@ -133,6 +133,9 @@ void cs2d_sv_settings_set(cs2d_sv_settings_t *s, const char *key, const char *va
     SV_INT(sv_spraytransfer) SV_INT(sv_maptransfer) SV_INT(mp_startmoney) SV_INT(mp_postspawn) SV_INT(mp_autoteambalance)
     SV_INT(lagcompensation) SV_INT(ticks) SV_INT(leaderboard) SV_INT(physics)
     SV_INT(mp_luamap) SV_INT(mp_randomspawn) SV_INT(mp_curtailedexplosions) SV_INT(mp_zombiespeedmod) SV_INT(mp_kevlar)
+    SV_INT(mp_timelimit)
+    else if (_stricmp(key, "timelimit") == 0) { s->mp_timelimit = atoi(val); }
+    else if (_stricmp(key, "randomspawn") == 0) { s->mp_randomspawn = atoi(val); }
     /* Construction (read from the CS2D.exe .data defaults; not in the [237] live broadcast of the original) */
     SV_INT(mp_teleportreload) SV_INT(mp_dispenser_health) SV_INT(mp_dispenser_money) SV_INT(mp_dmspawnmoney)
 #undef SV_INT
@@ -174,7 +177,7 @@ const char *cs2d_sv_settings_get(const cs2d_sv_settings_t *s, const char *key)
     SV_GET_INT(sv_forcelight) SV_GET_INT(sv_daylighttime) SV_GET_INT(mp_hudscale) SV_GET_INT(sv_voicechat)
     SV_GET_INT(sv_offscreendamage)
     SV_GET_INT(mp_teleportreload) SV_GET_INT(mp_dispenser_health) SV_GET_INT(mp_dispenser_money)
-    SV_GET_INT(mp_dmspawnmoney)
+    SV_GET_INT(mp_dmspawnmoney) SV_GET_INT(mp_timelimit) SV_GET_INT(mp_randomspawn)
 #undef SV_GET_INT
     return NULL;
 }
@@ -1716,6 +1719,31 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
         if (delay == 0) cs2d_sv_round_start(sv, 5);
         return true;
     }
+    if (_stricmp(cmd, "sv_gamemode") == 0 || _stricmp(cmd, "gamemode") == 0) {
+        if (!sv_next_arg(&cur, a1, sizeof(a1)) || a1[0] == '\0') {
+            cs2d_server_print("sv_gamemode is \"%d\"", sv->set.sv_gamemode);
+        } else {
+            int old_mode = sv->set.sv_gamemode;
+            int new_mode = atoi(a1);
+            char old_str[16];
+            snprintf(old_str, sizeof(old_str), "%d", old_mode);
+            sv->set.sv_gamemode = new_mode;
+            sv_broadcast_setting(sv, "sv_gamemode", old_str);
+            cs2d_server_print("sv_gamemode set to \"%d\"", new_mode);
+            if (new_mode != old_mode) {
+                cs2d_sv_round_end(sv, 5, 0);
+                cs2d_sv_round_start(sv, 5);
+            }
+        }
+        return true;
+    }
+    if (_stricmp(cmd, "trigger") == 0) {
+        if (sv_next_arg(&cur, a1, sizeof(a1)) && a1[0] != '\0') {
+            cs2d_sv_trigger_env_items(sv, a1);
+            cs2d_sv_lua_hook_trigger(sv, a1, 0);
+        }
+        return true;
+    }
     if (_stricmp(cmd, "endround") == 0) { /* 0x140145172 -> 0x14015d3c0 */
         int m = sv_next_arg(&cur, a1, sizeof(a1)) ? atoi(a1) : 0;
         int rmode = (m == 1) ? 1 : ((m == 2) ? 2 : 3);
@@ -1848,6 +1876,14 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
         snprintf(old_val, sizeof(old_val), "%s", prev ? prev : "");
         cfg_set(&sv->set, cmd, a1);
         sv_broadcast_setting(sv, cmd, old_val);
+        if (_stricmp(cmd, "sv_gamemode") == 0) {
+            int old_mode = atoi(old_val);
+            int new_mode = atoi(a1);
+            if (new_mode != old_mode) {
+                cs2d_sv_round_end(sv, 5, 0);
+                cs2d_sv_round_start(sv, 5);
+            }
+        }
         return true;
     }
     return false;
@@ -2261,6 +2297,8 @@ static int map_cmp(const void *a, const void *b) { return strcmp((const char *)a
 
 static void sv_load_maplist(cs2d_server_t *sv)
 {
+    sv->map_count = 0;
+    sv->mapcycle_count = 0;
     /* PTR_DAT_1405a1538: the map cycle (sys/mapcycle.cfg) sorted by name - the 14 maps of the shipped cycle
      * arrive in alphabetical order in proxy_ph1.log (the sort itself is not located in the binary yet) */
     FILE *f = fopen("sys/mapcycle.cfg", "rb");
@@ -2274,7 +2312,10 @@ static void sv_load_maplist(cs2d_server_t *sv)
         char m[64];
         while (*p && *p != ' ' && *p != '\t' && *p != '{' && *p != '\r' && *p != '\n' && k < 63) m[k++] = *p++;
         m[k] = '\0';
-        if (k) snprintf(sv->maps[sv->map_count++], 64, "%s", m);
+        if (k) {
+            snprintf(sv->mapcycle[sv->mapcycle_count++], 64, "%s", m);
+            snprintf(sv->maps[sv->map_count++], 64, "%s", m);
+        }
     }
     fclose(f);
     qsort(sv->maps, (size_t)sv->map_count, sizeof(sv->maps[0]), map_cmp);
@@ -2374,7 +2415,7 @@ bool cs2d_server_start(cs2d_server_t *sv, const char *map, int port, bool offlin
     }
     sv->secret[10] = '\0';
     sv->seed = rand() & 0x7fffffff;
-    sv->start_ms = sv->round_start_ms = sv->second_ms = sv_now();
+    sv->start_ms = sv->round_start_ms = sv->second_ms = sv->map_start_ms = sv_now();
 
     sv->next_item_id = 1;
     memset(sv->items, 0, sizeof(sv->items));
@@ -2389,6 +2430,7 @@ bool cs2d_server_start(cs2d_server_t *sv, const char *map, int port, bool offlin
     }
 
     cs2d_sv_init_hostages(sv);
+    cs2d_sv_init_env_items(sv);
     sv_load_serverinfo(sv);
     sv_load_maplist(sv);
     cs2d_dynobj_init(&sv->dynobj, &sv->map);

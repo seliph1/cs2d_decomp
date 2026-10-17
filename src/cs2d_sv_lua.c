@@ -752,9 +752,21 @@ static int l_game(lua_State *L)
     if (strcmp(key, "round") == 0) { lua_pushinteger(L, 1); return 1; }
     if (strcmp(key, "score_t") == 0) { lua_pushinteger(L, sv->score_t); return 1; }
     if (strcmp(key, "score_ct") == 0) { lua_pushinteger(L, sv->score_ct); return 1; }
-    if (strcmp(key, "time") == 0) { lua_pushinteger(L, cs2d_sv_now() - sv->start_ms); return 1; }
-    if (strcmp(key, "maptimeleft") == 0) { lua_pushinteger(L, 0); return 1; }
-    if (strcmp(key, "ticks") == 0) { lua_pushinteger(L, sv->set.ticks); return 1; }
+    if (strcmp(key, "maptimeleft") == 0) {
+        if (sv->set.mp_timelimit <= 0) {
+            lua_pushnumber(L, 1000000.0);
+        } else {
+            uint32_t limit_ms = (uint32_t)sv->set.mp_timelimit * 60000u;
+            uint32_t elapsed = cs2d_sv_now() - sv->map_start_ms;
+            float left_sec = (elapsed >= limit_ms) ? 0.0f : ((float)(limit_ms - elapsed) * 0.001f);
+            lua_pushnumber(L, (lua_Number)left_sec);
+        }
+        return 1;
+    }
+    if (strcmp(key, "nextmap") == 0) {
+        lua_pushstring(L, cs2d_sv_next_map(sv));
+        return 1;
+    }
     if (strcmp(key, "port") == 0) { lua_pushinteger(L, sv->set.sv_hostport); return 1; }
     if (strcmp(key, "sysfolder") == 0) { lua_pushstring(L, "sys"); return 1; }
     if (strcmp(key, "bombplanted") == 0) { lua_pushboolean(L, sv->bomb_planted); return 1; }

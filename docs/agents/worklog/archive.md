@@ -1,5 +1,36 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-17 — Antigravity — Dedicated Server: flags de linha de comando CLI (--map, etc.) e sanitização de mapa
+
+- **Flags de CLI expandidas em `src/main_dedicated.c`**:
+  - Suporte completo a `--map <name>`, `-map <name>`, `-m <name>`, bem como sintaxe com `=` ou `:` (`--map=fun_roleplay`).
+  - Suporte uniforme a traço simples ou duplo para `--port` / `-port` / `-p`, `--offline` / `-offline` / `--off` / `-off`, `--lua` / `-lua` / `-l`, `--name`, `--pw` / `--password`, `--rcon`, `--maxplayers`, e `--help` / `-h` / `-?`.
+- **Sanitização de caminhos de mapa (`cs2d_sv_sanitize_map_name`)**:
+  - Implementado em `src/cs2d_server.c` e declarado em `include/cs2d_server.h`.
+  - Remove aspas, espaços laterais, prefixos de pasta (`maps/`, `maps\`, diretórios absolutos) e extensão `.map` insensível a maiúsculas/minúsculas.
+  - Integrado em `main_dedicated.c`, `cs2d_server_start` e `cs2d_sv_change_map`.
+- **Verificação**:
+  - Novo teste `test_server_cli_and_map_sanitize` em `tests/test_cs2d.c` validando variações de nomes, prefixos, extensões, aspas e inicialização do servidor com override de mapa.
+  - `build.bat` compilou sem nenhum aviso (0 warnings).
+  - Testes do `test_cs2d.exe` executados com sucesso total (**83 / 83**).
+  - Inicialização real de `cs2d_server.exe --map fun_roleplay -offline -port 36999` e `--map=maps/fun_roleplay.map` verificada via log de execução.
+
+## 2026-10-17 — Antigravity — Construction: Laser Mine beam, cvars dinâmicas e Wrench raycast
+
+- **Laser Mine (`0x14000aa30` no dedicated)**:
+  - Implementado `cs2d_dynobj_in_lasermine` fiel ao BlitzMax original nas 4 direções (`dir = (int)rot`: 0 down +Y, 1 left -X, 2 up -Y, 3 right +X) e `cs2d_dynobj_update_lasermine` calculando o alcance do feixe (1..6 tiles, `FUN_14028e310`) interrompido por paredes, bordas do mapa e edifícios sólidos.
+  - Detonação ao cruzar o feixe em `sv_tile_object_effect` causando 150 de dano radial em raio de 200 via arma 87 (`CS2D_WEP_LASERMINE`), creditado ao criador da mina (`sv_object_kill`).
+  - Renderização no cliente em `src/cs2d_render.c`: flare central e feixe de laser vermelho estendido até `target`.
+- **Cvars dinâmicas `mp_building_price`, `mp_building_limit`, `mp_building_health` (`0x140118060`)**:
+  - Implementados comandos de console/RCON no servidor suportando resolução por nome ("Laser Mine", "Turret", etc.) ou ID numérico (1..CS2D_DYNOBJ_TYPES).
+  - Máscaras `building_*_mask` em `cs2d_server_t` preservando os valores padrão do jogo quando não sobrescritos.
+  - Clamping automático da saúde de edifícios ativos existentes ao reduzir `mp_building_health` (`0x1401182a6`).
+- **Alvo da chave inglesa (Wrench raycast)**:
+  - Raycast probe (`sv_wrench_target`, `Tdo.getatpos`) em passos de 2px ao longo da direção de rotação até o alcance da chave inglesa (15px), parando em obstáculos sólidos.
+- **Verificação**:
+  - Novo teste de regressão `test_construction_laser_mine_and_cvars` adicionado em `tests/test_cs2d.c`, cobrindo geometria de rotação 0..3, cvars por nome/número, clamping de vida, detonação do feixe e raycast da Wrench.
+  - Suíte completa passando: **82 / 82** testes aprovados (`test_cs2d.exe`).
+
 ## 2026-10-17 — Antigravity — Dedicated Server: Simulação de projéteis (Tpro), detonação radial e duplicação de granadas
 
 - **Simulação completa de projéteis em `src/cs2d_sv_game.c`**:
