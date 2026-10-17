@@ -237,6 +237,21 @@ typedef struct {
     uint32_t build_window_ms;
     /* Seconds since the last mp_dmspawnmoney grant (the Tpl +0x3fc counter, capped at 499) */
     int      money_secs;
+    /* Voting (Opcode 43 / +0x3dc votekick, +0x3e0 votemap) */
+    int      votekick;
+    int      votemap;
+    /* Flashlight & Specflash (Opcodes 57 & 60) */
+    uint8_t  flashlight;
+    uint8_t  specflash;
+    /* Portal locations (Opcode 50 / Portal Gun) */
+    int32_t  portal_x[2];
+    int32_t  portal_y[2];
+    bool     portal_active[2];
+    /* Client display settings & resolution (Opcode 232) */
+    int      screen_w;
+    int      screen_h;
+    uint8_t  screen_aspect;
+    uint8_t  screen_windowed;
 } cs2d_sv_player_t;
 
 typedef struct {
@@ -442,6 +457,12 @@ void cs2d_sv_kill_projectile(cs2d_server_t *sv, int id, int proj_id);         /*
 void cs2d_sv_step_projectiles(cs2d_server_t *sv);                             /* FUN_140179060 */
 void cs2d_sv_detonate_projectile(cs2d_server_t *sv, cs2d_sv_projectile_t *p); /* FUN_140167fa0 / FUN_1401f1130 */
 void cs2d_sv_flashlight(cs2d_server_t *sv, int id, int state);                /* FUN_1401d28b0: [57] */
+void cs2d_sv_spec_flash(cs2d_server_t *sv, int id, uint8_t state);             /* FUN_1401d2d40: [60] */
+void cs2d_sv_entity_event(cs2d_server_t *sv, int id, uint16_t x, uint16_t y, uint8_t mode);    /* FUN_1401cead0: [31] */
+void cs2d_sv_portal_fire(cs2d_server_t *sv, int id, uint8_t color, int32_t tx, int32_t ty);   /* FUN_1401d11a0: [50] */
+void cs2d_sv_weapon_impulse(cs2d_server_t *sv, int id, uint8_t val);                            /* FUN_1401d26a0: [56] */
+void cs2d_sv_fire_direction(cs2d_server_t *sv, int id, uint16_t dir);                          /* FUN_1401d3840: [68] */
+void cs2d_sv_reqcld(cs2d_server_t *sv, int id, int mode, const char *param);                   /* FUN_1401d16f0 / reqcld: [53] */
 
 int  cs2d_sv_bot_add(cs2d_server_t *sv, int team, int look, const char *name);
 void cs2d_sv_bot_kick(cs2d_server_t *sv, const char *name_or_id);

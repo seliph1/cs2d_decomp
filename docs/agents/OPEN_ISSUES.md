@@ -5,6 +5,27 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **Dedicated server: Comunicação Cliente > Lua (2026-10-17, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - [53] `reqcld` command & `clientdata` opcode (`FUN_140129a50`, `FUN_1401780d0`, `FUN_1401d16f0`): sends reliable `[53, mode u8 (, param string)]` from server; consumes response for modes 0 (screen cursor), 1 (scroll offset), 2 (map cursor), 3 (light bool), 4 (loaded bool + SHA256 string), 5 (weapon mod info), 6 (render3d bool), and dispatches Lua hook `clientdata(id, mode, d1, d2)`;
+  [227] & [228] `key press` & `key release` (`FUN_1401bb510`, `FUN_1401bb620`): parses `[op, key u16]`, maps key code to canonical name (`sv_resolve_key_name`) checking custom `addbind` keys in Lua state first and falling back to `cs2d_bind_key_name`, and calls Lua hook `key(id, key_name, state)`;
+  [232] `clientsetting` (`FUN_1401bb730`): handles sub 1 (screen resolution w/h), sub 2 (aspect 4:3), sub 3 (windowed), updates player state and dispatches hook `clientsetting(id, setting, val1, val2)`; updates Lua `player(id, "screenw")`, `"screenh"`, `"screen4by3"`, `"windowed"`;
+  [80] `player physics rotation` (`FUN_1401d4910`): reads flags and converts `dir u16` to `pl->rot = (float)dir * 0.005493164f`;
+  [81..87] physics updates return false in dedicated mode, terminating datagram loop;
+  [225] `voicechat` (`FUN_1401d68b0`): parses sub 0 (ping), sub 1 (voice data relay when `sv_voicechat != 0`), sub 2, and fires Lua hook `voice(id)`. Locked by `test_server_client_lua_communication` (90/90 tests passing).
+- **Dedicated server: Interações Cliente-Mundo/Entidades (2026-10-17, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - [31] `entityevent` (`FUN_1401cead0`) parses 5-byte payload `[31, x u16, y u16, mode u8]`, executes entity actions (`cs2d_sv_trigger_env_items`), triggers Lua hooks `triggerentity` & `trigger`, and relays 6-byte reliable `[31, x, y, mode]` to other players;
+  [50] `portalfire` (`FUN_1401d11a0`) parses 9-byte payload `[50, color u8, tx i32, ty i32]`, updates player portal coordinates/state, and broadcasts 11-byte reliable `[50, pid, color, tx, ty]` to all players;
+  [56] `weapon impulse` (`FUN_1401d26a0`) parses 1-byte payload `[56, val u8]` and relays 3-byte reliable `[56, pid, val]` to other players;
+  [57] `flashlight` (`FUN_1401d28b0` -> `FUN_140106350`) parses 1-byte payload `[57, state u8]`, checks `mp_flashlight != 0`, sets `pl->flashlight = state`, broadcasts 3-byte `[57, pid, state]`, and fires Lua hook `flashlight`;
+  [60] `specflash` (`FUN_1401d2d40`) parses 1-byte payload `[60, state u8]`, sets `pl->specflash = state`, and broadcasts 3-byte reliable `[60, pid, state]`;
+  [68] `firedirection` (`FUN_1401d3840`) parses 2-byte payload `[68, dir u16]`, updates `pl->rot = (float)dir / 182.04445f`, and relays unreliable `[70, pid, dir]` to dead players spectating;
+  [35, 36, 37, 65] server-to-client opcodes confirmed via disassembly of `0x1401cf350`, `0x1401cf4b0`, `0x1401cf630`, `0x1401d3430`: return 3 immediately when received on a dedicated server (`DAT_1407dfe48 != 0`), terminating datagram loop and cleanly dropping remainder of packet;
+  [26] `use` with `mode 100` (`usebutton`): checks Euclidean reach `<= 45 px` of `Trigger_Use` tile center, fires Lua hook `usebutton(id, x, y)`, and triggers linked entities if team matches (`int_settings[2]`). Locked by `test_server_entity_and_world_interactions` (89/89 tests passing).
+- **Dedicated server: Dispatch de Opcodes [28] Spray, [43] Vote, [230] Leaderboard e Guarda < 7 (2026-10-17, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - [28] spray (`FUN_1401bcd60`) desync corrected: now consumes full 6-byte in-game payload (`sub=0, x u16, y u16, mode u8`), calls `cs2d_sv_lua_hook_spray` and relays `[28, player, 0, x, y, mode]` reliably to other players (preventing trailing bytes from being misinterpreted as opcode 0);
+  [43] vote (`FUN_1401d0050`) implemented: parses `type u8` and `value u16` for votekick (type 1) and votemap (type 2), updates `pl->votekick`/`pl->votemap`, triggers Lua hook `vote` and broadcasts reliable `[43, voter, type, value]`;
+  [230] leaderboard (`FUN_1401d8360`) implemented: sub 0 replies with `[230, 0, timestamp i32]` and sub 1 consumes `rank u16` cleanly;
+  network loop `sv_recv_messages` (`FUN_1401e3cf0`) now cleanly drops opcodes `< 7` (padding zeros, trailing control bytes such as lone `0x03`) without logging unhandled client opcode errors. Locked by `test_server_spray_vote_leaderboard_messages` (88/88 tests passing).
 - **Dedicated server: Deathmatch (DM), Team Deathmatch (TDM), mp_randomspawn & mp_timelimit (2026-10-17, `docs/agents/knowledge/dedicated-server.md`):**
   fixed - `mp_randomspawn 1` port of `0x140160da0` - `0x140160dae` / `0x140162313` calling `0x1400d5650` for gamemodes 1 (DM) and 2 (TDM)
   probing valid map tiles; DM spawn fallback to any spawn (`Info_T` or `Info_CT`) when a map lacks the player's team spawns;

@@ -389,5 +389,87 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   - `game("maptimeleft")`: returns seconds remaining until `mp_timelimit` expires as a float. If `mp_timelimit <= 0`, returns `1000000.0` (matching original BlitzMax constant).
   - `game("nextmap")`: returns the name of the next map in the rotation cycle.
 
+## Client Message Dispatch: Spray [28], Vote [43], Leaderboard [230] & Opcodes < 7 (2026-10-17)
+
+- **In-Game Spray (Opcode 28, `FUN_1401bcd60`)**:
+  - Client sends `[28, sub u8, ...]`:
+    - `sub == 0`: in-game spray `[28, 0, x u16, y u16, mode u8]` (6 payload bytes). Server calls `cs2d_sv_lua_hook_spray` (`FUN_14015a890`) and relays reliable `[28, player_id, 0, x u16, y u16, mode u8]` to all other connected players.
+    - `sub == 2`: logo trigger / request `[28, 2]` (1 byte).
+    - Prevents packet desync where reading only 2 bytes left the remaining 4 bytes in the UDP stream to be misinterpreted as bogus opcodes (such as opcode 0).
+- **Vote (Opcode 43, `FUN_1401d0050`)**:
+  - Client sends `[43, type u8, value u16]` (3 payload bytes):
+    - `type == 1`: votekick (`value` = target player ID).
+    - `type == 2`: votemap (`value` = map cycle index).
+  - Updates `pl->votekick` / `pl->votemap`, triggers Lua hook `vote` (`cs2d_sv_lua_hook_vote`), and broadcasts reliable `[43, voter, type, value]` to all connected players.
+- **Leaderboard (Opcode 230, `FUN_1401d8360`)**:
+  - Client sends `[230, sub u8, ...]`:
+    - `sub == 0`: leaderboard timestamp request (1 byte). Server replies with reliable `[230, 0, timestamp i32]` (0 = empty / not updated).
+    - `sub == 1`: rank row request `[230, 1, rank u16]` (3 payload bytes). If row is not present/empty in dedicated, returns 0 without replying (matching `0x1401d8650`).
+- **Opcodes < 7 Guard (`FUN_1401e3cf0`)**:
+  - The dedicated network dispatcher jump table strictly indexes opcodes 7..253 (`opcode - 7`).
+  - When encountering `op < 7` (e.g. padding zeros `0x00`, incomplete control triples such as lone `0x03` at the end of a datagram), `FUN_1401e3cf0` branches to `LAB_1401e3e80` (`iVar7 = 2`), cleanly dropping the rest of the datagram without logging unhandled client opcode warnings.
+
+## Client-World/Entity Interactions: [31], [50], [56], [57], [60], [68], [35-37], [65], [26,100] (2026-10-17)
+
+- **Entity Event (Opcode 31, `FUN_1401cead0` -> `FUN_14016e0a0`)**:
+  - Payload: `[31, x u16, y u16, mode u8]` (5 bytes).
+  - Triggers entity at `(x, y)` if `e->trigger[0]` is present, invoking `cs2d_sv_trigger_env_items` and Lua `trigger` hook. Also invokes Lua `triggerentity` hook.
+  - Relays 6-byte reliable `[31, x u16, y u16, mode u8]` to all other connected players (`FUN_14010ddb0`).
+- **Portal Fire (Opcode 50, `FUN_1401d11a0` -> `FUN_140177230`)**:
+  - Payload: `[50, color u8, tx i32, ty i32]` (9 bytes).
+  - Updates player portal position `pl->portal_x[color & 1] = tx`, `pl->portal_y[color & 1] = ty`, `pl->portal_active[color & 1] = true`.
+  - Broadcasts 11-byte reliable `[50, player_id u8, color u8, tx i32, ty i32]` to all joined players.
+- **Weapon Impulse (Opcode 56, `FUN_1401d26a0` -> `FUN_1401694e0`)**:
+  - Payload: `[56, value u8]` (1 byte).
+  - Broadcasts 3-byte reliable `[56, player_id u8, value u8]` to all other connected players.
+- **Flashlight (Opcode 57, `FUN_1401d28b0` -> `FUN_140106350`)**:
+  - Payload: `[57, state u8]` (1 byte).
+  - Checked against `sv->set.mp_flashlight != 0` (`0x1401063b7`).
+  - Updates `pl->flashlight = state` (`0x14010659a`), broadcasts 3-byte reliable `[57, player_id u8, state u8]`, and fires Lua hook `flashlight`.
+- **Spectator Flashlight (Opcode 60, `FUN_1401d2d40` -> `FUN_1401b2bf0`)**:
+  - Payload: `[60, state u8]` (1 byte).
+  - Updates `pl->specflash = state` and broadcasts 3-byte reliable `[60, player_id u8, state u8]` to all joined players.
+- **Fire Direction (Opcode 68, `FUN_1401d3840` -> `FUN_140192080`)**:
+  - Payload: `[68, dir u16]` (2 bytes).
+  - Converts direction `pl->rot = (float)dir / 182.04445f` and sets `pl->rot_flag = 1`.
+  - Relays unreliable `[70, player_id u8, dir u16]` to dead players currently spectating this player.
+- **Server-to-Client Drops: [35], [36], [37], [65]**:
+  - `FUN_1401cf350` (35 dynobj remove), `FUN_1401cf4b0` (36 dynobj mode), `FUN_1401cf630` (37 dynobj hp), `FUN_1401d3430` (65 positionalsound).
+  - In dedicated server mode (`DAT_1407dfe48 != 0`), all four functions immediately return 3.
+  - In `FUN_1401e3cf0`, any handler returning `> 0` breaks out of the datagram opcode loop, safely dropping the remainder of the packet.
+- **Use Button (Opcode 26 mode 100, `FUN_140138a40`)**:
+  - When a player presses USE within 45px Euclidean distance of a `Trigger_Use` tile center (`(x * 32 + 16, y * 32 + 16)`), fires Lua hook `usebutton(id, x, y)`.
+  - If team filter passes (`int_settings[2] == 0 || int_settings[2] == pl->team`), fires linked triggers and Lua `trigger` hook.
+
+## Client -> Lua Communication: [53], [227/228], [232], [80..87], [225] (2026-10-17)
+
+- **reqcld & clientdata (Opcode 53, `FUN_140129a50`, `FUN_1401780d0`, `FUN_1401d16f0`)**:
+  - Server command `reqcld(id, mode [, param])`: sends reliable packet `[53, mode u8 (, param string if mode 4 or 5)]`.
+  - Client response `[53, mode u8, ...]`:
+    - `mode 0`: cursor on screen `[53, 0, x u16, y u16]`
+    - `mode 1`: map scrolling offset `[53, 1, (sx + 0x8000) u16, (sy + 0x8000) u16]`
+    - `mode 2`: absolute cursor on map `[53, 2, (mx + 0x8000) u16, (my + 0x8000) u16]`
+    - `mode 3`: light engine enabled `[53, 3, enabled u8]`
+    - `mode 4`: file loaded `[53, 4, loaded u8, checksum_sha256 rstr]`
+    - `mode 5`: mod info `[53, 5, sub u8, val u16, mod_info rstr]`
+    - `mode 6`: render3d enabled `[53, 6, enabled u8]`
+  - Dispatches Lua hook `clientdata(id, mode, data1, data2)` where `data2` is string for modes 4 and 5, integer for others.
+- **Key Press & Release (Opcodes 227 & 228, `FUN_1401bb510`, `FUN_1401bb620`)**:
+  - Client sends `[227/228, key u16]`.
+  - Server maps key code to canonical key name via `sv_resolve_key_name`: checks custom `addbind` keys in Lua state, falls back to `cs2d_bind_key_name(key)` or decimal string.
+  - Fires Lua hook `key(id, key_name, state)` (1 for press, 0 for release).
+- **Client Setting (Opcode 232, `FUN_1401bb730`)**:
+  - `sub 1`: screen resolution `[232, 1, width u16, height u16]` -> updates `pl->screen_w`, `pl->screen_h`.
+  - `sub 2`: aspect ratio 4:3 `[232, 2, s43 u8]` -> updates `pl->screen_aspect`.
+  - `sub 3`: windowed mode `[232, 3, win u8]` -> updates `pl->screen_windowed`.
+  - Fires Lua hook `clientsetting(id, setting, val1, val2)`.
+  - Lua `player(id, "screenw")`, `"screenh"`, `"screen4by3"`, `"windowed"` read player fields.
+- **Player Physics Rotation (Opcode 80, `FUN_1401d4910`)**:
+  - `[80, flags u8, ...]`: if `flags & 0x40` reads pos bytes; if `flags & 0x80` reads `dir u16` and sets `pl->rot = (float)dir * 0.005493164f` (360.0f / 65536.0f).
+- **Physics Updates [81..87] Drop (`FUN_1401e3cf0`)**:
+  - Functions `0x1401d4dc0` through `0x1401d64b0` return 4 in server mode, terminating packet parsing.
+- **Voice Chat (Opcode 225, `FUN_1401d68b0`)**:
+  - `[225, target u8, sub u8, ...]`: sub 0 (ping), sub 1 (`vlen u16 + data`), sub 2.
+  - If `sv_voicechat != 0`, relays sub 1 audio packet to target/team. Fires Lua hook `voice(id)`.
 
 

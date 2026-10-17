@@ -146,7 +146,7 @@ void cs2d_sv_lua_hook_objectkill(cs2d_server_t *sv, int id, int player);
 void cs2d_sv_lua_hook_objectupgrade(cs2d_server_t *sv, int id, int player, int progress, int total);
 void cs2d_sv_lua_hook_move(cs2d_server_t *sv, int id, int x, int y, int walk);
 void cs2d_sv_lua_hook_movetile(cs2d_server_t *sv, int id, int x, int y);
-void cs2d_sv_lua_hook_clientdata(cs2d_server_t *sv, int id, int mode, int data1, int data2);
+void cs2d_sv_lua_hook_clientdata(cs2d_server_t *sv, int id, int mode, int data1, int data2, const char *sdata);
 void cs2d_sv_lua_hook_clientsetting(cs2d_server_t *sv, int id, int setting, int val1, int val2);
 void cs2d_sv_lua_hook_itemfadeout(cs2d_server_t *sv, int iid, int type, int x, int y);
 void cs2d_sv_lua_hook_shutdown(cs2d_server_t *sv);

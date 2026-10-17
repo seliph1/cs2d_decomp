@@ -2726,6 +2726,21 @@ void cs2d_sv_use(cs2d_server_t *sv, int id, int mode, int32_t data, uint16_t x, 
         float ty_px = (float)y * 32.0f + 16.0f;
         float dx = pl->x - tx_px, dy = pl->y - ty_px;
         if (dx * dx + dy * dy <= 45.0f * 45.0f) {
+            cs2d_sv_lua_hook_usebutton(sv, id, (int)x, (int)y);
+            if (sv->map_loaded) {
+                for (uint32_t i = 0; i < sv->map.entity_count; i++) {
+                    const cs2d_entity_t *e = &sv->map.entities[i];
+                    if (e->x == x && e->y == y && e->type == CS2D_ENT_TRIGGER_USE) {
+                        int team_filter = e->int_settings[2];
+                        if (team_filter != 0 && team_filter != pl->team) continue;
+                        if (e->trigger[0] != '\0') {
+                            cs2d_sv_trigger_env_items(sv, e->trigger);
+                            cs2d_sv_lua_hook_trigger(sv, e->trigger, id);
+                        }
+                        break;
+                    }
+                }
+            }
             uint8_t pkt[11];
             pkt[0] = 26;
             pkt[1] = (uint8_t)id;
@@ -3321,16 +3336,107 @@ void cs2d_sv_step_projectiles(cs2d_server_t *sv)
     }
 }
 
-/* FUN_1401d28b0: [57, player u8, state u8] (3 bytes) */
+/* FUN_1401d28b0 -> FUN_140106350: [57, player u8, state u8] (3 bytes) */
 void cs2d_sv_flashlight(cs2d_server_t *sv, int id, int state)
 {
-    if (id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    if (!sv || id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
     cs2d_sv_player_t *pl = &sv->players[id];
     if (!pl->used) return;
+    if (sv->set.mp_flashlight == 0) return; /* 0x1401063b7 */
 
+    pl->flashlight = (uint8_t)state;
     uint8_t pkt[3] = { 57, (uint8_t)id, (uint8_t)state };
     sv_broadcast_joined(sv, pkt, 3);
     cs2d_sv_lua_hook_flashlight(sv, id, state);
+}
+
+/* FUN_1401d2d40 -> FUN_1401b2bf0: [60, player u8, state u8] (3 bytes, spectator flashlight) */
+void cs2d_sv_spec_flash(cs2d_server_t *sv, int id, uint8_t state)
+{
+    if (!sv || id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used) return;
+
+    pl->specflash = state;
+    uint8_t pkt[3] = { 60, (uint8_t)id, state };
+    sv_broadcast_joined(sv, pkt, 3);
+}
+
+/* FUN_1401cead0 -> FUN_14016e0a0: entity event [31, x u16, y u16, mode u8] */
+void cs2d_sv_entity_event(cs2d_server_t *sv, int id, uint16_t x, uint16_t y, uint8_t mode)
+{
+    if (!sv) return;
+    cs2d_sv_lua_hook_triggerentity(sv, (int)x, (int)y);
+    if (sv->map_loaded) {
+        for (uint32_t i = 0; i < sv->map.entity_count; i++) {
+            const cs2d_entity_t *e = &sv->map.entities[i];
+            if (e->x == x && e->y == y) {
+                if (e->trigger[0] != '\0') {
+                    cs2d_sv_trigger_env_items(sv, e->trigger);
+                    cs2d_sv_lua_hook_trigger(sv, e->trigger, id);
+                }
+                break;
+            }
+        }
+    }
+    uint8_t pkt[6] = { 31, (uint8_t)(x & 0xff), (uint8_t)(x >> 8), (uint8_t)(y & 0xff), (uint8_t)(y >> 8), mode };
+    sv_broadcast_joined_except(sv, id, pkt, 6);
+}
+
+/* FUN_1401d11a0 -> FUN_140177230: portalfire [50, color u8, tx i32, ty i32] */
+void cs2d_sv_portal_fire(cs2d_server_t *sv, int id, uint8_t color, int32_t tx, int32_t ty)
+{
+    if (!sv || id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive) return;
+
+    int c = color & 1;
+    pl->portal_x[c] = tx;
+    pl->portal_y[c] = ty;
+    pl->portal_active[c] = true;
+
+    /* Broadcast relay: [50, player_id u8, color u8, tx i32, ty i32] (11 bytes) */
+    uint8_t pkt[11];
+    pkt[0] = 50;
+    pkt[1] = (uint8_t)id;
+    pkt[2] = (uint8_t)c;
+    memcpy(&pkt[3], &tx, 4);
+    memcpy(&pkt[7], &ty, 4);
+    sv_broadcast_joined(sv, pkt, 11);
+}
+
+/* FUN_1401d26a0 -> FUN_1401694e0: weapon impulse [56, value u8] */
+void cs2d_sv_weapon_impulse(cs2d_server_t *sv, int id, uint8_t val)
+{
+    if (!sv || id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive) return;
+
+    uint8_t pkt[3] = { 56, (uint8_t)id, val };
+    sv_broadcast_joined_except(sv, id, pkt, 3);
+}
+
+/* FUN_1401d3840 -> FUN_140192080: firedirection [68, dir u16] */
+void cs2d_sv_fire_direction(cs2d_server_t *sv, int id, uint16_t dir)
+{
+    if (!sv || id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive) return;
+
+    pl->rot = (float)dir / 182.04445f;
+    pl->rot_flag = 1;
+
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_player_t *spec = &sv->players[i];
+        if (!spec->used || spec->alive || spec->spectating_player != id) continue;
+        cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
+        if (c && spec->joined) {
+            cs2d_pkt_t *p = cs2d_sv_packet(sv, c, false, false);
+            cs2d_pkt_w_byte(p, 70);
+            cs2d_pkt_w_byte(p, (uint8_t)id);
+            cs2d_pkt_w_short(p, dir);
+        }
+    }
 }
 
 /* ========================================================================= */
@@ -4475,6 +4581,37 @@ void cs2d_sv_wrench_hit(cs2d_server_t *sv, int id)
         if (pl->money <= 99) return;                 /* needs $100 */
         if (cs2d_sv_object_upgrade(sv, o->id, id, 1) == 1) {
             cs2d_sv_set_playerdata(sv, id, 2, pl->money - 100);
+        }
+    }
+}
+
+/* reqcld(id, mode [, param]): FUN_140129a50 / FUN_1401780d0
+ * Sends reliable packet [53, mode u8 (, param string if mode 4 or 5)] */
+void cs2d_sv_reqcld(cs2d_server_t *sv, int id, int mode, const char *param)
+{
+    if (!sv) return;
+    if (id > 0 && id <= CS2D_SV_MAX_PLAYERS) {
+        cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, id);
+        if (c) {
+            cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+            cs2d_pkt_w_byte(p, 53);
+            cs2d_pkt_w_byte(p, (uint8_t)mode);
+            if ((mode == 4 || mode == 5) && param && param[0]) {
+                cs2d_pkt_w_str(p, param);
+            }
+        }
+    } else if (id == 0) {
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            if (!sv->players[i].used || !sv->players[i].joined) continue;
+            cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
+            if (c) {
+                cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+                cs2d_pkt_w_byte(p, 53);
+                cs2d_pkt_w_byte(p, (uint8_t)mode);
+                if ((mode == 4 || mode == 5) && param && param[0]) {
+                    cs2d_pkt_w_str(p, param);
+                }
+            }
         }
     }
 }

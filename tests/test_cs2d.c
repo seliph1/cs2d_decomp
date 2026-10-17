@@ -6522,6 +6522,150 @@ static bool test_server_move_aim_messages(void)
     return true;
 }
 
+/* In-game spray [28], vote [43], leaderboard [230], and opcodes < 7 (FUN_1401bcd60, FUN_1401d0050, FUN_1401d8360, FUN_1401e3cf0) */
+static bool test_server_spray_vote_leaderboard_messages(void)
+{
+    printf("\n=== Testing Dedicated Server [28] spray, [43] vote, [230] leaderboard & opcode < 7 ===\n");
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    cs2d_sv_player_t *pl = &sv.players[1];
+    pl->used = true; pl->joined = true; pl->team = 1; pl->alive = true; pl->health = 100;
+    pl->conn = 0;
+
+    /* 1. Spray [28, 0, x u16, y u16, mode u8] followed by flashlight [57, 1]: must consume all bytes without desync */
+    static const uint8_t m_spray[] = { 28, 0, 0x40, 0x01, 0xf0, 0x00, 3, 57, 1 };
+    int left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_spray, (int)sizeof(m_spray));
+    if (left != 0) TEST_FAIL("[28] spray", "did not consume spray + flashlight bytes cleanly");
+
+    /* 2. Vote [43, 1, target u16] (votekick) */
+    static const uint8_t m_vote_kick[] = { 43, 1, 2, 0 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_vote_kick, (int)sizeof(m_vote_kick));
+    if (left != 0) TEST_FAIL("[43] votekick", "did not consume 3 payload bytes");
+    if (pl->votekick != 2) TEST_FAIL("[43] votekick", "pl->votekick not set to target id");
+
+    /* 3. Vote [43, 2, map u16] (votemap) */
+    static const uint8_t m_vote_map[] = { 43, 2, 7, 0 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_vote_map, (int)sizeof(m_vote_map));
+    if (left != 0) TEST_FAIL("[43] votemap", "did not consume 3 payload bytes");
+    if (pl->votemap != 7) TEST_FAIL("[43] votemap", "pl->votemap not set to map index");
+
+    /* 4. Leaderboard [230, 0] timestamp request */
+    static const uint8_t m_lb_ts[] = { 230, 0 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_lb_ts, (int)sizeof(m_lb_ts));
+    if (left != 0) TEST_FAIL("[230, 0]", "did not consume timestamp request byte");
+
+    /* 5. Leaderboard [230, 1, rank u16] row request */
+    static const uint8_t m_lb_row[] = { 230, 1, 1, 0 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_lb_row, (int)sizeof(m_lb_row));
+    if (left != 0) TEST_FAIL("[230, 1]", "did not consume row request bytes");
+
+    /* 6. Opcode < 7 (padding / control residual: 0, 3) must be dropped silently without desync */
+    static const uint8_t m_pad[] = { 0, 0, 0, 0 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_pad, (int)sizeof(m_pad));
+    if (left != 3) TEST_FAIL("opcode 0 drop", "expected 3 bytes left after dropping at opcode 0");
+
+    static const uint8_t m_pad3[] = { 3 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_pad3, (int)sizeof(m_pad3));
+    if (left != 0) TEST_FAIL("opcode 3 drop", "expected 0 bytes left after dropping lone opcode 3");
+
+    TEST_PASS("Dedicated server [28] spray (6b), [43] vote (3b), [230] leaderboard & opcode < 7 handled cleanly");
+    free(sv.conns[0].pending);
+    return true;
+}
+
+static bool test_server_entity_and_world_interactions(void)
+{
+    printf("\n=== Testing Dedicated Server: Client-World/Entity Interactions ([31], [50], [56], [60], [68], [35-37], [65]) ===\n");
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    cs2d_sv_init_env_items(&sv);
+
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    cs2d_sv_player_t *pl = &sv.players[1];
+    pl->used = true; pl->joined = true; pl->team = 1; pl->alive = true; pl->health = 100;
+    pl->conn = 0; pl->x = 320.0f; pl->y = 320.0f;
+
+    /* Player 2 for relays */
+    sv.conns[1].active = true;
+    sv.conns[1].player = 2;
+    sv.conns[1].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    cs2d_sv_player_t *pl2 = &sv.players[2];
+    pl2->used = true; pl2->joined = true; pl2->team = 2; pl2->alive = true; pl2->health = 100;
+    pl2->conn = 1; pl2->x = 500.0f; pl2->y = 500.0f;
+
+    /* 1. Entity event [31, x u16, y u16, mode u8] */
+    static const uint8_t m_ee[] = { 31, 10, 0, 15, 0, 2 };
+    int left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_ee, (int)sizeof(m_ee));
+    if (left != 0) TEST_FAIL("[31] entityevent", "did not consume 5 payload bytes");
+
+    /* 2. Portalfire [50, color u8, tx i32, ty i32] */
+    static const uint8_t m_portal[] = { 50, 0, 40, 0, 0, 0, 60, 0, 0, 0 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_portal, (int)sizeof(m_portal));
+    if (left != 0) TEST_FAIL("[50] portalfire", "did not consume 9 payload bytes");
+    if (!pl->portal_active[0] || pl->portal_x[0] != 40 || pl->portal_y[0] != 60) {
+        TEST_FAIL("[50] portalfire", "portal 0 position/active not recorded");
+    }
+
+    /* 3. Weapon impulse [56, value u8] */
+    static const uint8_t m_impulse[] = { 56, 12 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_impulse, (int)sizeof(m_impulse));
+    if (left != 0) TEST_FAIL("[56] weapon impulse", "did not consume 1 payload byte");
+
+    /* 4. Specflash [60, state u8] */
+    static const uint8_t m_specflash[] = { 60, 1 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_specflash, (int)sizeof(m_specflash));
+    if (left != 0) TEST_FAIL("[60] specflash", "did not consume 1 payload byte");
+    if (pl->specflash != 1) TEST_FAIL("[60] specflash", "pl->specflash not updated");
+
+    /* 5. Firedirection [68, dir u16] */
+    uint16_t dir = (uint16_t)(90.0f * 182.04445f);
+    uint8_t m_firedir[] = { 68, (uint8_t)(dir & 0xff), (uint8_t)(dir >> 8) };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_firedir, (int)sizeof(m_firedir));
+    if (left != 0) TEST_FAIL("[68] firedirection", "did not consume 2 payload bytes");
+    float diff = pl->rot - 90.0f;
+    if (diff < -1.0f || diff > 1.0f) TEST_FAIL("[68] firedirection", "pl->rot did not match 90 deg");
+
+    /* 6. Dynamic objects and positionalsound dropped cleanly (server returns 3 -> drops datagram) */
+    static const uint8_t m_drop35[] = { 35, 1, 0 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_drop35, (int)sizeof(m_drop35));
+    if (left != 2) TEST_FAIL("[35] drop", "expected 2 unread bytes on drop");
+
+    static const uint8_t m_drop36[] = { 36, 1, 0, 5 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_drop36, (int)sizeof(m_drop36));
+    if (left != 3) TEST_FAIL("[36] drop", "expected 3 unread bytes on drop");
+
+    static const uint8_t m_drop37[] = { 37, 1, 0, 100 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_drop37, (int)sizeof(m_drop37));
+    if (left != 3) TEST_FAIL("[37] drop", "expected 3 unread bytes on drop");
+
+    static const uint8_t m_drop65[] = { 65, 10, 0, 20, 0, 4, 't','e','s','t' };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_drop65, (int)sizeof(m_drop65));
+    if (left != 9) TEST_FAIL("[65] drop", "expected 9 unread bytes on drop");
+
+    /* 6b. Flashlight [57, state u8] */
+    static const uint8_t m_flash[] = { 57, 1 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_flash, (int)sizeof(m_flash));
+    if (left != 0) TEST_FAIL("[57] flashlight", "did not consume 1 payload byte");
+    if (pl->flashlight != 1) TEST_FAIL("[57] flashlight", "pl->flashlight not updated");
+
+    /* 7. Use button [26, mode=100, data=0, tx=10, ty=10] within reach */
+    uint8_t m_use_btn[] = { 26, 100, 0, 0, 0, 0, 10, 0, 10, 0 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_use_btn, (int)sizeof(m_use_btn));
+    if (left != 0) TEST_FAIL("[26, 100] usebutton", "did not consume 9 use bytes");
+
+    free(sv.conns[0].pending);
+    free(sv.conns[1].pending);
+    TEST_PASS("Dedicated server: entityevent [31], portalfire [50], impulse [56], specflash [60], firedir [68], dropped [35-37,65], usebutton [26,100]");
+    return true;
+}
+
 static bool test_server_phase2_respawn_and_speeder(void)
 {
     printf("\n=== Testing Dedicated Server Phase 2: Team Suicide, Respawn Modes & Anti-Speeder ===\n");
@@ -9286,6 +9430,133 @@ static bool test_sv_deathmatch_and_timelimit(void)
     return true;
 }
 
+/* =========================================================================
+ * Client -> Server / Lua Communication: [53] reqcld/clientdata, [227/228] key,
+ * [232] clientsetting, [225] voicechat, [80..87] physics rotation & drop
+ * ========================================================================= */
+static bool test_server_client_lua_communication(void)
+{
+    printf("\n=== Testing Dedicated Server: Client -> Lua Communication ([53], [227/228], [232], [225], [80..87]) ===\n");
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.set.sv_voicechat = 1;
+
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    cs2d_sv_player_t *pl = &sv.players[1];
+    pl->used = true; pl->joined = true; pl->team = 1; pl->alive = true; pl->health = 100;
+    pl->conn = 0; pl->x = 320.0f; pl->y = 320.0f;
+
+    /* Initialize Lua state */
+    cs2d_sv_lua_init(&sv);
+
+    /* Hook trackers in Lua */
+    cs2d_sv_lua_dostring(&sv,
+        "g_cld_id, g_cld_mode, g_cld_d1, g_cld_d2 = 0, 0, 0, 0\n"
+        "function on_clientdata(id, mode, d1, d2)\n"
+        "    g_cld_id, g_cld_mode, g_cld_d1, g_cld_d2 = id, mode, d1, d2\n"
+        "end\n"
+        "addhook('clientdata', 'on_clientdata')\n"
+        "g_key_id, g_key_str, g_key_state = 0, '', -1\n"
+        "function on_key(id, k, st)\n"
+        "    g_key_id, g_key_str, g_key_state = id, k, st\n"
+        "end\n"
+        "addhook('key', 'on_key')\n"
+        "g_cs_id, g_cs_set, g_cs_v1, g_cs_v2 = 0, 0, 0, 0\n"
+        "function on_setting(id, s, v1, v2)\n"
+        "    g_cs_id, g_cs_set, g_cs_v1, g_cs_v2 = id, s, v1, v2\n"
+        "end\n"
+        "addhook('clientsetting', 'on_setting')\n"
+    );
+
+    /* 1. Test reqcld command from Lua / C */
+    cs2d_sv_reqcld(&sv, 1, 4, "gfx/player/t1.bmp");
+    cs2d_pkt_t *out_p = &sv.conns[0].out;
+    if (out_p->pos < 3 || out_p->buf[0] != 53 || out_p->buf[1] != 4) {
+        TEST_FAIL("reqcld", "failed to write [53, 4, ...] packet");
+    }
+    out_p->pos = 0; /* Reset output packet */
+
+    /* 2. Client response [53] mode 0: cursor position */
+    static const uint8_t m_cld0[] = { 53, 0, 100, 0, 200, 0 };
+    int left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_cld0, (int)sizeof(m_cld0));
+    if (left != 0) TEST_FAIL("[53] clientdata mode 0", "did not consume payload bytes");
+    cs2d_sv_lua_dostring(&sv, "assert(g_cld_id == 1 and g_cld_mode == 0 and g_cld_d1 == 100 and g_cld_d2 == 200)");
+
+    /* Client response [53] mode 2: abs cursor with +0x8000 offset */
+    uint16_t abs_x = (uint16_t)(500 + 0x8000);
+    uint16_t abs_y = (uint16_t)(600 + 0x8000);
+    uint8_t m_cld2[] = { 53, 2, (uint8_t)(abs_x & 0xff), (uint8_t)(abs_x >> 8),
+                                (uint8_t)(abs_y & 0xff), (uint8_t)(abs_y >> 8) };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_cld2, (int)sizeof(m_cld2));
+    if (left != 0) TEST_FAIL("[53] clientdata mode 2", "did not consume payload bytes");
+    cs2d_sv_lua_dostring(&sv, "assert(g_cld_id == 1 and g_cld_mode == 2 and g_cld_d1 == 500 and g_cld_d2 == 600)");
+
+    /* Client response [53] mode 4: loaded bool + checksum string */
+    static const uint8_t m_cld4[] = { 53, 4, 1, 4, 's', 'h', 'a', '1' };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_cld4, (int)sizeof(m_cld4));
+    if (left != 0) TEST_FAIL("[53] clientdata mode 4", "did not consume payload bytes");
+    cs2d_sv_lua_dostring(&sv, "assert(g_cld_id == 1 and g_cld_mode == 4 and g_cld_d1 == 1 and g_cld_d2 == 'sha1')");
+
+    /* 3. Key Press [227] and Release [228] */
+    /* Key 'W' = 87 */
+    static const uint8_t m_key_press[] = { 227, 87, 0 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_key_press, (int)sizeof(m_key_press));
+    if (left != 0) TEST_FAIL("[227] key press", "did not consume payload bytes");
+    cs2d_sv_lua_dostring(&sv, "assert(g_key_id == 1 and (g_key_str == 'W' or g_key_str == 'w') and g_key_state == 1)");
+
+    static const uint8_t m_key_rel[] = { 228, 87, 0 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_key_rel, (int)sizeof(m_key_rel));
+    if (left != 0) TEST_FAIL("[228] key release", "did not consume payload bytes");
+    cs2d_sv_lua_dostring(&sv, "assert(g_key_id == 1 and (g_key_str == 'W' or g_key_str == 'w') and g_key_state == 0)");
+
+    /* 4. Client Setting [232] sub 1 (res), sub 2 (4:3), sub 3 (windowed) */
+    static const uint8_t m_cs1[] = { 232, 1, 128, 7, 56, 4 }; /* 1920x1080: 1920=0x0780, 1080=0x0438 */
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_cs1, (int)sizeof(m_cs1));
+    if (left != 0) TEST_FAIL("[232] setting res", "did not consume payload bytes");
+    if (pl->screen_w != 1920 || pl->screen_h != 1080) {
+        TEST_FAIL("[232] setting res", "player screen_w/h mismatch");
+    }
+    cs2d_sv_lua_dostring(&sv, "assert(player(1, 'screenw') == 1920 and player(1, 'screenh') == 1080)");
+
+    static const uint8_t m_cs2[] = { 232, 2, 1 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_cs2, (int)sizeof(m_cs2));
+    if (left != 0) TEST_FAIL("[232] setting 4:3", "did not consume payload bytes");
+    if (pl->screen_aspect != 1) TEST_FAIL("[232] setting 4:3", "player screen_aspect mismatch");
+    cs2d_sv_lua_dostring(&sv, "assert(player(1, 'screen4by3') == true)");
+
+    static const uint8_t m_cs3[] = { 232, 3, 1 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_cs3, (int)sizeof(m_cs3));
+    if (left != 0) TEST_FAIL("[232] setting windowed", "did not consume payload bytes");
+    if (pl->screen_windowed != 1) TEST_FAIL("[232] setting windowed", "player screen_windowed mismatch");
+    cs2d_sv_lua_dostring(&sv, "assert(player(1, 'windowed') == true)");
+
+    /* 5. Player Physics Rotation [80] */
+    uint16_t rdir = (uint16_t)(180.0f / 0.005493164f); /* 180 deg */
+    uint8_t m_rot80[] = { 80, 0x80, (uint8_t)(rdir & 0xff), (uint8_t)(rdir >> 8) };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_rot80, (int)sizeof(m_rot80));
+    if (left != 0) TEST_FAIL("[80] rot", "did not consume payload bytes");
+    float rdiff = pl->rot - 180.0f;
+    if (rdiff < -1.0f || rdiff > 1.0f) TEST_FAIL("[80] rot", "pl->rot did not match 180 deg");
+
+    /* 6. Physics updates [81..87] drop datagram */
+    static const uint8_t m_phys81[] = { 81, 1, 2, 3 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_phys81, (int)sizeof(m_phys81));
+    if (left != 3) TEST_FAIL("[81] physics drop", "expected datagram drop (3 bytes unread)");
+
+    /* 7. Voice Chat [225] */
+    static const uint8_t m_voice[] = { 225, 0, 1, 4, 0, 1, 2, 3, 4 };
+    left = cs2d_sv_recv_payload(&sv, &sv.conns[0], m_voice, (int)sizeof(m_voice));
+    if (left != 0) TEST_FAIL("[225] voicechat", "did not consume voice packet");
+
+    cs2d_sv_lua_close(&sv);
+    free(sv.conns[0].pending);
+    TEST_PASS("Dedicated server: [53] reqcld/clientdata, [227/228] key, [232] clientsetting, [80..87] rot/drop & [225] voice");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -9294,7 +9565,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 87;
+    int total = 90;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -9361,6 +9632,8 @@ int main(void)
     if (test_server_join()) passed++;
     if (test_server_phase2_items_and_chat()) passed++;
     if (test_server_move_aim_messages()) passed++;
+    if (test_server_spray_vote_leaderboard_messages()) passed++;
+    if (test_server_entity_and_world_interactions()) passed++;
     if (test_server_phase2_respawn_and_speeder()) passed++;
     if (test_server_phase3_rcon_and_commands()) passed++;
     if (test_server_phase4_lua()) passed++;
@@ -9383,6 +9656,7 @@ int main(void)
     if (test_server_network_and_protocol()) passed++;
     if (test_sv_gamemode_and_env_items()) passed++;
     if (test_sv_deathmatch_and_timelimit()) passed++;
+    if (test_server_client_lua_communication()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

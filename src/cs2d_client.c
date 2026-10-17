@@ -2719,6 +2719,18 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         client->spec.server_mode = value & 0xFF;
                         cs2d_client_console_print(client, 255, 220, 0, "spec mode changed to %d", value);
                     }
+                    if (setting == 7) {
+                        /* sv_gamemode (FUN_1401e3f10 case 0x7): update mode and show center banner */
+                        client->net_sv_gamemode = value;
+                        static const char *s_mode_names[] = {
+                            "Standard", "Deathmatch", "Team Deathmatch", "Construction", "Zombies!"
+                        };
+                        const char *mname = (value >= 0 && value < 5) ? s_mode_names[value] : "Unknown";
+                        char banner[96];
+                        snprintf(banner, sizeof(banner), "game mode changed to %s", mname);
+                        cs2d_client_center_msg(client, 255, 220, 0, banner);
+                        cs2d_client_console_print(client, 255, 220, 0, "%s", banner);
+                    }
                     if (setting == 14) {
                         /* mp_flashlight (FUN_1401e3f10 case 0xe): Thud_msg.add_center in (255, 220, 0) */
                         client->net_flashlight = value;

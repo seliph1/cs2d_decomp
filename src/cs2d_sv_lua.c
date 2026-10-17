@@ -355,8 +355,10 @@ static int l_player(lua_State *L)
     if (strcmp(prop, "maxhealth") == 0) { lua_pushinteger(L, pl->maxhealth); return 1; }
     if (strcmp(prop, "rcon") == 0) { lua_pushboolean(L, pl->rcon_auth); return 1; }
     if (strcmp(prop, "spectating") == 0) { lua_pushinteger(L, pl->spectating_player); return 1; }
-    if (strcmp(prop, "screenw") == 0) { lua_pushinteger(L, 850); return 1; }
-    if (strcmp(prop, "screenh") == 0) { lua_pushinteger(L, 480); return 1; }
+    if (strcmp(prop, "screenw") == 0) { lua_pushinteger(L, pl->screen_w > 0 ? pl->screen_w : 850); return 1; }
+    if (strcmp(prop, "screenh") == 0) { lua_pushinteger(L, pl->screen_h > 0 ? pl->screen_h : 480); return 1; }
+    if (strcmp(prop, "screen4by3") == 0) { lua_pushboolean(L, pl->screen_aspect ? 1 : 0); return 1; }
+    if (strcmp(prop, "windowed") == 0) { lua_pushboolean(L, pl->screen_windowed ? 1 : 0); return 1; }
 
     return 0;
 }
@@ -752,6 +754,7 @@ static int l_game(lua_State *L)
     if (strcmp(key, "round") == 0) { lua_pushinteger(L, 1); return 1; }
     if (strcmp(key, "score_t") == 0) { lua_pushinteger(L, sv->score_t); return 1; }
     if (strcmp(key, "score_ct") == 0) { lua_pushinteger(L, sv->score_ct); return 1; }
+    if (strcmp(key, "time") == 0) { lua_pushinteger(L, cs2d_sv_now() - sv->start_ms); return 1; }
     if (strcmp(key, "maptimeleft") == 0) {
         if (sv->set.mp_timelimit <= 0) {
             lua_pushnumber(L, 1000000.0);
@@ -767,6 +770,7 @@ static int l_game(lua_State *L)
         lua_pushstring(L, cs2d_sv_next_map(sv));
         return 1;
     }
+    if (strcmp(key, "ticks") == 0) { lua_pushinteger(L, sv->set.ticks); return 1; }
     if (strcmp(key, "port") == 0) { lua_pushinteger(L, sv->set.sv_hostport); return 1; }
     if (strcmp(key, "sysfolder") == 0) { lua_pushstring(L, "sys"); return 1; }
     if (strcmp(key, "bombplanted") == 0) { lua_pushboolean(L, sv->bomb_planted); return 1; }
@@ -1388,10 +1392,15 @@ static int l_removeallbinds(lua_State *L)
     return 1;
 }
 
-/* reqcld(...) */
+/* reqcld(id, mode [, param]) */
 static int l_reqcld(lua_State *L)
 {
-    (void)L;
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int id = (int)luaL_checkinteger(L, 1);
+    int mode = (int)luaL_checkinteger(L, 2);
+    const char *param = (lua_gettop(L) >= 3 && !lua_isnil(L, 3)) ? lua_tostring(L, 3) : "";
+    cs2d_sv_reqcld(sv, id, mode, param);
     return 0;
 }
 
@@ -2577,10 +2586,23 @@ void cs2d_sv_lua_hook_movetile(cs2d_server_t *sv, int id, int x, int y)
     dispatch_hook(sv, "movetile", 3, push_3int, &a, NULL, 0);
 }
 
-void cs2d_sv_lua_hook_clientdata(cs2d_server_t *sv, int id, int mode, int data1, int data2)
+static int push_clientdata(lua_State *L, void *ctx) {
+    hook_args_t *a = (hook_args_t *)ctx;
+    lua_pushinteger(L, a->a); /* id */
+    lua_pushinteger(L, a->b); /* mode */
+    lua_pushinteger(L, a->c); /* data1 */
+    if (a->s1) {
+        lua_pushstring(L, a->s1); /* data2 as string for mode 4/5 */
+    } else {
+        lua_pushinteger(L, a->d); /* data2 as integer */
+    }
+    return 4;
+}
+
+void cs2d_sv_lua_hook_clientdata(cs2d_server_t *sv, int id, int mode, int data1, int data2, const char *sdata)
 {
-    hook_args_t a = { .a = id, .b = mode, .c = data1, .d = data2 };
-    dispatch_hook(sv, "clientdata", 4, push_4int_vals, &a, NULL, 0);
+    hook_args_t a = { .a = id, .b = mode, .c = data1, .d = data2, .s1 = sdata };
+    dispatch_hook(sv, "clientdata", 4, push_clientdata, &a, NULL, 0);
 }
 
 void cs2d_sv_lua_hook_clientsetting(cs2d_server_t *sv, int id, int setting, int val1, int val2)

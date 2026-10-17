@@ -10,6 +10,7 @@
 #include "cs2d_server.h"
 #include "cs2d_weapons.h"
 #include "cs2d_sv_lua.h"
+#include "cs2d_bind.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -134,6 +135,7 @@ void cs2d_sv_settings_set(cs2d_sv_settings_t *s, const char *key, const char *va
     SV_INT(lagcompensation) SV_INT(ticks) SV_INT(leaderboard) SV_INT(physics)
     SV_INT(mp_luamap) SV_INT(mp_randomspawn) SV_INT(mp_curtailedexplosions) SV_INT(mp_zombiespeedmod) SV_INT(mp_kevlar)
     SV_INT(mp_timelimit)
+    else if (_stricmp(key, "gamemode") == 0) { s->sv_gamemode = atoi(val); }
     else if (_stricmp(key, "timelimit") == 0) { s->mp_timelimit = atoi(val); }
     else if (_stricmp(key, "randomspawn") == 0) { s->mp_randomspawn = atoi(val); }
     /* Construction (read from the CS2D.exe .data defaults; not in the [237] live broadcast of the original) */
@@ -158,17 +160,14 @@ void cs2d_sv_settings_set(cs2d_sv_settings_t *s, const char *key, const char *va
 const char *cs2d_sv_settings_get(const cs2d_sv_settings_t *s, const char *key)
 {
     if (!s || !key || !key[0]) return NULL;
-    for (int i = 0; i < s->cvar_count; i++) {
-        if (_stricmp(s->cvars[i].key, key) == 0) {
-            return s->cvars[i].val;
-        }
-    }
+
+    /* Typed struct fields have priority so live runtime mutations reflect immediately */
     if (_stricmp(key, "sv_name") == 0) return s->sv_name;
     if (_stricmp(key, "sv_map") == 0) return s->sv_map;
     if (_stricmp(key, "sv_password") == 0) return s->sv_password;
     if (_stricmp(key, "mp_luaserver") == 0) return s->mp_luaserver;
     if (_stricmp(key, "mp_supply_items") == 0) return s->mp_supply_items;
-    /* numeric settings still at their default (never set by cfg / console): read the typed field */
+
     static char num[16];
 #define SV_GET_INT(name) if (_stricmp(key, #name) == 0) { snprintf(num, sizeof(num), "%d", (int)s->name); return num; }
     SV_GET_INT(sv_fow) SV_GET_INT(sv_specmode) SV_GET_INT(sv_gamemode) SV_GET_INT(mp_roundtime)
@@ -179,6 +178,16 @@ const char *cs2d_sv_settings_get(const cs2d_sv_settings_t *s, const char *key)
     SV_GET_INT(mp_teleportreload) SV_GET_INT(mp_dispenser_health) SV_GET_INT(mp_dispenser_money)
     SV_GET_INT(mp_dmspawnmoney) SV_GET_INT(mp_timelimit) SV_GET_INT(mp_randomspawn)
 #undef SV_GET_INT
+    if (_stricmp(key, "gamemode") == 0) { snprintf(num, sizeof(num), "%d", (int)s->sv_gamemode); return num; }
+    if (_stricmp(key, "timelimit") == 0) { snprintf(num, sizeof(num), "%d", (int)s->mp_timelimit); return num; }
+    if (_stricmp(key, "randomspawn") == 0) { snprintf(num, sizeof(num), "%d", (int)s->mp_randomspawn); return num; }
+
+    /* Generic cvar fallback */
+    for (int i = 0; i < s->cvar_count; i++) {
+        if (_stricmp(s->cvars[i].key, key) == 0) {
+            return s->cvars[i].val;
+        }
+    }
     return NULL;
 }
 
@@ -613,8 +622,8 @@ void cs2d_sv_write_player_record(cs2d_pkt_t *p, int id, const cs2d_sv_player_t *
     cs2d_pkt_w_byte(p, 0);                              /* vtable +0x200: the special byte */
     cs2d_pkt_w_byte(p, 0);                              /* +0x2e0 weapon object: +0xc type */
     cs2d_pkt_w_byte(p, 0);                              /*                       +0x1c mode */
-    cs2d_pkt_w_byte(p, 0);                              /* +0x3dc votekick */
-    cs2d_pkt_w_short(p, 0xffff);                        /* +0x3e0 votemap: -1 = no vote (proxy) */
+    cs2d_pkt_w_byte(p, (uint8_t)pl->votekick);          /* +0x3dc votekick */
+    cs2d_pkt_w_short(p, (uint16_t)(pl->votemap ? pl->votemap : 0xffff)); /* +0x3e0 votemap: -1 = no vote (proxy) */
 }
 
 static void sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
@@ -1727,7 +1736,7 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
             int new_mode = atoi(a1);
             char old_str[16];
             snprintf(old_str, sizeof(old_str), "%d", old_mode);
-            sv->set.sv_gamemode = new_mode;
+            cs2d_sv_settings_set(&sv->set, "sv_gamemode", a1);
             sv_broadcast_setting(sv, "sv_gamemode", old_str);
             cs2d_server_print("sv_gamemode set to \"%d\"", new_mode);
             if (new_mode != old_mode) {
@@ -1889,6 +1898,21 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
     return false;
 }
 
+static const char *sv_resolve_key_name(cs2d_server_t *sv, int key, char *buf, size_t buf_sz)
+{
+    const char *name = cs2d_bind_key_name(key);
+    if (sv && sv->lua) {
+        cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
+        for (int i = 0; i < lua->bind_key_count; i++) {
+            if (name && _stricmp(name, lua->bind_keys[i]) == 0) return lua->bind_keys[i];
+            if (atoi(lua->bind_keys[i]) == key) return lua->bind_keys[i];
+        }
+    }
+    if (name) return name;
+    snprintf(buf, buf_sz, "%d", key);
+    return buf;
+}
+
 /* Messages of a joined player. Phase 1 handles the team choice; everything else is skipped by length
  * where it is known and ends the datagram otherwise (like the original does on an unknown opcode). */
 static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int op)
@@ -2015,10 +2039,34 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         if (pl) cs2d_sv_projectile(sv, c->player, type, (uint16_t)x, (uint16_t)y, (uint16_t)dir, (uint16_t)flydist);
         return true;
     }
-    case 28: { /* spray: [28, kind u8, sub u8] */
-        if (rd_left(r) < 2) return false;
-        rd_byte(r); rd_byte(r);
-        if (pl) cs2d_sv_lua_hook_spray(sv, c->player);
+    case 28: { /* spray / logo: [28, sub u8, ...] (FUN_1401bcd60) */
+        if (rd_left(r) < 1) return false;
+        int sub = rd_byte(r);
+        if (sub == 0) {
+            /* in-game spray: [28, 0, x u16, y u16, mode u8] (FUN_1401bcd60 -> FUN_14015a890) */
+            if (rd_left(r) < 5) return false;
+            int sx = rd_short(r), sy = rd_short(r);
+            int smode = rd_byte(r);
+            if (pl) {
+                cs2d_sv_lua_hook_spray(sv, c->player);
+                /* Relay [28, player, 0, x, y, mode] to other joined players */
+                for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+                    cs2d_sv_conn_t *oc = conn_of_player(sv, i);
+                    if (!oc || !sv->players[i].joined || i == c->player) continue;
+                    cs2d_pkt_t *p28 = sv_packet(sv, oc, true, false);
+                    cs2d_pkt_w_byte(p28, 28);
+                    cs2d_pkt_w_byte(p28, (uint8_t)c->player);
+                    cs2d_pkt_w_byte(p28, 0);
+                    cs2d_pkt_w_short(p28, (uint16_t)sx);
+                    cs2d_pkt_w_short(p28, (uint16_t)sy);
+                    cs2d_pkt_w_byte(p28, (uint8_t)smode);
+                }
+            }
+        } else if (sub == 2) {
+            /* logo trigger / transfer request: [28, 2] (FUN_1401bcd60: 0x1401bcf57 calls FUN_140048950) */
+        } else {
+            return false;
+        }
         return true;
     }
     case 30: { /* process/bomb: [30, mode u8] (FUN_1401ce7c0) */
@@ -2031,16 +2079,203 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         }
         return true;
     }
+    case 31: { /* entity event: [31, x u16, y u16, mode u8] (FUN_1401cead0 -> FUN_14016e0a0) */
+        if (rd_left(r) < 5) return false;
+        int ex = rd_short(r), ey = rd_short(r);
+        int emode = rd_byte(r);
+        if (pl) cs2d_sv_entity_event(sv, c->player, (uint16_t)ex, (uint16_t)ey, (uint8_t)emode);
+        return true;
+    }
+    case 35: { /* dynamic object remove: (FUN_1401cf350: server returns 3 -> drop datagram) */
+        return false;
+    }
+    case 36: { /* dynamic object mode: (FUN_1401cf4b0: server returns 3 -> drop datagram) */
+        return false;
+    }
+    case 37: { /* dynamic object health: (FUN_1401cf630: server returns 3 -> drop datagram) */
+        return false;
+    }
     case 41: { /* kill projectile: [41, proj_id u16] (FUN_1401cfd00) */
         if (rd_left(r) < 2) return false;
         int proj_id = rd_short(r);
         if (pl) cs2d_sv_kill_projectile(sv, c->player, proj_id);
         return true;
     }
+    case 50: { /* portalfire: [50, color u8, tx i32, ty i32] (FUN_1401d11a0 -> FUN_140177230) */
+        if (rd_left(r) < 9) return false;
+        int color = rd_byte(r);
+        int32_t tx = (int32_t)rd_int(r);
+        int32_t ty = (int32_t)rd_int(r);
+        if (pl) cs2d_sv_portal_fire(sv, c->player, (uint8_t)color, tx, ty);
+        return true;
+    }
+    case 53: { /* clientdata response: [53, mode u8, ...] (FUN_1401d16f0) */
+        if (rd_left(r) < 1) return false;
+        int mode = rd_byte(r);
+        int d1 = 0, d2 = 0;
+        char sdata_buf[256];
+        char *sdata = NULL;
+        if (mode == 0) {
+            if (rd_left(r) < 4) return false;
+            d1 = rd_short(r);
+            d2 = rd_short(r);
+        } else if (mode == 1 || mode == 2) {
+            if (rd_left(r) < 4) return false;
+            d1 = rd_short(r) - 0x8000;
+            d2 = rd_short(r) - 0x8000;
+        } else if (mode == 3 || mode == 6) {
+            if (rd_left(r) < 1) return false;
+            d1 = rd_byte(r);
+        } else if (mode == 4) {
+            if (rd_left(r) < 1) return false;
+            d1 = rd_byte(r);
+            rd_str(r, sdata_buf, sizeof(sdata_buf));
+            sdata = sdata_buf;
+        } else if (mode == 5) {
+            if (rd_left(r) < 1) return false;
+            int sub = rd_byte(r);
+            if (sub == 1) {
+                if (rd_left(r) < 1) return false;
+                d1 = rd_byte(r);
+            } else {
+                if (rd_left(r) < 2) return false;
+                d1 = rd_short(r);
+            }
+            rd_str(r, sdata_buf, sizeof(sdata_buf));
+            sdata = sdata_buf;
+        }
+        if (pl) cs2d_sv_lua_hook_clientdata(sv, c->player, mode, d1, d2, sdata);
+        return true;
+    }
+    case 56: { /* weapon impulse: [56, value u8] (FUN_1401d26a0 -> FUN_1401694e0) */
+        if (rd_left(r) < 1) return false;
+        int val = rd_byte(r);
+        if (pl) cs2d_sv_weapon_impulse(sv, c->player, (uint8_t)val);
+        return true;
+    }
     case 57: { /* flashlight: [57, state u8] (FUN_1401d28b0) */
         if (rd_left(r) < 1) return false;
         int state = rd_byte(r);
         if (pl) cs2d_sv_flashlight(sv, c->player, state);
+        return true;
+    }
+    case 60: { /* specflash: [60, state u8] (FUN_1401d2d40 -> FUN_1401b2bf0) */
+        if (rd_left(r) < 1) return false;
+        int state = rd_byte(r);
+        if (pl) cs2d_sv_spec_flash(sv, c->player, (uint8_t)state);
+        return true;
+    }
+    case 65: { /* positionalsound: (FUN_1401d3430: server returns 3 -> drop datagram) */
+        return false;
+    }
+    case 68: { /* firedirection: [68, dir u16] (FUN_1401d3840 -> FUN_140192080) */
+        if (rd_left(r) < 2) return false;
+        int dir = rd_short(r);
+        if (pl) cs2d_sv_fire_direction(sv, c->player, (uint16_t)dir);
+        return true;
+    }
+    case 80: { /* player physics rotation: [80, flags u8, ...] (FUN_1401d4910) */
+        if (rd_left(r) < 1) return false;
+        uint8_t flags = (uint8_t)rd_byte(r);
+        if (flags & 0x40) {
+            if (rd_left(r) < 4) return false;
+            int16_t u1 = (int16_t)rd_short(r);
+            int16_t u2 = (int16_t)rd_short(r);
+            (void)u2;
+            if (u1 < 0) {
+                if (rd_left(r) < 1) return false;
+                rd_byte(r);
+            }
+        }
+        if (flags & 0x80) {
+            if (rd_left(r) < 2) return false;
+            uint16_t dir = (uint16_t)rd_short(r);
+            if (pl) pl->rot = (float)dir * 0.005493164f;
+        }
+        return true;
+    }
+    case 81:
+    case 82:
+    case 83:
+    case 84:
+    case 85:
+    case 86:
+    case 87: {
+        /* Physics client update in dedicated returns 4 (terminate datagram, FUN_1401e3cf0) */
+        return false;
+    }
+    case 225: { /* voice chat: [225, target u8, sub u8, ...] (FUN_1401d68b0) */
+        if (rd_left(r) < 2) return false;
+        int target = rd_byte(r);
+        int sub = rd_byte(r);
+        if (sub == 0) {
+            if (rd_left(r) < 2) return false;
+            (void)rd_short(r);
+            if (pl) cs2d_sv_lua_hook_voice(sv, c->player);
+        } else if (sub == 1) {
+            if (rd_left(r) < 2) return false;
+            int vlen = rd_short(r);
+            if (vlen < 0 || vlen > 1024 || rd_left(r) < vlen) return false;
+            uint8_t vdata[1024];
+            for (int i = 0; i < vlen; i++) vdata[i] = (uint8_t)rd_byte(r);
+            if (sv->set.sv_voicechat != 0) {
+                for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+                    if (i == c->player || !sv->players[i].used || !sv->players[i].joined) continue;
+                    if (target != 0 && target != i) continue;
+                    if (sv->set.sv_voicechat == 2 && sv->players[i].team != pl->team) continue;
+                    cs2d_sv_conn_t *oc = cs2d_sv_conn_of_player(sv, i);
+                    if (oc) {
+                        cs2d_pkt_t *p = sv_packet(sv, oc, false, false);
+                        cs2d_pkt_w_byte(p, 225);
+                        cs2d_pkt_w_byte(p, (uint8_t)c->player);
+                        cs2d_pkt_w_byte(p, 1);
+                        cs2d_pkt_w_short(p, (uint16_t)vlen);
+                        for (int vi = 0; vi < vlen; vi++) cs2d_pkt_w_byte(p, vdata[vi]);
+                    }
+                }
+            }
+        } else if (sub == 2) {
+            if (pl) cs2d_sv_lua_hook_voice(sv, c->player);
+        }
+        return true;
+    }
+    case 227:
+    case 228: { /* key press (227) / release (228): [op, key u16] (FUN_1401bb510, FUN_1401bb620) */
+        if (rd_left(r) < 2) return false;
+        int key = rd_short(r);
+        char kbuf[32];
+        const char *kname = sv_resolve_key_name(sv, key, kbuf, sizeof(kbuf));
+        int state = (op == 227) ? 1 : 0;
+        if (pl) cs2d_sv_lua_hook_key(sv, c->player, kname, state);
+        return true;
+    }
+    case 232: { /* clientsetting: [232, sub u8, ...] (FUN_1401bb730) */
+        if (rd_left(r) < 1) return false;
+        int sub = rd_byte(r);
+        if (sub == 1) {
+            if (rd_left(r) < 4) return false;
+            int w = rd_short(r);
+            int h = rd_short(r);
+            if (pl) {
+                pl->screen_w = w;
+                pl->screen_h = h;
+                cs2d_sv_lua_hook_clientsetting(sv, c->player, 1, w, h);
+            }
+        } else if (sub == 2) {
+            if (rd_left(r) < 1) return false;
+            int s43 = rd_byte(r);
+            if (pl) {
+                pl->screen_aspect = (uint8_t)s43;
+                cs2d_sv_lua_hook_clientsetting(sv, c->player, 2, s43, 0);
+            }
+        } else if (sub == 3) {
+            if (rd_left(r) < 1) return false;
+            int win = rd_byte(r);
+            if (pl) {
+                pl->screen_windowed = (uint8_t)win;
+                cs2d_sv_lua_hook_clientsetting(sv, c->player, 3, win, 0);
+            }
+        }
         return true;
     }
     case 235: { /* luamenu reply: [235, pid u8, slen u16, slen*2 bytes title UTF-16LE, button u8] */
@@ -2136,8 +2371,55 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         }
         return true;
     }
+    case 43: { /* vote: [43, type u8, value u16] (FUN_1401d0050 -> FUN_1401527e0 / FUN_14014ee60) */
+        if (rd_left(r) < 3) return false;
+        int type = rd_byte(r);
+        int val  = rd_short(r);
+        if (pl) {
+            char val_str[16];
+            snprintf(val_str, sizeof(val_str), "%d", val);
+            if (type == 1) {
+                pl->votekick = val;
+                cs2d_sv_lua_hook_vote(sv, c->player, 1, val_str);
+            } else if (type == 2) {
+                pl->votemap = val;
+                cs2d_sv_lua_hook_vote(sv, c->player, 2, val_str);
+            }
+            /* Relay [43, voter, type, value] to all joined players */
+            for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+                cs2d_sv_conn_t *oc = conn_of_player(sv, i);
+                if (!oc || !sv->players[i].joined) continue;
+                cs2d_pkt_t *pv = sv_packet(sv, oc, true, false);
+                cs2d_pkt_w_byte(pv, 43);
+                cs2d_pkt_w_byte(pv, (uint8_t)c->player);
+                cs2d_pkt_w_byte(pv, (uint8_t)type);
+                cs2d_pkt_w_short(pv, (uint16_t)val);
+            }
+        }
+        return true;
+    }
+    case 230: { /* leaderboard: [230, sub u8, ...] (FUN_1401d8360) */
+        if (rd_left(r) < 1) return false;
+        int sub = rd_byte(r);
+        if (sub == 0) {
+            /* request timestamp: sends reliable [230, 0, timestamp i32] */
+            cs2d_pkt_t *p = sv_packet(sv, c, true, false);
+            cs2d_pkt_w_byte(p, 230);
+            cs2d_pkt_w_byte(p, 0);
+            cs2d_pkt_w_int(p, 0); /* 0 timestamp: leaderboard not configured / empty */
+            return true;
+        } else if (sub == 1) {
+            /* request rank entry: [230, 1, rank u16] */
+            if (rd_left(r) < 2) return false;
+            int rank = rd_short(r);
+            (void)rank;
+            /* Returns 0 without sending if empty in original binary (FUN_1401d8360 0x1401d8650) */
+            return true;
+        }
+        return false;
+    }
     default:
-        /* Opcodes without a port yet (e.g. 43, 53, 230). The original runs a handler per opcode and drops the
+        /* Opcodes without a port yet (e.g. 53). The original runs a handler per opcode and drops the
          * rest of the datagram when it returns > 0 (FUN_1401e3cf0); [40] is one of those drops: 0x1401cfba0 returns
          * 3 or 4 without reading anything on a dedicated. Report them on stderr (not the game console) so longer
          * capture_server.sh sessions show which handlers are still missing. */
@@ -2153,6 +2435,10 @@ static void sv_recv_messages(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
         int op = rd_byte(r);
         if (op == 252) {
             sv_recv_join(sv, c, r);
+        } else if (op < 7) {
+            /* FUN_1401e3cf0: opcodes < 7 are control/handshake or padding, not game opcodes (jump table starts at 7).
+             * Drop the rest of the datagram silently matching original binary behaviour. */
+            break;
         } else if (!sv_recv_game(sv, c, r, op)) {
             break;
         }

@@ -20,7 +20,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo [3/3] Compiling dedicated server (cs2d_server.exe)...
-gcc -Wall -Wextra -Iinclude -Ithird_party -Ithird_party/lua51/src src/cs2d_server.c src/cs2d_sv_game.c src/cs2d_sv_lua.c src/cs2d_sv_stubs.c src/cs2d_weapons.c src/cs2d_network.c src/cs2d_map.c src/cs2d_dynobj.c src/cs2d_entities.c src/cs2d_customtile.c src/cs2d_platform.c third_party/lua51/lua_all.c src/main_dedicated.c -lws2_32 -lwinmm -l:libz.a -lm -o cs2d_server.exe
+gcc -Wall -Wextra -Iinclude -Ithird_party -Ithird_party/lua51/src src/cs2d_server.c src/cs2d_sv_game.c src/cs2d_sv_lua.c src/cs2d_sv_stubs.c src/cs2d_weapons.c src/cs2d_network.c src/cs2d_map.c src/cs2d_dynobj.c src/cs2d_entities.c src/cs2d_customtile.c src/cs2d_bind.c src/cs2d_platform.c third_party/lua51/lua_all.c src/main_dedicated.c -lws2_32 -lwinmm -l:libz.a -lm -o cs2d_server.exe
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Failed to compile dedicated server.
     exit /b %ERRORLEVEL%
