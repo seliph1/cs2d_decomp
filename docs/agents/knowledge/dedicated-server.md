@@ -274,6 +274,10 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
 - **Server Menus (`menu`, Opcode `235`):**
   - `menu(id, text)`: sends opcode `[235, title (wlstr), page u8, items (wlstr)]` to target player.
   - Client response `[235, pid, slen, UTF-16LE title, button u8]`: invokes Lua hook `"menu"` with `(id, title, button)`.
+- **Terminal Output & Interactive CMD Console (`print`, `msg`, `msg2`, errors):**
+  - All Lua outputs (`print(...)`, `msg(...)`, `msg2(...)`, Lua runtime/syntax errors) print to `stdout` in the CMD terminal where `cs2d_server.exe` runs, unbuffered (`setvbuf(stdout, NULL, _IONBF, 0)`), without color tag corruption (stripped via `cs2d_server_print`), and dispatch to `log` hook.
+  - `print(...)`: follows Lua 5.1 / BlitzMax `FUN_1400f3a10` conventions, converting all arguments to strings separated by `\t`.
+  - Non-blocking CMD terminal input: `_kbhit()` and `_getch()` poll user input every frame in `main_dedicated.c`, executing lines through `cs2d_sv_exec` (allowing `lua <code>`, `msg <text>`, `echo <text>`, and all server commands directly in the CMD prompt).
 
 ## Phase 5: Bomb system, hostages, bots, bans & map change
 

@@ -2386,6 +2386,13 @@ void cs2d_sv_set_teamscores(cs2d_server_t *sv, int score_t, int score_ct)
 void cs2d_sv_msg(cs2d_server_t *sv, const char *text, int target_id)
 {
     if (!text) return;
+    if (sv) cs2d_sv_set_active(sv);
+    if (target_id == 0) {
+        cs2d_server_print("%s", text);
+    } else {
+        cs2d_server_print("(MSG to #%d) %s", target_id, text);
+    }
+
     int len = (int)strlen(text);
     if (len > 255) len = 255;
 
@@ -2413,7 +2420,6 @@ void cs2d_sv_slap(cs2d_server_t *sv, int id, bool death)
 
     char msg_txt[128];
     snprintf(msg_txt, sizeof(msg_txt), "%s was slapped", pl->name);
-    cs2d_server_print("%s", msg_txt);
     cs2d_sv_msg(sv, msg_txt, 0);
 
     int dmg = death ? 1000 : 10;

@@ -475,6 +475,7 @@ static int l_msg(lua_State *L)
 {
     cs2d_server_t *sv = get_sv_from_lua(L);
     if (!sv) return 0;
+    cs2d_sv_set_active(sv);
     const char *text = luaL_checkstring(L, 1);
     cs2d_sv_msg(sv, text, 0);
     return 0;
@@ -485,17 +486,53 @@ static int l_msg2(lua_State *L)
 {
     cs2d_server_t *sv = get_sv_from_lua(L);
     if (!sv) return 0;
+    cs2d_sv_set_active(sv);
     int id = (int)luaL_checkinteger(L, 1);
     const char *text = luaL_checkstring(L, 2);
     cs2d_sv_msg(sv, text, id);
     return 0;
 }
 
-/* print(text) */
+/* print(...) - matches BlitzMax FUN_1400f3a10 / Lua 5.1 print() */
 static int l_print(lua_State *L)
 {
-    const char *text = luaL_checkstring(L, 1);
-    cs2d_server_print("%s", text);
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_set_active(sv);
+    int n = lua_gettop(L);
+    if (n == 0) {
+        cs2d_server_print("");
+        return 0;
+    }
+
+    lua_getglobal(L, "tostring");
+    char buf[4096];
+    int pos = 0;
+    buf[0] = '\0';
+
+    for (int i = 1; i <= n; i++) {
+        lua_pushvalue(L, -1); /* push tostring function */
+        lua_pushvalue(L, i);  /* push argument i */
+        if (lua_pcall(L, 1, 1, 0) == 0) {
+            const char *s = lua_tostring(L, -1);
+            if (!s) s = "";
+            int slen = (int)strlen(s);
+            if (i > 1 && pos < (int)sizeof(buf) - 2) {
+                buf[pos++] = '\t';
+                buf[pos] = '\0';
+            }
+            if (pos + slen < (int)sizeof(buf) - 1) {
+                memcpy(buf + pos, s, (size_t)slen);
+                pos += slen;
+                buf[pos] = '\0';
+            }
+            lua_pop(L, 1); /* pop tostring result */
+        } else {
+            lua_pop(L, 1); /* pop error message */
+        }
+    }
+    lua_pop(L, 1); /* pop tostring function */
+
+    cs2d_server_print("%s", buf);
     return 0;
 }
 
@@ -1709,7 +1746,7 @@ bool cs2d_sv_lua_init(cs2d_server_t *sv)
     lua->sv = sv;
     lua->next_image_id = 1;
     sv->lua = lua;
-    if (!cs2d_sv_get_active()) cs2d_sv_set_active(sv);
+    cs2d_sv_set_active(sv);
 
     lua->L = luaL_newstate();
     if (!lua->L) {
@@ -1890,7 +1927,8 @@ bool cs2d_sv_lua_dofile(cs2d_server_t *sv, const char *path)
 
 bool cs2d_sv_lua_dostring(cs2d_server_t *sv, const char *code)
 {
-    if (!sv || !sv->lua) return false;
+    if (!sv || !sv->lua || !code) return false;
+    cs2d_sv_set_active(sv);
     cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
     if (luaL_dostring(lua->L, code) != 0) {
         const char *err = lua_tostring(lua->L, -1);
@@ -2025,6 +2063,7 @@ static int dispatch_hook(cs2d_server_t *sv, const char *hook_name, int nargs, in
                          char *out_str, size_t max_out_str)
 {
     if (!sv || !sv->lua) return 0;
+    cs2d_sv_set_active(sv);
     cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
     cs2d_hook_t *h = NULL;
     for (int i = 0; i < lua->hook_count; i++) {

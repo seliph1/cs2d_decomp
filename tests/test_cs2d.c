@@ -7201,6 +7201,37 @@ static bool test_server_phase4_lua(void)
     rc = cs2d_sv_lua_dostring(&sv, "assert(menu_sel == 2, 'menu button response assertion failed')\n");
     if (!rc) TEST_FAIL("menu response", "hook menu did not record button selection");
 
+    /* 6. Test Lua print output and msg output to log/terminal */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "captured_log = ''\n"
+        "function on_log_print(m)\n"
+        "    captured_log = m\n"
+        "end\n"
+        "addhook('log', 'on_log_print')\n"
+        "print('TestOutput', 123, true, nil)\n"
+    );
+    if (!rc) TEST_FAIL("Lua print", "print() call failed with multi-arg / mixed types");
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(string.find(captured_log, 'TestOutput') ~= nil, 'print did not log message')\n"
+        "assert(string.find(captured_log, '123') ~= nil, 'print did not log number')\n"
+        "assert(string.find(captured_log, 'true') ~= nil, 'print did not log boolean')\n"
+        "assert(string.find(captured_log, 'nil') ~= nil, 'print did not log nil')\n"
+    );
+    if (!rc) TEST_FAIL("Lua print verification", "print() captured log assertion failed");
+
+    /* Test msg() outputs to server print/log */
+    rc = cs2d_sv_lua_dostring(&sv, "msg('HelloServerFromMsg')\n");
+    if (!rc) TEST_FAIL("Lua msg", "msg() call failed");
+    rc = cs2d_sv_lua_dostring(&sv, "assert(string.find(captured_log, 'HelloServerFromMsg') ~= nil, 'msg did not log')\n");
+    if (!rc) TEST_FAIL("Lua msg verification", "msg() did not appear in server print/log");
+
+    /* Test cs2d_sv_exec with lua command */
+    if (!cs2d_sv_exec(&sv, "lua g_exec_val = 999")) {
+        TEST_FAIL("cs2d_sv_exec lua", "cs2d_sv_exec did not handle lua command");
+    }
+    rc = cs2d_sv_lua_dostring(&sv, "assert(g_exec_val == 999, 'lua command execution failed')\n");
+    if (!rc) TEST_FAIL("cs2d_sv_exec lua verify", "g_exec_val mismatch");
+
     /* Clean up */
     cs2d_sv_lua_close(&sv);
     if (sv.lua != NULL) TEST_FAIL("Lua Close", "sv.lua not NULL after cs2d_sv_lua_close");

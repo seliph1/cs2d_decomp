@@ -10,7 +10,21 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
-## 2026-10-18 — Antigravity — Dedicated Server: Reconnect / Password Prompt Reset ([252, 0] hello replay bug fix) e Teste de Fogo com Scripts Reais
+## 2026-10-18 — Antigravity — Dedicated Server: Saída de Scripts Lua no Terminal CMD (`print`, `msg`, `msg2`, erros) e Console Interativo
+
+- **Saída de Lua Direcionada para o Terminal/CMD (`cs2d_server.exe`)**:
+  - `cs2d_server_print`: Atualizado para remover rigorosamente quaisquer tags de cor (`©RRRGGGBBB` tanto em encoding Windows-1252 `\xa9` quanto UTF-8 `\xc2\xa9`) em qualquer ponto da mensagem (fiel ao BlitzMax `FUN_1400ce590`), imprimindo no terminal via `printf("%s\n", clean); fflush(stdout);` e despachando para o hook Lua `log` via `cs2d_sv_lua_log`.
+  - Desativação de buffer de terminal: adicionados `setvbuf(stdout, NULL, _IONBF, 0);` e `setvbuf(stderr, NULL, _IONBF, 0);` no início de `src/main_dedicated.c` para garantir que toda saída apareça imediatamente no CMD do Windows sem delay.
+  - Implementação completa e robusta de `print(...)` em `src/cs2d_sv_lua.c` (`l_print`): espelha `FUN_1400f3a10` e a semântica padrão de Lua 5.1, iterando todos os argumentos `1..lua_gettop(L)`, convertendo via `tostring`, separando por tabulações `\t` e enviando para `cs2d_server_print`. Trata números, booleans, strings, nil, tabelas e chamadas sem argumentos.
+  - Integração de `msg(text)` e `msg2(id, text)`:
+    - Em `cs2d_sv_msg`: adicionado `cs2d_server_print("%s", text)` para mensagens globais (`target_id == 0`) e `cs2d_server_print("(MSG to #%d) %s", target_id, text)` para mensagens direcionadas, garantindo que o servidor sempre exiba mensagens enviadas por scripts ou rcon.
+    - Em `cs2d_sv_exec`: adicionado suporte aos comandos de console `msg <text>` e `msg2 <id> <text>` (além dos existentes `sv_msg` e `sv_msg2`), permitindo que as funções de wrapper de `sys/lua/wrapper.lua` (`function msg(m) parse("msg "..m) end`) funcionem perfeitamente.
+    - Adicionado suporte a `echo <text>`, `lua <code>` (`cs2d_sv_lua_dostring`) e `luareset` no interpretador de comandos `cs2d_sv_exec`.
+- **Console Interativo no CMD**:
+  - Em `src/main_dedicated.c`, adicionada leitura não bloqueante de teclado via `_kbhit()` e `_getch()`. Comandos digitados diretamente no CMD onde `cs2d_server.exe` está rodando são acumulados linha a linha e executados via `cs2d_sv_exec`, permitindo rodar `lua <code>`, `msg <text>`, `echo <text>`, comandos de admin ou chat diretamente pelo terminal do Windows sem travar o loop de rede.
+- **Verificação**:
+  - Adicionadas asserções no teste `test_server_phase4_lua` em `tests/test_cs2d.c` validando saída com múltiplos tipos em `print(...)`, captura via hook `log`, chamada de `msg(...)` via `wrapper.lua` e execução de código Lua via comando `lua`.
+  - Suíte completa de testes compilada e aprovada: **92 / 92** testes passando (`test_cs2d.exe`).
 
 - **Bug do Handshake de Reconnect / Password Prompt (`CS2D.exe` vs `cs2d_server.c`)**:
   - Diagnosticado fluxo do cliente original ao tentar entrar em servidor protegido por senha:
@@ -128,26 +142,4 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
 - **Verificação**:
   - Adicionado teste de regressão abrangente `test_server_entity_and_world_interactions` em `tests/test_cs2d.c`.
   - Recompilado e aprovado com sucesso: **89 / 89** testes passando (`test_cs2d.exe`).
-
-## 2026-10-18 — Antigravity — Dedicated Server: Reconnect / Password Prompt Reset ([252, 0] hello replay bug fix) e Teste de Fogo com Scripts Reais
-
-- **Bug do Handshake de Reconnect / Password Prompt (`CS2D.exe` vs `cs2d_server.c`)**:
-  - Diagnosticado fluxo do cliente original ao tentar entrar em servidor protegido por senha:
-    1. O cliente conecta inicialmente sem senha -> servidor responde `[252, 2, 1]` (status 1 = password required).
-    2. O cliente abre modal interativo de senha (`Tgui_joinmen.pwprompt`, `CS2D.exe 0x1402cf1c1`).
-    3. Quando o usuário digita a senha e clica em "Connect", o cliente chama `FUN_14016a3c0(0)`, recriando o socket Tudp e **reiniciando o handshake de conexão do zero com `[252, 0]` e sequence number confiável = 2** a partir da mesma porta local.
-  - No servidor (`src/cs2d_server.c`), `sv_find_conn` reaproveitava a conexão existente sem resetar os números de sequência e o bitmap de replay (`c->seen`). O novo pacote `seq = 2` era interpretado como duplicata em `sv_handle_datagram` e descartado, sem jamais chamar `sv_recv_messages` e sem responder o secret `[252, 0, secret]`.
-  - O cliente ficava esperando em loop até expirar os timers de timeout (1.5s -> retry, 5.0s -> `sending NAT hole punch`).
-- **Correção em `sv_find_conn`**:
-  - Quando um datagrama `hello` (`[252, 0]`) chega de um cliente que já possui conexão ativa:
-    - Remove jogador pré-existente (`sv_remove_player`).
-    - Limpa estado da conexão via `sv_conn_reset(c)` (reseta `seen`, `next_seq = 2`, `join_step = 0`, buffers pendentes).
-    - Reativa a conexão com endereço atualizado e timestamp renovado.
-- **Teste de Fogo com Scripts Reais do CS2D**:
-  - Carregados e executados simultaneamente em `sys/lua/`: todos os **23 scripts reais de sample** da distribuição oficial (`sys/lua/samples/*.lua`), cobrindo hooks de jogo, HUD, menus, binds, física e eventos de jogador sem nenhum crash ou erro de sintaxe.
-- **Verificação**:
-  - Verificada conexão do cliente original `CS2D.exe` com senha via `-pw 123` e reconexão interativa via handshake de 2 estágios.
-  - Exposto `cs2d_sv_handle_datagram` em `include/cs2d_server.h` para testes unitários de pacotes de rede.
-  - Adicionado teste de regressão `test_server_reconnect_and_pw` em `tests/test_cs2d.c`.
-  - Suíte completa de testes aprovada: **92 / 92** testes passando (`test_cs2d.exe`).
 

@@ -45,23 +45,47 @@ cs2d_server_t *cs2d_sv_get_active(void)
     return s_active_sv;
 }
 
-/* FUN_1400ce590 prints a line on the console; a leading "©RRRGGGBBB" colour tag is not part of the
- * text (the dedicated's log shows the lines without it, ded_ph1.log) */
+/* FUN_1400ce590 prints a line on the console; strips all "©RRRGGGBBB" color tags */
 void cs2d_server_print(const char *fmt, ...)
 {
-    char line[1024];
+    char line[2048];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(line, sizeof(line), fmt, ap);
     va_end(ap);
-    const char *t = line;
-    if ((uint8_t)t[0] == 0xa9 && strlen(t) >= 10) t += 10;
-    else if ((uint8_t)t[0] == 0xc2 && (uint8_t)t[1] == 0xa9 && strlen(t) >= 11) t += 11;
-    printf("%s\n", t);
+
+    char clean[2048];
+    size_t d = 0;
+    const char *s = line;
+    while (*s && d + 1 < sizeof(clean)) {
+        if ((uint8_t)s[0] == 0xa9) {
+            bool is_col = true;
+            for (int k = 1; k <= 9; k++) {
+                if (s[k] < '0' || s[k] > '9') { is_col = false; break; }
+            }
+            if (is_col) {
+                s += 10;
+                continue;
+            }
+        } else if ((uint8_t)s[0] == 0xc2 && (uint8_t)s[1] == 0xa9) {
+            bool is_col = true;
+            for (int k = 2; k <= 10; k++) {
+                if (s[k] < '0' || s[k] > '9') { is_col = false; break; }
+            }
+            if (is_col) {
+                s += 11;
+                continue;
+            }
+        }
+        clean[d++] = *s++;
+    }
+    clean[d] = '\0';
+
+    printf("%s\n", clean);
     fflush(stdout);
 
     if (s_active_sv && s_active_sv->lua) {
-        cs2d_sv_lua_log(s_active_sv, t);
+        cs2d_sv_lua_log(s_active_sv, clean);
     }
 }
 
@@ -1801,12 +1825,27 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
         cs2d_sv_set_teamscores(sv, atoi(a1), atoi(a2));
         return true;
     }
-    if (_stricmp(cmd, "sv_msg") == 0) { /* 0x140144a92 */
+    if (_stricmp(cmd, "echo") == 0) {
+        sv_rest_arg(cur, a1, sizeof(a1));
+        cs2d_server_print("%s", a1);
+        return true;
+    }
+    if (_stricmp(cmd, "lua") == 0) {
+        sv_rest_arg(cur, a1, sizeof(a1));
+        cs2d_sv_lua_dostring(sv, a1);
+        return true;
+    }
+    if (_stricmp(cmd, "luareset") == 0) {
+        cs2d_sv_lua_close(sv);
+        cs2d_sv_lua_init(sv);
+        return true;
+    }
+    if (_stricmp(cmd, "sv_msg") == 0 || _stricmp(cmd, "msg") == 0) { /* 0x140144a92 / wrapper msg */
         sv_rest_arg(cur, a1, sizeof(a1));
         cs2d_sv_msg(sv, a1, 0);
         return true;
     }
-    if (_stricmp(cmd, "sv_msg2") == 0) { /* 0x140144b99 */
+    if (_stricmp(cmd, "sv_msg2") == 0 || _stricmp(cmd, "msg2") == 0) { /* 0x140144b99 / wrapper msg2 */
         sv_next_arg(&cur, a1, sizeof(a1));
         sv_rest_arg(cur, a2, sizeof(a2));
         cs2d_sv_msg(sv, a2, atoi(a1));
@@ -2966,6 +3005,7 @@ bool cs2d_server_start(cs2d_server_t *sv, const char *map, int port, bool offlin
 
 void cs2d_server_frame(cs2d_server_t *sv)
 {
+    s_active_sv = sv;
     uint8_t buf[4096];
     struct sockaddr_in from;
     for (;;) {

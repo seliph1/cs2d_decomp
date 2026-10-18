@@ -18,6 +18,7 @@
 #endif
 #include <windows.h>
 #include <mmsystem.h>
+#include <conio.h>
 #endif
 
 static cs2d_server_t g_sv;
@@ -77,6 +78,9 @@ static void print_usage(const char *prog)
 
 int main(int argc, char **argv)
 {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+
     char map_buf[64] = {0};
     char name_buf[64] = {0};
     char pw_buf[64] = {0};
@@ -172,6 +176,34 @@ int main(int argc, char **argv)
         cs2d_server_frame(&g_sv);
 
 #ifdef _WIN32
+        static char s_con_buf[1024];
+        static int s_con_pos = 0;
+        while (_kbhit()) {
+            int ch = _getch();
+            if (ch == '\r' || ch == '\n') {
+                s_con_buf[s_con_pos] = '\0';
+                putchar('\n');
+                fflush(stdout);
+                if (s_con_pos > 0) {
+                    cs2d_sv_exec(&g_sv, s_con_buf);
+                    s_con_pos = 0;
+                    s_con_buf[0] = '\0';
+                }
+            } else if (ch == '\b') {
+                if (s_con_pos > 0) {
+                    s_con_pos--;
+                    s_con_buf[s_con_pos] = '\0';
+                    printf("\b \b");
+                    fflush(stdout);
+                }
+            } else if (ch >= 32 && ch <= 126 && s_con_pos < (int)sizeof(s_con_buf) - 1) {
+                s_con_buf[s_con_pos++] = (char)ch;
+                s_con_buf[s_con_pos] = '\0';
+                putchar(ch);
+                fflush(stdout);
+            }
+        }
+
         /* Advance next tick target */
         next_tick.QuadPart += (LONGLONG)(frame_interval_sec * (double)qpf.QuadPart);
 
