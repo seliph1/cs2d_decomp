@@ -27,6 +27,7 @@
 #define SV_TIMEOUT_MS 30000
 
 #define sv_packet cs2d_sv_packet
+#define sv_flush cs2d_sv_flush
 #define conn_of_player cs2d_sv_conn_of_player
 
 /* ------------------------------------------------------------------------------------------------ */
@@ -264,7 +265,7 @@ static void sv_sendto(cs2d_server_t *sv, cs2d_sv_conn_t *c, const uint8_t *d, in
 /* The datagram header of an unreliable packet is the last reliable id + 1 (proxy: "35 00" after 0x34) */
 static uint16_t sv_unreliable_hdr(const cs2d_sv_conn_t *c) { return (uint16_t)(c->next_seq - 1); }
 
-static void sv_flush(cs2d_server_t *sv, cs2d_sv_conn_t *c)
+void sv_flush(cs2d_server_t *sv, cs2d_sv_conn_t *c)
 {
     if (!c->out_open || c->out.pos == 0) {
         c->out_open = false;
@@ -1106,6 +1107,8 @@ static void sv_recv_join1(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
     pl->port = ntohs(c->addr.sin_port);
     pl->look = 0;
     pl->maxhealth = 100;
+    pl->screen_w = 850;
+    pl->screen_h = 480;
     c->player = id;
     c->join_step = 2;
 
@@ -1783,6 +1786,7 @@ static void sv_broadcast_setting(cs2d_server_t *sv, const char *key, const char 
 bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
 {
     if (!sv || !cmd_line) return false;
+    if (cs2d_sv_lua_parse_hudtxt(sv, cmd_line)) return true;
     const char *cur = cmd_line;
     char cmd[64];
     if (!sv_next_arg(&cur, cmd, sizeof(cmd))) return false;

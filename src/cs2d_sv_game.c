@@ -911,7 +911,13 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
     sv->round_mvp = 0;
     sv->round_start_ms = cs2d_sv_now();
     sv->round_number++;
-    cs2d_sv_lua_hook_startround(sv, reason);
+    /* Clear Lua images from previous round (Tdo typ 40) before hooks and client reset */
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+        if (o->active && o->typ == CS2D_DO_IMAGE) {
+            cs2d_dynobj_kill(&sv->dynobj, o->id, NULL);
+        }
+    }
 
     /* Standard mode: the map's mission counters and this round's VIP (0x1401717a1). The new round
      * starts in the freezetime phase (mp_freezetime); the round clock begins when it ends
@@ -938,14 +944,6 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
     cs2d_sv_init_hostages(sv);
     cs2d_sv_init_env_items(sv);
 
-    /* Clear Lua images from previous round (Tdo typ 40) */
-    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
-        cs2d_dynobj_t *o = &sv->dynobj.objs[i];
-        if (o->active && o->typ == CS2D_DO_IMAGE) {
-            cs2d_dynobj_kill(&sv->dynobj, o->id, NULL);
-        }
-    }
-
     /* Update team scores according to round end reason (FUN_1402520b0 / cs2d_game_apply_round_reason) */
     uint64_t bit = (reason >= 0 && reason <= 61) ? (1ULL << reason) : 0;
     if (bit & 0x1004010040101000ULL) {
@@ -960,7 +958,7 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
         }
     }
 
-    /* Hook startround_prespawn */
+    /* Hook startround_prespawn: before actually spawning all players */
     cs2d_sv_lua_hook_startround_prespawn(sv, reason);
 
     /* Respawn all team players */
@@ -982,18 +980,24 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
             pl->is_reloading = false;
             pl->reload_end_ms = 0;
 
-            const sv_mode_t *m = sv_mode(sv);
-            pl->item_count = 0;
-            const char *list = (pl->team == 1) ? m->items_t : m->items_ct;
-            for (const char *q = list; *q;) {
-                int t = atoi(q);
-                if (t > 0 && !sv_has_item(pl, t)) sv_give(pl, t);
-                while (*q && *q != ',') q++;
-                if (*q == ',') q++;
+            char custom_items[128] = {0};
+            int sret = cs2d_sv_lua_hook_spawn(sv, i, custom_items, sizeof(custom_items));
+            if (sret != 1) {
+                const sv_mode_t *m = sv_mode(sv);
+                pl->item_count = 0;
+                const char *list = (custom_items[0] != '\0') ? custom_items : ((pl->team == 1) ? m->items_t : m->items_ct);
+                if (strcmp(list, "x") != 0) {
+                    for (const char *q = list; *q;) {
+                        int t = atoi(q);
+                        if (t > 0 && !sv_has_item(pl, t)) sv_give(pl, t);
+                        while (*q && *q != ',') q++;
+                        if (*q == ',') q++;
+                    }
+                    int melee = (pl->team == 1) ? m->melee_t : m->melee_ct;
+                    if (!sv_has_item(pl, melee)) sv_give(pl, melee);
+                }
+                sv_best_weapon(sv, pl);
             }
-            int melee = (pl->team == 1) ? m->melee_t : m->melee_ct;
-            if (!sv_has_item(pl, melee)) sv_give(pl, melee);
-            sv_best_weapon(sv, pl);
         }
     }
 
@@ -1048,6 +1052,15 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
             cs2d_pkt_w_byte(p, recip->items[k]);
         }
     }
+
+    /* Flush [22] roundstart packets before triggering startround hook so clients reset world before receiving new objects */
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
+        if (c && sv->players[i].joined) cs2d_sv_flush(sv, c);
+    }
+
+    /* Hook startround: executed AFTER spawning all players and sending [22] */
+    cs2d_sv_lua_hook_startround(sv, reason);
 }
 
 /* FUN_14015ce30(0): the standard mode's win conditions. A team without players cannot play the round

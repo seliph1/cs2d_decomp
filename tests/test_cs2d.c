@@ -10053,6 +10053,163 @@ static bool test_dedicated_dynamic_images(void)
     return true;
 }
 
+static bool test_dedicated_hudtxt(void)
+{
+    printf("\n=== Testing Dedicated Server: HUD Texts ([234], [54], Lua API & Console) ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.sock = INVALID_SOCKET;
+    sv.set.debuglua = 1;
+
+    /* Initialize Lua state */
+    if (!cs2d_sv_lua_init(&sv)) {
+        TEST_FAIL("Dedicated hudtxt init", "failed to initialize server Lua state");
+    }
+
+    /* Set up test player 1 with active connection */
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].conn = 0;
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+
+    /* 1. Direct Lua API calls */
+    bool rc = cs2d_sv_lua_dostring(&sv,
+        "hudtxt(0, 'Hello World', 100, 200, 1, 1, 15)\n"
+        "hudtxt2(1, 1, 'Player1 Only', 50, 60, 0, 0, 13)\n"
+        "hudtxtalphafade(1, 1, 1000, 0.5)\n"
+        "hudtxtcolorfade(1, 1, 2000, 255, 100, 50)\n"
+        "hudtxtmove(1, 1, 1500, 120, 140)\n"
+        "hudtxtclear(1)\n"
+        "hudtxtclear()\n"
+    );
+    if (!rc) TEST_FAIL("Dedicated hudtxt Lua API", "error executing direct hudtxt Lua calls");
+
+    /* 2. String commands via parse() */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "parse('hudtxt 2 \"Quoted String Text\" 300 400 2 2 16')\n"
+        "parse('hudtxt2 1 3 SingleWord 10 20')\n"
+        "parse('hudtxtalphafade 1 3 500 0.8')\n"
+        "parse('hudtxtcolorfade 1 3 500 0 255 0')\n"
+        "parse('hudtxtmove 1 3 500 40 50')\n"
+        "parse('hudtxtclear 1')\n"
+        "parse('hudtxt 2')\n" /* hide text 2 with omitted params */
+    );
+    if (!rc) TEST_FAIL("Dedicated hudtxt parse()", "error executing parse() hudtxt commands");
+
+    /* 3. Server console commands via cs2d_sv_exec() */
+    if (!cs2d_sv_exec(&sv, "hudtxt 4 \"Console Test\" 10 20 0 0 13")) {
+        TEST_FAIL("Dedicated hudtxt cs2d_sv_exec", "cs2d_sv_exec failed for hudtxt");
+    }
+    if (!cs2d_sv_exec(&sv, "hudtxt2 1 5 \"Console Pl\" 30 40 1 1 14")) {
+        TEST_FAIL("Dedicated hudtxt2 cs2d_sv_exec", "cs2d_sv_exec failed for hudtxt2");
+    }
+    if (!cs2d_sv_exec(&sv, "hudtxtalphafade 1 5 1000 0.2")) {
+        TEST_FAIL("Dedicated hudtxtalphafade cs2d_sv_exec", "cs2d_sv_exec failed for hudtxtalphafade");
+    }
+    if (!cs2d_sv_exec(&sv, "hudtxtcolorfade 1 5 1000 128 64 32")) {
+        TEST_FAIL("Dedicated hudtxtcolorfade cs2d_sv_exec", "cs2d_sv_exec failed for hudtxtcolorfade");
+    }
+    if (!cs2d_sv_exec(&sv, "hudtxtmove 1 5 1000 70 80")) {
+        TEST_FAIL("Dedicated hudtxtmove cs2d_sv_exec", "cs2d_sv_exec failed for hudtxtmove");
+    }
+    if (!cs2d_sv_exec(&sv, "hudtxtclear")) {
+        TEST_FAIL("Dedicated hudtxtclear cs2d_sv_exec", "cs2d_sv_exec failed for hudtxtclear");
+    }
+
+    /* 4. Packet wire format inspection */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+
+    /* 4a. Opcode 234 wire format: id=7, text="Hi", x=10, y=20, align=1, valign=2, size=15 */
+    cs2d_sv_hudtxt(&sv, 1, 7, "Hi", 10, 20, 1, 2, 15);
+    cs2d_pkt_t *p_rel = &sv.conns[0].out;
+    if (p_rel->pos < 13 || p_rel->buf[0] != 234 || p_rel->buf[1] != 7) {
+        TEST_FAIL("Dedicated hudtxt opcode 234", "opcode 234 header mismatch");
+    }
+    int chars = p_rel->buf[2] | (p_rel->buf[3] << 8);
+    if (chars != 2) TEST_FAIL("Dedicated hudtxt chars", "expected 2 chars for 'Hi'");
+    if (p_rel->buf[4] != 'H' || p_rel->buf[6] != 'i') {
+        TEST_FAIL("Dedicated hudtxt text payload", "UTF-16 encoding mismatch");
+    }
+    int off = 4 + chars * 2;
+    int bx = p_rel->buf[off] | (p_rel->buf[off + 1] << 8);
+    int by = p_rel->buf[off + 2] | (p_rel->buf[off + 3] << 8);
+    if (bx != 10 + 0x4000 || by != 20 + 0x4000) {
+        TEST_FAIL("Dedicated hudtxt coords", "coordinate biasing 0x4000 mismatch");
+    }
+    if (p_rel->buf[off + 4] != 1 || p_rel->buf[off + 5] != 2 || p_rel->buf[off + 6] != 15) {
+        TEST_FAIL("Dedicated hudtxt params", "align/valign/size mismatch");
+    }
+
+    /* 4b. Clear wire format: [234, 255] */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_hudtxt_clear(&sv, 1, 255);
+    if (p_rel->pos != 2 || p_rel->buf[0] != 234 || p_rel->buf[1] != 255) {
+        TEST_FAIL("Dedicated hudtxtclear packet", "expected [234, 255]");
+    }
+
+    /* 4c. Tweens (opcode 54) wire format: unreliable */
+    /* Alphafade (mode 4): [54, 4, target, dur, alpha_byte] */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_hudtxt_alphafade(&sv, 1, 10, 1000, 0.5f);
+    cs2d_pkt_t *p_unrel = &sv.conns[0].out;
+    if (p_unrel->pos != 9 || p_unrel->buf[0] != 54 || p_unrel->buf[1] != 4) {
+        TEST_FAIL("Dedicated hudtxtalphafade packet", "expected opcode 54 mode 4");
+    }
+    int target = p_unrel->buf[2] | (p_unrel->buf[3] << 8);
+    if (target != (200 - 10)) TEST_FAIL("Dedicated hudtxtalphafade target", "expected target 190");
+
+    /* Colorfade (mode 5): [54, 5, target, dur, r, g, b] */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_hudtxt_colorfade(&sv, 1, 10, 2000, 255, 128, 64);
+    if (p_unrel->pos != 11 || p_unrel->buf[0] != 54 || p_unrel->buf[1] != 5) {
+        TEST_FAIL("Dedicated hudtxtcolorfade packet", "expected opcode 54 mode 5");
+    }
+    if (p_unrel->buf[8] != 255 || p_unrel->buf[9] != 128 || p_unrel->buf[10] != 64) {
+        TEST_FAIL("Dedicated hudtxtcolorfade rgb", "rgb bytes mismatch");
+    }
+
+    /* Move (mode 0): [54, 0, target, dur, x+32768, y+32768] */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_hudtxt_move(&sv, 1, 10, 1500, 100, 200);
+    if (p_unrel->pos != 12 || p_unrel->buf[0] != 54 || p_unrel->buf[1] != 0) {
+        TEST_FAIL("Dedicated hudtxtmove packet", "expected opcode 54 mode 0");
+    }
+    int mx = p_unrel->buf[8] | (p_unrel->buf[9] << 8);
+    int my = p_unrel->buf[10] | (p_unrel->buf[11] << 8);
+    if (mx != 100 + 32768 || my != 200 + 32768) {
+        TEST_FAIL("Dedicated hudtxtmove coords", "expected coordinates biased by 32768");
+    }
+
+    /* 5. Out of bounds validation */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_hudtxt(&sv, 1, 200, "Invalid ID", 0, 0, 0, 0, 13);
+    cs2d_sv_hudtxt(&sv, 1, -1, "Negative ID", 0, 0, 0, 0, 13);
+    if (sv.conns[0].out.pos != 0) TEST_FAIL("Dedicated hudtxt bounds", "out of bounds id should not send packet");
+
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_hudtxt_alphafade(&sv, 1, 250, 1000, 0.5f);
+    cs2d_sv_hudtxt_colorfade(&sv, 1, 250, 1000, 255, 0, 0);
+    cs2d_sv_hudtxt_move(&sv, 1, 250, 1000, 0, 0);
+    if (sv.conns[0].out.pos != 0) TEST_FAIL("Dedicated hudtxt tweens bounds", "out of bounds id should not send tween");
+
+    free(sv.conns[0].pending);
+    cs2d_sv_lua_close(&sv);
+
+    TEST_PASS("Dedicated Server: HUD Texts (hudtxt/2, clear, tweens, [234], [54], Lua API & console)");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -10061,7 +10218,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 93;
+    int total = 94;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -10156,6 +10313,7 @@ int main(void)
     if (test_server_jump_table_opcodes()) passed++;
     if (test_server_reconnect_and_pw()) passed++;
     if (test_dedicated_dynamic_images()) passed++;
+    if (test_dedicated_hudtxt()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

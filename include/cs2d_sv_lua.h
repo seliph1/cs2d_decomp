@@ -167,6 +167,7 @@ void cs2d_sv_hudtxt_clear(cs2d_server_t *sv, int target_pid, int id);
 void cs2d_sv_hudtxt_alphafade(cs2d_server_t *sv, int target_pid, int id, int duration, float alpha);
 void cs2d_sv_hudtxt_colorfade(cs2d_server_t *sv, int target_pid, int id, int duration, int r, int g, int b);
 void cs2d_sv_hudtxt_move(cs2d_server_t *sv, int target_pid, int id, int duration, int x, int y);
+bool cs2d_sv_lua_parse_hudtxt(cs2d_server_t *sv, const char *cmd);
 
 /* Image helper functions */
 int  cs2d_sv_image_create(cs2d_server_t *sv, const char *path, float x, float y, int mode, int player);

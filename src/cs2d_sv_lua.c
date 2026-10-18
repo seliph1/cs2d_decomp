@@ -18,6 +18,7 @@
 #include "cs2d_sv_lua.h"
 #include "cs2d_weapons.h"
 #include "cs2d_image.h"
+#include "cs2d_hudtxt.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,7 +42,7 @@ static void send_to_player(cs2d_server_t *sv, int id, const uint8_t *data, int l
     if (!pl->used || pl->conn < 0) return;
     cs2d_sv_conn_t *c = &sv->conns[pl->conn];
     if (!c->active) return;
-    cs2d_pkt_t *p = cs2d_sv_packet(sv, c, reliable, true);
+    cs2d_pkt_t *p = cs2d_sv_packet(sv, c, reliable, false);
     if (!p) return;
     if (p->pos + len <= (int)sizeof(p->buf)) {
         memcpy(p->buf + p->pos, data, (size_t)len);
@@ -152,8 +153,14 @@ static int l_sethookstate(lua_State *L)
     return 0;
 }
 
-/* Forward declaration of hudtxt parsing */
-static bool cs2d_sv_lua_parse_hudtxt(cs2d_server_t *sv, const char *cmd);
+/* Forward declaration of hudtxt parsing and Lua functions */
+bool cs2d_sv_lua_parse_hudtxt(cs2d_server_t *sv, const char *cmd);
+static int l_hudtxt(lua_State *L);
+static int l_hudtxt2(lua_State *L);
+static int l_hudtxtclear(lua_State *L);
+static int l_hudtxtalphafade(lua_State *L);
+static int l_hudtxtcolorfade(lua_State *L);
+static int l_hudtxtmove(lua_State *L);
 
 /* parse(cmd) */
 static int l_parse(lua_State *L)
@@ -1813,6 +1820,14 @@ bool cs2d_sv_lua_init(cs2d_server_t *sv)
     lua_register(lua->L, "print", l_print);
     lua_register(lua->L, "game", l_game);
 
+    /* HUD texts */
+    lua_register(lua->L, "hudtxt", l_hudtxt);
+    lua_register(lua->L, "hudtxt2", l_hudtxt2);
+    lua_register(lua->L, "hudtxtclear", l_hudtxtclear);
+    lua_register(lua->L, "hudtxtalphafade", l_hudtxtalphafade);
+    lua_register(lua->L, "hudtxtcolorfade", l_hudtxtcolorfade);
+    lua_register(lua->L, "hudtxtmove", l_hudtxtmove);
+
     /* Images */
     lua_register(lua->L, "image", l_image);
     lua_register(lua->L, "freeimage", l_freeimage);
@@ -3013,8 +3028,17 @@ void cs2d_sv_menu_send(cs2d_server_t *sv, int id, const char *menu_str)
 
 void cs2d_sv_hudtxt(cs2d_server_t *sv, int target_pid, int id, const char *text, int x, int y, int align, int valign, int size)
 {
-    uint16_t u16_buf[256];
-    int chars = to_utf16le(text, u16_buf, 256);
+    if (!sv) return;
+    if (id < 0 || id >= CS2D_HUDTXT_MAX) {
+        cs2d_server_print("©255000000ERROR: hudtxt(2) - text id out of bounds (0-199 expected)!");
+        return;
+    }
+    if (!text) text = "";
+    if (size <= 0) size = 13;
+
+    uint16_t u16_buf[512];
+    int chars = to_utf16le(text, u16_buf, 400);
+    if (chars > 400) chars = 400;
 
     /* [234, id u8, chars u16, chars*u16, (x+0x4000) u16, (y+0x4000) u16, align u8, valign u8, size u8] */
     int pkt_size = 1 + 1 + 2 + chars * 2 + 2 + 2 + 1 + 1 + 1;
@@ -3036,9 +3060,9 @@ void cs2d_sv_hudtxt(cs2d_server_t *sv, int target_pid, int id, const char *text,
     pkt[p++] = (uint8_t)((bx >> 8) & 0xff);
     pkt[p++] = (uint8_t)(by & 0xff);
     pkt[p++] = (uint8_t)((by >> 8) & 0xff);
-    pkt[p++] = (uint8_t)align;
-    pkt[p++] = (uint8_t)valign;
-    pkt[p++] = (uint8_t)size;
+    pkt[p++] = (uint8_t)(align & 0xff);
+    pkt[p++] = (uint8_t)(valign & 0xff);
+    pkt[p++] = (uint8_t)(size & 0xff);
 
     if (target_pid > 0) {
         send_to_player(sv, target_pid, pkt, p, true);
@@ -3050,17 +3074,27 @@ void cs2d_sv_hudtxt(cs2d_server_t *sv, int target_pid, int id, const char *text,
 
 void cs2d_sv_hudtxt_clear(cs2d_server_t *sv, int target_pid, int id)
 {
+    if (!sv) return;
     if (id < 0 || id == 255) {
         uint8_t pkt[2] = { 234, 255 };
         if (target_pid > 0) send_to_player(sv, target_pid, pkt, sizeof(pkt), true);
         else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
     } else {
-        cs2d_sv_hudtxt(sv, target_pid, id, "", 0, 0, 0, 0, 0);
+        cs2d_sv_hudtxt(sv, target_pid, id, "", 0, 0, 0, 0, 13);
     }
 }
 
 void cs2d_sv_hudtxt_alphafade(cs2d_server_t *sv, int target_pid, int id, int duration, float alpha)
 {
+    if (!sv) return;
+    if (id < 0 || id >= CS2D_HUDTXT_MAX) {
+        cs2d_server_print("©255000000ERROR: hudtxtalphafade - text id out of bounds (0-199 expected)!");
+        return;
+    }
+    if (duration < 0) duration = 0;
+    if (alpha < 0.0f) alpha = 0.0f;
+    if (alpha > 1.0f) alpha = 1.0f;
+
     /* [54, mode 4, target (200 - id) u16, duration i32, alpha u8] */
     uint16_t target = (uint16_t)(200 - id);
     uint8_t a = (uint8_t)(alpha * 255.0f);
@@ -3075,12 +3109,22 @@ void cs2d_sv_hudtxt_alphafade(cs2d_server_t *sv, int target_pid, int id, int dur
     pkt[7] = (uint8_t)((duration >> 24) & 0xff);
     pkt[8] = a;
 
-    if (target_pid > 0) send_to_player(sv, target_pid, pkt, sizeof(pkt), true);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
+    if (target_pid > 0) send_to_player(sv, target_pid, pkt, sizeof(pkt), false);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
 }
 
 void cs2d_sv_hudtxt_colorfade(cs2d_server_t *sv, int target_pid, int id, int duration, int r, int g, int b)
 {
+    if (!sv) return;
+    if (id < 0 || id >= CS2D_HUDTXT_MAX) {
+        cs2d_server_print("©255000000ERROR: hudtxtcolorfade - text id out of bounds (0-199 expected)!");
+        return;
+    }
+    if (duration < 0) duration = 0;
+    if (r < 0) { r = 0; } else if (r > 255) { r = 255; }
+    if (g < 0) { g = 0; } else if (g > 255) { g = 255; }
+    if (b < 0) { b = 0; } else if (b > 255) { b = 255; }
+
     /* [54, mode 5, target (200 - id) u16, duration i32, r u8, g u8, b u8] */
     uint16_t target = (uint16_t)(200 - id);
     uint8_t pkt[11];
@@ -3096,12 +3140,19 @@ void cs2d_sv_hudtxt_colorfade(cs2d_server_t *sv, int target_pid, int id, int dur
     pkt[9] = (uint8_t)g;
     pkt[10] = (uint8_t)b;
 
-    if (target_pid > 0) send_to_player(sv, target_pid, pkt, sizeof(pkt), true);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
+    if (target_pid > 0) send_to_player(sv, target_pid, pkt, sizeof(pkt), false);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
 }
 
 void cs2d_sv_hudtxt_move(cs2d_server_t *sv, int target_pid, int id, int duration, int x, int y)
 {
+    if (!sv) return;
+    if (id < 0 || id >= CS2D_HUDTXT_MAX) {
+        cs2d_server_print("©255000000ERROR: hudtxtmove - text id out of bounds (0-199 expected)!");
+        return;
+    }
+    if (duration < 0) duration = 0;
+
     /* [54, mode 0, target (200 - id) u16, duration i32, (x+32768) u16, (y+32768) u16] */
     uint16_t target = (uint16_t)(200 - id);
     uint16_t bx = (uint16_t)(x + 32768);
@@ -3120,93 +3171,225 @@ void cs2d_sv_hudtxt_move(cs2d_server_t *sv, int target_pid, int id, int duration
     pkt[10] = (uint8_t)(by & 0xff);
     pkt[11] = (uint8_t)((by >> 8) & 0xff);
 
-    if (target_pid > 0) send_to_player(sv, target_pid, pkt, sizeof(pkt), true);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
+    if (target_pid > 0) send_to_player(sv, target_pid, pkt, sizeof(pkt), false);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
 }
 
-static bool cs2d_sv_lua_parse_hudtxt(cs2d_server_t *sv, const char *cmd)
+bool cs2d_sv_lua_parse_hudtxt(cs2d_server_t *sv, const char *cmd)
 {
-    if (strncmp(cmd, "hudtxt2 ", 8) == 0) {
-        int pl = 0, id = 0, x = 0, y = 0, align = 0, valign = 0, size = 0;
-        char text[128] = {0};
-        const char *p = cmd + 8;
+    if (!sv || !cmd) return false;
+    while (*cmd == ' ' || *cmd == '\t') cmd++;
+
+    if (strncmp(cmd, "hudtxt2", 7) == 0 && (cmd[7] == ' ' || cmd[7] == '\t' || cmd[7] == '\0')) {
+        int pl = 0, id = 0, x = 0, y = 0, align = 0, valign = 0, size = 13;
+        char text[512] = {0};
+        const char *p = cmd + 7;
+        while (*p == ' ' || *p == '\t') p++;
         if (sscanf(p, "%d %d", &pl, &id) == 2) {
-            /* skip pl and id */
-            while (*p && *p == ' ') p++;
-            while (*p && *p != ' ') p++;
-            while (*p && *p == ' ') p++;
-            while (*p && *p != ' ') p++;
-            while (*p && *p == ' ') p++;
+            while (*p && *p != ' ' && *p != '\t') p++;
+            while (*p == ' ' || *p == '\t') p++;
+            while (*p && *p != ' ' && *p != '\t') p++;
+            while (*p == ' ' || *p == '\t') p++;
+
             if (*p == '"') {
                 p++;
                 int ti = 0;
                 while (*p && *p != '"' && ti < (int)sizeof(text) - 1) text[ti++] = *p++;
                 if (*p == '"') p++;
-            } else {
+                while (*p == ' ' || *p == '\t') p++;
+                int read_count = sscanf(p, "%d %d %d %d %d", &x, &y, &align, &valign, &size);
+                if (read_count < 5) size = 13;
+            } else if (*p != '\0') {
+                char token[256] = {0};
                 int ti = 0;
-                while (*p && *p != ' ' && ti < (int)sizeof(text) - 1) text[ti++] = *p++;
+                while (*p && *p != ' ' && *p != '\t' && ti < (int)sizeof(token) - 1) token[ti++] = *p++;
+                while (*p == ' ' || *p == '\t') p++;
+                int nx = 0, ny = 0;
+                if (sscanf(p, "%d %d", &nx, &ny) == 2) {
+                    strncpy(text, token, sizeof(text) - 1);
+                    x = nx; y = ny;
+                    while (*p && *p != ' ' && *p != '\t') p++;
+                    while (*p == ' ' || *p == '\t') p++;
+                    while (*p && *p != ' ' && *p != '\t') p++;
+                    while (*p == ' ' || *p == '\t') p++;
+                    int read_count = sscanf(p, "%d %d %d", &align, &valign, &size);
+                    if (read_count < 3) size = 13;
+                } else {
+                    strncpy(text, token, sizeof(text) - 1);
+                }
             }
-            sscanf(p, "%d %d %d %d %d", &x, &y, &align, &valign, &size);
             cs2d_sv_hudtxt(sv, pl, id, text, x, y, align, valign, size);
+            return true;
+        } else if (sscanf(p, "%d", &pl) == 1) {
             return true;
         }
     }
-    if (strncmp(cmd, "hudtxt ", 7) == 0) {
-        int id = 0, x = 0, y = 0, align = 0, valign = 0, size = 0;
-        char text[128] = {0};
-        const char *p = cmd + 7;
+    if (strncmp(cmd, "hudtxt", 6) == 0 && (cmd[6] == ' ' || cmd[6] == '\t' || cmd[6] == '\0')) {
+        int id = 0, x = 0, y = 0, align = 0, valign = 0, size = 13;
+        char text[512] = {0};
+        const char *p = cmd + 6;
+        while (*p == ' ' || *p == '\t') p++;
         if (sscanf(p, "%d", &id) == 1) {
-            while (*p && *p == ' ') p++;
-            while (*p && *p != ' ') p++;
-            while (*p && *p == ' ') p++;
+            while (*p && *p != ' ' && *p != '\t') p++;
+            while (*p == ' ' || *p == '\t') p++;
+
             if (*p == '"') {
                 p++;
                 int ti = 0;
                 while (*p && *p != '"' && ti < (int)sizeof(text) - 1) text[ti++] = *p++;
                 if (*p == '"') p++;
-            } else {
+                while (*p == ' ' || *p == '\t') p++;
+                int read_count = sscanf(p, "%d %d %d %d %d", &x, &y, &align, &valign, &size);
+                if (read_count < 5) size = 13;
+            } else if (*p != '\0') {
+                char token[256] = {0};
                 int ti = 0;
-                while (*p && *p != ' ' && ti < (int)sizeof(text) - 1) text[ti++] = *p++;
+                while (*p && *p != ' ' && *p != '\t' && ti < (int)sizeof(token) - 1) token[ti++] = *p++;
+                while (*p == ' ' || *p == '\t') p++;
+                int nx = 0, ny = 0;
+                if (sscanf(p, "%d %d", &nx, &ny) == 2) {
+                    strncpy(text, token, sizeof(text) - 1);
+                    x = nx; y = ny;
+                    while (*p && *p != ' ' && *p != '\t') p++;
+                    while (*p == ' ' || *p == '\t') p++;
+                    while (*p && *p != ' ' && *p != '\t') p++;
+                    while (*p == ' ' || *p == '\t') p++;
+                    int read_count = sscanf(p, "%d %d %d", &align, &valign, &size);
+                    if (read_count < 3) size = 13;
+                } else {
+                    strncpy(text, token, sizeof(text) - 1);
+                }
             }
-            sscanf(p, "%d %d %d %d %d", &x, &y, &align, &valign, &size);
             cs2d_sv_hudtxt(sv, 0, id, text, x, y, align, valign, size);
             return true;
         }
     }
-    if (strncmp(cmd, "hudtxtclear", 11) == 0) {
-        int pl = 0, id = 255;
-        if (sscanf(cmd + 11, "%d %d", &pl, &id) == 2) {
-            cs2d_sv_hudtxt_clear(sv, pl, id);
-        } else if (sscanf(cmd + 11, "%d", &id) == 1) {
-            cs2d_sv_hudtxt_clear(sv, 0, id);
-        } else {
-            cs2d_sv_hudtxt_clear(sv, 0, 255);
+    if (strncmp(cmd, "hudtxtclear", 11) == 0 && (cmd[11] == ' ' || cmd[11] == '\t' || cmd[11] == '\0')) {
+        int pl = 0;
+        const char *p = cmd + 11;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p != '\0') {
+            sscanf(p, "%d", &pl);
         }
+        cs2d_sv_hudtxt_clear(sv, pl, 255);
         return true;
     }
-    if (strncmp(cmd, "hudtxtalphafade ", 16) == 0) {
+    if (strncmp(cmd, "hudtxtalphafade", 15) == 0 && (cmd[15] == ' ' || cmd[15] == '\t' || cmd[15] == '\0')) {
         int pl = 0, id = 0, dur = 0;
         float alpha = 1.0f;
-        if (sscanf(cmd + 16, "%d %d %d %f", &pl, &id, &dur, &alpha) >= 4) {
+        const char *p = cmd + 15;
+        while (*p == ' ' || *p == '\t') p++;
+        if (sscanf(p, "%d %d %d %f", &pl, &id, &dur, &alpha) >= 4) {
             cs2d_sv_hudtxt_alphafade(sv, pl, id, dur, alpha);
             return true;
         }
     }
-    if (strncmp(cmd, "hudtxtcolorfade ", 16) == 0) {
+    if (strncmp(cmd, "hudtxtcolorfade", 15) == 0 && (cmd[15] == ' ' || cmd[15] == '\t' || cmd[15] == '\0')) {
         int pl = 0, id = 0, dur = 0, r = 255, g = 255, b = 255;
-        if (sscanf(cmd + 16, "%d %d %d %d %d %d", &pl, &id, &dur, &r, &g, &b) >= 6) {
+        const char *p = cmd + 15;
+        while (*p == ' ' || *p == '\t') p++;
+        if (sscanf(p, "%d %d %d %d %d %d", &pl, &id, &dur, &r, &g, &b) >= 6) {
             cs2d_sv_hudtxt_colorfade(sv, pl, id, dur, r, g, b);
             return true;
         }
     }
-    if (strncmp(cmd, "hudtxtmove ", 11) == 0) {
+    if (strncmp(cmd, "hudtxtmove", 10) == 0 && (cmd[10] == ' ' || cmd[10] == '\t' || cmd[10] == '\0')) {
         int pl = 0, id = 0, dur = 0, x = 0, y = 0;
-        if (sscanf(cmd + 11, "%d %d %d %d %d", &pl, &id, &dur, &x, &y) >= 5) {
+        const char *p = cmd + 10;
+        while (*p == ' ' || *p == '\t') p++;
+        if (sscanf(p, "%d %d %d %d %d", &pl, &id, &dur, &x, &y) >= 5) {
             cs2d_sv_hudtxt_move(sv, pl, id, dur, x, y);
             return true;
         }
     }
     return false;
+}
+
+/* ---------------------------------------------------------------------------
+ * Lua API C Functions for HUD texts
+ * --------------------------------------------------------------------------- */
+
+static int l_hudtxt(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int id = (int)luaL_checkinteger(L, 1);
+    const char *text = lua_gettop(L) >= 2 ? lua_tostring(L, 2) : "";
+    if (!text) text = "";
+    int x = lua_gettop(L) >= 3 ? (int)lua_tointeger(L, 3) : 0;
+    int y = lua_gettop(L) >= 4 ? (int)lua_tointeger(L, 4) : 0;
+    int align = lua_gettop(L) >= 5 ? (int)lua_tointeger(L, 5) : 0;
+    int valign = lua_gettop(L) >= 6 ? (int)lua_tointeger(L, 6) : 0;
+    int size = lua_gettop(L) >= 7 ? (int)lua_tointeger(L, 7) : 13;
+    if (size <= 0) size = 13;
+    cs2d_sv_hudtxt(sv, 0, id, text, x, y, align, valign, size);
+    return 0;
+}
+
+static int l_hudtxt2(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int player = (int)luaL_checkinteger(L, 1);
+    int id = (int)luaL_checkinteger(L, 2);
+    const char *text = lua_gettop(L) >= 3 ? lua_tostring(L, 3) : "";
+    if (!text) text = "";
+    int x = lua_gettop(L) >= 4 ? (int)lua_tointeger(L, 4) : 0;
+    int y = lua_gettop(L) >= 5 ? (int)lua_tointeger(L, 5) : 0;
+    int align = lua_gettop(L) >= 6 ? (int)lua_tointeger(L, 6) : 0;
+    int valign = lua_gettop(L) >= 7 ? (int)lua_tointeger(L, 7) : 0;
+    int size = lua_gettop(L) >= 8 ? (int)lua_tointeger(L, 8) : 13;
+    if (size <= 0) size = 13;
+    cs2d_sv_hudtxt(sv, player, id, text, x, y, align, valign, size);
+    return 0;
+}
+
+static int l_hudtxtclear(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int player = lua_gettop(L) >= 1 ? (int)lua_tointeger(L, 1) : 0;
+    cs2d_sv_hudtxt_clear(sv, player, 255);
+    return 0;
+}
+
+static int l_hudtxtalphafade(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int player = (int)luaL_checkinteger(L, 1);
+    int id = (int)luaL_checkinteger(L, 2);
+    int duration = (int)luaL_checkinteger(L, 3);
+    float alpha = (float)luaL_checknumber(L, 4);
+    cs2d_sv_hudtxt_alphafade(sv, player, id, duration, alpha);
+    return 0;
+}
+
+static int l_hudtxtcolorfade(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int player = (int)luaL_checkinteger(L, 1);
+    int id = (int)luaL_checkinteger(L, 2);
+    int duration = (int)luaL_checkinteger(L, 3);
+    int r = (int)luaL_checkinteger(L, 4);
+    int g = (int)luaL_checkinteger(L, 5);
+    int b = (int)luaL_checkinteger(L, 6);
+    cs2d_sv_hudtxt_colorfade(sv, player, id, duration, r, g, b);
+    return 0;
+}
+
+static int l_hudtxtmove(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int player = (int)luaL_checkinteger(L, 1);
+    int id = (int)luaL_checkinteger(L, 2);
+    int duration = (int)luaL_checkinteger(L, 3);
+    int x = (int)luaL_checkinteger(L, 4);
+    int y = (int)luaL_checkinteger(L, 5);
+    cs2d_sv_hudtxt_move(sv, player, id, duration, x, y);
+    return 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -3313,10 +3496,10 @@ void cs2d_sv_image_free(cs2d_server_t *sv, int id)
     cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
 
-    /* [51, 6, id u16] - unreliable */
+    /* [51, 6, id u16] - reliable (FUN_140129a50) */
     uint8_t pkt[4] = { 51, 6, (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff) };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
 
     cs2d_dynobj_kill(&sv->dynobj, id, NULL);
 }
@@ -3327,7 +3510,7 @@ void cs2d_sv_image_pos(cs2d_server_t *sv, int id, float x, float y, float rot)
     if (!img) return;
     img->x = x; img->y = y; img->rot = rot;
 
-    /* [51, 5, id u16, (x+32768) u16, (y+32768) u16, rot_u16] - unreliable */
+    /* [51, 5, id u16, (x+32768) u16, (y+32768) u16, rot_u16] - reliable (FUN_14012a560) */
     uint16_t bx = (uint16_t)((int)x + 32768);
     uint16_t by = (uint16_t)((int)y + 32768);
     uint16_t brot = (uint16_t)(rot * 182.04445f);
@@ -3338,8 +3521,8 @@ void cs2d_sv_image_pos(cs2d_server_t *sv, int id, float x, float y, float rot)
         (uint8_t)(by & 0xff), (uint8_t)((by >> 8) & 0xff),
         (uint8_t)(brot & 0xff), (uint8_t)((brot >> 8) & 0xff)
     };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
 }
 
 void cs2d_sv_image_alpha(cs2d_server_t *sv, int id, float alpha)
@@ -3350,11 +3533,11 @@ void cs2d_sv_image_alpha(cs2d_server_t *sv, int id, float alpha)
     else if (alpha > 1.0f) alpha = 1.0f;
     img->alpha = alpha;
 
-    /* [51, 2, id u16, alpha u8] - unreliable */
+    /* [51, 2, id u16, alpha u8] - reliable (FUN_14012a940) */
     uint8_t a = (uint8_t)(alpha * 255.0f);
     uint8_t pkt[5] = { 51, 2, (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff), a };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
 }
 
 void cs2d_sv_image_color(cs2d_server_t *sv, int id, int r, int g, int b)
@@ -3368,10 +3551,10 @@ void cs2d_sv_image_color(cs2d_server_t *sv, int id, int r, int g, int b)
     img->color[1] = (uint8_t)g;
     img->color[2] = (uint8_t)b;
 
-    /* [51, 1, id u16, r u8, g u8, b u8] - unreliable */
+    /* [51, 1, id u16, r u8, g u8, b u8] - reliable (0x140129a50) */
     uint8_t pkt[7] = { 51, 1, (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff), (uint8_t)r, (uint8_t)g, (uint8_t)b };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
 }
 
 void cs2d_sv_image_scale(cs2d_server_t *sv, int id, float sx, float sy)
@@ -3380,14 +3563,14 @@ void cs2d_sv_image_scale(cs2d_server_t *sv, int id, float sx, float sy)
     if (!img) return;
     img->scalex = sx; img->scaley = sy;
 
-    /* [51, 4, id u16, sx f32, sy f32] - unreliable */
+    /* [51, 4, id u16, sx f32, sy f32] - reliable (FUN_14012a280) */
     uint8_t pkt[12];
     pkt[0] = 51; pkt[1] = 4;
     pkt[2] = (uint8_t)(id & 0xff); pkt[3] = (uint8_t)((id >> 8) & 0xff);
     memcpy(pkt + 4, &sx, 4);
     memcpy(pkt + 8, &sy, 4);
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
 }
 
 void cs2d_sv_image_blend(cs2d_server_t *sv, int id, int blend)
@@ -3398,10 +3581,10 @@ void cs2d_sv_image_blend(cs2d_server_t *sv, int id, int blend)
     else if (blend > 3) blend = 3;
     img->blend = blend;
 
-    /* [51, 3, id u16, blend u8] - unreliable */
+    /* [51, 3, id u16, blend u8] - reliable (0x14012a090) */
     uint8_t pkt[5] = { 51, 3, (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff), (uint8_t)blend };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
 }
 
 void cs2d_sv_image_frame(cs2d_server_t *sv, int id, int frame)
@@ -3413,10 +3596,10 @@ void cs2d_sv_image_frame(cs2d_server_t *sv, int id, int frame)
     if (img->frames > 0 && f >= img->frames) f = img->frames - 1;
     img->frame = f;
 
-    /* [51, 7, id u16, frame u8] (1-based byte) - unreliable */
+    /* [51, 7, id u16, frame u8] (1-based byte) - reliable (FUN_14012b1d0) */
     uint8_t pkt[5] = { 51, 7, (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff), (uint8_t)(frame > 0 ? frame : 1) };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
 }
 
 void cs2d_sv_image_shadow(cs2d_server_t *sv, int id, int shadow)
@@ -3425,10 +3608,10 @@ void cs2d_sv_image_shadow(cs2d_server_t *sv, int id, int shadow)
     if (!img) return;
     img->shadow = shadow;
 
-    /* [51, 9, id u16, shadow u8] - unreliable */
+    /* [51, 9, id u16, shadow u8] - reliable */
     uint8_t pkt[5] = { 51, 9, (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff), (uint8_t)shadow };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
 }
 
 void cs2d_sv_image_physicsparent(cs2d_server_t *sv, int id, int parent_type, int parent_id, int mode)
@@ -3436,7 +3619,7 @@ void cs2d_sv_image_physicsparent(cs2d_server_t *sv, int id, int parent_type, int
     cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
 
-    /* [51, 8, id u16, parent_type u8, parent_id u16, mode u8] - unreliable */
+    /* [51, 8, id u16, parent_type u8, parent_id u16, mode u8] - reliable */
     uint8_t pkt[8] = {
         51, 8,
         (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff),
@@ -3444,8 +3627,8 @@ void cs2d_sv_image_physicsparent(cs2d_server_t *sv, int id, int parent_type, int
         (uint8_t)(parent_id & 0xff), (uint8_t)((parent_id >> 8) & 0xff),
         (uint8_t)mode
     };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
 }
 
 void cs2d_sv_image_hitzone(cs2d_server_t *sv, int id, int mode, int xo, int yo, int w, int h)
@@ -3459,7 +3642,7 @@ void cs2d_sv_image_hitzone(cs2d_server_t *sv, int id, int mode, int xo, int yo, 
     img->hit_w = abs(w);
     img->hit_h = abs(h);
 
-    /* [59, id u16, mode u8, (xo+32768) u16, (yo+32768) u16, abs(w) u16, abs(h) u16] - unreliable */
+    /* [59, id u16, mode u8, (xo+32768) u16, (yo+32768) u16, abs(w) u16, abs(h) u16] - reliable */
     uint16_t bxo = (uint16_t)(xo + 32768);
     uint16_t byo = (uint16_t)(yo + 32768);
     uint16_t bw = (uint16_t)abs(w);
@@ -3473,8 +3656,8 @@ void cs2d_sv_image_hitzone(cs2d_server_t *sv, int id, int mode, int xo, int yo, 
         (uint8_t)(bw & 0xff), (uint8_t)((bw >> 8) & 0xff),
         (uint8_t)(bh & 0xff), (uint8_t)((bh >> 8) & 0xff)
     };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
 }
 
 void cs2d_sv_tween_alpha(cs2d_server_t *sv, int id, int duration, float alpha)

@@ -5,6 +5,16 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **Dedicated server: HUD Texts [234], Tweens [54] & Comandos (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - Implementação autêntica de todos os 6 comandos/funções de HUD text no dedicado:
+  `hudtxt(id [, text, x, y, align, valign, size])` e `hudtxt2(player, id [, text, x, y, align, valign, size])` (`FUN_14011c0d0`),
+  `hudtxtclear([player])` (`FUN_14011c5e0`), `hudtxtalphafade(player, id, duration, alpha)` (`FUN_14011cc20`),
+  `hudtxtcolorfade(player, id, duration, r, g, b)` (`FUN_14011c800`) e `hudtxtmove(player, id, duration, x, y)` (`FUN_14011cea0`);
+  validação de limites `0 <= id < 200` com mensagens idênticas ao original (`ERROR: hudtxt(2) - text id out of bounds ...`);
+  limite de 400 caracteres UTF-16, tamanho padrão 13, deslocamento de coordenadas x/y em +16384 (0x4000) e envio `reliable = true` no opcode 234;
+  tweens enviados com alvo `(200 - id)` em pacotes não-confiáveis `[54]` (`reliable = false`) nos modos 4 (alpha), 5 (cor) e 0 (movimento com offset +32768);
+  disponível simultaneamente via funções nativas da API Lua, via `parse("hudtxt ...")` e via console do servidor / CLI / RCON (`cs2d_sv_exec`);
+  bloqueado por teste `test_dedicated_hudtxt` (94/94 testes passando).
 - **Dedicated server: Objetos Dinâmicos de Imagem e Modos no Servidor Dedicado (2026-10-18, `docs/agents/knowledge/dynobj.md`):**
   fixed - Implementação autêntica de imagens como objetos dinâmicos (`Tdo`, `typ = 40`, `CS2D_DO_IMAGE`):
   imagens agora residem na lista unificada `sv->dynobj`, integrando-se nativamente com `object(id, "type")` e `object(0, "table")`;
@@ -12,12 +22,14 @@ the same one.
   `imageblend`, `imageframe`, `imagehitzone`, `imageparam`, `imageshadow`, `freeimage` e `imagephysicsparent`;
   `image` (`FUN_14011aab0`): validação de caminhos e tags especiais (`<light>`, `<avatar_...>`, `<tile:...>`, `<flag:...>`, `<spritesheet:...>`),
   leitura de dimensões reais de BMP/PNG via `stbi_info`, e envio confiável de `[51, 0, id, path, x, y, mode, player]`;
-  operações de alteração de imagem transmitem via pacotes não-confiáveis (`reliable = false`) conforme binário original;
+  operações de alteração de imagem transmitem via pacotes confiáveis agrupados (`Createpacket(1, 0)`) conforme binário original `cs2d_dedicated.exe`;
+  ordem de início de rodada em `cs2d_sv_round_start` ajustada para limpar imagens antigas antes de spawnar e emitir o hook `startround` após o broadcast/flush do Opcode 22 (evitando que `CS2D.exe` destrua as imagens com `Tdo.freeall`);
+  resolução padrão do cliente inicializada em 850x480 para compatibilidade com `hudimg.lua` em `mp_hudscale 0`;
   `imageparam` (`FUN_14012e5c0`): suporta todos os 9 parâmetros (`x`, `y`, `rot`, `alpha`, `path`, `frame`, `width`, `height`, `framecount`),
   retornando `false` caso não exista ou parâmetro inválido;
   snapshots de entrada: seção 5 (`[252,7,5]`) serializa objetos `CS2D_DO_IMAGE` (filtrando imagens privadas HUD modo 2 de outros players)
-  e seção 7 (`[252,7,7]`) envia bloco completo de propriedades em blocos de até 20 imagens com terminador 0;
-  limpeza de imagens ao início da rodada (`cs2d_sv_round_start`). Bloqueado por `test_dedicated_dynamic_images` (93/93 testes passando).
+  e seção 7 (`[252,7,7]`) envia bloco completo de propriedades em blocos de até 20 imagens com terminador 0.
+  Bloqueado por `test_dedicated_dynamic_images` (94/94 testes passando).
 - **Dedicated server: Exibição no Console de Registro de Hooks e Binds (`addhook`, `freehook`, `sethookstate`, `debuglua`) (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
   fixed - Validação e exibição de mensagens de hooks e binds idênticas ao `cs2d_dedicated.exe` original:
   `addhook` (`FUN_1400d59f0`): valida nomes contra a tabela nativa de 84 hooks; se válido e `debuglua` ativo, exibe `Lua: Adding function '<func>' to hook '<hook>'`; se inválido, emite `LUA ERROR: Cannot add '<func>' to hook '<hook>' (hook does not exist)!`;

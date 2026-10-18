@@ -31,13 +31,13 @@
 --dofile("sys/lua/samples/classes.lua")				-- sample.classes [Different player classes with different weapons] hooks: team,menu,spawn,buy,walkover,drop,die,serveraction
 --dofile("sys/lua/samples/fastplayers.lua")			-- sample.fast [Make all players faster] hooks: spawn
 --dofile("sys/lua/samples/gungame.lua")				-- sample.gg [Simple Gun Game Mod] hooks: startround,join,spawn,kill,buy,walkover,drop,die
-dofile("sys/lua/samples/glowingplayers.lua")		-- sample.glowing [Make all players glow using the Lua image commands] hooks: startround
+--dofile("sys/lua/samples/glowingplayers.lua")		-- sample.glowing [Make all players glow using the Lua image commands] hooks: startround
 --dofile("sys/lua/samples/undestroyable.lua")		-- sample.undestroyable [Makes all dynamic objects undestroyable] hooks: objectdamage
 --dofile("sys/lua/samples/spawnequip.lua")			-- sample.spawnequip [Equip players with items on spawn] hooks: spawn
 --dofile("sys/lua/samples/cursors.lua")				-- sample.cursors [Show flares at cursor positions of players] hooks: - none -
 --dofile("sys/lua/samples/tween.lua")				-- sample.tween [Adds an image which follows player 1] hooks: second, startround
 --dofile("sys/lua/samples/hudtxt.lua")				-- sample.hudtxt [Adds a custom text to the HUD] hooks: second
---dofile("sys/lua/samples/hudimg.lua")				-- sample.hudimg [Adds custom images to the HUD] hooks: startround, join
+dofile("sys/lua/samples/hudimg.lua")				-- sample.hudimg [Adds custom images to the HUD] hooks: startround, join
 --dofile("sys/lua/samples/imghover.lua")			-- sample.imghover [Adds a HUD image which reacts on mouseover] hooks: startround, join, clientdata
 --dofile("sys/lua/samples/projectiles.lua")			-- sample.projectiles [Spawn 8 grenades at once when hitting F2 and other stuff with F3/F4] hooks: serveraction
 --dofile("sys/lua/samples/hitzone.lua")				-- sample.hitzone [Creates an image with a hitzone] hooks: startround, serveraction, hitzone

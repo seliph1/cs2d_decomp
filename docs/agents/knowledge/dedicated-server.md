@@ -262,9 +262,12 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
     - `hudtxtclear [id]`: id 255 clears all.
     - `hudtxtalphafade`, `hudtxtcolorfade`, `hudtxtmove`: broadcasts opcode `[54]` targeting `200 - id`.
 - **Dynamic Images & Tweens (`image`, `tween_*`):**
-  - `image(path, x, y, mode, [target])`: assigns incremental ID, stores in `lua->images`, and broadcasts reliable `[51, 0, id u16, mode u8, target u8, x u16, y u16, path (wstr)]`.
-  - Manipulation functions: `imagealpha` (mode 2), `imagecolor` (mode 1), `imagescale` (mode 4), `imageblend` (mode 3),
-    `imagepos` (mode 5), `freeimage` (mode 6), `imagehitzone` (opcode 59).
+  - `image(path, x, y, mode, [target])` (`FUN_14011aab0`): allocates dynamic object (`Tdo`, `typ = 40`, `CS2D_DO_IMAGE`) in `sv->dynobj`, resolves image dimensions via `stbi_info`, and broadcasts reliable `[51, 0, id u16, mode u8, target u8, x u16, y u16, path (wstr)]`.
+  - Manipulation functions: `imagecolor` (`0x140129a50`, mode 1), `imagealpha` (`0x14012a940`, mode 2), `imageblend` (`0x14012a090`, mode 3),
+    `imagescale` (`0x14012a280`, mode 4), `imagepos` (`0x14012a560`, mode 5), `freeimage` (mode 6), `imageframe` (`0x14012b1d0`, mode 7),
+    `imagephysicsparent` (mode 8), `imageshadow` (mode 9), `imagehitzone` (opcode 59). In `cs2d_dedicated.exe`, all call `Createpacket(1, 0)`: reliable UDP grouped into the open datagram (`fresh = false`).
+  - Round start lifecycle: `cs2d_sv_round_start` removes images from the previous round BEFORE `startround_prespawn`, spawns players, sends and flushes Opcode 22 (`Tdo.freeall` on client), and only then invokes `startround`, ensuring images created in `startround` (like in `sys/lua/samples/hudimg.lua`) survive on both client and server.
+  - Client resolution defaults: `screen_w = 850`, `screen_h = 480` default on connection for proper `mp_hudscale 0` placement.
   - Tweens: `tween_alpha`, `tween_color`, `tween_move`, `tween_rotate`, `tween_rotateconstantly`, `tween_scale`, `tween_frame`, `tween_animate`
     broadcasting opcode `[54]` with target `200 + id`.
 - **Server Timers (`timer`, `freetimer`):**
@@ -498,5 +501,34 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   - Flags2: bit 0 dynamic recoil, 1 off-screen damage, 2 transfer files active.
   - Modes 3 (ack), 4 (player names: `[01 00] [FB] [4] [n] [n x name str]`), 5 (player details: `[01 00] [FB] [5] [n] [n x {id u8, name str, team u8, score i32, deaths i32}]`).
   - Matches the captured 36-byte offline reply `fb 01 10 0b "CS2D Server" 0e "prison_funst3r" 00 0c 00 02` byte for byte.
+
+## Dedicated Server: HUD Texts [234], Tweens [54] & Commands (2026-10-18)
+
+- **HUD Text Creation & Update (`FUN_14011c0d0`, Opcode 234 `0xea`)**:
+  - `hudtxt(id [, text, x, y, align, valign, size])` (all players) & `hudtxt2(player, id [, text, x, y, align, valign, size])` (single player).
+  - Validation: `id < 0 || id >= 200` prints `©255000000ERROR: hudtxt(2) - text id out of bounds (0-199 expected)!`.
+  - Max text length clamped to 400 UTF-16 code units (`0x190`).
+  - Default font size is 13 (`0xd`) if omitted or <= 0.
+  - Wire format (sent **reliable = true**):
+    `[234, id u8, chars u16, chars * u16, (x + 0x4000) u16, (y + 0x4000) u16, align u8, valign u8, size u8]`.
+- **HUD Text Clear (`FUN_14011c5e0`)**:
+  - `hudtxtclear([player])`: clears all HUD texts for player (or broadcast if player == 0) by sending reliable `[234, 255]`.
+  - Clearing a single ID sends `hudtxt(id, "")` with blank text.
+- **HUD Text Tweens (Opcode 54 `0x36`, `FUN_1401a8c00`)**:
+  - Interpolation target ID: HUD text tweens use target `(200 - id)` (u16) to distinguish from dynamic image tweens.
+  - Sent **unreliable = false** (`plVar[0x19]->send(1, 0)`).
+  - `hudtxtalphafade(player, id, duration, alpha)` (`FUN_14011cc20`):
+    - Mode 4: `[54, 4, (200 - id) u16, duration i32, (uint8_t)(alpha * 255.0f) u8]`.
+    - Error on out-of-bounds: `©255000000ERROR: hudtxtalphafade - text id out of bounds (0-199 expected)!`.
+  - `hudtxtcolorfade(player, id, duration, r, g, b)` (`FUN_14011c800`):
+    - Mode 5: `[54, 5, (200 - id) u16, duration i32, r u8, g u8, b u8]`.
+    - Error on out-of-bounds: `©255000000ERROR: hudtxtcolorfade - text id out of bounds (0-199 expected)!`.
+  - `hudtxtmove(player, id, duration, x, y)` (`FUN_14011cea0`):
+    - Mode 0: `[54, 0, (200 - id) u16, duration i32, (x + 32768) u16, (y + 32768) u16]`.
+    - Error on out-of-bounds: `©255000000ERROR: hudtxtmove - text id out of bounds (0-199 expected)!`.
+- **Command Dispatch Surfaces**:
+  - Registered as Lua global C functions: `hudtxt`, `hudtxt2`, `hudtxtclear`, `hudtxtalphafade`, `hudtxtcolorfade`, `hudtxtmove`.
+  - Hooked into `parse(...)` and server console / CLI (`cs2d_sv_exec`): parses quoted strings, coordinate biasing, align/valign/size arguments, and shorthand clearing.
+
 
 
