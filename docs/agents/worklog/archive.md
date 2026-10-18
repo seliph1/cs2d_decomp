@@ -1,5 +1,44 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-17 — Antigravity — Dedicated Server: Deathmatch (DM), Team Deathmatch (TDM), mp_randomspawn e Rotação mp_timelimit
+
+- **Spawns Aleatórios (`mp_randomspawn 1`) em Deathmatch (`gamemode 1`) e TDM (`gamemode 2`)**:
+  - Port de `0x140160da0` - `0x140160dae` e `0x140162313` chamando `0x1400d5650`: quando `mp_randomspawn == 1` e `gamemode` é 1 ou 2, o servidor sorteia tiles navegáveis (não sólidos e sem outro jogador ou objeto bloqueando) em até 100 tentativas, centralizando o jogador no tile (`tx * 32 + 16`, `ty * 32 + 16`).
+- **Fallback de Spawns em Deathmatch Sem Spawns Dedicados**:
+  - Em `sv_gamemode 1`, se um mapa não possui pontos de spawn do time do jogador (por exemplo, um jogador CT entrando em um mapa de DM que só tem entidades `Info_T`), `sv_pick_spawn` agora faz fallback para aceitar spawns de ambos os times (`Info_T` e `Info_CT`), garantindo que o jogador entre no jogo sem travar.
+- **Rotação Automática de Mapa com `mp_timelimit` e Ciclo `mapcycle.cfg`**:
+  - Port de `0x1401a3058` - `0x1401a30c5`: leitura de `mp_timelimit` em minutos (`* 60000 ms`) e medição de `now - sv->map_start_ms >= limit_ms`.
+  - Em modos de respawn (`respawn == 1`) ou quando há <= 1 jogador ativo no servidor, a rotação dispara imediatamente (`cs2d_sv_change_map`) para o próximo mapa retornado por `cs2d_sv_next_map`.
+  - Preservação da ordem sequencial original das entradas em `sys/mapcycle.cfg` em `sv->mapcycle` (com wrap-around para o primeiro mapa) antes da ordenação alfabética exigida pelo snapshot de join da Seção 12 (`sv->maps`).
+- **Suporte na API Lua (`src/cs2d_sv_lua.c`)**:
+  - `game("maptimeleft")`: retorna os segundos restantes até o limite do mapa como float, ou `1000000.0` se `mp_timelimit <= 0` (ilimitado), correspondendo exatamente ao comportamento original do BlitzMax.
+  - `game("nextmap")`: retorna o nome do próximo mapa do ciclo via `cs2d_sv_next_map`.
+- **Verificação**:
+  - Adicionado teste completo `test_sv_deathmatch_and_timelimit` em `tests/test_cs2d.c` validando:
+    - Spawn aleatório dentro das dimensões do mapa com `mp_randomspawn 1` em modos 1 (DM) e 2 (TDM).
+    - Fallback de spawn para jogador CT em mapa de DM que só possui `Info_T`.
+    - Resolução sequencial de `cs2d_sv_next_map` e wrap-around no fim do ciclo.
+    - Gatilho automático de `mp_timelimit` em `cs2d_sv_step_round` acionando troca para o próximo mapa.
+    - Consultas Lua `game('maptimeleft')` e `game('nextmap')`.
+  - Suíte completa de testes compilada e aprovada: **87 / 87** testes passando (`test_cs2d.exe`).
+
+## 2026-10-17 — Antigravity — Dedicated Server: Gamemode Auto-Restart, Shotgun Shell Timing e Env_Item Spawns
+
+- **Reinício Automático de Round ao Mudar Modo de Jogo (`sv_gamemode` / `gamemode`)**:
+  - Quando o modo de jogo é alterado via comando de console/RCON (`gamemode <n>`, `sv_gamemode <n>`) ou cvar genérica, se o valor for diferente do modo atual, o servidor encerra e reinicia o round imediatamente (`cs2d_sv_round_end(sv, 5, 0)` + `cs2d_sv_round_start(sv, 5)`), resetando pontuações, bomba e spawns, e transmitindo `[22, 5]` para todos os clientes conectados.
+- **Sincronização de Recarregamento de Shotguns (M3 / XM1014) e Compensação de Lag (`mode 101`)**:
+  - No cliente real `CS2D.exe`, se a animação do projétil/shell expira antes de receber a confirmação do servidor (`[16, id, 4]`), o cliente adiciona uma bala localmente e envia o pacote de compensação `[16, 101]` (`0x65`).
+  - No servidor, o `mode == 101` incrementava a bala, mas não atualizava `pl->reload_end_ms`. No frame seguinte (~16ms), `cs2d_sv_step_reloads` via o timer expirado e disparava `mode 4` imediatamente, inserindo uma segunda bala no servidor e transmitindo `[16, id, 4]` de volta ao cliente (que adicionava outra bala), dobrando a velocidade de reload.
+  - Corrigido rearmando `pl->reload_end_ms = now + (reload_ticks * 5)` ao receber `mode == 101`, sincronizando com exatidão a cadência entre cliente e servidor sem duplicar conchas.
+- **Entidades de Mapa `Env_Item` (ID 21) no Início de Round e Join**:
+  - Implementado `cs2d_sv_init_env_items` e rotina de manutenção em `cs2d_sv_step_items` cobrindo os modos de spawn das entidades do mapa: 0 (One Time), 1 (Instant/Infinite), 2 (Every X sec) e 3 (On Trigger Only).
+  - No início de round (`cs2d_sv_round_start`), os ground items do round anterior são limpos e as entidades `Env_Item` dos modos 0, 1 e 2 são instanciadas no solo em `sv->items`.
+  - No join do jogador, a Seção 3 do join snapshot (`[252, 7, 3]`) agora transmite todos os itens de `Env_Item` já instanciados, tornando-os visíveis e interativos no mapa imediatamente ao entrar no servidor.
+  - Adicionado comando de console/RCON `trigger <name>` para disparar entidades `Env_Item` com trigger configurado (`cs2d_sv_trigger_env_items`).
+- **Verificação**:
+  - Adicionado teste completo `test_sv_gamemode_and_env_items` em `tests/test_cs2d.c` validando reinício automático de round, rearm do timer da shotgun com proteção contra duplicação de concha e ciclo de vida de `Env_Item` (spawns iniciais, respawn instantâneo no modo 1 e acionamento por trigger).
+  - Suíte completa de testes compilada e aprovada: **86 / 86** testes passando (`test_cs2d.exe`).
+
 ## 2026-10-17 — Antigravity — Itens Consumíveis, correção do bug HE (65532) e Menu da Supply Station
 
 - **Correção do bug crítico da HE (65532) / underflow de itens no chão**:

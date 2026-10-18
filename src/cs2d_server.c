@@ -11,6 +11,7 @@
 #include "cs2d_weapons.h"
 #include "cs2d_sv_lua.h"
 #include "cs2d_bind.h"
+#include "cs2d_serverlist.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -1438,6 +1439,126 @@ void cs2d_sv_public_rcon(cs2d_server_t *sv, const struct sockaddr_in *from,
     if (cmd) cs2d_sv_exec(sv, cmd);
 }
 
+/*
+ * Server browser queries (Find Servers):
+ * Ping echo [FA] (FUN_1400d4ed0) and Info reply [FB] (FUN_1401da400).
+ */
+size_t cs2d_sv_build_info_reply(const cs2d_server_t *sv, uint8_t mode, uint16_t req_ver,
+                                uint8_t *out, size_t max_out)
+{
+    if (!sv || !out || max_out < 16) return 0;
+
+    uint16_t hdr = 1;
+    memcpy(out, &hdr, 2);
+
+    cs2d_pkt_t p;
+    p.pos = 0;
+    cs2d_pkt_w_byte(&p, 0xFB);
+    cs2d_pkt_w_byte(&p, mode);
+
+    if (mode == 1 || mode == 2) {
+        uint8_t flags = 0;
+        if (sv->set.sv_password[0] != '\0') flags |= 0x01;
+        if (sv->set.sv_usgnonly == 1)       flags |= 0x02;
+        if (sv->set.sv_fow > 0)             flags |= 0x04;
+        if (sv->set.sv_friendlyfire == 1)   flags |= 0x08;
+        if (req_ver == CS2D_SV_VERSION)     flags |= 0x10;
+        if (sv->set.sv_gamemode != 0)       flags |= 0x20;
+        if (sv->lua != NULL)                flags |= 0x40;
+        if (sv->set.sv_forcelight != 0)     flags |= 0x80;
+
+        uint8_t total_players = 0;
+        uint8_t bots = 0;
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            if (sv->players[i].used) {
+                total_players++;
+                if (sv->players[i].bot) bots++;
+            }
+        }
+        uint8_t max_players = (uint8_t)sv->set.sv_maxplayers;
+        if (max_players > 32 || max_players == 0) max_players = 32;
+
+        uint8_t flags2 = 0;
+        if (sv->set.mp_recoil > 0)          flags2 |= 0x01;
+        if (sv->set.sv_offscreendamage > 0) flags2 |= 0x02;
+
+        cs2d_pkt_w_byte(&p, flags);
+        cs2d_pkt_w_str(&p, sv->set.sv_name[0] ? sv->set.sv_name : "CS2D Server");
+        cs2d_pkt_w_str(&p, sv->set.sv_map[0] ? sv->set.sv_map : "de_dust");
+        cs2d_pkt_w_byte(&p, total_players);
+        cs2d_pkt_w_byte(&p, max_players);
+        if (flags & 0x20) {
+            cs2d_pkt_w_byte(&p, (uint8_t)sv->set.sv_gamemode);
+        }
+        cs2d_pkt_w_byte(&p, bots);
+        cs2d_pkt_w_byte(&p, flags2);
+    } else if (mode == 3) {
+        /* Mode 3: ack / alive (FUN_1401da400 line 93) */
+    } else if (mode == 4) {
+        /* Mode 4: player names (FUN_1401da400 line 108) */
+        uint8_t total_players = 0;
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            if (sv->players[i].used) total_players++;
+        }
+        cs2d_pkt_w_byte(&p, total_players);
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            if (sv->players[i].used) {
+                cs2d_pkt_w_str(&p, sv->players[i].name);
+            }
+        }
+    } else if (mode == 5) {
+        /* Mode 5: player details (FUN_1401da400 line 133) */
+        uint8_t total_players = 0;
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            if (sv->players[i].used) total_players++;
+        }
+        cs2d_pkt_w_byte(&p, total_players);
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            if (sv->players[i].used) {
+                cs2d_pkt_w_byte(&p, (uint8_t)i);
+                cs2d_pkt_w_str(&p, sv->players[i].name);
+                cs2d_pkt_w_byte(&p, (uint8_t)sv->players[i].team);
+                cs2d_pkt_w_int(&p, sv->players[i].score);
+                cs2d_pkt_w_int(&p, sv->players[i].deaths);
+            }
+        }
+    } else {
+        return 0;
+    }
+
+    if ((size_t)p.pos + 2 > max_out) return 0;
+    memcpy(out + 2, p.buf, (size_t)p.pos);
+    return (size_t)p.pos + 2;
+}
+
+void cs2d_sv_handle_ping(cs2d_server_t *sv, const struct sockaddr_in *from,
+                         const uint8_t *buf, int n, int q)
+{
+    if (!sv || !from || sv->sock == INVALID_SOCKET) return;
+    if (q + 5 > n) return;
+    uint8_t out[7];
+    uint16_t hdr = 1;
+    memcpy(out, &hdr, 2);
+    out[2] = 0xFA;
+    memcpy(out + 3, buf + q + 1, 4);
+    sendto(sv->sock, (const char *)out, 7, 0, (const struct sockaddr *)from, sizeof(*from));
+}
+
+void cs2d_sv_handle_info(cs2d_server_t *sv, const struct sockaddr_in *from,
+                         const uint8_t *buf, int n, int q)
+{
+    if (!sv || !from || sv->sock == INVALID_SOCKET) return;
+    uint8_t mode = (q + 1 < n) ? buf[q + 1] : 1;
+    uint16_t req_ver = 0;
+    if (q + 3 < n) memcpy(&req_ver, buf + q + 2, 2);
+
+    uint8_t out[1024];
+    size_t len = cs2d_sv_build_info_reply(sv, mode, req_ver, out, sizeof(out));
+    if (len > 0) {
+        sendto(sv->sock, (const char *)out, (int)len, 0, (const struct sockaddr *)from, sizeof(*from));
+    }
+}
+
 /* FUN_14006a840: resolve player by exact name or numeric ID */
 static int sv_resolve_player(const cs2d_server_t *sv, const char *tok)
 {
@@ -1944,6 +2065,28 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         }
         return true;
     }
+    case 12: { /* rotation only: [12, rot u16] (FUN_1401cbce0) */
+        if (rd_left(r) < 2) return false;
+        int rot = rd_short(r);
+        if (pl && pl->alive) {
+            pl->rot = (float)rot * 0.005493164f;
+            pl->rot_flag = 1;
+        }
+        return true;
+    }
+    case 13: case 14: { /* run + rot (13) / walk + rot (14): [13|14, x u16, y u16, rot u16] (FUN_1401cc0b0 / FUN_1401cc310) */
+        if (rd_left(r) < 6) return false;
+        int x = rd_short(r), y = rd_short(r), rot = rd_short(r);
+        if (pl && pl->alive) {
+            cs2d_sv_validate_move(sv, c->player, (float)x, (float)y, op == 13 ? 10 : 11);
+            pl->rot = (float)rot * 0.005493164f;
+            pl->rot_flag = 1;
+        }
+        return true;
+    }
+    case 18: { /* no-op in dedicated dispatcher (0x1401e4350: xor esi, esi; jmp next) */
+        return true;
+    }
     case 71: case 72: { /* run / walk + rot + aim: [71|72, x u16, y u16, rot u16, aim] (FUN_1401d3fb0 / FUN_1401d4430:
                          * both read opcode + 3 shorts + 1 byte and need > 7 bytes left; proxy: "47 10 04 6b 05 c1 d6 87").
                          * 71 used to read only x, y, aim, so 2 bytes were parsed as opcodes (e.g. 57 flashlight, 253 leave) */
@@ -2086,15 +2229,6 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         if (pl) cs2d_sv_entity_event(sv, c->player, (uint16_t)ex, (uint16_t)ey, (uint8_t)emode);
         return true;
     }
-    case 35: { /* dynamic object remove: (FUN_1401cf350: server returns 3 -> drop datagram) */
-        return false;
-    }
-    case 36: { /* dynamic object mode: (FUN_1401cf4b0: server returns 3 -> drop datagram) */
-        return false;
-    }
-    case 37: { /* dynamic object health: (FUN_1401cf630: server returns 3 -> drop datagram) */
-        return false;
-    }
     case 41: { /* kill projectile: [41, proj_id u16] (FUN_1401cfd00) */
         if (rd_left(r) < 2) return false;
         int proj_id = rd_short(r);
@@ -2164,9 +2298,6 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         int state = rd_byte(r);
         if (pl) cs2d_sv_spec_flash(sv, c->player, (uint8_t)state);
         return true;
-    }
-    case 65: { /* positionalsound: (FUN_1401d3430: server returns 3 -> drop datagram) */
-        return false;
     }
     case 68: { /* firedirection: [68, dir u16] (FUN_1401d3840 -> FUN_140192080) */
         if (rd_left(r) < 2) return false;
@@ -2416,14 +2547,98 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
             /* Returns 0 without sending if empty in original binary (FUN_1401d8360 0x1401d8650) */
             return true;
         }
+    /* Server-to-Client dropped opcodes in dedicated server mode (DAT_1407dfe48 != 0):
+     * Return code 3 or 4 breaks datagram parsing (FUN_1401e3cf0) cleanly dropping remainder. */
+    case 15:  /* setpos / teleport (FUN_1401cc570) */
+    case 21:  /* spawn record (FUN_1401cd470) */
+    case 22:  /* round restart (inline 0x1401e4929 -> 0x1401e4ce0) */
+    case 25:  /* ground item collect (inline 0x1401e49da -> 0x1401e4ce0) */
+    case 29:  /* hostage update (FUN_1401ce2f0) */
+    case 33:  /* ammo sync (inline 0x1401e48b6 -> 0x1401e4ce0) */
+    case 35:  /* dynamic object remove (FUN_1401cf350) */
+    case 36:  /* dynamic object mode (FUN_1401cf4b0) */
+    case 37:  /* dynamic object health (FUN_1401cf630) */
+    case 38:  /* sound effect (inline 0x1401e4820 -> 0x1401e4ce0) */
+    case 40:  /* kill dropped weapon (FUN_1401cfba0) */
+    case 42:  /* set playerdata (FUN_1401cfe80) */
+    case 44:  /* radar blip / HUD (FUN_1401d03f0) */
+    case 45:  /* HUD elements (FUN_1401d06b0) */
+    case 46:  /* custom HUD / menus (FUN_1401d0970) */
+    case 47:  /* custom HUD (FUN_1401d0ca0) */
+    case 48:  /* custom sound (inline 0x1401e4769 -> 0x1401e4ce0) */
+    case 49:  /* screenshake (inline 0x1401e4708 -> 0x1401e4ce0) */
+    case 51:  /* dynamic image spawn (inline 0x1401e46b1 -> 0x1401e4ce0) */
+    case 52:  /* dynamic image update (inline 0x1401e4652 -> 0x1401e4ce0) */
+    case 55:  /* fog of war update (FUN_1401d2520) */
+    case 58:  /* blend tile (inline 0x1401e456d -> 0x1401e4ce0) */
+    case 59:  /* image hitzone (inline 0x1401e450e -> 0x1401e4ce0) */
+    case 61:  /* custom tile (inline 0x1401e44a3 -> 0x1401e4ce0) */
+    case 62:  /* settile (inline 0x1401e4444 -> 0x1401e4ce0) */
+    case 63:  /* custom item (inline 0x1401e43e5 -> 0x1401e4ce0) */
+    case 64:  /* team scores broadcast (FUN_1401d3280) */
+    case 65:  /* positionalsound (FUN_1401d3430) */
+    case 66:  /* hostage pos (inline 0x1401e436f -> 0x1401e4ce0) */
+    case 69:  /* death cam (inline 0x1401e42fb -> 0x1401e4ce4) */
+    case 224: /* kill streak announcement (FUN_1401d6730) */
+    case 226: /* round end (inline 0x1401e4083 -> 0x1401e4ce0) */
+    case 234: /* hud text (inline 0x1401e4258 -> 0x1401e4ce0) */
+    case 237: /* cvar change (inline 0x1401e41af -> 0x1401e4ce0) */
+    case 239: /* map reload (FUN_1401d9720) */
+    case 247: /* ping list (inline 0x1401e3fdf -> 0x1401e4ce0) */
+    case 248: /* join notice (inline 0x1401e3f96 -> 0x1401e4ce0) */
+        return false;
+
+    case 54: { /* dynamic tween update: [54, mode u8, target u16, ...] (FUN_1400bf930) */
+        if (rd_left(r) < 3) return false;
+        int tmode = rd_byte(r);
+        int target = rd_short(r);
+        (void)tmode; (void)target;
+        return true;
+    }
+    case 100: { /* command relay / custom event: [100, sub u8, ...] (FUN_1401c3500) */
+        if (rd_left(r) < 1) return false;
+        int sub = rd_byte(r);
+        if (sub == 2) {
+            char cmd_buf[256];
+            rd_str(r, cmd_buf, sizeof(cmd_buf));
+            if (rd_left(r) >= 1) rd_byte(r);
+            return true;
+        }
         return false;
     }
+    case 243: { /* client log / debug string: [243, len u16, len*2 bytes UTF-16LE] (FUN_1401be4a0) */
+        if (rd_left(r) < 2) return false;
+        int slen = rd_short(r);
+        if (slen < 0 || slen > 1024 || rd_left(r) < slen * 2) return false;
+        for (int i = 0; i < slen; i++) (void)rd_short(r);
+        return true;
+    }
+    case 250: { /* Ping: [250, millisecs i32] (FUN_1400d4ed0) */
+        if (rd_left(r) < 4) return false;
+        int32_t ms = rd_int(r);
+        cs2d_pkt_t *p = sv_packet(sv, c, false, false);
+        cs2d_pkt_w_byte(p, 250);
+        cs2d_pkt_w_int(p, ms);
+        return true;
+    }
+    case 251: { /* Info query: [251, mode u8, [version u16]] (FUN_1401da400) */
+        if (rd_left(r) < 1) return false;
+        uint8_t mode = (uint8_t)rd_byte(r);
+        uint16_t req_ver = 0;
+        if (rd_left(r) >= 2) req_ver = (uint16_t)rd_short(r);
+        uint8_t rep[1024];
+        size_t rep_len = cs2d_sv_build_info_reply(sv, mode, req_ver, rep, sizeof(rep));
+        if (rep_len > 2) {
+            cs2d_pkt_t *p = sv_packet(sv, c, false, false);
+            for (size_t k = 2; k < rep_len; k++) {
+                cs2d_pkt_w_byte(p, rep[k]);
+            }
+        }
+        return true;
+    }
     default:
-        /* Opcodes without a port yet (e.g. 53). The original runs a handler per opcode and drops the
-         * rest of the datagram when it returns > 0 (FUN_1401e3cf0); [40] is one of those drops: 0x1401cfba0 returns
-         * 3 or 4 without reading anything on a dedicated. Report them on stderr (not the game console) so longer
-         * capture_server.sh sessions show which handlers are still missing. */
-        fprintf(stderr, "[sv] unhandled client opcode %d (%d bytes left dropped)\n", op, rd_left(r));
+        /* Jump table default entries (0x1401e3e80) in cs2d_dedicated.exe cleanly drop
+         * the remainder of the datagram (esi = 2; break;) without logging errors. */
         return false;
     }
 }
@@ -2470,6 +2685,14 @@ static void sv_handle_datagram(cs2d_server_t *sv, const struct sockaddr_in *from
             rd_str(&r, pw, sizeof(pw));
             rd_lstr(&r, cmd, sizeof(cmd));
             cs2d_sv_public_rcon(sv, from, pw, cmd);
+            return;
+        }
+        if (q < n && buf[q] == 0xFA) {
+            cs2d_sv_handle_ping(sv, from, buf, n, q);
+            return;
+        }
+        if (q < n && buf[q] == 0xFB) {
+            cs2d_sv_handle_info(sv, from, buf, n, q);
             return;
         }
         hello = (q + 1 < n && buf[q] == 252 && buf[q + 1] == 0);

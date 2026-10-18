@@ -10,6 +10,40 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-18 — Antigravity — Dedicated Server: Mapeamento de Opcodes Residuais na Jump Table ([12..14], [18], [243], S->C drops e defaults)
+
+- **Opcodes de Movimentação e Rotação do Jogador (`[12..14]`)**:
+  - Implementado `case 12:` (`FUN_1401cbce0`): rotação pura `[12, rot u16]`, convertendo via `pl->rot = (float)rot * 0.005493164f` e ativando `pl->rot_flag = 1`.
+  - Implementado `case 13:` (`FUN_1401cc0b0`) e `case 14:` (`FUN_1401cc310`): corrida + rotação (`[13]`) e caminhada + rotação (`[14]`) lendo `x u16, y u16, rot u16`, validando movimento em `cs2d_sv_validate_move` e atualizando rotação.
+- **Opcode [18] No-op (`0x1401e4350`)**:
+  - Implementado `case 18:` retornando `true` imediatamente. Desassemblagem em `0x1401e4350` confirmou `xor esi, esi; jmp next`, sendo um verdadeiro no-op no dispatcher dedicado.
+- **Opcode [243] UTF-16LE String (`FUN_1401be4a0`)**:
+  - Implementado `case 243:` consumindo `slen u16` seguido por `slen * 2` bytes de string UTF-16LE, evitando desincronização de payload no datagrama.
+- **Opcodes Server-to-Client e Defaults na Jump Table**:
+  - Mapeados todos os opcodes Server-to-Client que no modo Dedicated Server (`DAT_1407dfe48 != 0`) retornam código 3/4 no binário original (`15`, `21`, `22`, `25`, `29`, `33`, `35..38`, `40`, `42`, `44..49`, `51`, `52`, `55`, `58`, `59`, `61..66`, `69`, `224`, `226`, `234`, `237`, `239`, `247`, `248`): retornam `false` em `sv_recv_game`, encerrando o loop de processamento do datagrama de forma limpa.
+  - Opcodes não utilizados na jump table (`73..79`, `88..99`, `101..223`, `231`, `233`, `244..246`): no binário original apontam para `0x1401e3e80` (`esi = 2`), agora caem no `default:` retornando `false` sem imprimir warnings de opcodes desconhecidos.
+- **Verificação**:
+  - Adicionado teste abrangente `test_server_jump_table_opcodes` em `tests/test_cs2d.c` cobrindo [12], [13], [14], no-op [18], string [243], S->C drops e defaults.
+  - Suíte completa de testes aprovada: **91 / 91** testes passando (`test_cs2d.exe`).
+
+## 2026-10-17 — Antigravity — Dedicated Server: Resposta de Server Browser, Ping Echo [FA] e Info Reply [FB]
+
+- **Ping Echo Connectionless e In-Session (`[FA]` / 250, `FUN_1400d4ed0`)**:
+  - Implementado `cs2d_sv_handle_ping` em `src/cs2d_server.c` interceptando pacotes `0xFA` antes da criação de conexões (`sv_find_conn`), ecoando os 7 bytes exatos `[01 00] [FA] [millisecs i32]` de volta para o cliente requisitante.
+  - Implementado `case 250:` em `sv_recv_game` para clientes já conectados.
+- **Server Info Reply (`[FB]` / 251, `FUN_1401da400`)**:
+  - Implementado `cs2d_sv_build_info_reply` e `cs2d_sv_handle_info` respondendo às requisições de consulta do navegador de servidores e do tooltip:
+    - Modo 1 (consulta direta ao servidor) e Modo 2 (broadcast LAN para `255.255.255.255:36963`).
+    - Geração exata dos campos de wire: `[01 00] [FB] [mode] [flags] [name u8 str] [map u8 str] [players u8] [max_players u8] ([gamemode u8] se flags & 0x20) [bots u8] [flags2 u8]`.
+    - Bits de `flags`: bit 0 (senha), bit 1 (usgn_only), bit 2 (fog of war), bit 3 (friendly fire), bit 4 (versão 1018 compatível), bit 5 (gamemode presente se != 0), bit 6 (scripts Lua carregados), bit 7 (forcelight).
+    - Bits de `flags2`: bit 0 (recoil dinâmico), bit 1 (offscreen damage), bit 2 (transferências ativas).
+    - Modos 3 (alive ack), 4 (lista de nomes de jogadores) e 5 (detalhes de jogadores: id, nome, time, score e mortes) fiéis à rotina de decompilação `FUN_1401da400`.
+  - Implementado `case 251:` em `sv_recv_game` para consultas em sessões ativas.
+- **Verificação**:
+  - Teste de regressão adicionado em `tests/test_cs2d.c` comprovando que o pacote gerado por `cs2d_sv_build_info_reply` para o mapa `prison_funst3r` com configurações padrão é idêntico byte a byte (36 bytes) à captura original do `cs2d_dedicated.exe`.
+  - Modos 4 e 5 validados com dados reais de jogadores.
+  - Suíte completa de testes aprovada: **90 / 90** testes passando (`test_cs2d.exe`).
+
 ## 2026-10-17 — Antigravity — Dedicated Server: Comunicação Cliente > Lua ([53] reqcld/clientdata, [227/228] key, [232] clientsetting, [80..87] physics rotation & [225] voice)
 
 - **Opcode [53] `reqcld` & `clientdata` (`FUN_140129a50`, `FUN_1401780d0`, `FUN_1401d16f0`)**:
@@ -91,41 +125,3 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
   - Adicionado teste completo de regressão `test_server_spray_vote_leaderboard_messages` em `tests/test_cs2d.c` validando o consumo exato dos bytes de spray, votekick, votemap, leaderboard e descarte limpo de opcodes residuais < 7.
   - Recompilado e aprovado com sucesso: **88 / 88** testes passando (`test_cs2d.exe`).
 
-## 2026-10-17 — Antigravity — Dedicated Server: Deathmatch (DM), Team Deathmatch (TDM), mp_randomspawn e Rotação mp_timelimit
-
-- **Spawns Aleatórios (`mp_randomspawn 1`) em Deathmatch (`gamemode 1`) e TDM (`gamemode 2`)**:
-  - Port de `0x140160da0` - `0x140160dae` e `0x140162313` chamando `0x1400d5650`: quando `mp_randomspawn == 1` e `gamemode` é 1 ou 2, o servidor sorteia tiles navegáveis (não sólidos e sem outro jogador ou objeto bloqueando) em até 100 tentativas, centralizando o jogador no tile (`tx * 32 + 16`, `ty * 32 + 16`).
-- **Fallback de Spawns em Deathmatch Sem Spawns Dedicados**:
-  - Em `sv_gamemode 1`, se um mapa não possui pontos de spawn do time do jogador (por exemplo, um jogador CT entrando em um mapa de DM que só tem entidades `Info_T`), `sv_pick_spawn` agora faz fallback para aceitar spawns de ambos os times (`Info_T` e `Info_CT`), garantindo que o jogador entre no jogo sem travar.
-- **Rotação Automática de Mapa com `mp_timelimit` e Ciclo `mapcycle.cfg`**:
-  - Port de `0x1401a3058` - `0x1401a30c5`: leitura de `mp_timelimit` em minutos (`* 60000 ms`) e medição de `now - sv->map_start_ms >= limit_ms`.
-  - Em modos de respawn (`respawn == 1`) ou quando há <= 1 jogador ativo no servidor, a rotação dispara imediatamente (`cs2d_sv_change_map`) para o próximo mapa retornado por `cs2d_sv_next_map`.
-  - Preservação da ordem sequencial original das entradas em `sys/mapcycle.cfg` em `sv->mapcycle` (com wrap-around para o primeiro mapa) antes da ordenação alfabética exigida pelo snapshot de join da Seção 12 (`sv->maps`).
-- **Suporte na API Lua (`src/cs2d_sv_lua.c`)**:
-  - `game("maptimeleft")`: retorna os segundos restantes até o limite do mapa como float, ou `1000000.0` se `mp_timelimit <= 0` (ilimitado), correspondendo exatamente ao comportamento original do BlitzMax.
-  - `game("nextmap")`: retorna o nome do próximo mapa do ciclo via `cs2d_sv_next_map`.
-- **Verificação**:
-  - Adicionado teste completo `test_sv_deathmatch_and_timelimit` em `tests/test_cs2d.c` validando:
-    - Spawn aleatório dentro das dimensões do mapa com `mp_randomspawn 1` em modos 1 (DM) e 2 (TDM).
-    - Fallback de spawn para jogador CT em mapa de DM que só possui `Info_T`.
-    - Resolução sequencial de `cs2d_sv_next_map` e wrap-around no fim do ciclo.
-    - Gatilho automático de `mp_timelimit` em `cs2d_sv_step_round` acionando troca para o próximo mapa.
-    - Consultas Lua `game('maptimeleft')` e `game('nextmap')`.
-  - Suíte completa de testes compilada e aprovada: **87 / 87** testes passando (`test_cs2d.exe`).
-
-## 2026-10-17 — Antigravity — Dedicated Server: Gamemode Auto-Restart, Shotgun Shell Timing e Env_Item Spawns
-
-- **Reinício Automático de Round ao Mudar Modo de Jogo (`sv_gamemode` / `gamemode`)**:
-  - Quando o modo de jogo é alterado via comando de console/RCON (`gamemode <n>`, `sv_gamemode <n>`) ou cvar genérica, se o valor for diferente do modo atual, o servidor encerra e reinicia o round imediatamente (`cs2d_sv_round_end(sv, 5, 0)` + `cs2d_sv_round_start(sv, 5)`), resetando pontuações, bomba e spawns, e transmitindo `[22, 5]` para todos os clientes conectados.
-- **Sincronização de Recarregamento de Shotguns (M3 / XM1014) e Compensação de Lag (`mode 101`)**:
-  - No cliente real `CS2D.exe`, se a animação do projétil/shell expira antes de receber a confirmação do servidor (`[16, id, 4]`), o cliente adiciona uma bala localmente e envia o pacote de compensação `[16, 101]` (`0x65`).
-  - No servidor, o `mode == 101` incrementava a bala, mas não atualizava `pl->reload_end_ms`. No frame seguinte (~16ms), `cs2d_sv_step_reloads` via o timer expirado e disparava `mode 4` imediatamente, inserindo uma segunda bala no servidor e transmitindo `[16, id, 4]` de volta ao cliente (que adicionava outra bala), dobrando a velocidade de reload.
-  - Corrigido rearmando `pl->reload_end_ms = now + (reload_ticks * 5)` ao receber `mode == 101`, sincronizando com exatidão a cadência entre cliente e servidor sem duplicar conchas.
-- **Entidades de Mapa `Env_Item` (ID 21) no Início de Round e Join**:
-  - Implementado `cs2d_sv_init_env_items` e rotina de manutenção em `cs2d_sv_step_items` cobrindo os modos de spawn das entidades do mapa: 0 (One Time), 1 (Instant/Infinite), 2 (Every X sec) e 3 (On Trigger Only).
-  - No início de round (`cs2d_sv_round_start`), os ground items do round anterior são limpos e as entidades `Env_Item` dos modos 0, 1 e 2 são instanciadas no solo em `sv->items`.
-  - No join do jogador, a Seção 3 do join snapshot (`[252, 7, 3]`) agora transmite todos os itens de `Env_Item` já instanciados, tornando-os visíveis e interativos no mapa imediatamente ao entrar no servidor.
-  - Adicionado comando de console/RCON `trigger <name>` para disparar entidades `Env_Item` com trigger configurado (`cs2d_sv_trigger_env_items`).
-- **Verificação**:
-  - Adicionado teste completo `test_sv_gamemode_and_env_items` em `tests/test_cs2d.c` validando reinício automático de round, rearm do timer da shotgun com proteção contra duplicação de concha e ciclo de vida de `Env_Item` (spawns iniciais, respawn instantâneo no modo 1 e acionamento por trigger).
-  - Suíte completa de testes compilada e aprovada: **86 / 86** testes passando (`test_cs2d.exe`).

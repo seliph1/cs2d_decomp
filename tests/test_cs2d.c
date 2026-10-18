@@ -1821,6 +1821,33 @@ static bool test_serverlist(void)
     }
     TEST_PASS("Info reply: u8-length name/map, players, max, optional game mode, bots, flags2");
 
+    /* Dedicated server generates the exact 36-byte reply when queried with mode 2 and version 1018 */
+    static cs2d_server_t test_sv;
+    memset(&test_sv, 0, sizeof(test_sv));
+    cs2d_sv_settings_default(&test_sv.set);
+    snprintf(test_sv.set.sv_map, sizeof(test_sv.set.sv_map), "prison_funst3r");
+    uint8_t generated_reply[64];
+    size_t gen_len = cs2d_sv_build_info_reply(&test_sv, 2, 1018, generated_reply, sizeof(generated_reply));
+    if (gen_len != 36 || memcmp(generated_reply, reply, 36) != 0) {
+        TEST_FAIL("cs2d_sv_build_info_reply", "Generated reply differs byte-for-byte from original dedicated capture");
+    }
+    TEST_PASS("cs2d_sv_build_info_reply matches the original dedicated server capture byte-for-byte");
+
+    /* Modes 4 and 5: player names and details */
+    test_sv.players[1].used = true;
+    snprintf(test_sv.players[1].name, sizeof(test_sv.players[1].name), "Player1");
+    test_sv.players[1].team = 1;
+    test_sv.players[1].score = 15;
+    test_sv.players[1].deaths = 3;
+    uint8_t m4[64], m5[64];
+    size_t l4 = cs2d_sv_build_info_reply(&test_sv, 4, 1018, m4, sizeof(m4));
+    size_t l5 = cs2d_sv_build_info_reply(&test_sv, 5, 1018, m5, sizeof(m5));
+    if (l4 == 0 || m4[2] != 0xFB || m4[3] != 4 || m4[4] != 1 ||
+        l5 == 0 || m5[2] != 0xFB || m5[3] != 5 || m5[4] != 1) {
+        TEST_FAIL("cs2d_sv_build_info_reply modes 4/5", "Modes 4 and 5 failed to build player details");
+    }
+    TEST_PASS("cs2d_sv_build_info_reply: modes 4 (names) and 5 (details) match FUN_1401da400");
+
     /* sys/core/svl.cache: comment line, then {ip i32 LE (first octet in the MSB), port u16 LE} */
     static const uint8_t cache[] = {
         '/', '/', ' ', 'x', '\r', '\n',
@@ -9557,6 +9584,126 @@ static bool test_server_client_lua_communication(void)
     return true;
 }
 
+static bool test_server_jump_table_opcodes(void)
+{
+    printf("\n=== Testing Dedicated Server Jump Table Opcodes ([12..14], [18], [243], S->C drops & defaults) ===\n");
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.map_loaded = true;
+    sv.map.width = 64;
+    sv.map.height = 64;
+
+    /* Setup player 1 */
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].alive = true;
+    sv.players[1].team = 1;
+    sv.players[1].x = 320.0f;
+    sv.players[1].y = 320.0f;
+    sv.players[1].last_valid_x = 320.0f;
+    sv.players[1].last_valid_y = 320.0f;
+
+    /* Setup connection 0 */
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].join_step = 4;
+    sv.conns[0].pending = (cs2d_sv_pending_t *)calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+
+    /* 1. Opcode 12: rotation only [12, rot u16] */
+    uint16_t rot_in = 32768; /* 180 degrees in 65536 space */
+    uint8_t pkt12[3];
+    pkt12[0] = 12;
+    memcpy(pkt12 + 1, &rot_in, 2);
+    int unread = cs2d_sv_recv_payload(&sv, &sv.conns[0], pkt12, sizeof(pkt12));
+    if (unread != 0) {
+        TEST_FAIL("Opcode 12", "failed to parse 3-byte payload");
+    }
+    if (fabsf(sv.players[1].rot - (32768.0f * 0.005493164f)) > 0.01f || sv.players[1].rot_flag != 1) {
+        TEST_FAIL("Opcode 12", "rotation not updated properly");
+    }
+
+    /* 2. Opcode 13: run + rot [13, x u16, y u16, rot u16] */
+    uint8_t pkt13[7];
+    pkt13[0] = 13;
+    uint16_t x13 = 352, y13 = 352, rot13 = 16384; /* 90 degrees */
+    memcpy(pkt13 + 1, &x13, 2);
+    memcpy(pkt13 + 3, &y13, 2);
+    memcpy(pkt13 + 5, &rot13, 2);
+    unread = cs2d_sv_recv_payload(&sv, &sv.conns[0], pkt13, sizeof(pkt13));
+    if (unread != 0) {
+        TEST_FAIL("Opcode 13", "failed to parse 7-byte payload");
+    }
+    if (fabsf(sv.players[1].x - 352.0f) > 0.1f || fabsf(sv.players[1].rot - (16384.0f * 0.005493164f)) > 0.01f) {
+        TEST_FAIL("Opcode 13", "position or rotation not updated properly");
+    }
+
+    /* 3. Opcode 14: walk + rot [14, x u16, y u16, rot u16] */
+    uint8_t pkt14[7];
+    pkt14[0] = 14;
+    uint16_t x14 = 384, y14 = 384, rot14 = 8192;
+    memcpy(pkt14 + 1, &x14, 2);
+    memcpy(pkt14 + 3, &y14, 2);
+    memcpy(pkt14 + 5, &rot14, 2);
+    unread = cs2d_sv_recv_payload(&sv, &sv.conns[0], pkt14, sizeof(pkt14));
+    if (unread != 0) {
+        TEST_FAIL("Opcode 14", "failed to parse 7-byte payload");
+    }
+    if (fabsf(sv.players[1].x - 384.0f) > 0.1f || fabsf(sv.players[1].rot - (8192.0f * 0.005493164f)) > 0.01f) {
+        TEST_FAIL("Opcode 14", "position or rotation not updated properly");
+    }
+
+    /* 4. Opcode 18: no-op in dedicated dispatcher (followed by opcode 12) */
+    uint8_t pkt18[4];
+    pkt18[0] = 18; /* no-op */
+    pkt18[1] = 12; /* rot */
+    uint16_t rot18 = 4096;
+    memcpy(pkt18 + 2, &rot18, 2);
+    unread = cs2d_sv_recv_payload(&sv, &sv.conns[0], pkt18, sizeof(pkt18));
+    if (unread != 0) {
+        TEST_FAIL("Opcode 18", "failed to pass through no-op opcode 18");
+    }
+    if (fabsf(sv.players[1].rot - (4096.0f * 0.005493164f)) > 0.01f) {
+        TEST_FAIL("Opcode 18", "following opcode 12 was not executed");
+    }
+
+    /* 5. Opcode 243: UTF-16LE string */
+    uint8_t pkt243[9];
+    pkt243[0] = 243;
+    uint16_t slen243 = 3;
+    memcpy(pkt243 + 1, &slen243, 2);
+    pkt243[3] = 'O'; pkt243[4] = 0;
+    pkt243[5] = 'K'; pkt243[6] = 0;
+    pkt243[7] = '!'; pkt243[8] = 0;
+    unread = cs2d_sv_recv_payload(&sv, &sv.conns[0], pkt243, sizeof(pkt243));
+    if (unread != 0) {
+        TEST_FAIL("Opcode 243", "failed to parse 9-byte UTF-16 string");
+    }
+
+    /* 6. Server-to-Client dropped opcodes: must cleanly return unread bytes (terminating datagram) */
+    uint8_t pkt_drop[] = { 22, 1, 2, 3 }; /* [22] round restart */
+    unread = cs2d_sv_recv_payload(&sv, &sv.conns[0], pkt_drop, sizeof(pkt_drop));
+    if (unread != 3) {
+        TEST_FAIL("Server-to-Client drop", "opcode 22 did not break datagram parsing");
+    }
+
+    uint8_t pkt_drop2[] = { 42, 1, 2, 3 }; /* [42] playerdata */
+    unread = cs2d_sv_recv_payload(&sv, &sv.conns[0], pkt_drop2, sizeof(pkt_drop2));
+    if (unread != 3) {
+        TEST_FAIL("Server-to-Client drop", "opcode 42 did not break datagram parsing");
+    }
+
+    /* 7. Default unused jump table opcodes (e.g. 73, 90, 150) -> clean break */
+    uint8_t pkt_def[] = { 73, 1, 2, 3 };
+    unread = cs2d_sv_recv_payload(&sv, &sv.conns[0], pkt_def, sizeof(pkt_def));
+    if (unread != 3) {
+        TEST_FAIL("Default drop", "opcode 73 did not cleanly drop remainder");
+    }
+
+    free(sv.conns[0].pending);
+    TEST_PASS("Dedicated Server Jump Table: [12..14] movement, [18] no-op, [243] string, S->C drops & defaults");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -9565,7 +9712,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 90;
+    int total = 91;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -9657,6 +9804,7 @@ int main(void)
     if (test_sv_gamemode_and_env_items()) passed++;
     if (test_sv_deathmatch_and_timelimit()) passed++;
     if (test_server_client_lua_communication()) passed++;
+    if (test_server_jump_table_opcodes()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);
@@ -9664,4 +9812,5 @@ int main(void)
 
     return (passed == total) ? 0 : 1;
 }
+
 

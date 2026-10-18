@@ -5,6 +5,17 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **Dedicated server: Mapeamento de Opcodes Residuais na Jump Table (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - Análise e mapeamento 1:1 de todos os 247 opcodes da jump table `0x1406cdb14` (`FUN_1401e3cf0`);
+  [12] `rot u16` (`FUN_1401cbce0`): atualiza rotação `pl->rot = (float)rot * 0.005493164f` e `pl->rot_flag = 1`;
+  [13] corrida + rotação (`FUN_1401cc0b0`) e [14] caminhada + rotação (`FUN_1401cc310`): consomem `x u16, y u16, rot u16`, validam movimento e atualizam rotação;
+  [18] (`0x1401e4350`): no-op autêntico (`xor esi, esi; jmp next`);
+  [243] (`FUN_1401be4a0`): consome `slen u16` + `slen * 2` bytes de string UTF-16LE;
+  [54] (`FUN_1400bf930`): consome `mode u8, target u16` de dynamic tweens;
+  [100] (`FUN_1401c3500`): trata comando relay sub 2;
+  Todos os opcodes Server-to-Client que no modo dedicado retornam código 3/4 (`15`, `21`, `22`, `25`, `29`, `33`, `35..38`, `40`, `42`, `44..49`, `51`, `52`, `55`, `58`, `59`, `61..66`, `69`, `224`, `226`, `234`, `237`, `239`, `247`, `248`) retornam `false` em `sv_recv_game`, encerrando o loop de datagrama de forma limpa;
+  Opcodes não utilizados na jump table (`73..79`, `88..99`, `101..223`, `231`, `233`, `244..246`) saltam para `0x1401e3e80` (`esi = 2`) no binário original, caindo no `default:` retornando `false` sem avisos de erro.
+  Bloqueado por `test_server_jump_table_opcodes` (91/91 testes passando).
 - **Dedicated server: Comunicação Cliente > Lua (2026-10-17, `docs/agents/knowledge/dedicated-server.md`):**
   fixed - [53] `reqcld` command & `clientdata` opcode (`FUN_140129a50`, `FUN_1401780d0`, `FUN_1401d16f0`): sends reliable `[53, mode u8 (, param string)]` from server; consumes response for modes 0 (screen cursor), 1 (scroll offset), 2 (map cursor), 3 (light bool), 4 (loaded bool + SHA256 string), 5 (weapon mod info), 6 (render3d bool), and dispatches Lua hook `clientdata(id, mode, d1, d2)`;
   [227] & [228] `key press` & `key release` (`FUN_1401bb510`, `FUN_1401bb620`): parses `[op, key u16]`, maps key code to canonical name (`sv_resolve_key_name`) checking custom `addbind` keys in Lua state first and falling back to `cs2d_bind_key_name`, and calls Lua hook `key(id, key_name, state)`;

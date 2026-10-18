@@ -488,6 +488,14 @@ void cs2d_sv_public_rcon(cs2d_server_t *sv, const struct sockaddr_in *from,
                          const char *pw, const char *cmd);                                     /* FUN_1401be1c0: [242] */
 bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line);                                    /* FUN_140140a00 */
 
+/* Server browser queries: ping echo [FA] (FUN_1400d4ed0) and info reply [FB] (FUN_1401da400) */
+size_t cs2d_sv_build_info_reply(const cs2d_server_t *sv, uint8_t mode, uint16_t req_ver,
+                                uint8_t *out, size_t max_out);
+void cs2d_sv_handle_ping(cs2d_server_t *sv, const struct sockaddr_in *from,
+                         const uint8_t *buf, int n, int q);
+void cs2d_sv_handle_info(cs2d_server_t *sv, const struct sockaddr_in *from,
+                         const uint8_t *buf, int n, int q);
+
 /* Console output: the dedicated prints every line with its colour prefix stripped */
 void cs2d_server_print(const char *fmt, ...);
 void cs2d_sv_set_active(cs2d_server_t *sv);
