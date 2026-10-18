@@ -236,10 +236,10 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   - Uses vendored PUC Lua 5.1.4 (`third_party/lua51/lua_all.c`).
   - `cs2d_sv_lua_init`: creates state via `luaL_newstate()`, opens standard libraries (`luaL_openlibs()`), sets `_CS2DVERSION = "1.0.1.8"`,
     stores `cs2d_server_t *` in `LUA_REGISTRYINDEX["cs2d_sv"]`, registers native functions, and executes in order:
-    1. `sys/lua/wrapper.lua` (if present)
-    2. `sys/lua/server.lua` (if present)
-    3. `sys/lua/autorun/*.lua` (alphabetical order)
-    4. `maps/<mapname>.lua` (if present)
+    1. Server entry point via `mp_luaserver` (`0x1405a64f8`, default `"server.lua"`; resolves in `sys/lua/`, supports paths/extensions; `""` or `"0"` disables)
+    2. `sys/lua/autorun/*.lua` (alphabetical order)
+    3. Map script `maps/<mapname>.lua` (if `mp_luamap != 0`, `0x1407dfb94`, default 1; also reloaded on map change)
+    (Note: `wrapper.lua` is not auto-loaded; user scripts load it manually via `dofile` if needed)
   - `cs2d_sv_lua_frame`: stepped every server frame, advances active timer countdowns and runs expiration callbacks.
   - `cs2d_sv_lua_close`: closes Lua state, frees all hook nodes, and deallocates memory.
 - **Hook Engine (`addhook`, `freehook`, `sethookstate`):**

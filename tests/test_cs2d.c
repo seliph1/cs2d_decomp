@@ -7232,6 +7232,93 @@ static bool test_server_phase4_lua(void)
     rc = cs2d_sv_lua_dostring(&sv, "assert(g_exec_val == 999, 'lua command execution failed')\n");
     if (!rc) TEST_FAIL("cs2d_sv_exec lua verify", "g_exec_val mismatch");
 
+    /* Test mp_luaserver entry point loading */
+    FILE *f_entry = fopen("sys/lua/test_entry_point.lua", "w");
+    if (f_entry) {
+        fprintf(f_entry, "g_test_entry_loaded = 42\n");
+        fclose(f_entry);
+        cs2d_sv_settings_set(&sv.set, "mp_luaserver", "test_entry_point.lua");
+        cs2d_sv_lua_load_server(&sv);
+        rc = cs2d_sv_lua_dostring(&sv, "assert(g_test_entry_loaded == 42, 'mp_luaserver script failed to run')\n");
+        if (!rc) TEST_FAIL("mp_luaserver load", "failed verifying g_test_entry_loaded");
+
+        /* Also test resolution without .lua extension and with sys/lua/ prefix */
+        rc = cs2d_sv_lua_dostring(&sv, "g_test_entry_loaded = 0\n");
+        cs2d_sv_settings_set(&sv.set, "mp_luaserver", "sys/lua/test_entry_point");
+        cs2d_sv_lua_load_server(&sv);
+        rc = cs2d_sv_lua_dostring(&sv, "assert(g_test_entry_loaded == 42, 'mp_luaserver extensionless failed')\n");
+        if (!rc) TEST_FAIL("mp_luaserver load ext", "failed verifying g_test_entry_loaded without extension");
+        remove("sys/lua/test_entry_point.lua");
+    }
+
+    /* Test mp_luamap loading */
+    FILE *f_map = fopen("maps/test_map_script.lua", "w");
+    if (f_map) {
+        fprintf(f_map, "g_test_map_loaded = 100\n");
+        fclose(f_map);
+
+        /* When mp_luamap == 1 -> loads maps/<mapname>.lua */
+        sv.set.mp_luamap = 1;
+        cs2d_sv_lua_load_map(&sv, "test_map_script");
+        rc = cs2d_sv_lua_dostring(&sv, "assert(g_test_map_loaded == 100, 'mp_luamap script failed to run')\n");
+        if (!rc) TEST_FAIL("mp_luamap load", "failed verifying g_test_map_loaded");
+
+        /* When mp_luamap == 0 -> ignored */
+        rc = cs2d_sv_lua_dostring(&sv, "g_test_map_loaded = 0\n");
+        sv.set.mp_luamap = 0;
+        cs2d_sv_lua_load_map(&sv, "test_map_script");
+        rc = cs2d_sv_lua_dostring(&sv, "assert(g_test_map_loaded == 0, 'mp_luamap 0 should not load script')\n");
+        if (!rc) TEST_FAIL("mp_luamap disabled", "script should not load when mp_luamap is 0");
+        remove("maps/test_map_script.lua");
+    }
+
+    /* Test cvar query via cs2d_sv_exec */
+    if (!cs2d_sv_exec(&sv, "mp_luamap")) {
+        TEST_FAIL("cs2d_sv_exec mp_luamap", "failed querying mp_luamap");
+    }
+    if (!cs2d_sv_exec(&sv, "mp_luaserver")) {
+        TEST_FAIL("cs2d_sv_exec mp_luaserver", "failed querying mp_luaserver");
+    }
+
+    /* Test hook validation, sethookstate and debuglua logging */
+    {
+        /* Valid hook add */
+        int add_ok = cs2d_sv_lua_addhook(&sv, "team", "my_team_func", 0);
+        if (!add_ok) TEST_FAIL("addhook valid", "expected valid hook 'team' to succeed");
+
+        /* Invalid hook add */
+        int add_invalid = cs2d_sv_lua_addhook(&sv, "non_existent_hook", "foo", 0);
+        if (add_invalid != 0) TEST_FAIL("addhook invalid", "expected non-existent hook to fail");
+
+        /* Test sethookstate disable and enable */
+        cs2d_sv_lua_sethookstate(&sv, "team", 0);
+        rc = cs2d_sv_lua_dostring(&sv,
+            "g_team_ran = false\n"
+            "function my_team_func(id, team, look) g_team_ran = true return 0 end\n"
+        );
+        if (!rc) TEST_FAIL("dostring my_team_func", "failed defining my_team_func");
+        cs2d_sv_lua_hook_team(&sv, 1, 1, 0);
+        rc = cs2d_sv_lua_dostring(&sv, "assert(g_team_ran == false, 'disabled hook should not execute')\n");
+        if (!rc) TEST_FAIL("sethookstate disabled", "hook executed while disabled");
+
+        /* Re-enable */
+        cs2d_sv_lua_sethookstate(&sv, "team", 1);
+        cs2d_sv_lua_hook_team(&sv, 1, 1, 0);
+        rc = cs2d_sv_lua_dostring(&sv, "assert(g_team_ran == true, 're-enabled hook should execute')\n");
+        if (!rc) TEST_FAIL("sethookstate re-enabled", "hook did not execute after re-enabling");
+
+        /* freehook */
+        int free_ok = cs2d_sv_lua_freehook(&sv, "team", "my_team_func");
+        if (!free_ok) TEST_FAIL("freehook", "expected freehook to succeed");
+
+        /* debuglua cvar get and set */
+        if (!cs2d_sv_exec(&sv, "debuglua")) TEST_FAIL("debuglua query", "failed querying debuglua");
+        if (!cs2d_sv_exec(&sv, "debuglua 0")) TEST_FAIL("debuglua set 0", "failed setting debuglua 0");
+        if (sv.set.debuglua != 0) TEST_FAIL("debuglua val 0", "debuglua should be 0");
+        if (!cs2d_sv_exec(&sv, "debuglua 1")) TEST_FAIL("debuglua set 1", "failed setting debuglua 1");
+        if (sv.set.debuglua != 1) TEST_FAIL("debuglua val 1", "debuglua should be 1");
+    }
+
     /* Clean up */
     cs2d_sv_lua_close(&sv);
     if (sv.lua != NULL) TEST_FAIL("Lua Close", "sv.lua not NULL after cs2d_sv_lua_close");
@@ -9802,6 +9889,170 @@ static bool test_server_reconnect_and_pw(void)
     return true;
 }
 
+/* ========================================================================= */
+/* Dedicated Server: Dynamic Image Objects (Tdo typ 40, [51], [59], snapshot)*/
+/* ========================================================================= */
+static bool test_dedicated_dynamic_images(void)
+{
+    printf("\n=== Testing Dedicated Server: Dynamic Image Objects ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.sock = INVALID_SOCKET;
+
+    if (!cs2d_sv_lua_init(&sv)) TEST_FAIL("DynImage Lua init", "cs2d_sv_lua_init failed");
+
+    /* 1. Invalid image path -> returns 0 and logs error */
+    bool rc = cs2d_sv_lua_dostring(&sv, "g_img_fail = image('non_existent_folder/missing_file.png', 100, 200, 0)\n");
+    if (!rc) TEST_FAIL("DynImage fail lua", "script execution failed");
+    rc = cs2d_sv_lua_dostring(&sv, "assert(g_img_fail == 0, 'invalid image path must return 0')\n");
+    if (!rc) TEST_FAIL("DynImage invalid path", "expected 0 on missing image");
+
+    /* 2. Special tags: <light>, <avatar_1>, <tile:5>, <flag:de> */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "g_light = image('<light>', 50, 50, 0)\n"
+        "assert(g_light > 0, 'light image must succeed')\n"
+        "assert(imageparam(g_light, 'width') == 128, 'light width 128')\n"
+        "assert(imageparam(g_light, 'height') == 128, 'light height 128')\n"
+        "assert(imageparam(g_light, 'framecount') == 1, 'light framecount 1')\n"
+        "g_avatar = image('<avatar_1>', 60, 60, 2)\n"
+        "assert(g_avatar > 0, 'avatar image must succeed')\n"
+        "assert(imageparam(g_avatar, 'width') == 32, 'avatar width 32')\n"
+        "g_flag = image('<flag:de>', 70, 70, 2)\n"
+        "assert(g_flag > 0, 'flag image must succeed')\n"
+        "assert(imageparam(g_flag, 'width') == 16, 'flag width 16')\n"
+        "assert(imageparam(g_flag, 'height') == 11, 'flag height 11')\n"
+    );
+    if (!rc) TEST_FAIL("DynImage tags", "special image tags failed");
+
+    /* 3. Real file & spritesheet */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "g_img = image('gfx/pointer.bmp', 320, 240, 0)\n"
+        "assert(g_img > 0, 'pointer.bmp image must succeed')\n"
+        "assert(imageparam(g_img, 'path') == 'gfx/pointer.bmp', 'path mismatch')\n"
+        "assert(imageparam(g_img, 'x') == 320, 'initial x mismatch')\n"
+        "assert(imageparam(g_img, 'y') == 240, 'initial y mismatch')\n"
+        "assert(imageparam(g_img, 'rot') == 0, 'initial rot mismatch')\n"
+        "assert(imageparam(g_img, 'alpha') == 1.0, 'initial alpha mismatch')\n"
+        "assert(imageparam(g_img, 'frame') == 1, 'initial 1-based frame mismatch')\n"
+        "assert(imageparam(g_img, 'width') == 92, 'pointer.bmp width 92')\n"
+        "assert(imageparam(g_img, 'height') == 92, 'pointer.bmp height 92')\n"
+        "assert(imageparam(g_img, 'framecount') == 0, 'normal image framecount 0')\n"
+    );
+    if (!rc) TEST_FAIL("DynImage normal file", "pointer.bmp load failed");
+
+    /* 4. Spritesheet: <spritesheet:gfx/pointer.bmp:46:46:m> */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "g_sheet = image('<spritesheet:gfx/pointer.bmp:46:46:m>', 100, 100, 1)\n"
+        "assert(g_sheet > 0, 'spritesheet must succeed')\n"
+        "assert(imageparam(g_sheet, 'width') == 46, 'spritesheet cell width 46')\n"
+        "assert(imageparam(g_sheet, 'height') == 46, 'spritesheet cell height 46')\n"
+        "assert(imageparam(g_sheet, 'framecount') == 4, 'spritesheet framecount 4 (92/46 * 92/46)')\n"
+    );
+    if (!rc) TEST_FAIL("DynImage spritesheet", "spritesheet load failed");
+
+    /* 5. Modifiers: imagepos, imagealpha, imagecolor, imagescale, imageblend, imageframe, imageshadow, imagehitzone, imagephysicsparent */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "imagepos(g_img, 400, 300, 90)\n"
+        "assert(imageparam(g_img, 'x') == 400, 'x updated')\n"
+        "assert(imageparam(g_img, 'y') == 300, 'y updated')\n"
+        "assert(imageparam(g_img, 'rot') == 90, 'rot updated')\n"
+        "imagealpha(g_img, 0.75)\n"
+        "assert(math.abs(imageparam(g_img, 'alpha') - 0.75) < 0.001, 'alpha updated')\n"
+        "imagecolor(g_img, 255, 0, 128)\n"
+        "imagescale(g_img, 2.0, 1.5)\n"
+        "imageblend(g_img, 1)\n"
+        "imageframe(g_sheet, 3)\n"
+        "assert(imageparam(g_sheet, 'frame') == 3, 'frame updated')\n"
+        "imageshadow(g_img, 1)\n"
+        "imagephysicsparent(g_img, 1, 10, 0)\n"
+        "imagehitzone(g_img, 1, -10, -10, 20, 20)\n"
+    );
+    if (!rc) TEST_FAIL("DynImage modifiers", "modifiers execution failed");
+
+    /* 6. Verify unknown param and missing id return false */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(imageparam(g_img, 'non_existent_prop') == false, 'unknown param must return false')\n"
+        "assert(imageparam(999999, 'x') == false, 'missing image id must return false')\n"
+    );
+    if (!rc) TEST_FAIL("DynImage param false", "unknown param/missing id did not return false");
+
+    /* 7. Object integration: object(id, prop) & object(0, 'table') */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(object(g_img, 'exists') == true, 'object exists')\n"
+        "assert(object(g_img, 'type') == 40, 'object type must be 40 (CS2D_DO_IMAGE)')\n"
+        "assert(object(g_img, 'x') == 400, 'object x')\n"
+        "local tbl = object(0, 'table')\n"
+        "local found = false\n"
+        "for _, id in ipairs(tbl) do if id == g_img then found = true break end end\n"
+        "assert(found == true, 'image must be in object table')\n"
+    );
+    if (!rc) TEST_FAIL("DynImage object API", "object integration failed");
+
+    /* 8. Image modes: 0, 1, 2, 3, 4, 101, 133, 201, 233 */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "local m0 = image('<light>', 0, 0, 0)\n"
+        "local m1 = image('<light>', 0, 0, 1)\n"
+        "local m2 = image('<light>', 0, 0, 2, 1)\n"
+        "local m3 = image('<light>', 0, 0, 3)\n"
+        "local m4 = image('<light>', 0, 0, 4)\n"
+        "local m101 = image('<light>', 0, 0, 101)\n"
+        "local m133 = image('<light>', 0, 0, 133)\n"
+        "local m201 = image('<light>', 0, 0, 201)\n"
+        "local m233 = image('<light>', 0, 0, 233)\n"
+        "assert(m0 > 0 and m1 > 0 and m2 > 0 and m3 > 0 and m4 > 0, 'modes 0..4 created')\n"
+        "assert(m101 > 0 and m133 > 0 and m201 > 0 and m233 > 0, 'follow player modes created')\n"
+    );
+    if (!rc) TEST_FAIL("DynImage modes", "all image modes creation failed");
+
+    /* 9. Join snapshot sections 5 and 7 filtering: private HUD image for player 1 shouldn't be sent to player 2 */
+    cs2d_sv_conn_t c1, c2;
+    memset(&c1, 0, sizeof(c1));
+    memset(&c2, 0, sizeof(c2));
+    c1.active = true; c1.player = 1;
+    c2.active = true; c2.player = 2;
+
+    int active_for_c1 = 0, active_for_c2 = 0;
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *o = &sv.dynobj.objs[i];
+        if (o->active) {
+            if (!(o->typ == CS2D_DO_IMAGE && o->mode == 2 && o->player > 0 && o->player != c1.player)) active_for_c1++;
+            if (!(o->typ == CS2D_DO_IMAGE && o->mode == 2 && o->player > 0 && o->player != c2.player)) active_for_c2++;
+        }
+    }
+    if (active_for_c1 <= active_for_c2) {
+        TEST_FAIL("DynImage snapshot filter", "player 1 HUD image should be visible to c1 but not c2");
+    }
+
+    /* 10. freeimage(id) removes dynobj */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "freeimage(g_img)\n"
+        "assert(object(g_img, 'exists') == false, 'image dynobj must be destroyed by freeimage')\n"
+    );
+    if (!rc) TEST_FAIL("DynImage freeimage", "freeimage did not destroy dynobj");
+
+    /* 11. cs2d_sv_round_start clears all image dynobjs */
+    int imgs_before = 0;
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        if (sv.dynobj.objs[i].active && sv.dynobj.objs[i].typ == CS2D_DO_IMAGE) imgs_before++;
+    }
+    if (imgs_before == 0) TEST_FAIL("DynImage round_start count", "expected active images before round start");
+
+    cs2d_sv_round_start(&sv, 0);
+
+    int imgs_after = 0;
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        if (sv.dynobj.objs[i].active && sv.dynobj.objs[i].typ == CS2D_DO_IMAGE) imgs_after++;
+    }
+    if (imgs_after != 0) TEST_FAIL("DynImage round_start cleanup", "round start did not clear all image dynobjs");
+
+    cs2d_sv_lua_close(&sv);
+
+    TEST_PASS("Dedicated Server: Dynamic Image Objects (Tdo typ 40, all modes, [51], [59], snapshot 5/7, round cleanup)");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -9810,7 +10061,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 92;
+    int total = 93;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -9904,6 +10155,7 @@ int main(void)
     if (test_server_client_lua_communication()) passed++;
     if (test_server_jump_table_opcodes()) passed++;
     if (test_server_reconnect_and_pw()) passed++;
+    if (test_dedicated_dynamic_images()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

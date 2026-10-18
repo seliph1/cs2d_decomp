@@ -8,7 +8,6 @@
 
 #define CS2D_SV_MAX_HOOKS       128
 #define CS2D_SV_MAX_TIMERS      256
-#define CS2D_SV_MAX_IMAGES      2048
 
 /* Hook listener entry (ordered by priority ascending) */
 typedef struct cs2d_hook_node {
@@ -20,6 +19,7 @@ typedef struct cs2d_hook_node {
 /* Hook definition */
 typedef struct {
     char name[32];
+    bool enabled;
     cs2d_hook_node_t *head;
 } cs2d_hook_t;
 
@@ -33,22 +33,6 @@ typedef struct {
     char     param[128];
 } cs2d_sv_timer_t;
 
-/* Lua image (Tdo 40) */
-typedef struct {
-    bool     active;
-    uint16_t id;
-    char     path[128];
-    float    x, y, rot;
-    uint8_t  mode;
-    uint8_t  player;
-    float    alpha;
-    uint8_t  blend;
-    uint8_t  r, g, b;
-    float    sx, sy;
-    uint8_t  frame;
-    uint8_t  shadow;
-} cs2d_sv_image_t;
-
 /* Lua subsystem state */
 typedef struct cs2d_sv_lua {
     lua_State        *L;
@@ -56,8 +40,6 @@ typedef struct cs2d_sv_lua {
     cs2d_hook_t       hooks[CS2D_SV_MAX_HOOKS];
     int               hook_count;
     cs2d_sv_timer_t   timers[CS2D_SV_MAX_TIMERS];
-    cs2d_sv_image_t   images[CS2D_SV_MAX_IMAGES];
-    int               next_image_id;
     uint32_t          last_ms100;
     uint32_t          last_second;
     uint32_t          last_minute;
@@ -75,12 +57,14 @@ void cs2d_sv_lua_log(cs2d_server_t *sv, const char *msg);
 /* Script runners */
 bool cs2d_sv_lua_dofile(cs2d_server_t *sv, const char *path);
 bool cs2d_sv_lua_dostring(cs2d_server_t *sv, const char *code);
+void cs2d_sv_lua_load_server(cs2d_server_t *sv);
 void cs2d_sv_lua_load_autorun(cs2d_server_t *sv);
 void cs2d_sv_lua_load_map(cs2d_server_t *sv, const char *mapname);
 
 /* Hook dispatcher */
 int  cs2d_sv_lua_addhook(cs2d_server_t *sv, const char *hook_name, const char *func_name, int priority);
 int  cs2d_sv_lua_freehook(cs2d_server_t *sv, const char *hook_name, const char *func_name);
+int  cs2d_sv_lua_sethookstate(cs2d_server_t *sv, const char *hook_name, int state);
 
 /* Specific hook triggers */
 void cs2d_sv_lua_hook_join(cs2d_server_t *sv, int id);
@@ -194,6 +178,7 @@ void cs2d_sv_image_scale(cs2d_server_t *sv, int id, float sx, float sy);
 void cs2d_sv_image_blend(cs2d_server_t *sv, int id, int blend);
 void cs2d_sv_image_frame(cs2d_server_t *sv, int id, int frame);
 void cs2d_sv_image_shadow(cs2d_server_t *sv, int id, int shadow);
+void cs2d_sv_image_physicsparent(cs2d_server_t *sv, int id, int parent_type, int parent_id, int mode);
 void cs2d_sv_image_hitzone(cs2d_server_t *sv, int id, int mode, int xo, int yo, int w, int h);
 void cs2d_sv_tween_alpha(cs2d_server_t *sv, int id, int duration, float alpha);
 void cs2d_sv_tween_color(cs2d_server_t *sv, int id, int duration, int r, int g, int b);

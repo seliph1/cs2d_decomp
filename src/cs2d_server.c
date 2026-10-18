@@ -123,11 +123,13 @@ void cs2d_sv_settings_default(cs2d_sv_settings_t *s)
     s->ticks              = 16;
     s->leaderboard        = 1;
     s->mp_luamap          = 1;
+    snprintf(s->mp_luaserver, sizeof(s->mp_luaserver), "server.lua");
     s->mp_zombiespeedmod  = 100;
     s->mp_teleportreload  = 5;   /* DAT_140a14d48 in CS2D.exe .data: the 5 s the captures show */
     s->mp_dispenser_health = 10; /* DAT_140a14dac in CS2D.exe .data */
     s->mp_dispenser_money  = 500;/* DAT_140a14db0 in CS2D.exe .data (Changelog: "defaults to 500") */
     s->mp_dmspawnmoney     = 2000;/* DAT_1405a6554 in cs2d_dedicated.exe .data (Changelog: "2000$ by default") */
+    s->debuglua            = 1;   /* DAT_1405a6398 in cs2d_dedicated.exe .data: 1 by default */
     s->cvar_count         = 0;
 }
 
@@ -159,7 +161,7 @@ void cs2d_sv_settings_set(cs2d_sv_settings_t *s, const char *key, const char *va
     SV_INT(sv_spraytransfer) SV_INT(sv_maptransfer) SV_INT(mp_startmoney) SV_INT(mp_postspawn) SV_INT(mp_autoteambalance)
     SV_INT(lagcompensation) SV_INT(ticks) SV_INT(leaderboard) SV_INT(physics)
     SV_INT(mp_luamap) SV_INT(mp_randomspawn) SV_INT(mp_curtailedexplosions) SV_INT(mp_zombiespeedmod) SV_INT(mp_kevlar)
-    SV_INT(mp_timelimit)
+    SV_INT(mp_timelimit) SV_INT(debuglua)
     else if (_stricmp(key, "gamemode") == 0) { s->sv_gamemode = atoi(val); }
     else if (_stricmp(key, "timelimit") == 0) { s->mp_timelimit = atoi(val); }
     else if (_stricmp(key, "randomspawn") == 0) { s->mp_randomspawn = atoi(val); }
@@ -199,7 +201,7 @@ const char *cs2d_sv_settings_get(const cs2d_sv_settings_t *s, const char *key)
     SV_GET_INT(mp_freezetime) SV_GET_INT(mp_c4timer) SV_GET_INT(mp_respawndelay) SV_GET_INT(mp_infammo)
     SV_GET_INT(mp_flashlight) SV_GET_INT(mp_hovertext) SV_GET_INT(sv_maxplayers) SV_GET_INT(sv_friendlyfire)
     SV_GET_INT(sv_forcelight) SV_GET_INT(sv_daylighttime) SV_GET_INT(mp_hudscale) SV_GET_INT(sv_voicechat)
-    SV_GET_INT(sv_offscreendamage)
+    SV_GET_INT(sv_offscreendamage) SV_GET_INT(mp_luamap) SV_GET_INT(debuglua)
     SV_GET_INT(mp_teleportreload) SV_GET_INT(mp_dispenser_health) SV_GET_INT(mp_dispenser_money)
     SV_GET_INT(mp_dmspawnmoney) SV_GET_INT(mp_timelimit) SV_GET_INT(mp_randomspawn)
 #undef SV_GET_INT
@@ -745,13 +747,18 @@ static void sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
     /* Section 5: dynamic objects (Tdo), 60 per message */
     int active_objs = 0;
     for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
-        if (sv->dynobj.objs[i].active && sv->dynobj.objs[i].typ != CS2D_DO_IMAGE) active_objs++;
+        const cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+        if (o->active) {
+            if (o->typ == CS2D_DO_IMAGE && o->mode == 2 && o->player > 0 && o->player != c->player) continue;
+            active_objs++;
+        }
     }
     if (active_objs > 0) {
         int ok = 0;
         for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
             const cs2d_dynobj_t *o = &sv->dynobj.objs[i];
-            if (!o->active || o->typ == CS2D_DO_IMAGE) continue;
+            if (!o->active) continue;
+            if (o->typ == CS2D_DO_IMAGE && o->mode == 2 && o->player > 0 && o->player != c->player) continue;
             if ((ok % 60) == 0) {
                 p = sv_packet(sv, c, true, true);
                 int rem = active_objs - ok;
@@ -808,8 +815,64 @@ static void sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
         cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 10); cs2d_pkt_w_byte(p, 0);
     }
 
-    /* Sections 7, 8, 9: image data, tweens, custom tiles (empty until Lua images / settile are ported) */
-    for (int sec = 7; sec <= 9; sec++) {
+    /* Section 7: image data (FUN_1402ce7c0 case 4), 20 per message */
+    int active_imgs = 0;
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+        if (o->active && o->typ == CS2D_DO_IMAGE) {
+            if (o->mode == 2 && o->player > 0 && o->player != c->player) continue;
+            active_imgs++;
+        }
+    }
+    if (active_imgs > 0) {
+        int ok = 0;
+        for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+            const cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+            if (!o->active || o->typ != CS2D_DO_IMAGE) continue;
+            if (o->mode == 2 && o->player > 0 && o->player != c->player) continue;
+            if ((ok % 20) == 0) {
+                p = sv_packet(sv, c, true, true);
+                int rem = active_imgs - ok;
+                cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 7);
+                cs2d_pkt_w_byte(p, (uint8_t)(rem > 20 ? 20 : rem));
+            }
+            ok++;
+            cs2d_pkt_w_short(&c->out, (uint16_t)o->id);
+            cs2d_pkt_w_str(&c->out, o->path);
+            cs2d_pkt_w_byte(&c->out, o->color[0]);
+            cs2d_pkt_w_byte(&c->out, o->color[1]);
+            cs2d_pkt_w_byte(&c->out, o->color[2]);
+            float a = o->alpha;
+            float sx = o->scalex;
+            float sy = o->scaley;
+            uint8_t ab[4], sxb[4], syb[4];
+            memcpy(ab, &a, 4);
+            memcpy(sxb, &sx, 4);
+            memcpy(syb, &sy, 4);
+            for (int b = 0; b < 4; b++) cs2d_pkt_w_byte(&c->out, ab[b]);
+            for (int b = 0; b < 4; b++) cs2d_pkt_w_byte(&c->out, sxb[b]);
+            for (int b = 0; b < 4; b++) cs2d_pkt_w_byte(&c->out, syb[b]);
+            cs2d_pkt_w_byte(&c->out, (uint8_t)o->blend);
+            cs2d_pkt_w_short(&c->out, (uint16_t)o->frame);
+            cs2d_pkt_w_byte(&c->out, 0); /* parent typ = 0 */
+            cs2d_pkt_w_byte(&c->out, (uint8_t)o->shadow);
+            if (o->hit_mode != 0) {
+                cs2d_pkt_w_byte(&c->out, 1);
+                cs2d_pkt_w_byte(&c->out, (uint8_t)o->hit_mode);
+                cs2d_pkt_w_short(&c->out, (uint16_t)(o->hit_xo + 0x8000));
+                cs2d_pkt_w_short(&c->out, (uint16_t)(o->hit_yo + 0x8000));
+                cs2d_pkt_w_short(&c->out, (uint16_t)o->hit_w);
+                cs2d_pkt_w_short(&c->out, (uint16_t)o->hit_h);
+            } else {
+                cs2d_pkt_w_byte(&c->out, 0);
+            }
+        }
+    }
+    p = sv_packet(sv, c, true, true);
+    cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 0);
+
+    /* Sections 8, 9: tweens, custom tiles (empty until tweens / settile snapshot are needed) */
+    for (int sec = 8; sec <= 9; sec++) {
         p = sv_packet(sv, c, true, true);
         cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, (uint8_t)sec); cs2d_pkt_w_byte(p, 0);
     }
@@ -2065,6 +2128,12 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
             }
         }
         return true;
+    } else {
+        const char *cur_val = cs2d_sv_settings_get(&sv->set, cmd);
+        if (cur_val) {
+            cs2d_server_print("\"%s\" is \"%s\"", cmd, cur_val);
+            return true;
+        }
     }
     return false;
 }

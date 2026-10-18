@@ -938,6 +938,14 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
     cs2d_sv_init_hostages(sv);
     cs2d_sv_init_env_items(sv);
 
+    /* Clear Lua images from previous round (Tdo typ 40) */
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+        if (o->active && o->typ == CS2D_DO_IMAGE) {
+            cs2d_dynobj_kill(&sv->dynobj, o->id, NULL);
+        }
+    }
+
     /* Update team scores according to round end reason (FUN_1402520b0 / cs2d_game_apply_round_reason) */
     uint64_t bit = (reason >= 0 && reason <= 61) ? (1ULL << reason) : 0;
     if (bit & 0x1004010040101000ULL) {

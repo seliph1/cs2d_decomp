@@ -17,6 +17,7 @@
 
 #include "cs2d_sv_lua.h"
 #include "cs2d_weapons.h"
+#include "cs2d_image.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -143,8 +144,11 @@ static int l_freehook(lua_State *L)
 /* sethookstate(hook_name, state) */
 static int l_sethookstate(lua_State *L)
 {
-    /* State: 1 = enabled, 0 = disabled (CS2D default is all active) */
-    (void)L;
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    const char *hook_name = luaL_checkstring(L, 1);
+    int state = (int)luaL_checkinteger(L, 2);
+    cs2d_sv_lua_sethookstate(sv, hook_name, state);
     return 0;
 }
 
@@ -536,6 +540,13 @@ static int l_print(lua_State *L)
     return 0;
 }
 
+static cs2d_dynobj_t *find_image(cs2d_server_t *sv, int id)
+{
+    if (!sv || id <= 0) return NULL;
+    cs2d_dynobj_t *o = cs2d_dynobj_get(&sv->dynobj, id);
+    return (o && o->typ == CS2D_DO_IMAGE) ? o : NULL;
+}
+
 /* image(path, x, y, mode [, player]) */
 static int l_image(lua_State *L)
 {
@@ -644,6 +655,19 @@ static int l_imageshadow(lua_State *L)
     return 0;
 }
 
+/* imagephysicsparent(id, parent_type, parent_id, mode) */
+static int l_imagephysicsparent(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv) return 0;
+    int id = (int)luaL_checkinteger(L, 1);
+    int ptype = (int)luaL_checkinteger(L, 2);
+    int pid = (int)luaL_checkinteger(L, 3);
+    int mode = (int)luaL_checkinteger(L, 4);
+    cs2d_sv_image_physicsparent(sv, id, ptype, pid, mode);
+    return 0;
+}
+
 /* imagehitzone(id, mode, xo, yo, w, h) */
 static int l_imagehitzone(lua_State *L)
 {
@@ -659,30 +683,29 @@ static int l_imagehitzone(lua_State *L)
     return 0;
 }
 
-/* imageparam(id, param) */
+/* imageparam(id, param) - FUN_14012e5c0 */
 static int l_imageparam(lua_State *L)
 {
     cs2d_server_t *sv = get_sv_from_lua(L);
-    if (!sv || !sv->lua) return 0;
-    cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
+    if (!sv) { lua_pushboolean(L, 0); return 1; }
     int id = (int)luaL_checkinteger(L, 1);
     const char *param = luaL_checkstring(L, 2);
 
-    for (int i = 0; i < CS2D_SV_MAX_IMAGES; i++) {
-        if (lua->images[i].active && lua->images[i].id == id) {
-            cs2d_sv_image_t *img = &lua->images[i];
-            if (strcmp(param, "x") == 0) { lua_pushnumber(L, (double)img->x); return 1; }
-            if (strcmp(param, "y") == 0) { lua_pushnumber(L, (double)img->y); return 1; }
-            if (strcmp(param, "rot") == 0) { lua_pushnumber(L, (double)img->rot); return 1; }
-            if (strcmp(param, "alpha") == 0) { lua_pushnumber(L, (double)img->alpha); return 1; }
-            if (strcmp(param, "blend") == 0) { lua_pushinteger(L, img->blend); return 1; }
-            if (strcmp(param, "mode") == 0) { lua_pushinteger(L, img->mode); return 1; }
-            if (strcmp(param, "frame") == 0) { lua_pushinteger(L, img->frame); return 1; }
-            if (strcmp(param, "shadow") == 0) { lua_pushinteger(L, img->shadow); return 1; }
-            break;
-        }
-    }
-    return 0;
+    cs2d_dynobj_t *img = find_image(sv, id);
+    if (!img) { lua_pushboolean(L, 0); return 1; }
+
+    if (strcmp(param, "x") == 0) { lua_pushnumber(L, (double)img->x); return 1; }
+    if (strcmp(param, "y") == 0) { lua_pushnumber(L, (double)img->y); return 1; }
+    if (strcmp(param, "rot") == 0) { lua_pushnumber(L, (double)img->rot); return 1; }
+    if (strcmp(param, "alpha") == 0) { lua_pushnumber(L, (double)img->alpha); return 1; }
+    if (strcmp(param, "path") == 0) { lua_pushstring(L, img->path); return 1; }
+    if (strcmp(param, "frame") == 0) { lua_pushinteger(L, img->frame + 1); return 1; }
+    if (strcmp(param, "width") == 0) { lua_pushinteger(L, img->width); return 1; }
+    if (strcmp(param, "height") == 0) { lua_pushinteger(L, img->height); return 1; }
+    if (strcmp(param, "framecount") == 0) { lua_pushinteger(L, img->frames); return 1; }
+
+    lua_pushboolean(L, 0);
+    return 1;
 }
 
 /* Tween Lua functions */
@@ -1388,14 +1411,21 @@ static int l_addbind(lua_State *L)
     const char *key = luaL_checkstring(L, 1);
     for (int i = 0; i < lua->bind_key_count; i++) {
         if (_stricmp(lua->bind_keys[i], key) == 0) {
-            lua_pushboolean(L, 1);
+            cs2d_server_print("LUA ERROR: Cannot add '%s' key bind (key does not exist or is already bound)!", key);
+            lua_pushboolean(L, 0);
             return 1;
         }
     }
     if (lua->bind_key_count < 64) {
         snprintf(lua->bind_keys[lua->bind_key_count++], 32, "%s", key);
+        if (sv->set.debuglua) {
+            cs2d_server_print("Lua: Adding key bind '%s'", key);
+        }
+        lua_pushboolean(L, 1);
+        return 1;
     }
-    lua_pushboolean(L, 1);
+    cs2d_server_print("LUA ERROR: Cannot add '%s' key bind (key does not exist or is already bound)!", key);
+    lua_pushboolean(L, 0);
     return 1;
 }
 
@@ -1410,10 +1440,14 @@ static int l_removebind(lua_State *L)
         if (_stricmp(lua->bind_keys[i], key) == 0) {
             memmove(&lua->bind_keys[i], &lua->bind_keys[i + 1], (size_t)(lua->bind_key_count - 1 - i) * 32);
             lua->bind_key_count--;
+            if (sv->set.debuglua) {
+                cs2d_server_print("Lua: Removing key bind '%s'", key);
+            }
             lua_pushboolean(L, 1);
             return 1;
         }
     }
+    cs2d_server_print("LUA ERROR: Cannot remove '%s' key bind (key is not bound)!", key);
     lua_pushboolean(L, 0);
     return 1;
 }
@@ -1744,7 +1778,6 @@ bool cs2d_sv_lua_init(cs2d_server_t *sv)
     cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)calloc(1, sizeof(cs2d_sv_lua_t));
     if (!lua) return false;
     lua->sv = sv;
-    lua->next_image_id = 1;
     sv->lua = lua;
     cs2d_sv_set_active(sv);
 
@@ -1790,6 +1823,7 @@ bool cs2d_sv_lua_init(cs2d_server_t *sv)
     lua_register(lua->L, "imageblend", l_imageblend);
     lua_register(lua->L, "imageframe", l_imageframe);
     lua_register(lua->L, "imageshadow", l_imageshadow);
+    lua_register(lua->L, "imagephysicsparent", l_imagephysicsparent);
     lua_register(lua->L, "imagehitzone", l_imagehitzone);
     lua_register(lua->L, "imageparam", l_imageparam);
 
@@ -1865,17 +1899,8 @@ bool cs2d_sv_lua_init(cs2d_server_t *sv)
     lua_register(lua->L, "ai_spray", l_ai_spray);
     lua_register(lua->L, "ai_use", l_ai_use);
 
-    /* Load wrapper.lua if present */
-    cs2d_sv_lua_dofile(sv, "sys/lua/wrapper.lua");
-
-    /* Load server.lua (or mp_luaserver) if present */
-    if (sv->set.mp_luaserver[0] != '\0') {
-        char p[128];
-        snprintf(p, sizeof(p), "sys/lua/%s", sv->set.mp_luaserver);
-        cs2d_sv_lua_dofile(sv, p);
-    } else {
-        cs2d_sv_lua_dofile(sv, "sys/lua/server.lua");
-    }
+    /* Load mp_luaserver script (root sys/lua, default server.lua) */
+    cs2d_sv_lua_load_server(sv);
 
     /* Load autorun */
     cs2d_sv_lua_load_autorun(sv);
@@ -1978,21 +2003,106 @@ void cs2d_sv_lua_load_autorun(cs2d_server_t *sv)
     }
 }
 
+void cs2d_sv_lua_load_server(cs2d_server_t *sv)
+{
+    if (!sv || !sv->lua) return;
+    const char *script = sv->set.mp_luaserver;
+    if (!script || !script[0] || strcmp(script, "0") == 0) return;
+
+    /* Trim leading whitespace and quotes */
+    while (*script == ' ' || *script == '\t' || *script == '"' || *script == '\'') script++;
+    char clean[128];
+    snprintf(clean, sizeof(clean), "%s", script);
+    size_t clen = strlen(clean);
+    while (clen > 0 && (clean[clen - 1] == ' ' || clean[clen - 1] == '\t' ||
+                        clean[clen - 1] == '"' || clean[clen - 1] == '\'' ||
+                        clean[clen - 1] == '\r' || clean[clen - 1] == '\n')) {
+        clean[--clen] = '\0';
+    }
+    if (clean[0] == '\0' || strcmp(clean, "0") == 0) return;
+
+    /* Strip leading sys/lua/ or sys\lua\ if user supplied full prefix */
+    const char *rel = clean;
+    if (_strnicmp(rel, "sys/lua/", 8) == 0 || _strnicmp(rel, "sys\\lua\\", 8) == 0) {
+        rel += 8;
+    }
+
+    char path[512];
+    snprintf(path, sizeof(path), "sys/lua/%s", rel);
+
+    /* If file does not exist directly, try with .lua appended */
+    size_t plen = strlen(path);
+    if (!cs2d_platform_file_exists(path) && (plen < 4 || _stricmp(path + plen - 4, ".lua") != 0)) {
+        if (plen + 5 < sizeof(path)) {
+            memcpy(path + plen, ".lua", 5);
+        }
+    }
+
+    if (cs2d_platform_file_exists(path)) {
+        cs2d_sv_lua_dofile(sv, path);
+    }
+}
+
 void cs2d_sv_lua_load_map(cs2d_server_t *sv, const char *mapname)
 {
+    if (!sv || !sv->lua || !sv->set.mp_luamap) return;
+    if (!mapname || !mapname[0]) return;
+
+    char clean[64];
+    cs2d_sv_sanitize_map_name(clean, sizeof(clean), mapname);
+    size_t clen = strlen(clean);
+    if (clen > 4 && _stricmp(clean + clen - 4, ".lua") == 0) {
+        clean[clen - 4] = '\0';
+    }
+    if (clean[0] == '\0') return;
+
     char path[128];
-    snprintf(path, sizeof(path), "maps/%s.lua", mapname);
-    cs2d_sv_lua_dofile(sv, path);
+    snprintf(path, sizeof(path), "maps/%s.lua", clean);
+    if (cs2d_platform_file_exists(path)) {
+        cs2d_sv_lua_dofile(sv, path);
+    }
 }
 
 /* ---------------------------------------------------------------------------
  * Hook Management & Invocation
  * --------------------------------------------------------------------------- */
 
+static bool cs2d_sv_lua_is_valid_hook(const char *name)
+{
+    static const char *s_hooks[] = {
+        "connect", "join", "collect", "attack", "walkover", "clientsetting", "leave",
+        "spawn", "startround", "second", "team", "minute", "name", "endround", "mapchange",
+        "serveraction", "always", "trigger", "ms100", "parse", "rcon", "buy", "triggerentity",
+        "drop", "startround_prespawn", "reload", "attack2", "move", "projectile", "itemfadeout",
+        "movetile", "kill", "hit", "projectile_impact", "break", "die", "suicide", "usebutton",
+        "use", "shieldhit", "say", "sayteamutf8", "sayutf8", "sayteam", "spray", "radio", "vote",
+        "menu", "assist", "build", "log", "flashlight", "buildattempt", "httpdata", "http",
+        "flagcapture", "flagtake", "key", "bombplant", "dominate", "bombexplode", "bombdefuse",
+        "hostagerescue", "vipescape", "objectdamage", "objectupgrade", "clientdata", "hitzone",
+        "specswitch", "shutdown", "objectkill", "turretscan", "oncollision", "oncollisionhit",
+        "onhit", "hostageuse", "hostagedamage", "hostagekill", "disconnect", "voice",
+        "connect_attempt", "connect_initplayer", "frame", "post_endround", "filetransfer"
+    };
+    if (!name) return false;
+    for (size_t i = 0; i < sizeof(s_hooks)/sizeof(s_hooks[0]); i++) {
+        if (_stricmp(s_hooks[i], name) == 0) return true;
+    }
+    return false;
+}
+
 int cs2d_sv_lua_addhook(cs2d_server_t *sv, const char *hook_name, const char *func_name, int priority)
 {
     if (!sv || !sv->lua) return 0;
     cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
+
+    if (!cs2d_sv_lua_is_valid_hook(hook_name)) {
+        cs2d_server_print("LUA ERROR: Cannot add '%s' to hook '%s' (hook does not exist)!", func_name, hook_name);
+        return 0;
+    }
+
+    if (sv->set.debuglua) {
+        cs2d_server_print("Lua: Adding function '%s' to hook '%s'", func_name, hook_name);
+    }
 
     /* Find or create hook */
     cs2d_hook_t *h = NULL;
@@ -2006,8 +2116,10 @@ int cs2d_sv_lua_addhook(cs2d_server_t *sv, const char *hook_name, const char *fu
         if (lua->hook_count >= CS2D_SV_MAX_HOOKS) return 0;
         h = &lua->hooks[lua->hook_count++];
         snprintf(h->name, sizeof(h->name), "%s", hook_name);
+        h->enabled = true;
         h->head = NULL;
     }
+    h->enabled = true;
 
     /* Remove any existing registration of func_name in this hook */
     cs2d_hook_node_t **prev = &h->head;
@@ -2049,6 +2161,9 @@ int cs2d_sv_lua_freehook(cs2d_server_t *sv, const char *hook_name, const char *f
                     cs2d_hook_node_t *del = *prev;
                     *prev = (*prev)->next;
                     free(del);
+                    if (sv->set.debuglua) {
+                        cs2d_server_print("Lua: Removing function '%s' from hook '%s'", func_name, hook_name);
+                    }
                     return 1;
                 }
                 prev = &(*prev)->next;
@@ -2056,6 +2171,31 @@ int cs2d_sv_lua_freehook(cs2d_server_t *sv, const char *hook_name, const char *f
         }
     }
     return 0;
+}
+
+int cs2d_sv_lua_sethookstate(cs2d_server_t *sv, const char *hook_name, int state)
+{
+    if (!sv || !sv->lua) return 0;
+    cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
+    cs2d_hook_t *h = NULL;
+    for (int i = 0; i < lua->hook_count; i++) {
+        if (_stricmp(lua->hooks[i].name, hook_name) == 0) {
+            h = &lua->hooks[i];
+            break;
+        }
+    }
+    if (!h) {
+        if (!cs2d_sv_lua_is_valid_hook(hook_name)) return 0;
+        if (lua->hook_count >= CS2D_SV_MAX_HOOKS) return 0;
+        h = &lua->hooks[lua->hook_count++];
+        snprintf(h->name, sizeof(h->name), "%s", hook_name);
+        h->head = NULL;
+    }
+    h->enabled = (state != 0);
+    if (sv->set.debuglua) {
+        cs2d_server_print("Lua: %s hook '%s'", (state != 0) ? "Enabling" : "Disabling", hook_name);
+    }
+    return 1;
 }
 
 /* Generic internal hook caller */
@@ -2072,7 +2212,7 @@ static int dispatch_hook(cs2d_server_t *sv, const char *hook_name, int nargs, in
             break;
         }
     }
-    if (!h || !h->head) return 0;
+    if (!h || !h->enabled || !h->head) return 0;
 
     int last_int_res = 0;
     cs2d_hook_node_t *curr = h->head;
@@ -3073,49 +3213,71 @@ static bool cs2d_sv_lua_parse_hudtxt(cs2d_server_t *sv, const char *cmd)
  * Image Helpers (Opcode 51 & 54)
  * --------------------------------------------------------------------------- */
 
-static cs2d_sv_image_t *find_image(cs2d_server_t *sv, int id)
-{
-    if (!sv || !sv->lua) return NULL;
-    cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
-    for (int i = 0; i < CS2D_SV_MAX_IMAGES; i++) {
-        if (lua->images[i].active && lua->images[i].id == id) {
-            return &lua->images[i];
-        }
-    }
-    return NULL;
-}
-
 int cs2d_sv_image_create(cs2d_server_t *sv, const char *path, float x, float y, int mode, int player)
 {
-    if (!sv || !sv->lua) return 0;
-    cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
+    if (!sv || !path || !path[0]) return 0;
 
-    cs2d_sv_image_t *img = NULL;
-    for (int i = 0; i < CS2D_SV_MAX_IMAGES; i++) {
-        if (!lua->images[i].active) {
-            img = &lua->images[i];
-            break;
+    int w = 0, h = 0, frames = 0;
+    char file[256];
+    int cell_w = 0, cell_h = 0, mask = 1, arg = 0;
+    int kind = cs2d_dynobj_image_kind(path, file, sizeof(file), &cell_w, &cell_h, &mask, &arg);
+
+    if (kind == CS2D_IMG_LIGHT) {
+        w = 128;
+        h = 128;
+        frames = 1;
+    } else if (kind == CS2D_IMG_AVATAR) {
+        w = 32;
+        h = 32;
+        frames = 1;
+    } else if (kind == CS2D_IMG_TILE) {
+        w = 32;
+        h = 32;
+        frames = 1;
+    } else if (kind == CS2D_IMG_FLAG) {
+        w = 16;
+        h = 11;
+        frames = 1;
+    } else if (kind == CS2D_IMG_FILE) {
+        int rw = 0, rh = 0;
+        if (!cs2d_image_dimensions(file, &rw, &rh)) {
+            FILE *f = fopen(file, "rb");
+            if (!f) {
+                cs2d_server_print("©255000000LUA ERROR: image - can't load image at '%s'", path);
+                return 0;
+            }
+            fclose(f);
         }
+        if (cell_w > 0 && cell_h > 0) {
+            w = cell_w;
+            h = cell_h;
+            if (rw > 0 && rh > 0) {
+                frames = (rw / cell_w) * (rh / cell_h);
+                if (frames < 1) frames = 1;
+            } else {
+                frames = 1;
+            }
+        } else {
+            w = rw;
+            h = rh;
+            frames = 0; /* In CS2D dedicated FUN_14012e5c0: framecount returns 0 for normal images */
+        }
+    } else {
+        cs2d_server_print("©255000000LUA ERROR: image - can't load image at '%s'", path);
+        return 0;
     }
+
+    cs2d_dynobj_t *img = cs2d_dynobj_add_image(&sv->dynobj, -1, path, x, y, mode, player);
     if (!img) return 0;
 
-    int id = lua->next_image_id++;
-    if (lua->next_image_id > 20000) lua->next_image_id = 1;
+    img->width  = w;
+    img->height = h;
+    img->frames = frames;
+    img->frame  = 0;
 
-    memset(img, 0, sizeof(*img));
-    img->active = true;
-    img->id = (uint16_t)id;
-    snprintf(img->path, sizeof(img->path), "%s", path);
-    img->x = x;
-    img->y = y;
-    img->mode = (uint8_t)mode;
-    img->player = (uint8_t)player;
-    img->alpha = 1.0f;
-    img->r = 255; img->g = 255; img->b = 255;
-    img->sx = 1.0f; img->sy = 1.0f;
-    img->frame = 1;
+    int id = (int)img->id;
 
-    /* [51, 0, path (len u8 + bytes), id u16, (x+32768) u16, (y+32768) u16, mode u8, player u8] */
+    /* [51, 0, path (len u8 + bytes), id u16, (x+32768) u16, (y+32768) u16, mode u8, player u8] - reliable */
     uint8_t plen = (uint8_t)strlen(path);
     int pkt_size = 2 + 1 + plen + 2 + 2 + 2 + 1 + 1;
     uint8_t *pkt = (uint8_t *)malloc((size_t)pkt_size);
@@ -3148,23 +3310,24 @@ int cs2d_sv_image_create(cs2d_server_t *sv, const char *path, float x, float y, 
 
 void cs2d_sv_image_free(cs2d_server_t *sv, int id)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
-    img->active = false;
 
-    /* [51, 6, id u16] */
+    /* [51, 6, id u16] - unreliable */
     uint8_t pkt[4] = { 51, 6, (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff) };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
+
+    cs2d_dynobj_kill(&sv->dynobj, id, NULL);
 }
 
 void cs2d_sv_image_pos(cs2d_server_t *sv, int id, float x, float y, float rot)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
     img->x = x; img->y = y; img->rot = rot;
 
-    /* [51, 5, id u16, (x+32768) u16, (y+32768) u16, rot_u16] */
+    /* [51, 5, id u16, (x+32768) u16, (y+32768) u16, rot_u16] - unreliable */
     uint16_t bx = (uint16_t)((int)x + 32768);
     uint16_t by = (uint16_t)((int)y + 32768);
     uint16_t brot = (uint16_t)(rot * 182.04445f);
@@ -3175,111 +3338,148 @@ void cs2d_sv_image_pos(cs2d_server_t *sv, int id, float x, float y, float rot)
         (uint8_t)(by & 0xff), (uint8_t)((by >> 8) & 0xff),
         (uint8_t)(brot & 0xff), (uint8_t)((brot >> 8) & 0xff)
     };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
 }
 
 void cs2d_sv_image_alpha(cs2d_server_t *sv, int id, float alpha)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
+    if (alpha < 0.0f) alpha = 0.0f;
+    else if (alpha > 1.0f) alpha = 1.0f;
     img->alpha = alpha;
 
-    /* [51, 2, id u16, alpha u8] */
+    /* [51, 2, id u16, alpha u8] - unreliable */
     uint8_t a = (uint8_t)(alpha * 255.0f);
     uint8_t pkt[5] = { 51, 2, (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff), a };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
 }
 
 void cs2d_sv_image_color(cs2d_server_t *sv, int id, int r, int g, int b)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
-    img->r = (uint8_t)r; img->g = (uint8_t)g; img->b = (uint8_t)b;
+    if (r < 0) r = 0; else if (r > 255) r = 255;
+    if (g < 0) g = 0; else if (g > 255) g = 255;
+    if (b < 0) b = 0; else if (b > 255) b = 255;
+    img->color[0] = (uint8_t)r;
+    img->color[1] = (uint8_t)g;
+    img->color[2] = (uint8_t)b;
 
-    /* [51, 1, id u16, r u8, g u8, b u8] */
+    /* [51, 1, id u16, r u8, g u8, b u8] - unreliable */
     uint8_t pkt[7] = { 51, 1, (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff), (uint8_t)r, (uint8_t)g, (uint8_t)b };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
 }
 
 void cs2d_sv_image_scale(cs2d_server_t *sv, int id, float sx, float sy)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
-    img->sx = sx; img->sy = sy;
+    img->scalex = sx; img->scaley = sy;
 
-    /* [51, 4, id u16, sx f32, sy f32] */
+    /* [51, 4, id u16, sx f32, sy f32] - unreliable */
     uint8_t pkt[12];
     pkt[0] = 51; pkt[1] = 4;
     pkt[2] = (uint8_t)(id & 0xff); pkt[3] = (uint8_t)((id >> 8) & 0xff);
     memcpy(pkt + 4, &sx, 4);
     memcpy(pkt + 8, &sy, 4);
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
 }
 
 void cs2d_sv_image_blend(cs2d_server_t *sv, int id, int blend)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
-    img->blend = (uint8_t)blend;
+    if (blend < 0) blend = 0;
+    else if (blend > 3) blend = 3;
+    img->blend = blend;
 
-    /* [51, 3, id u16, blend u8] */
+    /* [51, 3, id u16, blend u8] - unreliable */
     uint8_t pkt[5] = { 51, 3, (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff), (uint8_t)blend };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
 }
 
 void cs2d_sv_image_frame(cs2d_server_t *sv, int id, int frame)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
-    img->frame = (uint8_t)frame;
+    int f = frame - 1;
+    if (f < 0) f = 0;
+    if (img->frames > 0 && f >= img->frames) f = img->frames - 1;
+    img->frame = f;
 
-    /* [51, 7, id u16, frame u8] */
-    uint8_t pkt[5] = { 51, 7, (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff), (uint8_t)frame };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
+    /* [51, 7, id u16, frame u8] (1-based byte) - unreliable */
+    uint8_t pkt[5] = { 51, 7, (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff), (uint8_t)(frame > 0 ? frame : 1) };
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
 }
 
 void cs2d_sv_image_shadow(cs2d_server_t *sv, int id, int shadow)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
-    img->shadow = (uint8_t)shadow;
+    img->shadow = shadow;
 
-    /* [51, 9, id u16, shadow u8] */
+    /* [51, 9, id u16, shadow u8] - unreliable */
     uint8_t pkt[5] = { 51, 9, (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff), (uint8_t)shadow };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
+}
+
+void cs2d_sv_image_physicsparent(cs2d_server_t *sv, int id, int parent_type, int parent_id, int mode)
+{
+    cs2d_dynobj_t *img = find_image(sv, id);
+    if (!img) return;
+
+    /* [51, 8, id u16, parent_type u8, parent_id u16, mode u8] - unreliable */
+    uint8_t pkt[8] = {
+        51, 8,
+        (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff),
+        (uint8_t)parent_type,
+        (uint8_t)(parent_id & 0xff), (uint8_t)((parent_id >> 8) & 0xff),
+        (uint8_t)mode
+    };
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
 }
 
 void cs2d_sv_image_hitzone(cs2d_server_t *sv, int id, int mode, int xo, int yo, int w, int h)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
 
-    /* [59, id u16, mode u8, (xo+32768) u16, (yo+32768) u16, w u16, h u16] */
+    img->hit_mode = mode;
+    img->hit_xo = xo;
+    img->hit_yo = yo;
+    img->hit_w = abs(w);
+    img->hit_h = abs(h);
+
+    /* [59, id u16, mode u8, (xo+32768) u16, (yo+32768) u16, abs(w) u16, abs(h) u16] - unreliable */
     uint16_t bxo = (uint16_t)(xo + 32768);
     uint16_t byo = (uint16_t)(yo + 32768);
+    uint16_t bw = (uint16_t)abs(w);
+    uint16_t bh = (uint16_t)abs(h);
     uint8_t pkt[12] = {
         59,
         (uint8_t)(id & 0xff), (uint8_t)((id >> 8) & 0xff),
         (uint8_t)mode,
         (uint8_t)(bxo & 0xff), (uint8_t)((bxo >> 8) & 0xff),
         (uint8_t)(byo & 0xff), (uint8_t)((byo >> 8) & 0xff),
-        (uint8_t)(w & 0xff), (uint8_t)((w >> 8) & 0xff),
-        (uint8_t)(h & 0xff), (uint8_t)((h >> 8) & 0xff)
+        (uint8_t)(bw & 0xff), (uint8_t)((bw >> 8) & 0xff),
+        (uint8_t)(bh & 0xff), (uint8_t)((bh >> 8) & 0xff)
     };
-    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), true);
-    else broadcast_to_joined(sv, pkt, sizeof(pkt), true);
+    if (img->mode == 2 && img->player > 0) send_to_player(sv, img->player, pkt, sizeof(pkt), false);
+    else broadcast_to_joined(sv, pkt, sizeof(pkt), false);
 }
 
 void cs2d_sv_tween_alpha(cs2d_server_t *sv, int id, int duration, float alpha)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
     uint16_t target = (uint16_t)(id + 200);
     uint8_t a = (uint8_t)(alpha * 255.0f);
@@ -3296,7 +3496,7 @@ void cs2d_sv_tween_alpha(cs2d_server_t *sv, int id, int duration, float alpha)
 
 void cs2d_sv_tween_color(cs2d_server_t *sv, int id, int duration, int r, int g, int b)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
     uint16_t target = (uint16_t)(id + 200);
     uint8_t pkt[11] = {
@@ -3312,7 +3512,7 @@ void cs2d_sv_tween_color(cs2d_server_t *sv, int id, int duration, int r, int g, 
 
 void cs2d_sv_tween_move(cs2d_server_t *sv, int id, int duration, float x, float y)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
     uint16_t target = (uint16_t)(id + 200);
     uint16_t bx = (uint16_t)((int)x + 32768);
@@ -3331,7 +3531,7 @@ void cs2d_sv_tween_move(cs2d_server_t *sv, int id, int duration, float x, float 
 
 void cs2d_sv_tween_rotate(cs2d_server_t *sv, int id, int duration, float rot)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
     uint16_t target = (uint16_t)(id + 200);
     uint16_t brot = (uint16_t)(rot * 182.04445f);
@@ -3348,7 +3548,7 @@ void cs2d_sv_tween_rotate(cs2d_server_t *sv, int id, int duration, float rot)
 
 void cs2d_sv_tween_rotateconstantly(cs2d_server_t *sv, int id, float speed)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
     uint16_t target = (uint16_t)(id + 200);
     uint8_t pkt[8];
@@ -3361,7 +3561,7 @@ void cs2d_sv_tween_rotateconstantly(cs2d_server_t *sv, int id, float speed)
 
 void cs2d_sv_tween_scale(cs2d_server_t *sv, int id, int duration, float sx, float sy)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
     uint16_t target = (uint16_t)(id + 200);
     uint8_t pkt[16];
@@ -3377,7 +3577,7 @@ void cs2d_sv_tween_scale(cs2d_server_t *sv, int id, int duration, float sx, floa
 
 void cs2d_sv_tween_frame(cs2d_server_t *sv, int id, int duration, int frame)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
     uint16_t target = (uint16_t)(id + 200);
     uint8_t pkt[9] = {
@@ -3393,7 +3593,7 @@ void cs2d_sv_tween_frame(cs2d_server_t *sv, int id, int duration, int frame)
 
 void cs2d_sv_tween_animate(cs2d_server_t *sv, int id, int duration, int frame, int mode)
 {
-    cs2d_sv_image_t *img = find_image(sv, id);
+    cs2d_dynobj_t *img = find_image(sv, id);
     if (!img) return;
     uint16_t target = (uint16_t)(id + 200);
     uint8_t pkt[10] = {

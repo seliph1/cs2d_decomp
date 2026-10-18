@@ -5,6 +5,27 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **Dedicated server: Objetos Dinâmicos de Imagem e Modos no Servidor Dedicado (2026-10-18, `docs/agents/knowledge/dynobj.md`):**
+  fixed - Implementação autêntica de imagens como objetos dinâmicos (`Tdo`, `typ = 40`, `CS2D_DO_IMAGE`):
+  imagens agora residem na lista unificada `sv->dynobj`, integrando-se nativamente com `object(id, "type")` e `object(0, "table")`;
+  implementadas e exportadas todas as 12 funções da API Lua: `image`, `imagepos`, `imagealpha`, `imagecolor`, `imagescale`,
+  `imageblend`, `imageframe`, `imagehitzone`, `imageparam`, `imageshadow`, `freeimage` e `imagephysicsparent`;
+  `image` (`FUN_14011aab0`): validação de caminhos e tags especiais (`<light>`, `<avatar_...>`, `<tile:...>`, `<flag:...>`, `<spritesheet:...>`),
+  leitura de dimensões reais de BMP/PNG via `stbi_info`, e envio confiável de `[51, 0, id, path, x, y, mode, player]`;
+  operações de alteração de imagem transmitem via pacotes não-confiáveis (`reliable = false`) conforme binário original;
+  `imageparam` (`FUN_14012e5c0`): suporta todos os 9 parâmetros (`x`, `y`, `rot`, `alpha`, `path`, `frame`, `width`, `height`, `framecount`),
+  retornando `false` caso não exista ou parâmetro inválido;
+  snapshots de entrada: seção 5 (`[252,7,5]`) serializa objetos `CS2D_DO_IMAGE` (filtrando imagens privadas HUD modo 2 de outros players)
+  e seção 7 (`[252,7,7]`) envia bloco completo de propriedades em blocos de até 20 imagens com terminador 0;
+  limpeza de imagens ao início da rodada (`cs2d_sv_round_start`). Bloqueado por `test_dedicated_dynamic_images` (93/93 testes passando).
+- **Dedicated server: Exibição no Console de Registro de Hooks e Binds (`addhook`, `freehook`, `sethookstate`, `debuglua`) (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - Validação e exibição de mensagens de hooks e binds idênticas ao `cs2d_dedicated.exe` original:
+  `addhook` (`FUN_1400d59f0`): valida nomes contra a tabela nativa de 84 hooks; se válido e `debuglua` ativo, exibe `Lua: Adding function '<func>' to hook '<hook>'`; se inválido, emite `LUA ERROR: Cannot add '<func>' to hook '<hook>' (hook does not exist)!`;
+  `freehook` (`FUN_1400d60e0`): exibe `Lua: Removing function '<func>' from hook '<hook>'`;
+  `sethookstate` (`FUN_1400d63e0`): atualiza `h->enabled` e exibe `Lua: Enabling hook '<hook>'` ou `Lua: Disabling hook '<hook>'`;
+  `addbind` & `removebind` (`FUN_1400d5800`): exibem `Lua: Adding key bind '<key>'`, `LUA ERROR: Cannot add '<key>' key bind (...)`, `Lua: Removing key bind '<key>'`, `LUA ERROR: Cannot remove '<key>' key bind (...)`;
+  implementado cvar `debuglua` (`0x1405a6398`, default 1) com controle e consulta via console.
+  Bloqueado por `test_server_phase4_lua` (92/92 testes passando).
 - **Dedicated server: Reconnect & Password Handshake Reset (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
   fixed - Handshake de reconexão do cliente original `CS2D.exe` ao conectar em servidor protegido por senha:
   ao receber prompt de senha e clicar em "Connect", o cliente recria o socket e envia `[252, 0]` reiniciando de sequence number 2 a partir do mesmo endpoint;
@@ -337,7 +358,7 @@ sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT 
 
 - **Phase 3 (done 2026-10-15):** in-game name change `[238]` (`FUN_14010ddb0`, per-spawn `+0x2a4` limit 255, dead deferred `pending_name` 254 applied on spawn), RCON `[236]` (`rconcheck`), `[241]` (`rcon`), `[242]` (`public rcon`), `sv_rcon` / `sv_rconusers`, playerdata setter & broadcaster `[42]` (`FUN_140159840` modes 0..11), teleport `[15]` (`FUN_140102950`), team scores `[64]` (`FUN_140051ac0`), server messages `[240,0,1]`, `kick` (`FUN_1401502a0`), `slap` / `deathslap` (`FUN_140167e40`), and console command parser `cs2d_sv_exec` (`FUN_140140a00`: `server.cfg` cvars, `setmoney`, `sethealth`, `setmaxhealth`, `setarmor`, `setscore`, `setdeaths`, `setassists`, `setmvp`, `setrank`, `speedmod`, `equip`, `strip`, `setweapon`, `setpos`, `setname`, `setteamscores`, `sv_msg`, `sv_msg2`, `maket`, `makect`, `makespec`, `slap`, `deathslap`, `kick`, `killplayer`, `spawnplayer`, `sv_restart`, `sv_restartround`, `endround`, `listplayers`). `[237]` live cvar broadcast done 2026-10-16 with every id measured from `FUN_14015d960` (see `knowledge/dedicated-server.md`). `changemap`, `map` and the ban commands were done in Phase 5.
 - **Phase 4 (done 2026-10-15):** Lua subsystem integrated with vendored PUC Lua 5.1.4 (`third_party/lua51/lua_all.c`, `src/cs2d_sv_lua.c`, `include/cs2d_sv_lua.h`).
-  Full `addhook` priority ascending execution & return value veto/cancellation semantics; auto-loads `wrapper.lua`, `server.lua`, `sys/lua/autorun/*.lua`, `maps/<map>.lua`;
+  Full `addhook` priority ascending execution & return value veto/cancellation semantics; auto-loads entry point `mp_luaserver`, `sys/lua/autorun/*.lua`, `maps/<map>.lua` (`wrapper.lua` not auto-loaded, loaded manually via script if needed);
   native hooks wired (`join`, `leave`, `team`, `spawn`, `select`, `attack`, `attack2`, `hit`, `kill`, `die`, `buy`, `drop`, `collect`, `reload`, `say`, `sayteam`, `name`, `endround`, `startround`, `menu`, `serveraction`);
   `player(id, prop)` (40+ properties & tables), `playerweapons`, `playerammo`; `parse` with HUD text opcode `[234]` and tween `[54]`; dynamic images (`image`, `freeimage`, manipulation & tweens);
   timers (`timer`, `freetimer`); menu sending and response `[235]`. Locked in `test_server_phase4_lua` (66/66 tests pass).

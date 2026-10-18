@@ -9,7 +9,7 @@ sample.run={}
 --------------------------------------
 -- HIT SPACE TO RUN                 --
 --------------------------------------
-addbind("space")
+--addbind("space")
 addhook("key","sample.run.bind")
 addhook("spawn","sample.run.spawn")
 

@@ -82,6 +82,7 @@ typedef struct {
     int     mp_dispenser_money;  /* DAT_140a14db0 (= 500): money a Dispenser grants per frame (clamped at 16000) */
     int     mp_dmspawnmoney;     /* DAT_1405a6554 (= 2000): money each spawn of a respawn mode, max every 15 s */
     int     mp_timelimit;        /* 0x1405c70e8: map time limit in minutes (0 = unlimited) */
+    int     debuglua;            /* DAT_1405a6398: 1 = display Lua hook adds/removes, default 1 */
     /* Generic cvar store */
     cs2d_sv_cvar_t cvars[CS2D_SV_MAX_CVARS];
     int     cvar_count;

@@ -36,6 +36,9 @@ bool cs2d_image_load(cs2d_image_t *out, const char *path);
  */
 bool cs2d_image_load_ico(cs2d_image_t *out, const char *path);
 
+/* Fast dimension inspection using stbi_info (BMP / PNG / JPEG / etc) */
+bool cs2d_image_dimensions(const char *path, int *w, int *h);
+
 void cs2d_image_free(cs2d_image_t *img);
 
 #endif /* CS2D_IMAGE_H */

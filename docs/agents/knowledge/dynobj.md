@@ -384,6 +384,39 @@ below were read from.
   teleport test (the kinds are exclusive, so it returning "handled" skips the teleporter of the same tile).
 - **The four Construction settings are console cvars now**: `mp_teleportreload` (5), `mp_dispenser_health`
   (10), `mp_dispenser_money` (500) and `mp_dmspawnmoney` (2000) are in `cs2d_sv_settings_set` /
-  `cs2d_sv_settings_get` (`SV_INT` / `SV_GET_INT`), so `server.cfg`, the console and the Lua `game("...")`
-  reach them. None of them is part of the original's `[237]` live-setting broadcast (ids 1..24).
+
+## Dynamic Image Objects (typ 40, Tdo Image) (2026-10-18)
+
+- **Architecture in Dedicated Server**:
+  In `cs2d_dedicated.exe`, Lua images (`image(...)`) are instances of `Tdo` (`typ = 40`, `CS2D_DO_IMAGE`) placed directly
+  in the server dynamic object list (`sv->dynobj`), rather than a separate Lua-only data structure.
+  Consequently, `object(id, "type")` returns 40, and `object(0, "table")` includes image IDs.
+- **Lua Image API (`FUN_14012f2b0`)**:
+  - `image(path, x, y, mode [, player])`: creates dynamic object `typ = 40`, mode `mode`, owner `player`. Validates path
+    and special tags (`<light>`, `<avatar_...>`, `<tile:...>`, `<flag:...>`, `<spritesheet:...>`) via `FUN_14011aab0`.
+    Uses `stbi_info` to get dimensions (or parses `<spritesheet:path:w:h>` for sprite cell dimensions).
+    Sends reliable `[51, 0, id u16, path, x f32, y f32, mode u8, player u8]`. Returns object ID (or 0 if failed).
+  - `imagepos(id, x, y, rot)`: sends unreliable `[51, 1, id u16, x f32, y f32, rot f32]`.
+  - `imagealpha(id, alpha)`: sends unreliable `[51, 2, id u16, alpha f32]`.
+  - `imagecolor(id, r, g, b)`: sends unreliable `[51, 3, id u16, r u8, g u8, b u8]`.
+  - `imagescale(id, sx, sy)`: sends unreliable `[51, 4, id u16, sx f32, sy f32]`.
+  - `imageblend(id, blend)`: sends unreliable `[51, 5, id u16, blend u8]`.
+  - `imageframe(id, frame)`: sends unreliable `[51, 6, id u16, frame u8]`.
+  - `imageshadow(id, shadow)`: sends unreliable `[51, 7, id u16, shadow u8]`.
+  - `imagephysicsparent(id, parent_type, parent_id, mode)`: sends unreliable `[51, 8, id u16, p_type u8, p_id u16, mode u8]`.
+  - `freeimage(id)`: removes `Tdo` and sends unreliable `[51, 9, id u16]`.
+  - `imagehitzone(id, mode [, xo, yo, w, h])`: sets hitzone properties and sends unreliable `[59, id u16, mode u8 (, xo i16, yo i16, w u16, h u16)]`.
+  - `imageparam(id, param)` (`FUN_14012e5c0`): returns property or boolean `false` if invalid/unknown. Supported:
+    `"x"`, `"y"`, `"rot"`, `"alpha"`, `"path"`, `"frame"` (1-based), `"width"`, `"height"`, `"framecount"`.
+- **Modes**:
+  - 0: floor (under players/items)
+  - 1: top (above players/items)
+  - 2: HUD (screen space; if `player > 0`, sent only to that player)
+  - 3: super top (above HUD/all)
+  - 4: background
+  - 101–132 / 133–164 / 201–232 / 233–263: player follow modes (x offset / y offset, rotation flags, fog flags).
+- **Network Snapshot & Round Reset**:
+  - Join snapshot section 5 (`[252,7,5]`): serializes `CS2D_DO_IMAGE` objects, filtering out private HUD mode 2 images of other players.
+  - Join snapshot section 7 (`[252,7,7]`): serializes full image data (color, alpha, scale, blend, frame, shadow, hitzone) in chunks of 20.
+  - Round start: all `CS2D_DO_IMAGE` objects are freed automatically on `cs2d_sv_round_start`.
 

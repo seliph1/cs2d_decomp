@@ -232,6 +232,13 @@ bool cs2d_image_load_ico(cs2d_image_t *out, const char *path)
     return false;
 }
 
+bool cs2d_image_dimensions(const char *path, int *w, int *h)
+{
+    if (!path || !w || !h) return false;
+    int comp = 0;
+    return stbi_info(path, w, h, &comp) != 0;
+}
+
 void cs2d_image_free(cs2d_image_t *img)
 {
     if (!img) return;

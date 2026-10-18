@@ -92,6 +92,7 @@ typedef struct {
     int      blend;      /* 0 alpha, 1 light, 2 shade, 3 solid (imageblend) */
     int      frame;      /* Current frame (imageframe - 1) */
     int      frames;     /* Frame count once the image is loaded (cs2d_dynobj_set_frames), 0 unknown */
+    int      width, height; /* Raw/frame pixel dimensions (imageparam / dedicated) */
     int      shadow;     /* +0x44 (imageparam / snapshot), 0 casts an obstacle shadow */
     int      hit_mode;   /* Tdoc hit zone ([59]): mode 0 none, xo / yo / w / h */
     int      hit_xo, hit_yo, hit_w, hit_h;
