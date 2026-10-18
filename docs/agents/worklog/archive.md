@@ -1,5 +1,24 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-17 — Antigravity — Dedicated Server: Dispatch de Opcodes [28] Spray, [43] Vote, [230] Leaderboard e Guarda < 7
+
+- **Correção da desincronização de leitura do [28] Spray (`FUN_1401bcd60`)**:
+  - `case 28:` em `src/cs2d_server.c` lia incorretamente apenas 2 bytes, deixando 4 bytes no stream (`[28, 0, x u16, y u16, mode u8]` são 6 bytes de payload). Esses bytes restantes eram erroneamente interpretados como opcodes em loops seguintes (gerando avisos falsos como opcode 0).
+  - Corrigido o parsing para ler `sub = rd_byte(r)`: se `sub == 0`, consome `x`, `y` e `mode` (6 bytes total), dispara `cs2d_sv_lua_hook_spray` e retransmite `[28, player, 0, x, y, mode]` de forma confiável para os outros jogadores conectados. Se `sub == 2`, trata trigger/request sem dados adicionais.
+- **Implementação do [43] Vote (`FUN_1401d0050`)**:
+  - Implementado `case 43:` lendo 3 bytes (`type u8`, `value u16`): `type 1` = votekick (alvo = target ID), `type 2` = votemap (alvo = map index).
+  - Salva em `pl->votekick` e `pl->votemap` em `cs2d_sv_player_t`, aciona o hook Lua `vote` (`cs2d_sv_lua_hook_vote`) e retransmite o voto confiável `[43, voter, type, value]` para todos os clientes conectados.
+  - Serialização do registro de jogador (`cs2d_sv_write_player_record`) atualizada para escrever `pl->votekick` e `pl->votemap`.
+- **Implementação do [230] Leaderboard (`FUN_1401d8360`)**:
+  - Implementado `case 230:` lendo `sub`: `sub 0` (1 byte) responde com o timestamp do leaderboard `[230, 0, timestamp i32]`; `sub 1` (3 bytes: `sub` + `rank u16`) consome a requisição de linha sem enviar nada quando vazio (fiel ao comportamento em `0x1401d8650`).
+- **Guarda de Opcodes < 7 em `sv_recv_messages` (`FUN_1401e3cf0`)**:
+  - O dispatcher da tabela de saltos da dedicated original aceita estritamente `opcode - 7` (opcodes 7..253).
+  - Bytes `< 7` (padding residual de zeros `0x00`, resíduos de controle Tudp como `0x03` no final do pacote) agora encerram a leitura do datagrama silenciosamente (`break`), espelhando o salto para `LAB_1401e3e80` no binário original sem poluir o console com warnings de opcodes desconhecidos.
+- **Verificação**:
+  - Adicionado teste completo de regressão `test_server_spray_vote_leaderboard_messages` em `tests/test_cs2d.c` validando o consumo exato dos bytes de spray, votekick, votemap, leaderboard e descarte limpo de opcodes residuais < 7.
+  - Recompilado e aprovado com sucesso: **88 / 88** testes passando (`test_cs2d.exe`).
+
+
 ## 2026-10-17 — Antigravity — Dedicated Server: Deathmatch (DM), Team Deathmatch (TDM), mp_randomspawn e Rotação mp_timelimit
 
 - **Spawns Aleatórios (`mp_randomspawn 1`) em Deathmatch (`gamemode 1`) e TDM (`gamemode 2`)**:

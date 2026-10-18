@@ -495,6 +495,8 @@ void cs2d_sv_handle_ping(cs2d_server_t *sv, const struct sockaddr_in *from,
                          const uint8_t *buf, int n, int q);
 void cs2d_sv_handle_info(cs2d_server_t *sv, const struct sockaddr_in *from,
                          const uint8_t *buf, int n, int q);
+void cs2d_sv_handle_datagram(cs2d_server_t *sv, const struct sockaddr_in *from,
+                            const uint8_t *buf, int n);
 
 /* Console output: the dedicated prints every line with its colour prefix stripped */
 void cs2d_server_print(const char *fmt, ...);

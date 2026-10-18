@@ -9704,6 +9704,73 @@ static bool test_server_jump_table_opcodes(void)
     return true;
 }
 
+/* =========================================================================
+ * Test 92: Dedicated Server Reconnect & Password Reset (sv_find_conn hello)
+ * ========================================================================= */
+static bool test_server_reconnect_and_pw(void)
+{
+    printf("\n=== Testing Dedicated Server: Reconnect & Password Handshake Reset ===\n");
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    snprintf(sv.set.sv_password, sizeof(sv.set.sv_password), "mypass123");
+
+    struct sockaddr_in from;
+    memset(&from, 0, sizeof(from));
+    from.sin_family = AF_INET;
+    from.sin_port = htons(54321);
+    from.sin_addr.s_addr = htonl(0x7f000001); /* 127.0.0.1 */
+
+    /* Packet 1: Initial join handshake [252, 0] with seq 2 and 03 32 00 triple */
+    static const uint8_t pkt_hello[] = { 0x02, 0x00, 0x03, 0x32, 0x00, 0xfc, 0x00 };
+    cs2d_sv_handle_datagram(&sv, &from, pkt_hello, sizeof(pkt_hello));
+
+    cs2d_sv_conn_t *c = &sv.conns[0];
+    if (!c->active || c->join_step != 1) {
+        TEST_FAIL("Initial [252,0]", "failed to create active connection or advance join_step to 1");
+    }
+    /* Verify seq 2 is marked as seen */
+    if (!(c->seen[2 >> 3] & (1u << (2 & 7)))) {
+        TEST_FAIL("Initial [252,0]", "seq 2 was not recorded in seen bitmap");
+    }
+
+    /* Simulate client moving past hello: allocate player and advance sequence */
+    c->player = 1;
+    sv.players[1].used = true;
+    c->next_seq = 10;
+    c->join_step = 2;
+    /* Mark some higher seq as seen */
+    c->seen[4 >> 3] |= (1u << (4 & 7));
+
+    /* Packet 2: Reconnection hello [252, 0] with seq 2 from the same client endpoint (e.g. after password prompt) */
+    cs2d_sv_handle_datagram(&sv, &from, pkt_hello, sizeof(pkt_hello));
+
+    /* After hello from existing endpoint: old player must be cleared, seen reset, next_seq reset to 2, join_step 1 */
+    if (!c->active) {
+        TEST_FAIL("Reconnect [252,0]", "connection was deactivated");
+    }
+    if (c->player != 0 || sv.players[1].used) {
+        TEST_FAIL("Reconnect [252,0]", "stale player was not removed on reconnect hello");
+    }
+    if (c->join_step != 1) {
+        TEST_FAIL("Reconnect [252,0]", "join_step was not reset to 1");
+    }
+    /* Seq 4 should be 0 because seen was reset */
+    if (c->seen[4 >> 3] & (1u << (4 & 7))) {
+        TEST_FAIL("Reconnect [252,0]", "stale sequence numbers were not cleared from seen bitmap");
+    }
+    /* Seq 2 should be set because the new [252, 0] was accepted and processed */
+    if (!(c->seen[2 >> 3] & (1u << (2 & 7)))) {
+        TEST_FAIL("Reconnect [252,0]", "new seq 2 was dropped or not recorded in seen bitmap");
+    }
+
+    free(c->pending);
+    c->pending = NULL;
+
+    TEST_PASS("Dedicated Server: Reconnect & Password Handshake Reset (sv_find_conn hello)");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -9712,7 +9779,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 91;
+    int total = 92;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -9805,6 +9872,7 @@ int main(void)
     if (test_sv_deathmatch_and_timelimit()) passed++;
     if (test_server_client_lua_communication()) passed++;
     if (test_server_jump_table_opcodes()) passed++;
+    if (test_server_reconnect_and_pw()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

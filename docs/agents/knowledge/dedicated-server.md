@@ -51,6 +51,15 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
     `0x1405EE1C0` `) can't join (loaded wrong map: '`, `0x1405EE420` `) can't join (auth failed)`,
     `0x1405EE480` `) can't join (auth failed [v])`, `0x1405EE4E0` `) can't join (already connected)`,
     `0x1405EE540` `) can't join (Lua connect_attempt returned: `.
+  - **Password prompt / Reconnection handshake reset (CS2D.exe 0x1402cf1c1 / 0x1402d03b8):** when a client attempts
+    to join a password-protected server without password, the server replies `[252,2,1]` (password required).
+    `CS2D.exe` displays the password prompt `Tgui_joinmen.pwprompt`. When the user enters the password and clicks
+    "Connect", `CS2D.exe` calls `FUN_14016a3c0(0)` to recreate its Tudp socket and **restarts the join handshake by
+    sending `[252,0]` with reliable sequence number 2** from the same local port. On the dedicated (`sv_find_conn`),
+    receiving `[252,0]` (`hello == true`) from an existing active connection must call `sv_conn_reset` (clearing
+    the `seen` bitmap, setting `next_seq = 2`, `join_step = 0`) and remove any stale player (`sv_remove_player`).
+    Otherwise, the incoming `seq = 2` is discarded by the replay filter as already processed, leaving the client
+    unanswered until it times out into NAT hole punch retry loops.
   - `[252,3, sha, enc secret, download]` → `[252,4,status]`: enc secret = reverse(secret) shifted by the key
     table `DAT_1405f02d0` (= client's `"!aCz0jK5f\xfc"`) else **10** "client verification failed"; then the map
     checks (0 ok, 11 differs, 12 missing, 13 transfer follows).

@@ -10,6 +10,28 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-18 — Antigravity — Dedicated Server: Reconnect / Password Prompt Reset ([252, 0] hello replay bug fix) e Teste de Fogo com Scripts Reais
+
+- **Bug do Handshake de Reconnect / Password Prompt (`CS2D.exe` vs `cs2d_server.c`)**:
+  - Diagnosticado fluxo do cliente original ao tentar entrar em servidor protegido por senha:
+    1. O cliente conecta inicialmente sem senha -> servidor responde `[252, 2, 1]` (status 1 = password required).
+    2. O cliente abre modal interativo de senha (`Tgui_joinmen.pwprompt`, `CS2D.exe 0x1402cf1c1`).
+    3. Quando o usuário digita a senha e clica em "Connect", o cliente chama `FUN_14016a3c0(0)`, recriando o socket Tudp e **reiniciando o handshake de conexão do zero com `[252, 0]` e sequence number confiável = 2** a partir da mesma porta local.
+  - No servidor (`src/cs2d_server.c`), `sv_find_conn` reaproveitava a conexão existente sem resetar os números de sequência e o bitmap de replay (`c->seen`). O novo pacote `seq = 2` era interpretado como duplicata em `sv_handle_datagram` e descartado, sem jamais chamar `sv_recv_messages` e sem responder o secret `[252, 0, secret]`.
+  - O cliente ficava esperando em loop até expirar os timers de timeout (1.5s -> retry, 5.0s -> `sending NAT hole punch`).
+- **Correção em `sv_find_conn`**:
+  - Quando um datagrama `hello` (`[252, 0]`) chega de um cliente que já possui conexão ativa:
+    - Remove jogador pré-existente (`sv_remove_player`).
+    - Limpa estado da conexão via `sv_conn_reset(c)` (reseta `seen`, `next_seq = 2`, `join_step = 0`, buffers pendentes).
+    - Reativa a conexão com endereço atualizado e timestamp renovado.
+- **Teste de Fogo com Scripts Reais do CS2D**:
+  - Carregados e executados simultaneamente em `sys/lua/`: todos os **23 scripts reais de sample** da distribuição oficial (`sys/lua/samples/*.lua`), cobrindo hooks de jogo, HUD, menus, binds, física e eventos de jogador sem nenhum crash ou erro de sintaxe.
+- **Verificação**:
+  - Verificada conexão do cliente original `CS2D.exe` com senha via `-pw 123` e reconexão interativa via handshake de 2 estágios.
+  - Exposto `cs2d_sv_handle_datagram` em `include/cs2d_server.h` para testes unitários de pacotes de rede.
+  - Adicionado teste de regressão `test_server_reconnect_and_pw` em `tests/test_cs2d.c`.
+  - Suíte completa de testes aprovada: **92 / 92** testes passando (`test_cs2d.exe`).
+
 ## 2026-10-18 — Antigravity — Dedicated Server: Mapeamento de Opcodes Residuais na Jump Table ([12..14], [18], [243], S->C drops e defaults)
 
 - **Opcodes de Movimentação e Rotação do Jogador (`[12..14]`)**:
@@ -107,21 +129,25 @@ Only the 5 newest entries live here; when adding one, move the oldest to the top
   - Adicionado teste de regressão abrangente `test_server_entity_and_world_interactions` em `tests/test_cs2d.c`.
   - Recompilado e aprovado com sucesso: **89 / 89** testes passando (`test_cs2d.exe`).
 
-## 2026-10-17 — Antigravity — Dedicated Server: Dispatch de Opcodes [28] Spray, [43] Vote, [230] Leaderboard e Guarda < 7
+## 2026-10-18 — Antigravity — Dedicated Server: Reconnect / Password Prompt Reset ([252, 0] hello replay bug fix) e Teste de Fogo com Scripts Reais
 
-- **Correção da desincronização de leitura do [28] Spray (`FUN_1401bcd60`)**:
-  - `case 28:` em `src/cs2d_server.c` lia incorretamente apenas 2 bytes, deixando 4 bytes no stream (`[28, 0, x u16, y u16, mode u8]` são 6 bytes de payload). Esses bytes restantes eram erroneamente interpretados como opcodes em loops seguintes (gerando avisos falsos como opcode 0).
-  - Corrigido o parsing para ler `sub = rd_byte(r)`: se `sub == 0`, consome `x`, `y` e `mode` (6 bytes total), dispara `cs2d_sv_lua_hook_spray` e retransmite `[28, player, 0, x, y, mode]` de forma confiável para os outros jogadores conectados. Se `sub == 2`, trata trigger/request sem dados adicionais.
-- **Implementação do [43] Vote (`FUN_1401d0050`)**:
-  - Implementado `case 43:` lendo 3 bytes (`type u8`, `value u16`): `type 1` = votekick (alvo = target ID), `type 2` = votemap (alvo = map index).
-  - Salva em `pl->votekick` e `pl->votemap` em `cs2d_sv_player_t`, aciona o hook Lua `vote` (`cs2d_sv_lua_hook_vote`) e retransmite o voto confiável `[43, voter, type, value]` para todos os clientes conectados.
-  - Serialização do registro de jogador (`cs2d_sv_write_player_record`) atualizada para escrever `pl->votekick` e `pl->votemap`.
-- **Implementação do [230] Leaderboard (`FUN_1401d8360`)**:
-  - Implementado `case 230:` lendo `sub`: `sub 0` (1 byte) responde com o timestamp do leaderboard `[230, 0, timestamp i32]`; `sub 1` (3 bytes: `sub` + `rank u16`) consome a requisição de linha sem enviar nada quando vazio (fiel ao comportamento em `0x1401d8650`).
-- **Guarda de Opcodes < 7 em `sv_recv_messages` (`FUN_1401e3cf0`)**:
-  - O dispatcher da tabela de saltos da dedicated original aceita estritamente `opcode - 7` (opcodes 7..253).
-  - Bytes `< 7` (padding residual de zeros `0x00`, resíduos de controle Tudp como `0x03` no final do pacote) agora encerram a leitura do datagrama silenciosamente (`break`), espelhando o salto para `LAB_1401e3e80` no binário original sem poluir o console com warnings de opcodes desconhecidos.
+- **Bug do Handshake de Reconnect / Password Prompt (`CS2D.exe` vs `cs2d_server.c`)**:
+  - Diagnosticado fluxo do cliente original ao tentar entrar em servidor protegido por senha:
+    1. O cliente conecta inicialmente sem senha -> servidor responde `[252, 2, 1]` (status 1 = password required).
+    2. O cliente abre modal interativo de senha (`Tgui_joinmen.pwprompt`, `CS2D.exe 0x1402cf1c1`).
+    3. Quando o usuário digita a senha e clica em "Connect", o cliente chama `FUN_14016a3c0(0)`, recriando o socket Tudp e **reiniciando o handshake de conexão do zero com `[252, 0]` e sequence number confiável = 2** a partir da mesma porta local.
+  - No servidor (`src/cs2d_server.c`), `sv_find_conn` reaproveitava a conexão existente sem resetar os números de sequência e o bitmap de replay (`c->seen`). O novo pacote `seq = 2` era interpretado como duplicata em `sv_handle_datagram` e descartado, sem jamais chamar `sv_recv_messages` e sem responder o secret `[252, 0, secret]`.
+  - O cliente ficava esperando em loop até expirar os timers de timeout (1.5s -> retry, 5.0s -> `sending NAT hole punch`).
+- **Correção em `sv_find_conn`**:
+  - Quando um datagrama `hello` (`[252, 0]`) chega de um cliente que já possui conexão ativa:
+    - Remove jogador pré-existente (`sv_remove_player`).
+    - Limpa estado da conexão via `sv_conn_reset(c)` (reseta `seen`, `next_seq = 2`, `join_step = 0`, buffers pendentes).
+    - Reativa a conexão com endereço atualizado e timestamp renovado.
+- **Teste de Fogo com Scripts Reais do CS2D**:
+  - Carregados e executados simultaneamente em `sys/lua/`: todos os **23 scripts reais de sample** da distribuição oficial (`sys/lua/samples/*.lua`), cobrindo hooks de jogo, HUD, menus, binds, física e eventos de jogador sem nenhum crash ou erro de sintaxe.
 - **Verificação**:
-  - Adicionado teste completo de regressão `test_server_spray_vote_leaderboard_messages` em `tests/test_cs2d.c` validando o consumo exato dos bytes de spray, votekick, votemap, leaderboard e descarte limpo de opcodes residuais < 7.
-  - Recompilado e aprovado com sucesso: **88 / 88** testes passando (`test_cs2d.exe`).
+  - Verificada conexão do cliente original `CS2D.exe` com senha via `-pw 123` e reconexão interativa via handshake de 2 estágios.
+  - Exposto `cs2d_sv_handle_datagram` em `include/cs2d_server.h` para testes unitários de pacotes de rede.
+  - Adicionado teste de regressão `test_server_reconnect_and_pw` em `tests/test_cs2d.c`.
+  - Suíte completa de testes aprovada: **92 / 92** testes passando (`test_cs2d.exe`).
 

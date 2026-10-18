@@ -5,6 +5,13 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **Dedicated server: Reconnect & Password Handshake Reset (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - Handshake de reconexão do cliente original `CS2D.exe` ao conectar em servidor protegido por senha:
+  ao receber prompt de senha e clicar em "Connect", o cliente recria o socket e envia `[252, 0]` reiniciando de sequence number 2 a partir do mesmo endpoint;
+  em `src/cs2d_server.c`, `sv_find_conn` agora detecta `hello == true` em conexões ativas pré-existentes e executa `sv_conn_reset` (limpando o bitmap `seen`, buffers pendentes e resetando `next_seq = 2`) e remove jogador prévio (`sv_remove_player`).
+  Isso impede que o servidor descarte o novo `[252, 0]` como pacote duplicado, permitindo a entrada normal de clientes originais com senha.
+  Exposto `cs2d_sv_handle_datagram` em `include/cs2d_server.h` para testes unitários de rede.
+  Bloqueado por `test_server_reconnect_and_pw` (92/92 testes passando).
 - **Dedicated server: Mapeamento de Opcodes Residuais na Jump Table (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
   fixed - Análise e mapeamento 1:1 de todos os 247 opcodes da jump table `0x1406cdb14` (`FUN_1401e3cf0`);
   [12] `rot u16` (`FUN_1401cbce0`): atualiza rotação `pl->rot = (float)rot * 0.005493164f` e `pl->rot_flag = 1`;

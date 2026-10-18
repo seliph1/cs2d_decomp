@@ -297,6 +297,8 @@ static void sv_ack(cs2d_server_t *sv, cs2d_sv_conn_t *c, uint16_t seq)
     sv_sendto(sv, c, d, 5);
 }
 
+static void sv_remove_player(cs2d_server_t *sv, int id, int reason, const char *reason_str);
+
 static void sv_conn_reset(cs2d_sv_conn_t *c)
 {
     cs2d_sv_pending_t *keep = c->pending;
@@ -306,18 +308,27 @@ static void sv_conn_reset(cs2d_sv_conn_t *c)
     c->next_seq = 2;
 }
 
-static cs2d_sv_conn_t *sv_find_conn(cs2d_server_t *sv, const struct sockaddr_in *a, bool create)
+static cs2d_sv_conn_t *sv_find_conn(cs2d_server_t *sv, const struct sockaddr_in *a, bool hello)
 {
     int free_slot = -1;
     for (int i = 0; i < (int)(sizeof(sv->conns) / sizeof(sv->conns[0])); i++) {
         cs2d_sv_conn_t *c = &sv->conns[i];
         if (c->active) {
-            if (c->addr.sin_addr.s_addr == a->sin_addr.s_addr && c->addr.sin_port == a->sin_port) return c;
+            if (c->addr.sin_addr.s_addr == a->sin_addr.s_addr && c->addr.sin_port == a->sin_port) {
+                if (hello) {
+                    if (c->player > 0) sv_remove_player(sv, c->player, 0, "");
+                    sv_conn_reset(c);
+                    c->active = true;
+                    c->addr = *a;
+                    c->last_recv = sv_now();
+                }
+                return c;
+            }
         } else if (free_slot < 0) {
             free_slot = i;
         }
     }
-    if (!create || free_slot < 0) return NULL;
+    if (!hello || free_slot < 0) return NULL;
     cs2d_sv_conn_t *c = &sv->conns[free_slot];
     if (!c->pending) c->pending = (cs2d_sv_pending_t *)calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
     sv_conn_reset(c);
@@ -2547,6 +2558,8 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
             /* Returns 0 without sending if empty in original binary (FUN_1401d8360 0x1401d8650) */
             return true;
         }
+        return false;
+    }
     /* Server-to-Client dropped opcodes in dedicated server mode (DAT_1407dfe48 != 0):
      * Return code 3 or 4 breaks datagram parsing (FUN_1401e3cf0) cleanly dropping remainder. */
     case 15:  /* setpos / teleport (FUN_1401cc570) */
@@ -2668,7 +2681,7 @@ int cs2d_sv_recv_payload(cs2d_server_t *sv, cs2d_sv_conn_t *c, const uint8_t *bu
     return n - r.p;
 }
 
-static void sv_handle_datagram(cs2d_server_t *sv, const struct sockaddr_in *from, const uint8_t *buf, int n)
+void cs2d_sv_handle_datagram(cs2d_server_t *sv, const struct sockaddr_in *from, const uint8_t *buf, int n)
 {
     if (n < 2) return;
     uint16_t seq;
@@ -2959,7 +2972,7 @@ void cs2d_server_frame(cs2d_server_t *sv)
         cs2d_socklen_t fl = sizeof(from);
         int n = recvfrom(sv->sock, (char *)buf, sizeof(buf), 0, (struct sockaddr *)&from, &fl);
         if (n < 0) break;
-        sv_handle_datagram(sv, &from, buf, n);
+        cs2d_sv_handle_datagram(sv, &from, buf, n);
     }
 
     uint32_t now = sv_now();
