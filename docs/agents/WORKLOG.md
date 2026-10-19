@@ -10,6 +10,63 @@ Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
 
 Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
 
+## 2026-10-18 — Antigravity — Dedicated Server: API Lua de Itens e Armas (`itemtype`, `item`, `playerammo`, `playerweapons`, `closeitems`)
+
+- **Implementação Autêntica das 5 Funções da API Lua no Servidor Dedicado (`cs2d_dedicated.exe`)**:
+  - `itemtype(type, prop)` (`FUN_14009b4c0`):
+    - Validação de límites `0 <= type < CS2D_MAX_WEAPONS` e existência de definição (`def && def->name`); retorna booleano `false` para armas indefinidas (como itens de mods/scripts customizados: 80, 202, 290) ou propriedades não reconhecidas.
+    - Suporte a todas as 13 propriedades oficiais: `"name"` (retorna string do nome da arma, ou `false` se não for arma CS2D, permitindo o idiomático `if itemtype(id, "name") == false then`), `"dmg"`, `"dmg_z1"`, `"dmg_z2"`, `"rate"`, `"reload"`, `"ammo"`, `"ammoin"`, `"price"`, `"range"`, `"dispersion"`, `"slot"` (retorna `def->cs2d_slot`) e `"recoil"` (retorna `def->recoil_accuracy`).
+  - `item(id, prop)` (`FUN_140099a70`):
+    - `item(0, "table")`: retorna tabela 1-indexed com os IDs de todos os itens ativos caídos no chão (`player == 0`); qualquer outra propriedade com id 0 retorna `false`.
+    - `id > 0`: busca de item ativo no chão. Se não existir, retorna `false`.
+    - Suporte a `"exists"`, `"name"`, `"type"`, `"player"` (0 no chão), `"ammo"`, `"ammoin"`, `"mode"`, `"dropped"`, `"physicsid"`.
+    - **Correções críticas de paridade**: `"x"` e `"y"` retornam coordenadas **em TILES inteiros** (`it->tile_x`, `it->tile_y`) e não em pixels; `"droptimer"` retorna o tempo decorrido desde o drop em **segundos inteiros** (`(now - it->drop_time_ms) / 1000`).
+  - `playerammo(id, type)` (`FUN_14004caf0`):
+    - Se o jogador for válido e possuir a arma solicitada, retorna **dois valores inteiros**: `clip, reserve` (`pl->clip[type], pl->reserve[type]`).
+    - Se o jogador não existir ou não carregar a arma especificada, retorna um único valor booleano `false`.
+  - `playerweapons(id)` (`FUN_14004bd20`):
+    - Retorna tabela Lua 1-indexed contendo os IDs dos tipos das armas carregadas pelo jogador (`pl->items`).
+    - Retorna tabela vazia `{}` caso o jogador seja inválido ou não carregue itens.
+  - `closeitems(id [, range])` (`FUN_14004bf30`):
+    - Calcula distância Chebyshev em tiles (`max(abs(dx), abs(dy)) <= range`) em relação à posição do jogador em tiles `(int)(pl->x / 32), (int)(pl->y / 32)`. Range padrão é 64 tiles.
+    - Utiliza o algoritmo nativo de buckets por distância inteira (`0 .. min(range, 5)`), garantindo que os itens mais próximos (distância 0..4 tiles) apareçam primeiro na tabela resultante.
+    - Retorna tabela vazia `{}` para jogador inválido.
+- **Verificação**:
+  - Adicionado teste de regressão completo `test_dedicated_lua_items_and_weapons` em `tests/test_cs2d.c`, cobrindo exaustivamente todas as 13 propriedades de `itemtype`, casos de borda negativos/inválidos, `playerweapons` e `playerammo` com múltiplos retornos, propriedades de `item` (incluindo tiles inteiros e droptimer em segundos), e ordenação por proximidade de buckets em `closeitems`.
+  - Compilação limpa de `test_cs2d.exe`, `cs2d_client.exe` e `cs2d_server.exe` com `build.bat`.
+  - Suíte de testes aprovada com 100% de sucesso: **96 / 96** testes passando (`test_cs2d.exe`).
+
+## 2026-10-18 — Antigravity — Dedicated Server: `settile` (`Tcustomtile`), Opcode [62], Snapshot Seção 9 [252,7,9] & Lua/Console
+
+- **Implementação do Sistema `settile` (`Tcustomtile`) no Servidor Dedicado (`cs2d_dedicated.exe`)**:
+  - `cs2d_sv_settile` (`FUN_14011ed00`):
+    - Executa `Tcustomtile.startbatch`, `Tcustomtile.addcheck` (`FUN_140092770`) e `Tcustomtile.endbatch` (`FUN_1400fb050`).
+    - Atualiza os tiles, modificadores e `tile_data` do mapa do servidor, recalculando `map->base_collision` e `map->collision` (integrando-se com `cs2d_map_is_solid` e `freeline` em tempo real).
+    - Faz broadcast confiável do opcode `[62, x u16, y u16, tile u8, rot u8, r u8, g u8, b u8, overlay u8, blend u8]` (12 bytes) para todos os jogadores com `joined == true`.
+  - **Join Snapshot Seção 9 (`FUN_1401e1130` / `0x1401e1555`)**:
+    - Substituído o stub vazio pela serialização autêntica de `sv->map.custom_tiles` em blocos de até 70 itens (`0x46`):
+      `[252, 7, 9, chunk_count]` seguido por 11 bytes por tile: `{x u16, y u16, tile u8, rot&3 u8, r u8, g u8, b u8, overlay u8, blend u8}`.
+    - Emite pacote de fechamento com count 0 `[252, 7, 9, 0]`, permitindo que clientes conectando após modificações de `settile` recebam todos os tiles customizados.
+  - **Execução no Console / CLI / RCON (`FUN_14011f210`)**:
+    - Comando `settile <x> <y> <tile> [rot] [r] [g] [b] [overlay] [blenddir] [blendtype]`.
+    - Trata defaults autênticos: rot 0, cores RGB 255/255/255, overlay 0, cálculo do byte de blend via `dir - 8 + type * 8`.
+  - **Subsolo Lua**:
+    - Registrada a função nativa global `settile(...)` na VM Lua do servidor dedicado (`src/cs2d_sv_lua.c`).
+    - Suporte a comandos `settile` via `parse("settile ...")`.
+    - Query `tile(x, y, prop)` (`FUN_1400c0df0`) atualizada e alinhada 1:1 com a desassemblagem do Ghidra:
+      - `"hascustomframe"`: retorna booleano se o tile possui custom frame em `Tcustomtile.get`.
+      - `"originalframe"`: retorna o tile antigo se customizado, ou o frame atual se intocado.
+      - `"walkable"`: verifica se o tile é chão transponível.
+      - `"rot"`: retorna a rotação em graus (0, 90, 180, 270) baseada em `modifier & 3`.
+      - `"blend"`: retorna o ID do blend frame caso `(modifier & 0xc0) == 0x40`, ou `0` caso contrário.
+      - `"color"`: retorna tabela Lua `{r=..., g=..., b=...}` caso `(modifier & 0xc0) == 0x80`, tabela vazia `{}` para outro modificador ou `0` se sem modificador.
+      - `"brightness"`: retorna valor percentual `0..100` (`mod > 3`) ou `false`.
+      - `"property"`, `"wall"`, `"obstacle"`, `"deadly"`, `"height"`, `"entity"`.
+- **Verificação**:
+  - Adicionado teste completo de regressão `test_dedicated_settile` em `tests/test_cs2d.c`: validação do broadcast do opcode 62 (12 bytes reliable), atualização da colisão e modifiers do mapa, execução via `cs2d_sv_exec`, via `parse()`, via chamada direta em Lua `settile()`, validação das queries Lua `tile()`, transmissão e parsing da Seção 9 do snapshot via `cs2d_customtile_read_snapshot`, e reversão de tile para os valores originais com limpeza da lista.
+  - Suíte completa de testes aprovada com 100% de sucesso: **95 / 95** testes passando (`test_cs2d.exe`).
+  - Binários `test_cs2d.exe`, `cs2d_client.exe` e `cs2d_server.exe` compilados sem erros.
+
 ## 2026-10-18 — Antigravity — Dedicated Server: Correção do Ciclo de Vida de Imagens Dinâmicas Lua e `hudimg.lua` no Cliente Original
 
 - **Diagnóstico e Correção de `hudimg.lua` no Cliente Original (`CS2D.exe`)**:

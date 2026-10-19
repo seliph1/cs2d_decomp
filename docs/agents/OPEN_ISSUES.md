@@ -5,6 +5,22 @@ you discover. Sign items that are being worked on (`[in progress: <agent>]`) so 
 the same one.
 
 ## Known gaps
+- **Dedicated server: Lua Items & Weapons API (`itemtype`, `item`, `playerammo`, `playerweapons`, `closeitems`) (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - Implementação e calibração 1:1 das 5 funções de consulta de itens e armas no servidor dedicado:
+  `itemtype(type, prop)` (`FUN_14009b4c0`): cobre as 13 propriedades oficiais (`"name"`, `"dmg"`, `"dmg_z1"`, `"dmg_z2"`, `"rate"`, `"reload"`, `"ammo"`, `"ammoin"`, `"price"`, `"range"`, `"dispersion"`, `"slot"`, `"recoil"`), retornando `def->cs2d_slot` para `"slot"`, `def->recoil_accuracy` para `"recoil"`, e booleano `false` para tipos fora de limites, armas indefinidas/customizadas (ex: id 80, 202, 290) ou propriedades desconhecidas (permitindo a verificação `if itemtype(id, "name") == false then -- Not cs2d item`);
+  `item(id, prop)` (`FUN_140099a70`): `item(0, "table")` retorna array 1-indexed com os IDs de itens ativos caídos no chão (`player == 0`); suporta `"exists"`, `"name"`, `"type"`, `"player"`, `"ammo"`, `"ammoin"`, `"mode"`, `"x"`, `"y"`, `"dropped"`, `"droptimer"` e `"physicsid"`; corrigidas as coordenadas `"x"` e `"y"` para retornarem coordenadas **em TILES inteiros** (`it->tile_x`, `it->tile_y`) e `"droptimer"` para retornar em **segundos inteiros** decorridos desde o drop (`(now - it->drop_time_ms) / 1000`); IDs inexistentes ou propriedades desconhecidas retornam booleano `false`;
+  `playerammo(id, type)` (`FUN_14004caf0`): verifica se o jogador possui a arma e retorna **dois valores** (`clip, reserve`), ou booleano `false` caso não possua ou o jogador seja inexistente;
+  `playerweapons(id)` (`FUN_14004bd20`): retorna tabela 1-indexed contendo os IDs dos tipos de armas que o jogador carrega (`pl->items`), ou tabela vazia `{}` caso o jogador seja inválido;
+  `closeitems(id [, range])` (`FUN_14004bf30`): calcula alcance via distância Chebyshev em tiles (`max(|dx|, |dy|) <= range`), organizando os itens em buckets de distância inteira de 0 a 5, retornando a tabela de IDs de itens do chão ordenados por proximidade com os mais próximos primeiro;
+  bloqueado por teste de regressão `test_dedicated_lua_items_and_weapons` (96/96 testes passando).
+- **Dedicated server: Custom Tiles / settile [62], Snapshot Section 9 [252,7,9] & Lua/Console (2026-10-18, `docs/agents/knowledge/settile.md`):**
+  fixed - Implementação autêntica do sistema `settile` (`Tcustomtile`) e Seção 9 do Snapshot de entrada no servidor dedicado:
+  `cs2d_sv_settile` (`FUN_14011ed00`): aplica alterações no mapa do servidor via `Tcustomtile.addcheck` e `endbatch`, atualiza `map->base_collision` e `map->collision` (garantindo que `cs2d_map_is_solid` e `freeline` reflitam novas paredes e obstáculos em tempo de execução), e faz broadcast confiável do opcode `[62]` (12 bytes: `x u16, y u16, tile u8, rot u8, r, g, b, overlay, blend`) para todos os jogadores com `joined == true`;
+  Join Snapshot Seção 9 (`FUN_1401e1130` / `0x1401e1555`): serializa `sv->map.custom_tiles` em lotes de até 70 itens (`[252, 7, 9, chunk_count]` com 11 bytes por item), finalizando com terminador `[252, 7, 9, 0]`, permitindo que jogadores que entrem após um `settile` recebam todos os tiles customizados;
+  execução via console / CLI / RCON (`cs2d_sv_exec` `FUN_14011f210` / `FUN_140195d00`): suporta rotação (0..3), cores RGB, overlay e direções/tipos de blend (`left 2`, `topright 1`, etc.);
+  disponível simultaneamente via `parse("settile ...")` e via função nativa global da API Lua `settile(...)`;
+  query Lua `tile(x, y, prop)` (`FUN_1400c0df0`) atualizada para cobrir todas as propriedades: `"hascustomframe"`, `"originalframe"`, `"walkable"`, `"rot"`, `"blend"`, `"color"`, `"brightness"`, `"height"`, `"entity"`, `"property"`, `"wall"`, `"obstacle"`, `"deadly"`, espelhando fielmente os retornos do binário original;
+  bloqueado por teste `test_dedicated_settile` (95/95 testes passando).
 - **Dedicated server: HUD Texts [234], Tweens [54] & Comandos (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
   fixed - Implementação autêntica de todos os 6 comandos/funções de HUD text no dedicado:
   `hudtxt(id [, text, x, y, align, valign, size])` e `hudtxt2(player, id [, text, x, y, align, valign, size])` (`FUN_14011c0d0`),

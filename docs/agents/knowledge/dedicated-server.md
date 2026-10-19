@@ -530,5 +530,57 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   - Registered as Lua global C functions: `hudtxt`, `hudtxt2`, `hudtxtclear`, `hudtxtalphafade`, `hudtxtcolorfade`, `hudtxtmove`.
   - Hooked into `parse(...)` and server console / CLI (`cs2d_sv_exec`): parses quoted strings, coordinate biasing, align/valign/size arguments, and shorthand clearing.
 
+## Dedicated Server: settile [62], Snapshot Section 9 [252,7,9] & Lua/Console (2026-10-18)
+
+- **`cs2d_sv_settile` (`FUN_14011ed00`)**:
+  - Updates server map tiles, modifiers, and tile_data. Recalculates `map->base_collision` and `map->collision`.
+  - Broadcasts reliable opcode `[62, x u16, y u16, tile u8, rot u8, r u8, g u8, b u8, overlay u8, blend u8]` (12 bytes) to all connected clients with `joined == true`.
+- **Join Snapshot Section 9 (`FUN_1401e1130` / `0x1401e1555`)**:
+  - Sent in chunks of up to 70 entries (`0x46`): `[252, 7, 9, chunk_count]` followed by 11 bytes per custom tile (`{x u16, y u16, tile, rot&3, r, g, b, overlay, blend}`).
+  - Closes with a terminator packet `[252, 7, 9, 0]`.
+- **Server CLI / Console / RCON (`FUN_14011f210`)**:
+  - `settile <x> <y> <tile> [rot] [r] [g] [b] [overlay] [blenddir] [blendtype]`.
+- **Lua Subsystem Integration**:
+  - Lua global function `settile(...)` calls `cs2d_sv_settile`.
+  - `tile(x, y, prop)` (`FUN_1400c0df0`) provides queries for `"frame"`, `"originalframe"`, `"hascustomframe"`, `"walkable"`, `"rot"`, `"blend"`, `"color"`, `"brightness"`, `"height"`, `"entity"`.
+
+## Dedicated Server: Lua Items & Weapons API (2026-10-18)
+
+Verified against `cs2d_dedicated.exe` reverse engineering:
+- **`itemtype(type, prop)` (`FUN_14009b4c0`)**:
+  - Validates `0 <= type < CS2D_MAX_WEAPONS` and definition existence (`def != NULL && def->name != NULL`). If out-of-bounds, undefined weapon (such as custom item IDs like 80, 202, 290) or unknown property, returns boolean `false`.
+  - `"name"`: returns string weapon name (`def->name`). If weapon is not a valid CS2D weapon, returns `false` (allowing scripts to check `if itemtype(id, "name") == false then -- Not cs2d item`).
+  - Numeric properties: `"dmg"`, `"dmg_z1"`, `"dmg_z2"`, `"rate"`, `"reload"`, `"ammo"`, `"ammoin"`, `"price"`, `"range"`, `"dispersion"`, `"slot"` (returns `def->cs2d_slot`), `"recoil"` (returns `def->recoil_accuracy`).
+- **`item(id, prop)` (`FUN_140099a70`)**:
+  - `id == 0`: if `prop == "table"` returns 1-indexed Lua array containing all active ground items (`player == 0`); any other prop returns `false`.
+  - `id > 0`: searches active ground item by entity ID. If missing or invalid prop, returns `false` (`item(id, "exists")` returns `false`).
+  - Supported properties:
+    - `"exists"`: returns `true`.
+    - `"name"`: returns weapon name string (or `""`).
+    - `"type"`: returns weapon type integer.
+    - `"player"`: returns `0` for ground items (or holder player ID).
+    - `"ammo"`: returns reserve ammo integer.
+    - `"ammoin"`: returns clip ammo integer.
+    - `"mode"`: returns sub-mode integer.
+    - `"x"`, `"y"`: **returns integer coordinates in TILES** (`it->tile_x`, `it->tile_y`), not pixels.
+    - `"dropped"`: returns boolean dropped flag.
+    - `"droptimer"`: returns elapsed drop time in **whole seconds** (`(now_ms - it->drop_time_ms) / 1000`).
+    - `"physicsid"`: returns associated physics object ID or `0`.
+- **`playerammo(id, type)` (`FUN_14004caf0`)**:
+  - Validates player existence and `0 <= type < CS2D_MAX_WEAPONS`.
+  - Checks if player holds the weapon.
+  - If held, returns **two values**: `clip, reserve` (`pl->clip[type], pl->reserve[type]`).
+  - If player does not exist or does not hold the weapon, returns boolean `false`.
+- **`playerweapons(id)` (`FUN_14004bd20`)**:
+  - Validates player ID. If player does not exist, returns empty table `{}`.
+  - Iterates player weapons (`pl->items`) and returns a 1-indexed table with weapon type IDs.
+- **`closeitems(id [, range])` (`FUN_14004bf30`)**:
+  - Returns table of ground item IDs within `range` tiles of player `id`. Default `range` is 64 tiles.
+  - Uses player tile position `(int)(pl->x / 32.0f), (int)(pl->y / 32.0f)`.
+  - Distance check: Chebyshev distance in tiles `dx = abs(it->tile_x - ptx)`, `dy = abs(it->tile_y - pty)`, `dx <= range && dy <= range`.
+  - Proximity bucket ordering: uses `min(range, 5) + 1` buckets indexed by `min(max(dx, dy), 5)`.
+  - Populates table iterating buckets `0..max_bucket`, giving strict nearest-first ordering for tiles 0..4.
+  - Non-existent player returns empty table `{}`.
+
 
 

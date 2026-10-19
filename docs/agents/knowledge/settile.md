@@ -33,3 +33,24 @@ Code: `src/cs2d_customtile.c`. Test: `test_settile`. Probe: `tools/agent/lua/set
 - endbatch (0x1401443e0): cs2d_update_mapdata(1, 1, 1, minx - 1, miny - 1, maxx + 1, maxy + 1): cell props
   (collision), entity / building overrides, light engine SetTile, Ttileblend.updatetile of the region.
 - Map load clears the list (0x1401d0000 area); Tcustomtile.clear (restores old values) has no caller in CS2D.exe.
+
+## Dedicated Server (cs2d_dedicated.exe)
+
+- **`cs2d_sv_settile` (`FUN_14011ed00`)**: Server entry point. Executes `Tcustomtile.startbatch`, `Tcustomtile.addcheck` (`FUN_140092770`), and `Tcustomtile.endbatch` (`FUN_1400fb050`). Broadcasts reliable opcode `[62, x u16, y u16, tile u8, rot u8, r u8, g u8, b u8, overlay u8, blend u8]` (12 bytes) to all connected clients with `joined == true`.
+- **Join Snapshot Section 9 (`FUN_1401e1130` / `0x1401e1555`)**:
+  Iterates `sv->map.custom_tiles` in chunks of up to 70 entries (`0x46`):
+  - Sends `[252, 7, 9, chunk_count]` followed by 11 bytes per tile: `{x u16, y u16, tile u8, rot&3 u8, r u8, g u8, b u8, overlay u8, blend u8}`.
+  - Terminates snapshot section 9 by sending a closing `[252, 7, 9, 0]` packet.
+- **Server CLI / Console / RCON (`FUN_14011f210`)**: Command `settile <x> <y> <tile> [rot] [r] [g] [b] [overlay] [blenddir] [blendtype]`.
+  Default rotation: 0. Default color: 255, 255, 255. Default overlay: 0. Blend byte calculated via `dir - 8 + type * 8`.
+- **Lua Subsystem**:
+  - `settile(...)` function registered in Lua global namespace (`src/cs2d_sv_lua.c`).
+  - `tile(x, y, prop)` (`FUN_1400c0df0`):
+    - `"hascustomframe"`: boolean indicating whether `Tcustomtile.get(x, y)` exists.
+    - `"originalframe"`: old tile id from `Tcustomtile.get(x, y)` or current tile id if untouched.
+    - `"walkable"`: boolean checking whether tile mode allows walking.
+    - `"rot"`: integer rotation in degrees (0, 90, 180, 270) based on `modifier & 3`.
+    - `"blend"`: integer blend frame if `(modifier & 0xc0) == 0x40`, otherwise `0`.
+    - `"color"`: table `{r=..., g=..., b=...}` if `(modifier & 0xc0) == 0x80`, empty table `{}` if other modifier, `0` if no modifier.
+    - `"brightness"`: integer percentage `((mod >> 2) & 0xf) * 10` if `mod > 3`, otherwise `false`.
+

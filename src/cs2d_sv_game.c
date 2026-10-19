@@ -4643,3 +4643,31 @@ void cs2d_sv_reqcld(cs2d_server_t *sv, int id, int mode, const char *param)
     }
 }
 
+/* 0x14011ed00: settile on the dedicated server (apply, update collision and broadcast reliable [62]) */
+bool cs2d_sv_settile(cs2d_server_t *sv, const cs2d_settile_t *st)
+{
+    if (!sv || !st || (!sv->map_loaded && !sv->map.tiles)) return false;
+    cs2d_customtile_batch_t batch;
+    cs2d_customtile_begin(&batch);
+    cs2d_customtile_addcheck(&sv->map, &batch, st);
+    int bounds[4];
+    cs2d_customtile_end(&sv->map, &batch, bounds);
+
+    /* Broadcast reliable [62, x u16, y u16, tile u8, rot u8, r u8, g u8, b u8, overlay u8, blend u8] (FUN_14011ed00) */
+    uint8_t pkt[12];
+    pkt[0] = 62;
+    pkt[1] = (uint8_t)(st->x & 0xff);
+    pkt[2] = (uint8_t)((st->x >> 8) & 0xff);
+    pkt[3] = (uint8_t)(st->y & 0xff);
+    pkt[4] = (uint8_t)((st->y >> 8) & 0xff);
+    pkt[5] = st->tile;
+    pkt[6] = st->rot;
+    pkt[7] = st->r;
+    pkt[8] = st->g;
+    pkt[9] = st->b;
+    pkt[10] = st->overlay;
+    pkt[11] = st->blend;
+
+    sv_broadcast_joined(sv, pkt, 12);
+    return true;
+}

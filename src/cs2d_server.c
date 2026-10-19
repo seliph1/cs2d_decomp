@@ -665,7 +665,7 @@ void cs2d_sv_write_player_record(cs2d_pkt_t *p, int id, const cs2d_sv_player_t *
     cs2d_pkt_w_short(p, (uint16_t)(pl->votemap ? pl->votemap : 0xffff)); /* +0x3e0 votemap: -1 = no vote (proxy) */
 }
 
-static void sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
+void cs2d_sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
 {
     cs2d_pkt_t *p;
 
@@ -872,10 +872,46 @@ static void sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
     p = sv_packet(sv, c, true, true);
     cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 0);
 
-    /* Sections 8, 9: tweens, custom tiles (empty until tweens / settile snapshot are needed) */
-    for (int sec = 8; sec <= 9; sec++) {
+    /* Section 8: tweens (empty until needed) */
+    p = sv_packet(sv, c, true, true);
+    cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 8); cs2d_pkt_w_byte(p, 0);
+
+    /* Section 9: custom tiles (Tcustomtile, FUN_1401e1130) */
+    if (sv->map.custom_tile_count == 0) {
         p = sv_packet(sv, c, true, true);
-        cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, (uint8_t)sec); cs2d_pkt_w_byte(p, 0);
+        cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 9); cs2d_pkt_w_byte(p, 0);
+    } else {
+        uint32_t sent = 0;
+        while (sent < sv->map.custom_tile_count) {
+            uint8_t chunk = (uint8_t)(sv->map.custom_tile_count - sent > 70 ? 70 : sv->map.custom_tile_count - sent);
+            p = sv_packet(sv, c, true, true);
+            cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 9); cs2d_pkt_w_byte(p, chunk);
+            for (uint8_t j = 0; j < chunk; j++) {
+                const cs2d_customtile_t *ct = &sv->map.custom_tiles[sent + j];
+                size_t idx = (size_t)ct->y * sv->map.width + ct->x;
+                uint8_t tile = sv->map.tiles[idx];
+                uint8_t mod = sv->map.modifiers ? sv->map.modifiers[idx] : 0;
+                const uint8_t *d = sv->map.tile_data ? &sv->map.tile_data[idx * 4] : NULL;
+                uint8_t r = d ? d[0] : 255;
+                uint8_t g = d ? d[1] : 255;
+                uint8_t b = d ? d[2] : 255;
+                uint8_t overlay = (d && (mod & 0xc0) != 0x40) ? d[3] : 0;
+                uint8_t blend = (d && (mod & 0xc0) == 0x40) ? d[3] : 0;
+                cs2d_pkt_w_short(p, ct->x);
+                cs2d_pkt_w_short(p, ct->y);
+                cs2d_pkt_w_byte(p, tile);
+                cs2d_pkt_w_byte(p, (uint8_t)(mod & 3));
+                cs2d_pkt_w_byte(p, r);
+                cs2d_pkt_w_byte(p, g);
+                cs2d_pkt_w_byte(p, b);
+                cs2d_pkt_w_byte(p, overlay);
+                cs2d_pkt_w_byte(p, blend);
+            }
+            sent += chunk;
+        }
+        /* Second [252,7,9] with count 0 to close (FUN_1401e1555) */
+        p = sv_packet(sv, c, true, true);
+        cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 9); cs2d_pkt_w_byte(p, 0);
     }
 
     /* Section 11: weapon settings, wbank of PTR_DAT_14059d3a8 = [u16 size][u32 raw size][zlib]. The raw
@@ -1225,7 +1261,7 @@ static void sv_recv_join5(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
     cs2d_pkt_t *p = sv_packet(sv, c, true, true);
     int32_t round_ms = (int32_t)(sv_now() - sv->round_start_ms);
     cs2d_sv_build_join_settings(p, &sv->set, &sv->map, sv->score_t, sv->score_ct, round_ms, sv->seed);
-    sv_send_join_snapshot(sv, c);
+    cs2d_sv_send_join_snapshot(sv, c);
     c->join_step = 4;
     cs2d_sv_lua_hook_join(sv, c->player);
 }
@@ -2072,6 +2108,36 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
         sv_next_arg(&cur, a1, sizeof(a1));
         cs2d_sv_change_map(sv, a1);
         return true;
+    }
+    if (_stricmp(cmd, "settile") == 0) { /* 0x1401428d6 -> FUN_14011f210 -> FUN_14011ed00 */
+        char a_x[32], a_y[32], a_tile[32], a_rot[32], a_r[32], a_g[32], a_b[32], a_overlay[32], a_dir[32], a_typ[32];
+        if (!sv_next_arg(&cur, a_x, sizeof(a_x)) ||
+            !sv_next_arg(&cur, a_y, sizeof(a_y)) ||
+            !sv_next_arg(&cur, a_tile, sizeof(a_tile))) {
+            return false;
+        }
+        cs2d_settile_t st;
+        cs2d_settile_defaults(&st, atoi(a_x), atoi(a_y), atoi(a_tile));
+        if (sv_next_arg(&cur, a_rot, sizeof(a_rot))) {
+            st.rot = (uint8_t)atoi(a_rot);
+            if (sv_next_arg(&cur, a_r, sizeof(a_r))) {
+                st.r = (uint8_t)atoi(a_r);
+                if (sv_next_arg(&cur, a_g, sizeof(a_g))) {
+                    st.g = (uint8_t)atoi(a_g);
+                    if (sv_next_arg(&cur, a_b, sizeof(a_b))) {
+                        st.b = (uint8_t)atoi(a_b);
+                        if (sv_next_arg(&cur, a_overlay, sizeof(a_overlay))) {
+                            st.overlay = (uint8_t)atoi(a_overlay);
+                            if (sv_next_arg(&cur, a_dir, sizeof(a_dir)) &&
+                                sv_next_arg(&cur, a_typ, sizeof(a_typ))) {
+                                st.blend = cs2d_settile_blend(a_dir, a_typ);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return cs2d_sv_settile(sv, &st);
     }
     if (_stricmp(cmd, "mp_building_price") == 0) {
         sv_next_arg(&cur, a1, sizeof(a1));

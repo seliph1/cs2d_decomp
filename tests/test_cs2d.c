@@ -10210,6 +10210,370 @@ static bool test_dedicated_hudtxt(void)
     return true;
 }
 
+static bool test_dedicated_settile(void)
+{
+    printf("\n=== Testing Dedicated Server: settile (Tcustomtile, [62], Snapshot Section 9 [252,7,9], Lua API & Console) ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.sock = INVALID_SOCKET;
+    sv.set.debuglua = 1;
+
+    if (!cs2d_ed_new_map(&sv.map, 32, 32, "cs2dnorm.bmp")) {
+        TEST_FAIL("Dedicated settile", "failed to create new map");
+    }
+    sv.map.tile_count = 20;
+    sv.map.tile_modes[5] = CS2D_TILE_WALL;
+    sv.map.tile_modes[6] = CS2D_TILE_OBSTACLE;
+    sv.map_loaded = true;
+    sv.map.base_collision = calloc(32 * 32, 1);
+
+    /* Initialize Lua state */
+    if (!cs2d_sv_lua_init(&sv)) {
+        TEST_FAIL("Dedicated settile init", "failed to initialize server Lua state");
+    }
+
+    /* Player 1 connected and joined */
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].conn = 0;
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].next_seq = 2;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+
+    /* 1. Direct cs2d_sv_settile call & reliable packet [62] broadcast */
+    cs2d_settile_t st;
+    cs2d_settile_defaults(&st, 10, 15, 5);
+    st.rot = 1;
+    st.r = 200; st.g = 100; st.b = 50;
+    st.overlay = 3;
+    st.blend = 0;
+
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+
+    if (!cs2d_sv_settile(&sv, &st)) {
+        TEST_FAIL("Dedicated settile", "cs2d_sv_settile returned false");
+    }
+
+    /* Verify packet [62] wire format */
+    cs2d_pkt_t *p_rel = &sv.conns[0].out;
+    if (p_rel->pos != 12 || p_rel->buf[0] != 62) {
+        TEST_FAIL("Dedicated settile [62]", "expected 12-byte reliable packet with opcode 62");
+    }
+    uint16_t px = (uint16_t)(p_rel->buf[1] | (p_rel->buf[2] << 8));
+    uint16_t py = (uint16_t)(p_rel->buf[3] | (p_rel->buf[4] << 8));
+    if (px != 10 || py != 15 || p_rel->buf[5] != 5 || p_rel->buf[6] != 1 ||
+        p_rel->buf[7] != 200 || p_rel->buf[8] != 100 || p_rel->buf[9] != 50 ||
+        p_rel->buf[10] != 3 || p_rel->buf[11] != 0) {
+        TEST_FAIL("Dedicated settile [62] fields", "payload fields mismatch");
+    }
+
+    /* Verify map state and collision update */
+    size_t idx1 = 15 * 32 + 10;
+    if (sv.map.tiles[idx1] != 5 || sv.map.collision[idx1] != 1 || sv.map.base_collision[idx1] != 1 ||
+        sv.map.modifiers[idx1] != 0x81 || sv.map.custom_tile_count != 1) {
+        TEST_FAIL("Dedicated settile map update", "tile mode wall / collision / modifier mismatch");
+    }
+    const cs2d_customtile_t *ct1 = cs2d_customtile_get(&sv.map, 10, 15);
+    if (!ct1 || ct1->old_tile != 0) {
+        TEST_FAIL("Dedicated settile get", "customtile list entry missing");
+    }
+
+    /* 2. Console command via cs2d_sv_exec */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    if (!cs2d_sv_exec(&sv, "settile 12 18 6 2 255 255 255 0 bottom 3")) {
+        TEST_FAIL("Dedicated settile cs2d_sv_exec", "cs2d_sv_exec failed");
+    }
+    if (p_rel->pos != 12 || p_rel->buf[5] != 6 || p_rel->buf[6] != 2 || p_rel->buf[11] != 20) {
+        TEST_FAIL("Dedicated settile cs2d_sv_exec packet", "exec did not produce expected opcode 62 packet");
+    }
+    size_t idx2 = 18 * 32 + 12;
+    if (sv.map.tiles[idx2] != 6 || sv.map.collision[idx2] != 2 || sv.map.custom_tile_count != 2) {
+        TEST_FAIL("Dedicated settile cs2d_sv_exec map", "obstacle tile / collision mismatch");
+    }
+
+    /* 3. Lua parse('settile ...') */
+    bool rc = cs2d_sv_lua_dostring(&sv, "parse('settile 14 19 5 0 255 255 255 0 0 0')");
+    if (!rc) TEST_FAIL("Dedicated settile parse()", "parse('settile ...') failed");
+    size_t idx3 = 19 * 32 + 14;
+    if (sv.map.tiles[idx3] != 5 || sv.map.custom_tile_count != 3) {
+        TEST_FAIL("Dedicated settile parse() map", "tile at 14, 19 not updated");
+    }
+
+    /* 4. Lua settile(x, y, tile, ...) function */
+    rc = cs2d_sv_lua_dostring(&sv, "settile(16, 20, 6, 3, 10, 20, 30, 1, 0)");
+    if (!rc) TEST_FAIL("Dedicated settile Lua function", "settile(...) lua call failed");
+    size_t idx4 = 20 * 32 + 16;
+    if (sv.map.tiles[idx4] != 6 || sv.map.custom_tile_count != 4) {
+        TEST_FAIL("Dedicated settile Lua function map", "tile at 16, 20 not updated");
+    }
+
+    /* 5. Lua query tile(x, y, prop) for custom and original tiles */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(tile(10, 15, 'frame') == 5, 'frame must be 5')\n"
+        "assert(tile(10, 15, 'hascustomframe') == true, 'hascustomframe true')\n"
+        "assert(tile(10, 15, 'originalframe') == 0, 'originalframe was 0')\n"
+        "assert(tile(10, 15, 'rot') == 90, 'rot 1 is 90 deg')\n"
+        "assert(tile(10, 15, 'walkable') == false, 'wall is not walkable')\n"
+        "local c = tile(10, 15, 'color')\n"
+        "assert(type(c) == 'table' and c.r == 200 and c.g == 100 and c.b == 50, 'color table')\n"
+        "assert(tile(10, 15, 'blend') == 0, 'blend is 0 on color tile')\n"
+        "assert(tile(12, 18, 'blend') == 20, 'blend is 20 on blend tile')\n"
+        "assert(tile(12, 18, 'rot') == 180, 'rot 2 is 180 deg')\n"
+        "assert(tile(0, 0, 'hascustomframe') == false, 'untouched tile hascustomframe false')\n"
+        "assert(tile(0, 0, 'originalframe') == 0, 'untouched originalframe matches frame')\n"
+        "assert(tile(0, 0, 'walkable') == true, 'tile 0 is walkable')\n"
+    );
+    if (!rc) TEST_FAIL("Dedicated settile tile() Lua query", "tile(x, y, prop) query assertions failed");
+
+    /* 6. Join snapshot Section 9 ([252, 7, 9]): test sending to a new connecting player */
+    sv.players[2].used = true;
+    sv.players[2].conn = 1;
+    sv.conns[1].active = true;
+    sv.conns[1].player = 2;
+    sv.conns[1].next_seq = 2;
+    sv.conns[1].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+
+    cs2d_sv_send_join_snapshot(&sv, &sv.conns[1]);
+
+    /* Find Section 9 packet in pending queue */
+    int sec9_idx = -1;
+    for (int i = 0; i < CS2D_SV_MAX_PENDING; i++) {
+        if (sv.conns[1].pending[i].len >= 6) {
+            const uint8_t *d = sv.conns[1].pending[i].data;
+            /* d[0..1] is seq, d[2] is 252, d[3] is 7, d[4] is 9 */
+            if (d[2] == 252 && d[3] == 7 && d[4] == 9 && d[5] > 0) {
+                sec9_idx = i;
+                break;
+            }
+        }
+    }
+    if (sec9_idx < 0) {
+        TEST_FAIL("Dedicated settile Section 9 snapshot", "did not find Section 9 packet in pending queue");
+    }
+
+    /* Verify Section 9 payload with client snapshot parser (cs2d_customtile_read_snapshot) */
+    const uint8_t *sec9_pkt = sv.conns[1].pending[sec9_idx].data;
+    uint16_t sec9_len = sv.conns[1].pending[sec9_idx].len;
+    /* sec9_pkt[5] is chunk count (should be 4 custom tiles) */
+    if (sec9_pkt[5] != 4) {
+        TEST_FAIL("Dedicated settile Section 9 count", "expected 4 tiles in Section 9 snapshot chunk");
+    }
+
+    static cs2d_map_t cli_map;
+    if (!cs2d_ed_new_map(&cli_map, 32, 32, "cs2dnorm.bmp")) {
+        TEST_FAIL("Dedicated settile client map", "failed to create client map");
+    }
+    cli_map.tile_count = 20;
+    cli_map.tile_modes[5] = CS2D_TILE_WALL;
+    cli_map.tile_modes[6] = CS2D_TILE_OBSTACLE;
+
+    int spos = 0;
+    int bounds[4];
+    bool cut = false;
+    /* Pass from offset 5: [count, {x, y, tile, rot, r, g, b, overlay, blend} * count] */
+    const uint8_t *snap_body = &sec9_pkt[5];
+    int snap_body_len = sec9_len - 5;
+    if (!cs2d_customtile_read_snapshot(&cli_map, snap_body, snap_body_len, &spos, bounds, &cut) || cut ||
+        spos != snap_body_len || cli_map.custom_tile_count != 4) {
+        TEST_FAIL("Dedicated settile Section 9 client parse", "client snapshot parser failed to decode server Section 9");
+    }
+    if (cli_map.tiles[idx1] != 5 || cli_map.modifiers[idx1] != 0x81) {
+        TEST_FAIL("Dedicated settile Section 9 client map data", "client map data does not match server custom tile");
+    }
+    cs2d_map_free(&cli_map);
+
+    /* 7. Revert tile back to original ("settile 10 15 0") */
+    cs2d_sv_exec(&sv, "settile 10 15 0");
+    if (sv.map.custom_tile_count != 3) {
+        TEST_FAIL("Dedicated settile revert count", "expected 3 custom tiles after reverting one");
+    }
+    if (cs2d_customtile_get(&sv.map, 10, 15) != NULL) {
+        TEST_FAIL("Dedicated settile revert get", "reverted tile still in custom tile list");
+    }
+    if (sv.map.tiles[idx1] != 0 || sv.map.collision[idx1] != 0) {
+        TEST_FAIL("Dedicated settile revert collision", "reverted tile collision not cleared");
+    }
+    rc = cs2d_sv_lua_dostring(&sv, "assert(tile(10, 15, 'hascustomframe') == false, 'reverted hascustomframe false')");
+    if (!rc) TEST_FAIL("Dedicated settile revert Lua", "hascustomframe should be false after revert");
+
+    /* Cleanup */
+    free(sv.conns[0].pending);
+    free(sv.conns[1].pending);
+    cs2d_map_free(&sv.map);
+    cs2d_sv_lua_close(&sv);
+
+    TEST_PASS("Dedicated Server: settile (Tcustomtile, [62], snapshot Section 9 [252,7,9], Lua API & console)");
+    return true;
+}
+
+/* =========================================================================
+ * Dedicated Server: Lua items API (itemtype, item, playerammo, playerweapons, closeitems)
+ * Verified against cs2d_dedicated.exe (FUN_14009b4c0, FUN_140099a70, FUN_14004caf0, FUN_14004bd20, FUN_14004bf30)
+ * ========================================================================= */
+static bool test_dedicated_lua_items_and_weapons(void)
+{
+    printf("\n=== Testing Dedicated Server: Lua Items & Weapons API (itemtype, item, playerammo, playerweapons, closeitems) ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    cs2d_weapons_init();
+
+    sv.map.width = 40;
+    sv.map.height = 30;
+    sv.map.tiles = (uint8_t *)calloc(40 * 30, 1);
+    sv.map.modifiers = (uint8_t *)calloc(40 * 30, 1);
+    sv.map.collision = (uint8_t *)calloc(40 * 30, 1);
+    sv.map_loaded = true;
+
+    if (!cs2d_sv_lua_init(&sv)) {
+        TEST_FAIL("Lua items init", "cs2d_sv_lua_init failed");
+    }
+
+    /* 1. Test itemtype(type, prop) (FUN_14009b4c0) */
+    bool rc = cs2d_sv_lua_dostring(&sv,
+        "assert(itemtype(30, 'name') == 'AK-47', 'AK-47 name mismatch')\n"
+        "assert(itemtype(30, 'dmg') == 22, 'AK-47 dmg mismatch')\n"
+        "assert(itemtype(30, 'dmg_z1') == 0, 'AK-47 dmg_z1 mismatch')\n"
+        "assert(itemtype(30, 'dmg_z2') == 0, 'AK-47 dmg_z2 mismatch')\n"
+        "assert(itemtype(30, 'rate') == 3, 'AK-47 rate mismatch')\n"
+        "assert(itemtype(30, 'reload') == 275, 'AK-47 reload mismatch')\n"
+        "assert(itemtype(30, 'ammo') == 90, 'AK-47 reserve mismatch')\n"
+        "assert(itemtype(30, 'ammoin') == 30, 'AK-47 clip mismatch')\n"
+        "assert(itemtype(30, 'price') == 2500, 'AK-47 price mismatch')\n"
+        "assert(itemtype(30, 'range') == 300, 'AK-47 range mismatch')\n"
+        "assert(itemtype(30, 'dispersion') == 20, 'AK-47 dispersion mismatch')\n"
+        "assert(itemtype(30, 'slot') == 1, 'AK-47 slot mismatch (should be 1)')\n"
+        "assert(itemtype(30, 'recoil') == 1, 'AK-47 recoil mismatch')\n"
+        "assert(itemtype(50, 'name') == 'Knife', 'Knife name mismatch')\n"
+        "assert(itemtype(50, 'slot') == 3, 'Knife slot mismatch (should be 3)')\n"
+        "assert(itemtype(-1, 'name') == false, 'negative type should return false')\n"
+        "assert(itemtype(80, 'name') == false, 'undefined weapon type (80) should return false for name')\n"
+        "assert(itemtype(999, 'dmg') == false, 'out-of-bounds type should return false')\n"
+        "assert(itemtype(30, 'invalid_prop') == false, 'unknown prop should return false')\n"
+    );
+    if (!rc) TEST_FAIL("itemtype() verification", "itemtype assertions failed");
+
+    /* 2. Setup player and test playerweapons(id) & playerammo(id, type) (FUN_14004bd20, FUN_14004caf0) */
+    sv.players[1].used = true;
+    sv.players[1].x = 320.0f; /* tile 10 */
+    sv.players[1].y = 320.0f; /* tile 10 */
+    sv.players[1].item_count = 3;
+    sv.players[1].items[0] = 30; /* AK-47 */
+    sv.players[1].items[1] = 3;  /* Deagle */
+    sv.players[1].items[2] = 50; /* Knife */
+    sv.players[1].clip[30] = 28;
+    sv.players[1].reserve[30] = 60;
+    sv.players[1].clip[3] = 7;
+    sv.players[1].reserve[3] = 35;
+
+    rc = cs2d_sv_lua_dostring(&sv,
+        "local pw = playerweapons(1)\n"
+        "assert(#pw == 3, 'playerweapons count mismatch')\n"
+        "assert(pw[1] == 30 and pw[2] == 3 and pw[3] == 50, 'playerweapons content mismatch')\n"
+        "local empty_pw = playerweapons(2)\n"
+        "assert(type(empty_pw) == 'table' and #empty_pw == 0, 'invalid playerweapons should return empty table')\n"
+        "local c30, r30 = playerammo(1, 30)\n"
+        "assert(c30 == 28 and r30 == 60, 'playerammo 30 mismatch (expected 28, 60)')\n"
+        "local c3, r3 = playerammo(1, 3)\n"
+        "assert(c3 == 7 and r3 == 35, 'playerammo 3 mismatch (expected 7, 35)')\n"
+        "assert(playerammo(1, 20) == false, 'playerammo for weapon player does not have should return false')\n"
+        "assert(playerammo(2, 30) == false, 'playerammo for non-existent player should return false')\n"
+    );
+    if (!rc) TEST_FAIL("playerweapons() & playerammo()", "playerweapons or playerammo assertions failed");
+
+    /* 3. Setup ground items and test item(id, prop) (FUN_140099a70) */
+    uint32_t now = cs2d_sv_now();
+    sv.items[0].active = true;
+    sv.items[0].id = 101;
+    sv.items[0].type = 30;
+    sv.items[0].clip = 30;
+    sv.items[0].reserve = 90;
+    sv.items[0].tile_x = 10;
+    sv.items[0].tile_y = 10;
+    sv.items[0].dropped = true;
+    sv.items[0].drop_time_ms = now - 5000; /* 5s ago */
+
+    sv.items[1].active = true;
+    sv.items[1].id = 102;
+    sv.items[1].type = 3;
+    sv.items[1].clip = 7;
+    sv.items[1].reserve = 35;
+    sv.items[1].tile_x = 11;
+    sv.items[1].tile_y = 10; /* Chebyshev dist 1 */
+
+    sv.items[2].active = true;
+    sv.items[2].id = 103;
+    sv.items[2].type = 50;
+    sv.items[2].clip = 0;
+    sv.items[2].reserve = 0;
+    sv.items[2].tile_x = 10;
+    sv.items[2].tile_y = 13; /* Chebyshev dist 3 */
+
+    sv.items[3].active = true;
+    sv.items[3].id = 104;
+    sv.items[3].type = 51;
+    sv.items[3].clip = 1;
+    sv.items[3].reserve = 0;
+    sv.items[3].tile_x = 15;
+    sv.items[3].tile_y = 10; /* Chebyshev dist 5 */
+
+    sv.items[4].active = true;
+    sv.items[4].id = 105;
+    sv.items[4].type = 52;
+    sv.items[4].clip = 1;
+    sv.items[4].reserve = 0;
+    sv.items[4].tile_x = 18;
+    sv.items[4].tile_y = 10; /* Chebyshev dist 8 */
+
+    rc = cs2d_sv_lua_dostring(&sv,
+        "local tbl = item(0, 'table')\n"
+        "assert(#tbl == 5, 'item(0, table) count mismatch')\n"
+        "assert(item(0, 'invalid') == false, 'item(0, invalid) should return false')\n"
+        "assert(item(101, 'exists') == true, 'item 101 should exist')\n"
+        "assert(item(101, 'name') == 'AK-47', 'item 101 name mismatch')\n"
+        "assert(item(101, 'type') == 30, 'item 101 type mismatch')\n"
+        "assert(item(101, 'player') == 0, 'ground item player should be 0')\n"
+        "assert(item(101, 'ammoin') == 30, 'item 101 clip mismatch')\n"
+        "assert(item(101, 'ammo') == 90, 'item 101 reserve mismatch')\n"
+        "assert(item(101, 'x') == 10, 'item 101 x should be tile 10 (not pixels!)')\n"
+        "assert(item(101, 'y') == 10, 'item 101 y should be tile 10 (not pixels!)')\n"
+        "assert(item(101, 'dropped') == true, 'item 101 dropped mismatch')\n"
+        "assert(item(101, 'droptimer') >= 4, 'item 101 droptimer should be in seconds')\n"
+        "assert(item(101, 'physicsid') == 0, 'item 101 physicsid should be 0')\n"
+        "assert(item(101, 'unknown') == false, 'item unknown prop should return false')\n"
+        "assert(item(999, 'exists') == false, 'non-existent item exists should return false')\n"
+        "assert(item(999, 'name') == false, 'non-existent item prop should return false')\n"
+    );
+    if (!rc) TEST_FAIL("item() verification", "item assertions failed");
+
+    /* 4. Test closeitems(id, range) (FUN_14004bf30) */
+    rc = cs2d_sv_lua_dostring(&sv,
+        /* Player 1 is at tile 10,10. Items: 101 (dist 0), 102 (dist 1), 103 (dist 3), 104 (dist 5), 105 (dist 8) */
+        "local c4 = closeitems(1, 4)\n"
+        "assert(#c4 == 3, 'closeitems(1, 4) should find exactly 3 items within 4 tiles')\n"
+        "assert(c4[1] == 101 and c4[2] == 102 and c4[3] == 103, 'closeitems bucket ordering mismatch (0, 1, 3 tiles)')\n"
+        "local c6 = closeitems(1, 6)\n"
+        "assert(#c6 == 4, 'closeitems(1, 6) should find 4 items')\n"
+        "assert(c6[1] == 101 and c6[2] == 102 and c6[3] == 103 and c6[4] == 104, 'closeitems(1, 6) ordering mismatch')\n"
+        "local c_none = closeitems(99, 5)\n"
+        "assert(type(c_none) == 'table' and #c_none == 0, 'closeitems for non-existent player should return empty table')\n"
+    );
+    if (!rc) TEST_FAIL("closeitems() verification", "closeitems assertions failed");
+
+    /* Cleanup */
+    cs2d_map_free(&sv.map);
+    cs2d_sv_lua_close(&sv);
+
+    TEST_PASS("Dedicated Server: Lua Items & Weapons API (itemtype, item, playerammo, playerweapons, closeitems)");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -10218,7 +10582,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 94;
+    int total = 96;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -10314,6 +10678,8 @@ int main(void)
     if (test_server_reconnect_and_pw()) passed++;
     if (test_dedicated_dynamic_images()) passed++;
     if (test_dedicated_hudtxt()) passed++;
+    if (test_dedicated_settile()) passed++;
+    if (test_dedicated_lua_items_and_weapons()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);
@@ -10321,5 +10687,4 @@ int main(void)
 
     return (passed == total) ? 0 : 1;
 }
-
 

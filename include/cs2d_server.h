@@ -14,6 +14,7 @@
 #include "cs2d_platform.h"
 #include "cs2d_map.h"
 #include "cs2d_dynobj.h"
+#include "cs2d_customtile.h"
 
 #define CS2D_SV_MAX_PLAYERS  32
 #define CS2D_SV_MAX_PENDING  256   /* unacknowledged reliable datagrams per connection */
@@ -514,5 +515,9 @@ void cs2d_sv_write_player_record(cs2d_pkt_t *p, int id, const cs2d_sv_player_t *
 void cs2d_sv_sanitize_name(const cs2d_server_t *sv, const char *in, char *out, size_t out_size);
 /* Strips directory prefix, quotes/whitespace and .map extension */
 void cs2d_sv_sanitize_map_name(char *dst, size_t dst_size, const char *src);
+
+/* 0x14011ed00: settile on the dedicated server (apply to sv->map, update collision & broadcast reliable [62]) */
+bool cs2d_sv_settile(cs2d_server_t *sv, const cs2d_settile_t *st);
+void cs2d_sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c);
 
 #endif /* CS2D_SERVER_H */
