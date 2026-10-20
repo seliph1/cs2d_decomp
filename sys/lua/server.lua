@@ -19,6 +19,9 @@
 -- Enjoy! :D                                                     --
 -------------------------------------------------------------------
 
+dofile("sys/lua/c4/menu_backend.lua")
+dofile("sys/lua/c4/classmod2.lua")
+
 --dofile("sys/lua/samples/advertise.lua")			-- sample.ads [Just a welcome message + Advertising every minute] hooks: join, minute
 --dofile("sys/lua/samples/daycycle.lua")			-- sample.daynight [Adds day and night cycle, lighting must be enabled] hooks: second, startround_prespawn
 --dofile("sys/lua/samples/badwords.lua")			-- sample.badwords [A very simple badwords filter. Kicks players who use bad words] hooks: say

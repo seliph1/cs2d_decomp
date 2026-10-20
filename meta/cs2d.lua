@@ -28,8 +28,7 @@ function addhook(hook, func, priority) end
 
 ---Adds a client-side key bind that triggers the hook "key".
 ---@param key string
----@param cmd string
-function addbind(key, cmd) end
+function addbind(key) end
 
 ---@param key string
 ---@param cmd string
