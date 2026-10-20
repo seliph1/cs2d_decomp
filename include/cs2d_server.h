@@ -46,7 +46,8 @@ typedef struct {
     int     sv_voicechat;        /* PTR_DAT_1405a6678 +1 */
     int     sv_offscreendamage;  /* PTR_DAT_1405a6580 +4 */
     int     sv_maxclientsperip;  /* DAT_1405a6514 (0 = no limit) */
-    int     sv_antiaccel;        /* DAT_1405a64e4: > 0 pings with [229], else [249] */
+    int     mp_anticlock;        /* DAT_1405a64e4 / "mp_anticlock" (0x140141e51): > 0 pings
+                                  * with [229], else the normal in-game ping [249] */
     int     mp_roundtime;        /* PTR_DAT_1405a6640 +4 (minutes) */
     int     mp_freezetime;       /* PTR_DAT_1405a6638 +4 */
     int     mp_c4timer;          /* PTR_DAT_1405a65f0 +4 */
@@ -595,6 +596,10 @@ void cs2d_sv_public_rcon(cs2d_server_t *sv, const struct sockaddr_in *from,
 bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line);                                    /* FUN_140140a00 */
 /* exec/include entry: runs every line of a config through cs2d_sv_exec (server.cfg) */
 bool cs2d_sv_exec_config(cs2d_server_t *sv, const char *path);
+
+/* Periodic [247] ping list (0x1401e505d): [247, n, ticks, in/8 u16, out/8 u16,
+ * n x {id, ping u16}] over the players in a team. Used by the 1 s timer and by the tests. */
+size_t cs2d_sv_build_pinglist(const cs2d_server_t *sv, uint8_t *out, size_t max_out);
 
 /* Server browser queries: ping echo [FA] (FUN_1400d4ed0) and info reply [FB] (FUN_1401da400) */
 size_t cs2d_sv_build_info_reply(const cs2d_server_t *sv, uint8_t mode, uint16_t req_ver,

@@ -82,9 +82,13 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   ≥ 0x20 except `,` `;` 0x7f..0xa0 0xa6 0xae; an all-number or empty name becomes `Player` (language string
   `PTR_DAT_1405adb10 +0x120`); a taken name gets ` 2` … ` 65`.
 - **Per-second block (0x1401e505d, gate `DAT_1407dff88`):** every 2nd second each connection gets unreliable
-  `[229, MilliSecs - DAT_1407e0184]` (`DAT_1405a64e4` > 0) or `[249, …]`; every 3rd second the joined players
+  `[229, MilliSecs - DAT_1407e0184]` (`mp_anticlock` / `DAT_1405a64e4` > 0) or `[249, …]`; every 3rd second the joined players
   (`+0xf4`) get `[247, n, DAT_1407dfe28, DAT_1407dfe34/8 u16, DAT_1407dfe30/8 u16, n × {id, ping}]` over the players
   in a team (`+0x230` > 0); ping 0xffff for the host, 0xfffe for a bot (`+0x198`), else min(`+0xd0`, 30000).
+  This list is the **only** source of the original client's scoreboard latency (`Thud_scoreboard`
+  0x14012f2c0 writes `Tpl.ping`, 0xfffe/0xffff become "Bot"/"Server"); the RTT in it comes from the
+  `[229]`/`[249]` replies. `mp_anticlock` is the dedicated's real cvar name (0x140141e51): `0` switches
+  the 2nd-second ping to `[249]` (verified in `proxy_anticlock0.log`), and the original rejects `sv_antiaccel`.
   `DAT_1407dfe28` (server ticks / FPS) is calculated from real elapsed time `(frames * 1000) / elapsed` to avoid drift.
   On Windows, `timeBeginPeriod(1)` and `QueryPerformanceCounter` high-resolution sleep/spin-wait pace the loop to `g_sv.set.ticks` (default 50 ticks/s).
 
@@ -482,7 +486,19 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
 - **Initial Handshake Control Triple (`03 32 00`)**: The original `CS2D.exe` client prefixes its first datagram with the Tudp control triple `03 32 00` (kind 3 session reset, u16 value 0x0032 = 50 netrate ticks), producing the exact 7 wire bytes: `02 00 03 32 00 fc 00`. Handled in `cs2d_client_connect` and parsed in `cs2d_server.c`.
 - **Leave / Disconnect / Kick (`[253, id, reason]` / `FUN_1401502a0`, `0x140150ae0`)**:
   - `cmp edi, 0xf` (15): if `reason < 16`, sends 3 bytes `[253, id, reason]`.
-  - if `reason >= 16`, appends u8-length string `[253, id, reason, str_len, str]`.
+  - if `reason >= 16`, appends u8-length string `[253, id, reason, str_len, str]` (the original writes
+    the string unconditionally at `0x140150b12`, empty included).
+  - The per-player loop at `0x1401509a8` walks the players that still have a connection and
+    `joined == 1`. The client `FUN_1402eee40` -> `FUN_1401c7500` only shows
+    "Disconnect Reason: ..." when the `[253]` id is the local player.
+  - Our `sv_remove_player` broadcasts before clearing `used`, so the leaver/kicked client also gets
+    the packet. The caller **must flush** the connection before deactivating it:
+    - a client that quits sends `[253,0]` and waits for `[253, id, 0]` to finish the disconnect
+      (`FUN_1402eee40` -> `FUN_1401c7500`); without the flushed reply it stays in
+      "Disconnecting / Please wait";
+    - a kicked client needs `[253, id, 16, reason]` to show the kick message.
+    `sv_conn_reset` (duplicate hello from the same address) resets the buffer, so that path does
+    not send the reply.
   - Client parser in `src/cs2d_client.c` consumes the optional reason string on `reason >= 16`, preventing subsequent opcodes from desyncing.
 - **`mp_startmoney` Default and Clamp**:
   - In code (`cs2d_sv_settings_default`): default fallback is 800 (CS default).

@@ -11301,6 +11301,17 @@ static bool test_dedicated_p1_rules(void)
     if (!sv.items[0].active) TEST_FAIL("mp_weaponfadeout 0", "0 must keep the item forever");
     sv.items[0].active = false;
 
+    /* mp_anticlock is the dedicated's real cvar (name table 0x140141e51); 1 = [229] clock
+     * pings, 0 = the normal in-game ping [249]. The original rejects "sv_antiaccel". */
+    if (sv.set.mp_anticlock != 1) TEST_FAIL("mp_anticlock default", "the default must select [229]");
+    cs2d_sv_settings_set(&sv.set, "mp_anticlock", "0");
+    if (sv.set.mp_anticlock != 0 || !cs2d_sv_settings_get(&sv.set, "mp_anticlock") ||
+        strcmp(cs2d_sv_settings_get(&sv.set, "mp_anticlock"), "0") != 0) {
+        TEST_FAIL("mp_anticlock cvar", "mp_anticlock must select [249] and read back");
+    }
+    cs2d_sv_settings_set(&sv.set, "mp_anticlock", "1");
+    if (sv.set.mp_anticlock != 1) TEST_FAIL("mp_anticlock cvar", "mp_anticlock must select [229] again");
+
     /* ping measurement from the [229] clock reply: start_ms 1000 ms ago, ts 950 -> ~50 ms */
     sv.start_ms = cs2d_sv_now() - 1000;
     sv.players[2].used = true;
@@ -11318,8 +11329,47 @@ static bool test_dedicated_p1_rules(void)
     if (sv.players[2].ping < 40 || sv.players[2].ping > 60) {
         TEST_FAIL("ping measurement", "expected ~50 ms from the [229] reply");
     }
+
+    /* The same measurement from the normal in-game ping reply [249, srv_ts]. */
+    sv.players[2].ping = 0;
+    uint8_t ping_pkt249[5];
+    ping_pkt249[0] = 249;
+    int32_t ts249 = 970;
+    memcpy(&ping_pkt249[1], &ts249, 4);
+    cs2d_sv_recv_payload(&sv, &sv.conns[0], ping_pkt249, sizeof(ping_pkt249));
+    if (sv.players[2].ping < 20 || sv.players[2].ping > 40) {
+        TEST_FAIL("ping measurement [249]", "expected ~30 ms from the [249] reply");
+    }
     sv.conns[0].active = false;
     sv.conns[0].player = 0;
+
+    /* [247] ping list: count over the players in a team, ticks, in/out / 8, then {id, ping}.
+     * Humans are min(ping, 30000), bots 0xfffe; a spectator (team 0) is not listed. */
+    memset(sv.players, 0, sizeof(sv.players));
+    sv.players[1].used = true;  sv.players[1].team = 1; sv.players[1].ping = 16;
+    sv.players[2].used = true;  sv.players[2].team = 2; sv.players[2].ping = 42000;
+    sv.players[3].used = true;  sv.players[3].team = 1; sv.players[3].bot = true; sv.players[3].ping = 0xfffe;
+    sv.players[4].used = true;  sv.players[4].team = 0; sv.players[4].ping = 5;
+    sv.fps = 50;
+    sv.bytes_in_sec = 80;   /* / 8 = 10 */
+    sv.bytes_out_sec = 16;  /* / 8 = 2 */
+    uint8_t pinglist[128];
+    static const uint8_t pinglist_want[] = {
+        247, 3, 50, 10, 0, 2, 0,      /* [247, n=3, ticks=50, in=10, out=2] */
+        1, 0x10, 0x00,                 /* player 1: 16 ms */
+        2, 0x30, 0x75,                 /* player 2: 42000 clamped to 30000 */
+        3, 0xfe, 0xff                  /* player 3 (bot): 0xfffe */
+    };
+    size_t pinglist_len = cs2d_sv_build_pinglist(&sv, pinglist, sizeof(pinglist));
+    if (pinglist_len != sizeof(pinglist_want) ||
+        memcmp(pinglist, pinglist_want, sizeof(pinglist_want)) != 0) {
+        TEST_FAIL("ping list [247]", "unexpected [247] payload");
+    }
+    if (cs2d_sv_build_pinglist(&sv, pinglist, 4) != 0) {
+        TEST_FAIL("ping list [247]", "a short buffer must be refused");
+    }
+    memset(sv.players, 0, sizeof(sv.players));
+    sv.fps = sv.bytes_in_sec = sv.bytes_out_sec = 0;
 
     /* server spawn commands (help.php): spawnitem / spawnobject / spawnprojectile */
     memset(sv.items, 0, sizeof(sv.items));
@@ -11371,7 +11421,7 @@ static bool test_dedicated_p1_rules(void)
     cs2d_sv_lua_close(&sv);
 
     cs2d_map_free(&sv.map);
-    TEST_PASS("Dedicated Server P1: cvar aliases/floats, aliases, damage/buy/fadeout rules, ping, hook filter");
+    TEST_PASS("Dedicated Server P1: cvar aliases/floats, aliases, damage/buy/fadeout rules, mp_anticlock + [247] ping list, hook filter");
     return true;
 }
 
@@ -11856,6 +11906,116 @@ static bool test_dedicated_map_teleport(void)
     return true;
 }
 
+/* A kicked player must receive its own [253, id, 16, len, reason] before the server
+ * closes the connection: the original client shows "Disconnect Reason: ..." from it.
+ * sv_remove_player used to clear players[id].used before the broadcast, so
+ * conn_of_player() skipped exactly the client that needed the message. */
+static bool test_dedicated_kick_message(void)
+{
+    printf("\n=== Testing Dedicated Server: [253] reaches the kicked client ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+
+    for (int i = 0; i < 2; i++) {
+        sv.conns[i].active = true;
+        sv.conns[i].player = i + 1;
+        sv.conns[i].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+        if (!sv.conns[i].pending) TEST_FAIL("kick [253]", "calloc failed");
+        sv.conns[i].addr.sin_family = AF_INET;
+        sv.conns[i].addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        sv.conns[i].addr.sin_port = htons((uint16_t)(41000 + i));
+        sv.conns[i].out.pos = 0;
+        sv.conns[i].out_open = false;
+
+        sv.players[i + 1].used = true;
+        sv.players[i + 1].joined = true;
+        sv.players[i + 1].alive = true;
+        sv.players[i + 1].team = (i == 0) ? CS2D_TEAM_T : CS2D_TEAM_CT;
+        sv.players[i + 1].conn = i;
+        snprintf(sv.players[i + 1].name, sizeof(sv.players[i + 1].name), "P%d", i + 1);
+    }
+
+    cs2d_sv_kick(&sv, 1, "Test reason");
+    if (sv.players[1].used) TEST_FAIL("kick [253]", "the kicked player was not removed");
+    if (!sv.players[2].used) TEST_FAIL("kick [253]", "the other player was removed");
+
+    /* [253, id 1, reason 16, len 11, "Test reason"] */
+    static const uint8_t expect[] = {
+        253, 1, 16, 11, 'T', 'e', 's', 't', ' ', 'r', 'e', 'a', 's', 'o', 'n'
+    };
+    bool kicked_got = false;
+    for (int slot = 0; slot < CS2D_SV_MAX_PENDING && !kicked_got; slot++) {
+        const cs2d_sv_pending_t *pd = &sv.conns[0].pending[slot];
+        for (int i = 0; i + (int)sizeof(expect) <= (int)pd->len; i++) {
+            if (memcmp(pd->data + i, expect, sizeof(expect)) == 0) {
+                kicked_got = true;
+                break;
+            }
+        }
+    }
+    if (!kicked_got) {
+        TEST_FAIL("kick [253]", "the kicked client did not receive its [253, reason]");
+    }
+
+    /* The other joined client gets the same announcement. */
+    bool other_got = false;
+    for (int i = 0; i + (int)sizeof(expect) <= sv.conns[1].out.pos; i++) {
+        if (memcmp(sv.conns[1].out.buf + i, expect, sizeof(expect)) == 0) {
+            other_got = true;
+            break;
+        }
+    }
+    if (!other_got) TEST_FAIL("kick [253]", "the other client did not receive [253]");
+
+    /* A normal leave [253,0] must be answered with [253, id, 0] and the connection flushed:
+     * the original client waits for that reply before closing, otherwise it stays in
+     * "Disconnecting / Please wait". */
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].alive = true;
+    sv.players[1].conn = 0;
+    sv.conns[0].active = true;
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    memset(sv.conns[0].pending, 0, CS2D_SV_MAX_PENDING * sizeof(cs2d_sv_pending_t));
+    sv.conns[1].out.pos = 0;
+    sv.conns[1].out_open = false;
+
+    static const uint8_t leave[] = { 253, 0 };
+    (void)cs2d_sv_recv_payload(&sv, &sv.conns[0], leave, (int)sizeof(leave));
+
+    bool reply_sent = false;
+    for (int slot = 0; slot < CS2D_SV_MAX_PENDING && !reply_sent; slot++) {
+        const cs2d_sv_pending_t *pd = &sv.conns[0].pending[slot];
+        for (int i = 0; i + 3 <= (int)pd->len; i++) {
+            if (pd->data[i] == 253 && pd->data[i + 1] == 1 && pd->data[i + 2] == 0) {
+                reply_sent = true;
+                break;
+            }
+        }
+    }
+    if (!reply_sent) {
+        TEST_FAIL("leave [253]", "the leaving client did not get the flushed [253, id, 0] reply");
+    }
+
+    bool other_saw_leave = false;
+    for (int i = 0; i + 3 <= sv.conns[1].out.pos; i++) {
+        if (sv.conns[1].out.buf[i] == 253 && sv.conns[1].out.buf[i + 1] == 1 &&
+            sv.conns[1].out.buf[i + 2] == 0) {
+            other_saw_leave = true;
+            break;
+        }
+    }
+    if (!other_saw_leave) TEST_FAIL("leave [253]", "the other client did not get [253, id, 0]");
+
+    for (int i = 0; i < 2; i++) free(sv.conns[i].pending);
+    TEST_PASS("Dedicated Server: kick/leave [253] reaches the leaving client (flushed) and the others");
+    return true;
+}
+
 /* UTF-8 -> UTF-16: Lua/config strings are UTF-8, the [234]/[235]/[240] wire fields
  * are UTF-16LE. Expanding bytes showed WQ2D's "não" as "nÃ£o" in game. */
 static bool test_dedicated_utf8_messages(void)
@@ -11992,7 +12152,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 109;
+    int total = 110;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -12102,6 +12262,7 @@ int main(void)
     if (test_dedicated_idle_join()) passed++;
     if (test_dedicated_trigger_graph()) passed++;
     if (test_dedicated_map_teleport()) passed++;
+    if (test_dedicated_kick_message()) passed++;
     if (test_dedicated_utf8_messages()) passed++;
 
     printf("\n============================================================\n");

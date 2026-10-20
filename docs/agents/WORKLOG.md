@@ -1,4 +1,49 @@
 # Work log (append-only, newest first)
+## 2026-10-20 — Cline — dedicated: ping meter (`mp_anticlock` + `[247]`)
+
+- **Goal:** the original client must show the scoreboard latency of every player.
+- **Wire path (verified):** every 2nd second the server sends `[229, srv_ts]` (default) or
+  `[249, srv_ts]`; the original client replies with the same timestamp; the server stores
+  `(now - start_ms) - ts` in `Tpl +0xd0` and every 3rd second broadcasts
+  `[247, n, ticks, in/8 u16, out/8 u16, n x {id, ping}]`. The scoreboard (`Thud_scoreboard`
+  0x14012f2c0) is fed only by that list (`0xfffe` = Bot, `0xffff` = Server).
+- **Real cvar:** the dedicated's name table has `mp_anticlock` (0x140141e51 / `DAT_1405a64e4`), not
+  the invented `sv_antiaccel`. With `mp_anticlock 0` the original sends `[249]` (proxy
+  `proxy_anticlock0.log`); the default sends `[229]`. Our settings only accepted the fake name, so
+  the repository's `sys/server.cfg` line (`mp_anticlock 0`) was ignored, and the original dedicated
+  reports `sv_antiaccel` as an unknown command. Renamed the field/cvar and added it to the getter.
+- **Testability:** extracted `cs2d_sv_build_pinglist` (the payload builder used by the 1 s timer).
+- **Verified:** the original client against `cs2d_server.exe` shows `Latency 16` (screenshot
+  `tools/agent/out/srv_ping_score.png`); after the rename, with `mp_anticlock 0`, our server sends
+  `[249]`, the client replies and `[247]` reports 15 ms. `test_cs2d.exe` -> **110 / 110** (new
+  assertions: mp_anticlock get/set, `[249]` measurement, exact `[247]` bytes, short-buffer refusal).
+- **Residual:** the original also derives `clock_diff` / `clock_ratio` from the `[229]` reply and
+  kicks for "Speedhack Detected"; our port only uses it for latency (logged in OPEN_ISSUES).
+
+## 2026-10-20 — Cline — [253] do kick não chegava ao cliente expulso
+
+- **Sintoma (cliente original contra o nosso dedicated):** ao ser expulso, o cliente só perdia a
+  conexão; não mostrava o motivo do kick.
+- **Causa:** `sv_remove_player` marcava `players[id].used = false` **antes** do loop de `[253]`, então
+  `conn_of_player(id)` retornava NULL e o próprio cliente expulso não recebia
+  `[253, id, 16, len, reason]`. O original (`FUN_1401502a0`) percorre a lista de jogadores ainda
+  joined e inclui o que está saindo; no cliente `FUN_1402eee40` -> `FUN_1401c7500`, a mensagem
+  "Disconnect Reason: ..." só é mostrada quando o id do `[253]` é o jogador local.
+- **Correção:** o broadcast de `[253]` roda com o jogador ainda `used`; `used = false` passou para
+  depois do loop. Para `reason >= 16` a string u8 é sempre anexada (mesmo vazia), como em
+  `0x140150b12`.
+- **Handshake de saída (2026-10-20):** o cliente que clica em Disconnect envia `[253,0]` e **espera
+  a resposta `[253, id, 0]` do servidor** para concluir (`FUN_1401c7500` em modo client devolve sem
+  fechar; `FUN_1402eee40` -> `FUN_1401c7500(..., 0, ...)` fecha). O handler `[253]` agora dá
+  `sv_flush` na conexão depois de `sv_remove_player`, antes de `active = false`; sem isso o cliente
+  fica eternamente em "Disconnecting / Please wait". `sv_conn_reset` (novo hello do mesmo endereço)
+  descarta o buffer, então um handshake duplicado não gera esse `[253]`.
+- **Teste:** `test_dedicated_kick_message` confere `fd 01 10 0b "Test reason"` na conexão do
+  expulso, a resposta `fd 01 00` na fila do cliente que saiu normalmente, e o mesmo anúncio no outro
+  jogador. `test_cs2d.exe` -> **110 / 110**.
+
+
+
 ## 2026-10-20 — Cline — Dedicated: UTF-8 text fields and Func_Teleport walkover
 
 - **Symptoms:** WQ2D Lua messages with accents arrived in game as `"nÃ£o"`; walking onto the map's

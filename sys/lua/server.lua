@@ -1,1 +1,1 @@
-dofile("sys/lua/WQ2D/_server.lua")
+--dofile("sys/lua/WQ2D/_server.lua")

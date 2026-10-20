@@ -4,6 +4,12 @@ Keep this file current: remove items when they are done (and log them in `WORKLO
 you discover. Sign items that are being worked on (`[in progress: <agent>]`) so two agents do not take
 the same one.
 
+- **Cliente: [253] do jogador local (2026-10-20):** o dedicated já envia `[253,id,16,reason]` também
+  para o cliente expulso (o original mostra "Disconnect Reason" em `FUN_1401c7500`; teste
+  `test_dedicated_kick_message`, 110/110), mas `cs2d_client.c` ainda só remove o jogador quando
+  `id != local_player_id`; falta a UI de kick/desconexão no nosso cliente.
+
+
 - **Dedicated server: cliente original preso em "Loading map state" (2026-10-20, `docs/agents/knowledge/net-join.md`):**
   fixed - a seção 4 do snapshot (`[252,7,4,...]`, estados de entidade) não tinha o pacote terminador
   `[252,7,4,0]`; o cliente original ficava em `joindata 4` e rejeitava as seções 5, 6, 10, ..., 200 com
@@ -25,6 +31,10 @@ the same one.
 
 
 ## Known gaps
+- **Dedicated server: `mp_anticlock` clock tracking (2026-10-20):** the cvar now selects
+  `[229]`/`[249]` and the `[247]` ping list is locked by tests, but the anti-speedhack part of the
+  `[229]` reply (`clock_diff` / `clock_ratio`, 0x1402e2aa0, kick "Speedhack Detected") is not
+  implemented; only the RTT (`Tpl +0xd0`) is used.
 - **Dedicated server: Ttween no servidor / projéteis de imagem do C4 (2026-10-20, `docs/agents/knowledge/dedicated-server.md`):**
   fixed - `cs2d_sv_tween_*` agora criam o `Ttween` local além de transmitir `[54]`, e `cs2d_server_frame` executa
   `cs2d_dynobj_update_tweens` antes do hook `always` (`Ttween.update` 0x14027fc50). `object()`/`imageparam()` passam a

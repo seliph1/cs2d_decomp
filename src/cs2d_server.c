@@ -106,7 +106,7 @@ void cs2d_sv_settings_default(cs2d_sv_settings_t *s)
     s->sv_offscreendamage = 1;
     s->sv_spraytransfer   = 1;
     s->sv_maptransfer     = 1;
-    s->sv_antiaccel       = 1;   /* the capture pings with [229] */
+    s->mp_anticlock       = 1;   /* the capture pings with [229] */
     s->sv_daylighttime    = -1;
     s->sv_maxclientsperip = 5;   /* DAT_1405a6514 initial value */
     s->mp_startmoney      = 800; /* Fallback (CS default); shipped sys/server.cfg sets 16000; REA 0x14014c217 clamps to 0x3e80 = 16000 */
@@ -182,7 +182,7 @@ void cs2d_sv_settings_set(cs2d_sv_settings_t *s, const char *key, const char *va
     SV_STR(mp_buymenu) SV_STR(mp_reservations) SV_STR(mp_unbuyable) SV_STR(mp_unbuildable)
     SV_INT(sv_hostport) SV_INT(sv_maxplayers) SV_INT(sv_fow) SV_INT(sv_specmode) SV_INT(sv_gamemode)
     SV_INT(sv_usgnonly) SV_INT(sv_friendlyfire) SV_INT(sv_forcelight) SV_INT(sv_daylighttime)
-    SV_INT(sv_voicechat) SV_INT(sv_offscreendamage) SV_INT(sv_maxclientsperip) SV_INT(sv_antiaccel)
+    SV_INT(sv_voicechat) SV_INT(sv_offscreendamage) SV_INT(sv_maxclientsperip) SV_INT(mp_anticlock)
     SV_INT(mp_roundtime) SV_INT(mp_freezetime) SV_INT(mp_c4timer) SV_INT(mp_respawndelay) SV_INT(mp_deadchat)
     SV_INT(mp_infammo) SV_INT(mp_flashlight) SV_INT(mp_hovertext) SV_INT(mp_recoil) SV_INT(mp_hudscale)
     SV_INT(sv_spraytransfer) SV_INT(sv_maptransfer) SV_INT(mp_startmoney) SV_INT(mp_postspawn) SV_INT(mp_autoteambalance)
@@ -253,7 +253,8 @@ const char *cs2d_sv_settings_get(const cs2d_sv_settings_t *s, const char *key)
     SV_GET_INT(mp_roundlimit) SV_GET_INT(mp_winlimit) SV_GET_INT(mp_weaponfadeout) SV_GET_INT(mp_dropgrenades)
     SV_GET_INT(mp_grenaderebuy) SV_GET_INT(mp_teamkillpenalty) SV_GET_INT(mp_tkpunish) SV_GET_INT(mp_idlekick)
     SV_GET_INT(mp_idletime) SV_GET_INT(mp_idleaction) SV_GET_INT(mp_pinglimit) SV_GET_INT(mp_floodprot)
-    SV_GET_INT(mp_floodprotignoretime) SV_GET_INT(mp_antispeeder) SV_GET_INT(mp_maxrconfails)
+    SV_GET_INT(mp_floodprotignoretime) SV_GET_INT(mp_antispeeder) SV_GET_INT(mp_anticlock)
+    SV_GET_INT(mp_maxrconfails)
     SV_GET_INT(mp_tempbantime) SV_GET_INT(mp_connectionlimit) SV_GET_INT(mp_vulnerablehostages)
     SV_GET_INT(mp_hostagepenalty) SV_GET_INT(mp_deathdrop) SV_GET_INT(sv_lan) SV_GET_INT(sv_checkusgnlogin)
     SV_GET_INT(mp_turretdamage) SV_GET_INT(mp_zombiekillscore) SV_GET_INT(mp_zombiekillequip)
@@ -1768,10 +1769,15 @@ static void sv_remove_player(cs2d_server_t *sv, int id, int reason, const char *
     /* mp_deathdrop and mp_killbuildings also apply when a player leaves (help.php) */
     cs2d_sv_death_drop(sv, id);
     cs2d_sv_kill_player_buildings(sv, id, sv->set.mp_killbuildings);
-    sv->players[id].used = false;
 
     /* [253, id, reason] to all connected/joined players (FUN_1401502a0, cmp edi, 0xf at 0x140150ae0:
-     * if reason >= 16, appends u8 length + reason string). Sent reliable. */
+     * if reason >= 16, appends u8 length + reason string). Sent reliable.
+     *
+     * The player is still "used" here on purpose: the original's loop walks the joined players
+     * and includes the leaving/kicked client. This is required: a client that quits sends
+     * [253,0] and waits for the server's [253, id, 0] (FUN_1402eee40 -> FUN_1401c7500) before
+     * closing; a kicked client needs [253, id, 16, reason] to show the kick message. The caller
+     * must flush the connection before deactivating it (see the leave handler and cs2d_sv_kick). */
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
         cs2d_sv_conn_t *oc = conn_of_player(sv, i);
         if (!oc || !sv->players[i].joined) continue;
@@ -1779,10 +1785,12 @@ static void sv_remove_player(cs2d_server_t *sv, int id, int reason, const char *
         cs2d_pkt_w_byte(p, 253);
         cs2d_pkt_w_byte(p, (uint8_t)id);
         cs2d_pkt_w_byte(p, (uint8_t)reason);
-        if (reason >= 16 && has_reason) {
-            cs2d_pkt_w_str(p, reason_str);
-        }
+        /* reason >= 16 always carries the u8 string, even when it is empty (the original
+         * writes the string object unconditionally at 0x140150b12). */
+        if (reason >= 16) cs2d_pkt_w_str(p, has_reason ? reason_str : "");
     }
+
+    sv->players[id].used = false;
 
     /* help.php: disconnect runs after the player has been fully removed (player(id) no longer works),
      * with the numeric reason id of the [253] message. */
@@ -2895,7 +2903,12 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         char reason_str[128] = "";
         if (rd_left(r) > 0) reason = rd_byte(r);
         if (reason >= 16 && rd_left(r) > 0) rd_str(r, reason_str, sizeof(reason_str));
-        if (pl) sv_remove_player(sv, c->player, reason, reason_str);
+        if (pl) {
+            sv_remove_player(sv, c->player, reason, reason_str);
+            /* The client that sent [253] waits for the server's [253, id, reason] before it
+             * closes the socket; without this flush it stays in "Disconnecting / Please wait". */
+            sv_flush(sv, c);
+        }
         c->active = false;
         return false;
     }
@@ -3631,6 +3644,42 @@ void cs2d_sv_handle_datagram(cs2d_server_t *sv, const struct sockaddr_in *from, 
 /* Periodic messages (0x1401e505d, once per second: DAT_1407dff88)                                  */
 /* ------------------------------------------------------------------------------------------------ */
 
+/* [247] ping list (0x1401e505d): [247, n u8, ticks u8, in/8 u16, out/8 u16, n x {id u8, ping u16}]
+ * over every player in a team (Tpl +0x230 > 0). `ticks` is DAT_1407dfe28, the two u16 are
+ * DAT_1407dfe34 / DAT_1407dfe30 / 8. The ping is 0xfffe for a bot (Tpl +0x198), else
+ * min(Tpl +0xd0, 30000); the client writes it into Tpl.ping and draws the scoreboard latency
+ * (Thud_scoreboard 0x14012f2c0). Returns the bytes written, or 0 when the buffer is too small. */
+size_t cs2d_sv_build_pinglist(const cs2d_server_t *sv, uint8_t *out, size_t max_out)
+{
+    if (!sv || !out) return 0;
+    int cnt = 0;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (sv->players[i].used && sv->players[i].team > 0) cnt++;
+    }
+    size_t need = 7 + (size_t)cnt * 3;
+    if (max_out < need) return 0;
+
+    size_t k = 0;
+    out[k++] = 247;
+    out[k++] = (uint8_t)cnt;
+    out[k++] = (uint8_t)sv->fps;                                  /* DAT_1407dfe28 */
+    uint16_t bin = (uint16_t)(sv->bytes_in_sec / 8);              /* DAT_1407dfe34 / 8 */
+    uint16_t bout = (uint16_t)(sv->bytes_out_sec / 8);            /* DAT_1407dfe30 / 8 */
+    memcpy(out + k, &bin, 2);
+    k += 2;
+    memcpy(out + k, &bout, 2);
+    k += 2;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        const cs2d_sv_player_t *o = &sv->players[i];
+        if (!o->used || o->team <= 0) continue;
+        uint16_t ping = o->bot ? 0xfffe : (uint16_t)(o->ping > 30000 ? 30000 : o->ping);
+        out[k++] = (uint8_t)i;
+        memcpy(out + k, &ping, 2);
+        k += 2;
+    }
+    return k;
+}
+
 static void sv_second(cs2d_server_t *sv)
 {
     uint32_t now = sv_now();
@@ -3680,7 +3729,9 @@ static void sv_second(cs2d_server_t *sv)
         }
     }
 
-    /* Every 2nd second: [229, ms since start] (sv_antiaccel > 0) or [249, ...] to every connection */
+    /* Every 2nd second: [229, ms since start] (mp_anticlock > 0) or [249, ...] to every connection.
+     * mp_anticlock is the original's cvar (0x140141e51, DAT_1405a64e4); with 0 the client's
+     * normal in-game ping reply [249, srv_ts] refreshes the scoreboard latency (proxy capture). */
     sv->ping_ctr++;
     sv->pinglist_ctr++;
     if (sv->ping_ctr > 1) {
@@ -3689,31 +3740,21 @@ static void sv_second(cs2d_server_t *sv)
             cs2d_sv_conn_t *c = conn_of_player(sv, i);
             if (!c) continue;
             cs2d_pkt_t *p = sv_packet(sv, c, false, true);
-            cs2d_pkt_w_byte(p, sv->set.sv_antiaccel > 0 ? 229 : 249);
+            cs2d_pkt_w_byte(p, sv->set.mp_anticlock > 0 ? 229 : 249);
             cs2d_pkt_w_int(p, (int32_t)(sv_now() - sv->start_ms));
             sv_flush(sv, c);
         }
     }
-    /* Every 3rd second: [247, n, fps, in/8, out/8, n x {id, ping}] to the joined players */
+    /* Every 3rd second: the [247] ping list to the joined players */
     if (sv->pinglist_ctr > 2) {
         sv->pinglist_ctr = 0;
-        int cnt = 0;
-        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) if (sv->players[i].used && sv->players[i].team > 0) cnt++;
-        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        uint8_t list[7 + CS2D_SV_MAX_PLAYERS * 3];
+        size_t len = cs2d_sv_build_pinglist(sv, list, sizeof(list));
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS && len > 0; i++) {
             cs2d_sv_conn_t *c = conn_of_player(sv, i);
             if (!c || !sv->players[i].joined) continue;
             cs2d_pkt_t *p = sv_packet(sv, c, false, false);
-            cs2d_pkt_w_byte(p, 247);
-            cs2d_pkt_w_byte(p, (uint8_t)cnt);
-            cs2d_pkt_w_byte(p, (uint8_t)sv->fps);                       /* DAT_1407dfe28 */
-            cs2d_pkt_w_short(p, (uint16_t)(sv->bytes_in_sec / 8));      /* DAT_1407dfe34 / 8 */
-            cs2d_pkt_w_short(p, (uint16_t)(sv->bytes_out_sec / 8));     /* DAT_1407dfe30 / 8 */
-            for (int j = 1; j <= CS2D_SV_MAX_PLAYERS; j++) {
-                const cs2d_sv_player_t *o = &sv->players[j];
-                if (!o->used || o->team <= 0) continue;
-                cs2d_pkt_w_byte(p, (uint8_t)j);
-                cs2d_pkt_w_short(p, o->bot ? 0xfffe : (uint16_t)(o->ping > 30000 ? 30000 : o->ping));
-            }
+            for (size_t k = 0; k < len; k++) cs2d_pkt_w_byte(p, list[k]);
             sv_flush(sv, c);
         }
     }

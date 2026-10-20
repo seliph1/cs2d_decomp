@@ -90,8 +90,8 @@ table below: `tools/agent/out/{proxy_two_two2_orig,proxy_two_two2_our,cli_two_tw
 | 226 | `[226,1,u16,len u16,text,u8]` | Message |
 | 240 | `[240,pid,mode,len u8,UTF-16LE (2×len bytes)]` | Chat & Server Info (`mode == 50`: `"1"` clear serverinfo, `"2"` open `"<server_name> - Info"` window; `mode == 51`: append UTF-16LE serverinfo line with optional `U+00A9` + 9 digits `RRRGGGBBB` color tag or `U+00BB` gold link) |
 | 247 | `[247,n,ticks,u16,u16,n×{pid,ping u16}]` | Ping list (REA `FUN_140060f80`, proxy): server ticks, ping 0xfffe = bot, 0xffff = server |
-| 229 | `[229, srv_ts i32]` | Clock Ping / Anti-speedhack (REA `0x1401d7690`, `0x1402e2ed0`, proxy): used when `sv_antiaccel > 0` (default); client replies unreliable `[229, srv_ts i32, cli_ts i32]` (9 bytes); server calculates RTT latency (`now - srv_ts`) into `player->ping` (`Tpl +0xd0`) and tracks `clock_diff` / `clock_ratio` |
-| 249 | `[249, srv_ts i32]` | Normal In-Game Ping (REA `0x1401d9f10`, `0x1402e6080`): used when `sv_antiaccel == 0`; client replies unreliable `[249, srv_ts i32]` (5 bytes) |
+| 229 | `[229, srv_ts i32]` | Clock Ping / Anti-speedhack (REA `0x1401d7690`, `0x1402e2ed0`, proxy): used when `mp_anticlock > 0` (default; the dedicated's real cvar, name table `0x140141e51`, `DAT_1405a64e4`); client replies unreliable `[229, srv_ts i32, cli_ts i32]` (9 bytes); server calculates RTT latency (`now - srv_ts`) into `player->ping` (`Tpl +0xd0`) and tracks `clock_diff` / `clock_ratio` |
+| 249 | `[249, srv_ts i32]` | Normal In-Game Ping (REA `0x1401d9f10`, `0x1402e6080`): used when `mp_anticlock == 0` (`mp_anticlock 0` -> `[249]`, proxy `proxy_anticlock0.log`; the original rejects `sv_antiaccel`); client replies unreliable `[249, srv_ts i32]` (5 bytes) |
 | 65 | `[65, x u16 + 32768, y u16 + 32768, len u8, path]` | Positional sound (REA `FUN_1402de5f0` -> `FUN_1401e3890(x, y, path, 0)`, proxy 157.90.170.75:10003): Lua servers send `player/build.wav` right before a `spawnobject` `[49]` in the same datagram. Not handling it dropped the `[49]` |
 
 ## Ground item lifetime (the drop timer behind `[40]`)
