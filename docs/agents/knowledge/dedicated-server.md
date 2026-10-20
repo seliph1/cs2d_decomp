@@ -158,8 +158,22 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   - Mode 101 (`0x65`): client shell compensation; adds 1 shell, completes reload if full or out of reserve, without broadcast (`LAB_140214c10`).
   - Mode 3 (abort): cancels reload (`is_reloading = false`). Aborts automatically on weapon switch (`cs2d_sv_select_weapon`) or death (`cs2d_sv_kill`).
 - **Chat `[240]` (`FUN_140153900`, `0x1401bd120`):** client sends `[240, mode, len, UTF-16LE]`. Mode 1 = all, Mode 2 = team.
+  **Server `msg`/`msg2` center tag:** `FUN_140153900` at `0x1401546a0` checks whether the text ends with `@C`
+  (literal `0x1405e80e0`), removes the two characters and broadcasts `[240, 0, 2, ...]`; otherwise mode 1.
+  Only the uppercase spelling exists in the dedicated binary. The client's mode-2 path calls `Thud_msg.add_center`.
   Server verifies alive status vs `mp_deadchat` (dead players cannot chat to living players unless `mp_deadchat 1`),
   logs to console (`cs2d_server_print`), and broadcasts reliable `[240, pid, mode, len, UTF-16LE]` to eligible recipients.
+- **UTF-8 text -> UTF-16LE (2026-10-20):** Lua/map/config strings are UTF-8; the `[234]`, `[235]`, `[240]`
+  text fields (and `sys/serverinfo.txt` lines) are UTF-16LE. The dedicated must decode UTF-8
+  (`cs2d_net_utf8_to_utf16`, surrogate pairs for > U+FFFF); expanding bytes showed `"não"` as `"nÃ£o"`.
+  Invalid UTF-8 falls back to the byte as a Latin-1 code point. The Windows console is switched to
+  `CP_UTF8` at startup so `print`/`msg` echoed to stdout stay readable.
+- **`UTF-8:` escaped text (2026-10-20):** the engine also accepts a textual form documented by the
+  Changelog (`"hello" = "UTF-8:\x68\x65\x6C\x6C\x6F"`) for `print`, `msg`, `msg2`, `parse`, `hudtxt`
+  and `sv_msg`. WQ2D's `utf8.convert` emits the first byte as `\xNN` and continuation bytes as a bare
+  `xNN`: `©` = `UTF-8:\xC2xA9`, `€` = `UTF-8:\xE2x82xAC`. `cs2d_net_utf8_unescape` decodes both spellings
+  to raw UTF-8 before `cs2d_net_utf8_to_utf16`; it is applied to msg/msg2/sv_msg, Lua menu, hudtxt,
+  `print` and `parse` (so WQ2D's `parse(utf8.convert(cmd))` runs the decoded command).
 - **Spectator `[67]` & `[32]` (`0x140108260`, `FUN_1401ced00`):**
   - `[67, target_id]`: updates player's `spectating_player` target.
   - `[32, sx, sy]`: free-look position updates sent by dead/spectating players where `sx/sy = pos + 32768`. Server decodes
@@ -269,7 +283,10 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   - Round start lifecycle: `cs2d_sv_round_start` removes images from the previous round BEFORE `startround_prespawn`, spawns players, sends and flushes Opcode 22 (`Tdo.freeall` on client), and only then invokes `startround`, ensuring images created in `startround` (like in `sys/lua/samples/hudimg.lua`) survive on both client and server.
   - Client resolution defaults: `screen_w = 850`, `screen_h = 480` default on connection for proper `mp_hudscale 0` placement.
   - Tweens: `tween_alpha`, `tween_color`, `tween_move`, `tween_rotate`, `tween_rotateconstantly`, `tween_scale`, `tween_frame`, `tween_animate`
-    broadcasting opcode `[54]` with target `200 + id`.
+    broadcast opcode `[54]` with target `200 + id`. **The dedicated also creates the local Ttween and runs
+    `Ttween.update` every frame** (see the "Lua object()/player() screen values and the shared Tdo space" section):
+    without it `object()`/`imageparam()` never see the animated values and scripts like the C4 image-projectile
+    system (`cm.create_projectile` / `cm.projectile_update`) break.
 - **Server Timers (`timer`, `freetimer`):**
   - `timer(ms, func, param, [count])`: executes `func(param)` every `ms` milliseconds. `count == 0` loops indefinitely;
     default is `count = 1`.
@@ -337,7 +354,17 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
     - `addbind(key)` / `removebind(key)` / `removeallbinds()`: manages custom client key hooks intercepted by the server.
     - `reqcld` / `reqhttp`: stubs registered for script compatibility.
 - **Extended `player` and `game` queries:**
-  - `player(id, prop)`: added `"tablebot"`, `"tablehuman"`, `"players"`, `"mousemapx"`, `"mousemapy"`, `"mapmousex"`, `"mapmousey"`, `"mousex"`, `"mousey"`, `"mousedist"`, `"language"`, `"favweapon"`.
+  - `player(id, prop)`: added `"tablebot"`, `"tablehuman"`, `"players"`, `"language"`, `"favweapon"`.
+  - **Mouse properties (2026-10-20):** the dedicated derives them from the rotation + aim distance the
+    client already sends in `[70]`/`[71]`/`[72]` (no extra traffic):
+    `mousex = 425 + sin(rot) * aim`, `mousey = 240 - cos(rot) * aim` (850x480 virtual screen),
+    `mousemapx = x + (mousex - 425)`, `mousemapy = y + (mousey - 240)`,
+    `mousedist = (int)distance(player, world cursor)`. `mousemapx/y` and `mapmousex/y` are the
+    aliases. Dead players and clients that have not sent an aim packet yet return **-1**.
+    Measured on `cs2d_dedicated.exe` (0x1400c936c..): `x=1360 y=816 rot=118.07007 aim=254`
+    -> `mousex=649 mousey=359 mousemapx=1584 mousemapy=935 mousedist=253`; reproduced with the
+    original client against our server (`x=1392` -> `1621,938,654,362,259`).
+    Probe: `tools/agent/lua/mouse_probe.lua`.
   - `game(prop)`: added `"version"` (1.0.1.8), `"dedicated"` (1), `"phase"`, `"round"`, `"time"`, `"maptimeleft"`, `"ticks"`, `"port"`, `"sysfolder"`, `"bombplanted"`, and generic cvar fallback.
 - **Generic CVar Storage & Settings:**
   - `cs2d_sv_cvar_t cvars[128]` in `cs2d_server_t`: stores custom script cvars dynamically set via server commands or config files, queried via `game(cvar_name)`.
@@ -363,9 +390,11 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
 
 - Checked against the UTF-16 literals in `cs2d_dedicated.exe` and their code references (objdump),
   plus `docs/cs2d_help_db_complete.json`: the real hooks of this build include `connect`,
-  `connect_initplayer`, `disconnect` and `select`; there is **no** literal (and no reference) for
-  `shutdown`, `frame`, `http`, `filetransfer`, `post_endround`, `oncollision`, `oncollisionhit` or
-  `onhit`. `addhook` on those names must therefore fail like the original ("hook does not exist").
+  `connect_initplayer`, `disconnect` and `select`. **Correction (2026-10-20):** `shutdown` does
+  exist; the original log registers `rp.shutdown` on both `mapchange` and `shutdown`. There is no
+  literal (and no reference) for `frame`, `http`, `filetransfer`, `post_endround`, `oncollision`,
+  `oncollisionhit` or `onhit`. `addhook` on those names must therefore fail like the original
+  ("hook does not exist").
 - Documented argument lists: `connect_initplayer(id)`, `connect(id)`, `disconnect(id, reason id)`;
   execution order is `connect_attempt` → `connect_initplayer` → `connect` → `join`, and `disconnect`
   runs after the player is removed (so `player(id)` no longer works inside it).
@@ -558,15 +587,30 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
     - `mode 6`: render3d enabled `[53, 6, enabled u8]`
   - Dispatches Lua hook `clientdata(id, mode, data1, data2)` where `data2` is string for modes 4 and 5, integer for others.
 - **Key Press & Release (Opcodes 227 & 228, `FUN_1401bb510`, `FUN_1401bb620`)**:
-  - Client sends `[227/228, key u16]`.
-  - Server maps key code to canonical key name via `sv_resolve_key_name`: checks custom `addbind` keys in Lua state, falls back to `cs2d_bind_key_name(key)` or decimal string.
-  - Fires Lua hook `key(id, key_name, state)` (1 for press, 0 for release).
+  - Client sends `[227/228, key u16]` with a **Win32 VK code** (`Q = 0x51`, `E = 0x45`,
+    `leftshift = 0xA0`, `space = 0x20`, `mouse1 = 1`, `mouse2 = 2`, `mwheelup = 0x122`,
+    `f1 = 0x70`, `kp_5 = 0x65`; captured from `cs2d_dedicated.exe` with `tools/agent/lua/bind_probe.lua`).
+  - The client only reports keys listed in the join snapshot bind list, so `addbind` must be
+    advertised or the `key` hook never fires.
+  - `[252,6]` tail: `b+22` is the bind count **u8**, followed by `n * u16` VK codes (captured:
+    6 binds -> `06 51 00 45 00 a0 00 20 00 02 00 01 00`). Our `cs2d_sv_build_join_settings` writes
+    the real list (`cs2d_bind_key_code`).
+  - When `addbind` / `removebind` / `removeallbinds` changes the list, every joined player gets a
+    reliable `[224, count u16, count * key u16]` (`lua_bind.SendBindListToClients`,
+    `CS2D.exe 0x14005be90`; our `cs2d_sv_send_lua_binds`).
+  - Server maps key code to canonical name via `sv_resolve_key_name`: checks custom `addbind` keys by
+    VK code first (`cs2d_bind_key_code`), then `cs2d_bind_vk_name` (`f1`/`kp_*`; the client-facing
+    `cs2d_bind_key_name` cannot represent 0x60..0x7B because they overlap ASCII), then decimal string.
+  - Our client now stores the `[252,6]` / `[224]` list (`lua_binds`), reports `[227]/[228]` only for
+    announced VK codes from `cs2d_client_handle_key` / `_mouse` / `_mouse_wheel`, and releases held
+    binds on `SDL_EVENT_WINDOW_FOCUS_LOST`. Verified end to end with `bind_probe.lua`: `Q`, `mouse1`
+    and `mwheelup` reach the server `key` hook.
 - **Client Setting (Opcode 232, `FUN_1401bb730`)**:
   - `sub 1`: screen resolution `[232, 1, width u16, height u16]` -> updates `pl->screen_w`, `pl->screen_h`.
   - `sub 2`: aspect ratio 4:3 `[232, 2, s43 u8]` -> updates `pl->screen_aspect`.
   - `sub 3`: windowed mode `[232, 3, win u8]` -> updates `pl->screen_windowed`.
   - Fires Lua hook `clientsetting(id, setting, val1, val2)`.
-  - Lua `player(id, "screenw")`, `"screenh"`, `"screen4by3"`, `"windowed"` read player fields.
+  - Lua `player(id, "screenw")`, `"screenh"`, `"widescreen"` (0/1, inverted 4:3 setting), `"windowed"` read player fields.
 - **Player Physics Rotation (Opcode 80, `FUN_1401d4910`)**:
   - `[80, flags u8, ...]`: if `flags & 0x40` reads pos bytes; if `flags & 0x80` reads `dir u16` and sets `pl->rot = (float)dir * 0.005493164f` (360.0f / 65536.0f).
 - **Physics Updates [81..87] Drop (`FUN_1401e3cf0`)**:
@@ -664,5 +708,93 @@ Verified against `cs2d_dedicated.exe` reverse engineering:
   - Populates table iterating buckets `0..max_bucket`, giving strict nearest-first ordering for tiles 0..4.
   - Non-existent player returns empty table `{}`.
 
+## Dedicated Server: Lua `object()` / `player()` screen values and the shared Tdo space (2026-10-20)
 
+Verified against `CS2D.exe` (the shared BlitzMax game module; `cs2dlua_object` 0x1400dfc40,
+`cs2dlua_closeobjects` 0x140059330, round start `FUN_1402520b0` / `FUN_140190e10`) and the
+dedicated's `[232]` handler.
+
+- **`object(id, prop)`**:
+  - `id == 0`: only `"table"` (1-indexed ids of every active Tdo); any other value -> `false`.
+  - Properties: `exists`, `typename` (type table name), `type`, `health`, `mode`, `team`, `player`,
+    `x`, `y`, `rot`, `tilex`, `tiley`, `countdown`, `rootrot` (`rrot`), `idle` (number, `Tdo.idle`),
+    `rotvar`, `target`, `upgrade`, `entity` (boolean, `Tdo.entity[0]`), `entityx`/`entityy`
+    (`Tdo.entity[1]`/`[2]`, entity tile), `alpha`.
+  - `tilex` / `tiley` are `(int)((x + 1) * 0.03125)`, i.e. +1 px compared with `objectat`.
+  - Missing object, unknown property -> boolean `false`.
+- **`closeobjects(x, y, radius [, type])`**: Euclidean distance from `(x, y)` to the object's own
+  `x`/`y` (top-left), no +16 centre offset; list order, optional type filter.
+- **`player(id, ...)` screen values** (`cs2dlua_player` 0x1400e9440): `screenw` (`screenResX`),
+  `screenh` (`screenResY`), `widescreen` (0/1, inverted `screen4by3`), `windowed` (0/1). The
+  dedicated initialises remote players to 850x480 and updates them from `[232,1,w,h]`.
+- **Shared Tdo space**: Lua images (typ 40), buildings (1..23) and NPCs (typ 30) live in
+  `sv->dynobj`, share `next_free_id`, appear in `object(0,"table")`, `objectat` and
+  `closeobjects`. `Tdo.entity` records the spawning map entity: `[0]=1`, `[1]/[2]` = entity tile.
+- **Round start** (`FUN_1402520b0`): `Tdo.freeall()` then `FUN_140190e10` rebuilds the map's
+  Env_Building (type ints[0], team ints[1], rot ints[2]) **and** Env_NPC entities **in entity
+  order**. Player-built objects and Lua images do not survive. Both server and client run the same
+  pass, so the Tdo ids stay in sync through `[22]`.
+- **Env_NPC (map entity 31)**: typ 30 at `(x*32+16, y*32+16)`, rot `ints[0]`, NPC type `ints[1]`,
+  health `ints[2]` (0 = type default), `ints[3] == 1` = do not spawn on start. Default NPC health
+  (`Tdo.add` array 0x1409ed7f0, initialised at 0x14031a195): 1 zombie 150, 2 headcrab 30, 3 snark 20,
+  4 vortigaunt 200, 5 soldier 100.
+- **Server building health**: `spawnobject` sets `max_health[type]` (`Tdo.inibuilding` on the
+  dedicated), while the client keeps the percentage in `Tdo.health`.
+- **Image tweens are server state** (`cs2dlua_tween_*` 0x14009dbb0.. and `Ttween.update` 0x14027fc50):
+  the dedicated creates a `Ttween` in its own list *and* sends `[54]`. `Ttween.update` writes the
+  interpolated values into the Tdo (`x`, `y`, `rot`, `alpha`, `color`, `scale`, `frame`), so
+  `object(id, ...)` / `imageparam(id, ...)` return the animated values. `tween_move(id, time, x, y
+  [, rot])`: without `rot` the mode is 0 (move only, `[54,0,dur,x,y]`); with `rot` it is mode 1
+  (move + rotate, `[54,1,dur,x,y,rot]`). `tween_animate(id, speed, mode)` is `[54,8,speed,mode]`
+  (the client keeps its current frame; only the animation mode is sent).
+  `cs2d_dynobj_read_tween` parses the same packets on the client; mode 1 body size is 10 (not 8) and
+  mode 8 body size is 5.
+- **`closeplayers` / `hascloseplayers`** (`cs2dlua_closeplayers` 0x140058f40): only existing, alive
+  players (`team >= 1`, `health >= 1`); dead players and unused slots are not returned.
+
+## WQ2D roleplay startup: trigger graph, bot reqcld and API types (2026-10-20)
+
+Measured by running the original `cs2d_dedicated.exe` and our `cs2d_server.exe` with the same
+`sys/lua/WQ2D` scripts and a Lua probe (autorun) that logged `join`, `clientdata`, `trigger` and
+`entity`/`map`/`game` values. The RP map (`fun_roleplay`) is driven by 2.5k+ map entities.
+
+- **Entity trigger graph is server-side.** The dedicated fires the map's triggers itself; the Lua
+  `trigger` hook (`trigger: string, source: 0 map / 1 script`) runs **once per comma-separated
+  name**, even when no entity matches. `triggerentity(x, y)` runs once per affected entity and may
+  return 1 to cancel it. `parse("trigger a,b")` is source 1; entity chains are source 0.
+  - `Trigger_Start` (90) fires its list at round start (after the state reset and the Tdo rebuild).
+    `Trigger_If` (96) runs its condition and only then fires `trigger`; condition type 0 is the Lua
+    chunk `"_cs2d_trigger_if=" + strs[0]` (the map uses `(1) action code` and pure expressions).
+    `Trigger_Once` (95) fires only on state 0 -> 1. `Trigger_Delay` (94) sets state 1, waits
+    `ints[1]` ms (else `ints[0]` s) and forwards its list **without invoking the Lua trigger hook**
+    (probe: a delay whose timer elapsed produced no trigger hook for its names). `Trigger_Move` (91)
+    and `Trigger_Hit` (92) fire only on walkover/hit, never when their name is triggered.
+  - A plain entity (Func_DynWall, Env_Sprite, Gen_Weather, Trigger_Use, ...) only toggles its state.
+    Its own `trigger` field is **not** propagated. A Trigger_Use fires its list only when a player
+    presses it (opcode 26 mode 100), not when `trigger <name>` toggles it.
+  - Every entity with a matching name is affected (duplicate names group sprites). Toggling an
+    Env_Building/Env_NPC also creates/removes the linked Tdo object.
+- **Bot reqcld:** a bot answers `reqcld(id, mode)` immediately (the original emitted `clientdata`
+  for modes 0..6): 0/1/2 -> 0,0; 3 -> 1,0; 4 -> 0, checksum of the file ("" if missing);
+  5 -> false,""; 6 -> 0,0. WQ2D's `menu.join` -> `reqcld(uid,4,"gfx/c4/c4.bmp")` depends on this
+  (`login.query` is loaded once per bot). `player(bot,"ip")` is **"0.0.0.0"** and
+  `player(bot,"ping")` is **0** (the snapshot still sends 0xfffe); the empty IP made WQ2D's
+  `geoip_lookup` arithmetic fail in two timers.
+- **API values confirmed against the original** (probe): `game("dedicated")` is boolean `true`;
+  `game("timeleft")` is the remaining round seconds; `map("xsize"/"ysize")` are the **highest tile
+  indices** (fun_roleplay: 361/511 for a 362x512 grid); `map("tilesize")` is 0 in 1.0.1.8;
+  `map("botnodes")` counts Info_BotNode, `map("nobuying")`/`map("noweapons")` are 0/1;
+  `entity(x,y,"state")` is a **boolean**; `entity(x,y,"str0")` returns the full (256 byte) field.
+  `steamstats` returns boolean false without a stats store (the old stub returned a table, which
+  made WQ2D compare a table with 30).
+- **Hook inventory:** `shutdown` **does exist** in 1.0.1.8; the earlier note that it did not was
+  wrong. `rp.shutdown` registers on `mapchange` and `shutdown` in the original log.
+- **Map format strings:** entity `name`/`trigger`/`strs[0..9]` are CRLF lines of arbitrary length.
+  fun_roleplay's longest trigger is 175 bytes and its longest `strs[0]` is 255; only `strs[0]`
+  exceeds 63. `cs2d_entity_t` keeps `trigger[256]` and a dedicated `str0[256]` (the other nine
+  strings stay 64) to avoid the 2 GB static-data limit of the test binary.
+- **Remaining difference:** after a 16 s startup our server matched the original's first 564
+  trigger-hook calls byte for byte (same names/order), the object type counts and the 120 ground
+  items, but ended with 1618 vs 1574 entities in state 1 and 587 vs 565 hook calls. The extras are
+  later Trigger_If/Delay cascades (e.g. `d4entrance`, `sc*_light`, `d4mp*`); see OPEN_ISSUES.
 

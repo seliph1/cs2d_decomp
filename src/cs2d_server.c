@@ -486,6 +486,28 @@ cs2d_sv_conn_t *cs2d_sv_conn_of_player(cs2d_server_t *sv, int id)
     return c->active ? c : NULL;
 }
 
+/* CS2D.exe lua_bind.SendBindListToClients (0x14005be90): when addbind/removebind changes the
+ * list, every joined player gets a reliable [224, count u16, count * key u16] packet. */
+void cs2d_sv_send_lua_binds(cs2d_server_t *sv)
+{
+    if (!sv || !sv->lua) return;
+    const cs2d_sv_lua_t *lua = (const cs2d_sv_lua_t *)sv->lua;
+    uint16_t codes[64];
+    int n = 0;
+    for (int i = 0; i < lua->bind_key_count && n < 64; i++) {
+        int code = cs2d_bind_key_code(lua->bind_keys[i]);
+        if (code > 0) codes[n++] = (uint16_t)code;
+    }
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
+        if (!c || !sv->players[i].joined) continue;
+        cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
+        cs2d_pkt_w_byte(p, 224);
+        cs2d_pkt_w_short(p, (uint16_t)n);
+        for (int k = 0; k < n; k++) cs2d_pkt_w_short(p, codes[k]);
+    }
+}
+
 static void trim(char *s)
 {
     size_t n = strlen(s), a = 0;
@@ -621,10 +643,9 @@ static void w_id_list(cs2d_pkt_t *p, const char *list)
 }
 
 static void sv_write_join_settings_tail(cs2d_pkt_t *p, const cs2d_sv_settings_t *s, const cs2d_map_t *m,
-                                        int32_t seed);
-
+                                        int32_t seed, const struct cs2d_sv_lua *lua);
 void cs2d_sv_build_join_settings(cs2d_pkt_t *p, const cs2d_sv_settings_t *s, const cs2d_map_t *m, int score_t,
-                                 int score_ct, int32_t round_ms, int32_t seed)
+                                 int score_ct, int32_t round_ms, int32_t seed, const struct cs2d_sv_lua *lua)
 {
     /* FUN_1401dc530, [252,5] accepted (0x1401ded48 writes the closing "ACK") */
     cs2d_pkt_w_byte(p, 252);
@@ -654,12 +675,12 @@ void cs2d_sv_build_join_settings(cs2d_pkt_t *p, const cs2d_sv_settings_t *s, con
     cs2d_pkt_w_byte(p, (uint8_t)s->mp_flashlight);
     cs2d_pkt_w_byte(p, (uint8_t)s->mp_hovertext);
     cs2d_pkt_w_byte(p, (uint8_t)s->sv_friendlyfire);
-    sv_write_join_settings_tail(p, s, m, seed);
+    sv_write_join_settings_tail(p, s, m, seed, lua);
 }
 
 /* The map part of [252,6]: background image, its scroll, the header int, then the rest (FUN_1401dc530) */
 static void sv_write_join_settings_tail(cs2d_pkt_t *p, const cs2d_sv_settings_t *s, const cs2d_map_t *m,
-                                        int32_t seed)
+                                        int32_t seed, const struct cs2d_sv_lua *lua)
 {
     cs2d_pkt_w_str(p, m ? m->bg_image : "");           /* PTR_PTR_1405a1880 */
     cs2d_pkt_w_int(p, m ? m->bg_scroll_x : 0);         /* DAT_1407dfa8c */
@@ -672,9 +693,25 @@ static void sv_write_join_settings_tail(cs2d_pkt_t *p, const cs2d_sv_settings_t 
     cs2d_pkt_w_byte(p, (uint8_t)s->sv_voicechat);
     cs2d_pkt_w_byte(p, 1);                              /* DAT_1407e0020: the server OS, 1 Windows */
     cs2d_pkt_w_byte(p, (uint8_t)s->lagcompensation);    /* DAT_1405a64cc */
-    cs2d_pkt_w_byte(p, 0);                              /* 0 < DAT_1407dfcac: Lua scripts loaded */
+    cs2d_pkt_w_byte(p, lua ? 1 : 0);                    /* 0 < DAT_1407dfcac: Lua scripts loaded */
     cs2d_pkt_w_byte(p, (uint8_t)s->ticks);              /* DAT_1405a64c8 */
-    cs2d_pkt_w_byte(p, 0);                              /* Lua bind count (DAT_1407df810), then n x u16 */
+    /* Lua bind count (DAT_1407df810) and the Win32 VK codes. The original sends this list in the
+     * join snapshot (captured: 7 binds Q/E/leftshift/space/mouse1/mouse2/kp_5 ->
+     * 07 51 00 45 00 a0 00 20 00 01 00 02 00 65 00), and the client only reports [227]/[228]
+     * for keys it finds here. */
+    {
+        uint16_t codes[64];
+        int n = 0;
+        if (lua) {
+            for (int i = 0; i < lua->bind_key_count && n < 64; i++) {
+                int code = cs2d_bind_key_code(lua->bind_keys[i]);
+                if (code > 0) codes[n++] = (uint16_t)code;
+            }
+        }
+        if (n > 255) n = 255;
+        cs2d_pkt_w_byte(p, (uint8_t)n);
+        for (int i = 0; i < n; i++) cs2d_pkt_w_short(p, codes[i]);
+    }
     cs2d_pkt_w_int(p, seed);                            /* DAT_1407df3d4 */
     cs2d_pkt_w_byte(p, (uint8_t)s->sv_offscreendamage);
     cs2d_pkt_w_byte(p, (uint8_t)(s->leaderboard != 0)); /* && DAT_1405a63e8 */
@@ -857,9 +894,37 @@ void cs2d_sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
     p = sv_packet(sv, c, true, true);
     cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 3); cs2d_pkt_w_byte(p, 0);
 
-    /* Section 4: entity states (doors opened, breakables broken, flags taken, ...) */
-    p = sv_packet(sv, c, true, true);
-    cs2d_sv_write_entity_states(sv, p);
+    /* Section 4: entity states (doors opened, breakables broken, flags taken, ...). Like sections
+     * 1/2/3/5 this is a chunked list closed by a count-0 packet. The client stays on "joindata 4"
+     * until that terminator arrives; without it every later section is "unexpected joindata". */
+    {
+        int total_states = 0;
+        uint32_t n = sv->map.entity_count;
+        if (n > CS2D_MAX_ENTITIES) n = CS2D_MAX_ENTITIES;
+        for (uint32_t i = 0; i < n; i++) {
+            if (sv->map.entity_state[i] != 0) total_states++;
+        }
+        uint32_t cursor = 0;
+        while (total_states > 0) {
+            int chunk = total_states > 180 ? 180 : total_states;
+            p = sv_packet(sv, c, true, true);
+            cs2d_pkt_w_byte(p, 252);
+            cs2d_pkt_w_byte(p, 7);
+            cs2d_pkt_w_byte(p, 4);
+            cs2d_pkt_w_byte(p, (uint8_t)chunk);
+            int written = 0;
+            for (; cursor < n && written < chunk; cursor++) {
+                if (sv->map.entity_state[cursor] == 0) continue;
+                cs2d_pkt_w_short(p, sv->map.entities[cursor].x);
+                cs2d_pkt_w_short(p, sv->map.entities[cursor].y);
+                cs2d_pkt_w_byte(p, sv->map.entity_state[cursor]);
+                written++;
+            }
+            total_states -= written;
+        }
+        p = sv_packet(sv, c, true, true);
+        cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 4); cs2d_pkt_w_byte(p, 0);
+    }
 
     /* Section 5: dynamic objects (Tdo), 60 per message */
     int active_objs = 0;
@@ -1105,13 +1170,13 @@ void cs2d_sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
         cs2d_pkt_w_byte(p, 240); cs2d_pkt_w_byte(p, 0); cs2d_pkt_w_byte(p, 50);
         cs2d_pkt_w_short(p, 1); cs2d_pkt_w_short(p, '1');
         for (int i = 0; i < sv->info_count; i++) {
-            const uint8_t *t = (const uint8_t *)sv->info_lines[i];
-            int len = (int)strlen((const char *)t);
-            if (len > 255) len = 255;
-            p = sv_packet(sv, c, true, c->out.pos >= 1000 - len);
+            /* sys/serverinfo.txt is UTF-8; the wire field is UTF-16LE. */
+            uint16_t units[256];
+            int len = cs2d_net_utf8_to_utf16(sv->info_lines[i], units, 255);
+            p = sv_packet(sv, c, true, c->out.pos >= 1000 - len * 2);
             cs2d_pkt_w_byte(p, 240); cs2d_pkt_w_byte(p, 0); cs2d_pkt_w_byte(p, 51);
             cs2d_pkt_w_short(p, (uint16_t)len);
-            for (int j = 0; j < len; j++) cs2d_pkt_w_short(p, t[j]); /* Latin-1 -> UTF-16 */
+            for (int j = 0; j < len; j++) cs2d_pkt_w_short(p, units[j]);
         }
         p = sv_packet(sv, c, true, true);
         cs2d_pkt_w_byte(p, 240); cs2d_pkt_w_byte(p, 0); cs2d_pkt_w_byte(p, 50);
@@ -1529,7 +1594,8 @@ static void sv_recv_join5(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
     pl->joined = true;   /* +0xf4 */
     cs2d_pkt_t *p = sv_packet(sv, c, true, true);
     int32_t round_ms = (int32_t)(sv_now() - sv->round_start_ms);
-    cs2d_sv_build_join_settings(p, &sv->set, &sv->map, sv->score_t, sv->score_ct, round_ms, sv->seed);
+    cs2d_sv_build_join_settings(p, &sv->set, &sv->map, sv->score_t, sv->score_ct, round_ms, sv->seed,
+                                (const struct cs2d_sv_lua *)sv->lua);
     cs2d_sv_send_join_snapshot(sv, c);
     c->join_step = 4;
     cs2d_sv_lua_hook_join(sv, c->player);
@@ -2373,14 +2439,8 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
         sv_next_arg(&cur, a1, sizeof(a1));
         sv_next_arg(&cur, a2, sizeof(a2));
         int tx = atoi(a1), ty = atoi(a2);
-        int state = 1;
-        for (uint32_t i = 0; i < sv->map.entity_count && i < CS2D_MAX_ENTITIES; i++) {
-            if (sv->map.entities[i].x == tx && sv->map.entities[i].y == ty) {
-                state = sv->map.entity_state[i] ^ 1;
-                break;
-            }
-        }
-        cs2d_sv_entity_event(sv, 0, (uint16_t)tx, (uint16_t)ty, (uint8_t)state);
+        /* Toggles the entity at the tile and broadcasts [31] (knowledge: triggerposition). */
+        cs2d_sv_trigger_at_position(sv, tx, ty, 1);
         return true;
     }
     if (_stricmp(cmd, "killobject") == 0) {
@@ -2539,8 +2599,8 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
     }
     if (_stricmp(cmd, "trigger") == 0) {
         if (sv_next_arg(&cur, a1, sizeof(a1)) && a1[0] != '\0') {
-            cs2d_sv_trigger_env_items(sv, a1);
-            cs2d_sv_lua_hook_trigger(sv, a1, 0);
+            /* help.php: one Lua trigger hook per list entry, source 1 = script command. */
+            cs2d_sv_trigger_names(sv, a1, 1);
         }
         return true;
     }
@@ -2561,19 +2621,19 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
     }
     if (_stricmp(cmd, "bot_add") == 0) {
         int team = sv_next_arg(&cur, a1, sizeof(a1)) ? atoi(a1) : 0;
-        int look = sv_next_arg(&cur, a2, sizeof(a2)) ? atoi(a2) : 0;
+        int look = sv_next_arg(&cur, a2, sizeof(a2)) ? atoi(a2) : -1;
         sv_rest_arg(cur, a3, sizeof(a3));
         cs2d_sv_bot_add(sv, team, look, a3);
         return true;
     }
     if (_stricmp(cmd, "bot_add_t") == 0) {
-        int look = sv_next_arg(&cur, a1, sizeof(a1)) ? atoi(a1) : 0;
+        int look = sv_next_arg(&cur, a1, sizeof(a1)) ? atoi(a1) : -1;
         sv_rest_arg(cur, a2, sizeof(a2));
         cs2d_sv_bot_add(sv, 1, look, a2);
         return true;
     }
     if (_stricmp(cmd, "bot_add_ct") == 0) {
-        int look = sv_next_arg(&cur, a1, sizeof(a1)) ? atoi(a1) : 0;
+        int look = sv_next_arg(&cur, a1, sizeof(a1)) ? atoi(a1) : -1;
         sv_rest_arg(cur, a2, sizeof(a2));
         cs2d_sv_bot_add(sv, 2, look, a2);
         return true;
@@ -2729,13 +2789,17 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
         return true;
     }
     if (_stricmp(cmd, "spawnprojectile") == 0) {
-        char a4[32], a5[32];
+        /* help.php: spawnprojectile <player> <type> <x> <y> <flydist> <dir>; x / y and flydist
+         * are in PIXELS (not tiles) and flydist 0 spawns the projectile on the ground. */
+        char a4[32], a5[32], a6[32];
         sv_next_arg(&cur, a1, sizeof(a1));
         sv_next_arg(&cur, a2, sizeof(a2));
         sv_next_arg(&cur, a3, sizeof(a3));
-        int dir = sv_next_arg(&cur, a4, sizeof(a4)) ? atoi(a4) : 0;
+        sv_next_arg(&cur, a4, sizeof(a4));
         int fly = sv_next_arg(&cur, a5, sizeof(a5)) ? atoi(a5) : 0;
-        return cs2d_sv_spawn_projectile(sv, sv_resolve_weapon(a1), atoi(a2), atoi(a3), dir, fly) != 0;
+        int dir = sv_next_arg(&cur, a6, sizeof(a6)) ? atoi(a6) : 0;
+        return cs2d_sv_spawn_projectile(sv, atoi(a1), sv_resolve_weapon(a2),
+                                        atoi(a3), atoi(a4), fly, dir) != 0;
     }
     if (_stricmp(cmd, "mp_building_price") == 0) {
         sv_next_arg(&cur, a1, sizeof(a1));
@@ -2808,12 +2872,11 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
 
 static const char *sv_resolve_key_name(cs2d_server_t *sv, int key, char *buf, size_t buf_sz)
 {
-    const char *name = cs2d_bind_key_name(key);
+    const char *name = cs2d_bind_vk_name(key);
     if (sv && sv->lua) {
         cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
         for (int i = 0; i < lua->bind_key_count; i++) {
-            if (name && _stricmp(name, lua->bind_keys[i]) == 0) return lua->bind_keys[i];
-            if (atoi(lua->bind_keys[i]) == key) return lua->bind_keys[i];
+            if (cs2d_bind_key_code(lua->bind_keys[i]) == key) return lua->bind_keys[i];
         }
     }
     if (name) return name;
@@ -2900,6 +2963,7 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
             cs2d_sv_validate_move(sv, c->player, (float)x, (float)y, op == 71 ? 10 : 11);
             pl->rot = (float)rot / 182.04445f;
             pl->aim = (float)aim * 2.0f;
+            pl->aim_valid = true;
             pl->rot_flag = 1;
         }
         return true;
@@ -2910,6 +2974,7 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         if (pl && pl->alive) {
             pl->rot = (float)rot / 182.04445f;
             pl->aim = (float)aim * 2.0f;
+            pl->aim_valid = true;
             pl->rot_flag = 1;
         }
         return true;
@@ -3815,7 +3880,7 @@ bool cs2d_server_start(cs2d_server_t *sv, const char *map, int port, bool offlin
     sv_load_serverinfo(sv);
     sv_load_maplist(sv);
     cs2d_dynobj_init(&sv->dynobj, &sv->map);
-    cs2d_dynobj_spawn_map_buildings(&sv->dynobj);
+    cs2d_dynobj_spawn_map_objects(&sv->dynobj);
     cs2d_sv_fix_building_health(sv);
     s_active_sv = sv;
     cs2d_sv_lua_init(sv);
@@ -3858,10 +3923,14 @@ void cs2d_server_frame(cs2d_server_t *sv)
     cs2d_sv_step_bomb(sv);
     cs2d_sv_step_hostages(sv);
     cs2d_sv_step_items(sv);
+    cs2d_sv_step_trigger_delays(sv);
     cs2d_sv_step_reloads(sv);
     cs2d_sv_step_respawns(sv);
     cs2d_sv_step_buildings(sv);
     cs2d_sv_step_projectiles(sv);
+    /* Ttween.update (0x14027fc50): the dedicated keeps the tween state, so object()/imageparam()
+     * return the animated x/y/rot/... while Lua scripts (the C4 projectile system) poll them. */
+    cs2d_dynobj_update_tweens(&sv->dynobj, now);
     cs2d_sv_lua_frame(sv);
 
     sv->frames++;
@@ -3876,6 +3945,7 @@ void cs2d_server_frame(cs2d_server_t *sv)
 void cs2d_server_stop(cs2d_server_t *sv)
 {
     if (s_active_sv == sv) s_active_sv = NULL;
+    if (sv->lua) cs2d_sv_lua_hook_shutdown(sv);
     cs2d_sv_lua_close(sv);
     if (sv->sock != INVALID_SOCKET) closesocket(sv->sock);
     sv->sock = INVALID_SOCKET;

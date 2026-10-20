@@ -4,7 +4,44 @@ Keep this file current: remove items when they are done (and log them in `WORKLO
 you discover. Sign items that are being worked on (`[in progress: <agent>]`) so two agents do not take
 the same one.
 
+- **Dedicated server: cliente original preso em "Loading map state" (2026-10-20, `docs/agents/knowledge/net-join.md`):**
+  fixed - a seção 4 do snapshot (`[252,7,4,...]`, estados de entidade) não tinha o pacote terminador
+  `[252,7,4,0]`; o cliente original ficava em `joindata 4` e rejeitava as seções 5, 6, 10, ..., 200 com
+  `ERROR: unexpected joindata N (step 4 expected)`. Agora a seção é enviada em blocos de 180 e termina com
+  count 0. Regressão em `test_dedicated_trigger_graph` (107/107).
+
+
+- **Dedicated server: WQ2D RP não inicializava (2026-10-20, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - adicionado o hook `shutdown` (existe no 1.0.1.8), `player(bot,"ip")` = `"0.0.0.0"`, `ping` de bot = 0 na API,
+  resposta imediata de `reqcld` para bots (modes 0..6, mode 4 com SHA-256), motor de triggers do servidor
+  (`Trigger_Start/If/Once/Delay/Move`, `trigger`/`triggerposition`, `[31]` e Trigger_Use), hook `trigger` por nome
+  com source booleano, `triggerentity` cancelável, `move`/`movetile`/`walkover`, `game("dedicated")` boolean,
+  `game("timeleft")`, `map("xsize"/"ysize"/"tilesize"/"botnodes"/"nobuying"/"noweapons")`, `entity("state")` boolean,
+  `strs[0]` completo, `steamstats` false e buffers de entity de 256 bytes. Regressão: `test_dedicated_trigger_graph`
+  (**107/107**). Residual: após 16 s o nosso servidor termina com 1618 vs 1574 entidades em state 1 e 587 vs 565
+  chamadas de `trigger` (cascatas tardias de Trigger_If/Delay: `d4entrance`, `sc*_light`, `d4mp*`); objetos e itens
+  batem (27/57 turrets, 120 itens). Investigar a semântica exata do forwarding de `Trigger_Delay` e das condições
+  `Trigger_If` > 0.
+
+
 ## Known gaps
+- **Dedicated server: Ttween no servidor / projéteis de imagem do C4 (2026-10-20, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - `cs2d_sv_tween_*` agora criam o `Ttween` local além de transmitir `[54]`, e `cs2d_server_frame` executa
+  `cs2d_dynobj_update_tweens` antes do hook `always` (`Ttween.update` 0x14027fc50). `object()`/`imageparam()` passam a
+  devolver x/y/rot/alpha/scale/frame animados, restaurando `cm.create_projectile`/`cm.projectile_update` do mod C4
+  (antes a imagem ficava no spawn e colidia no frame 1). Corrigidos também `tween_move` com rotação opcional (modo 1,
+  corpo 10), `tween_animate(id,speed,mode)` (`[54,8,speed,mode]`, corpo 5) e o filtro de `closeplayers`/`hascloseplayers`
+  (somente jogadores existentes, vivos e de time). Regressão em `test_dedicated_dynamic_images` (106/106).
+
+- **Dedicated server: `object()` completo, `player("screenw")` e espaço Tdo compartilhado (2026-10-20, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - `object(id, prop)` agora cobre todos os valores oficiais (`exists`, `typename`, `type`, `health`, `mode`, `team`, `player`,
+  `x`, `y`, `rot`, `tilex`, `tiley`, `countdown`, `rootrot`, `idle`, `rotvar`, `target`, `upgrade`, `entity`, `entityx`, `entityy`, `alpha`),
+  com `tilex/tiley = (int)((x+1)/32)` como no `cs2dlua_object`; `closeobjects` mede a partir da posição do objeto (não do centro);
+  `player(id, "screenw"/"screenh")` confirmados (defaults 850x480, `[232,1]`) e `widescreen` adicionado.
+  Imagens, construções e NPCs compartilham `sv->dynobj`: o round start agora faz `Tdo.freeall` + recria Env_Building/Env_NPC
+  em ordem de entidade (`cs2d_dynobj_spawn_map_objects`), com saúde padrão de NPC 150/30/20/200/100 (zombie/headcrab/snark/vortigaunt/soldier)
+  e `Tdo.entity` preenchido; `spawnobject` usa `max_health` do tipo. Regressão: `test_dedicated_dynobj_shared_space` (106/106).
+
 - **Dedicated server: Lua Items & Weapons API (`itemtype`, `item`, `playerammo`, `playerweapons`, `closeitems`) (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
   fixed - Implementação e calibração 1:1 das 5 funções de consulta de itens e armas no servidor dedicado:
   `itemtype(type, prop)` (`FUN_14009b4c0`): cobre as 13 propriedades oficiais (`"name"`, `"dmg"`, `"dmg_z1"`, `"dmg_z2"`, `"rate"`, `"reload"`, `"ammo"`, `"ammoin"`, `"price"`, `"range"`, `"dispersion"`, `"slot"`, `"recoil"`), retornando `def->cs2d_slot` para `"slot"`, `def->recoil_accuracy` para `"recoil"`, e booleano `false` para tipos fora de limites, armas indefinidas/customizadas (ex: id 80, 202, 290) ou propriedades desconhecidas (permitindo a verificação `if itemtype(id, "name") == false then -- Not cs2d item`);

@@ -625,7 +625,7 @@ static bool game_load_map(cs2d_client_t *client, const char *map_name)
     /* Dynamic objects: offline the map's Env_Building entities (the server spawns them at round start);
      * online the join snapshot [252,7,5] and [49] bring the server's */
     cs2d_dynobj_init(&client->dynobj, &client->game.map);
-    if (client->net_sock == INVALID_SOCKET) cs2d_dynobj_spawn_map_buildings(&client->dynobj);
+    if (client->net_sock == INVALID_SOCKET) cs2d_dynobj_spawn_map_objects(&client->dynobj);
     client->build_mode = client->build_menu_open = false;
     client->supply_menu = 0;
     client->buy.menu   = 0;
@@ -660,7 +660,7 @@ void cs2d_scene_game_restart_round(cs2d_client_t *client)
     cs2d_ents_round_start(&client->ents);
     cs2d_fx_clear(&client->fx);
     cs2d_dynobj_clear(&client->dynobj);
-    cs2d_dynobj_spawn_map_buildings(&client->dynobj);
+    cs2d_dynobj_spawn_map_objects(&client->dynobj);
     cs2d_hostages_spawn_from_map(&client->hostages, &client->game.map);
     client->walk_active = false;
     client->last_tile_x = client->last_tile_y = -1;
@@ -1583,7 +1583,7 @@ static void game_update(cs2d_client_t *client, float delta_time)
             cs2d_ents_round_start(&client->ents);
             cs2d_fx_clear(&client->fx);
             cs2d_dynobj_clear(&client->dynobj);
-            cs2d_dynobj_spawn_map_buildings(&client->dynobj);
+            cs2d_dynobj_spawn_map_objects(&client->dynobj);
             cs2d_hostages_spawn_from_map(&client->hostages, &client->game.map);
             cs2d_projectile_clear(&client->projectiles);
         }

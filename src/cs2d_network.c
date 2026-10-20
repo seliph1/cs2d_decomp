@@ -584,6 +584,121 @@ int cs2d_pkt_r_str(const uint8_t *buf, int len, int *pos, char *out, int max_out
     return i;
 }
 
+/*
+ * UTF-8 -> UTF-16 code units for the CS2D text opcodes.
+ *
+ * The original dedicated receives UTF-8 Lua strings (BlitzMax String is UTF-8) and
+ * writes them as UTF-16LE on the wire (FUN_140153900 for [240], the [234]/[235]
+ * builders). Expanding each byte (the old code) turned "não" into "nÃ£o".
+ *
+ * Invalid sequences fall back to the byte as a Latin-1 code point, so paths and
+ * pre-existing non-UTF-8 data keep working, and no input is dropped.
+ */
+int cs2d_net_utf8_to_utf16(const char *src, uint16_t *dst, int max_units)
+{
+    if (!src || !dst || max_units <= 0) return 0;
+
+    const unsigned char *s = (const unsigned char *)src;
+    int n = 0;
+    while (*s && n < max_units) {
+        uint32_t cp = *s;
+        int bytes = 1;
+
+        if (*s >= 0x80) {
+            if ((s[0] & 0xe0) == 0xc0 && (s[1] & 0xc0) == 0x80) {
+                cp = ((uint32_t)(s[0] & 0x1f) << 6) | (uint32_t)(s[1] & 0x3f);
+                bytes = 2;
+                if (cp < 0x80) { cp = s[0]; bytes = 1; }          /* overlong */
+            } else if ((s[0] & 0xf0) == 0xe0 && (s[1] & 0xc0) == 0x80 && (s[2] & 0xc0) == 0x80) {
+                cp = ((uint32_t)(s[0] & 0x0f) << 12) |
+                     ((uint32_t)(s[1] & 0x3f) << 6) | (uint32_t)(s[2] & 0x3f);
+                bytes = 3;
+                if (cp < 0x800 || (cp >= 0xd800 && cp <= 0xdfff)) { cp = s[0]; bytes = 1; }
+            } else if ((s[0] & 0xf8) == 0xf0 && (s[1] & 0xc0) == 0x80 &&
+                       (s[2] & 0xc0) == 0x80 && (s[3] & 0xc0) == 0x80) {
+                cp = ((uint32_t)(s[0] & 0x07) << 18) |
+                     ((uint32_t)(s[1] & 0x3f) << 12) |
+                     ((uint32_t)(s[2] & 0x3f) << 6) | (uint32_t)(s[3] & 0x3f);
+                bytes = 4;
+                if (cp < 0x10000 || cp > 0x10ffff) { cp = s[0]; bytes = 1; }
+            }
+        }
+
+        if (cp >= 0x10000) {
+            if (n + 2 > max_units) break;
+            cp -= 0x10000;
+            dst[n++] = (uint16_t)(0xd800 + (cp >> 10));
+            dst[n++] = (uint16_t)(0xdc00 + (cp & 0x3ff));
+        } else {
+            dst[n++] = (uint16_t)cp;
+        }
+        s += bytes;
+    }
+    return n;
+}
+
+static int cs2d_hex_digit(int c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/*
+ * "UTF-8:" escaped text -> raw UTF-8 bytes.
+ *
+ * The engine's UTF-8 option (Changelog: print/msg/msg2/parse/hudtxt/sv_msg) uses a
+ * textual escape per byte: "UTF-8:\x68\x65\x6C\x6C\x6F" is "hello". WQ2D's
+ * utf8.convert writes the first byte as \xNN and the UTF-8 continuation bytes as
+ * bare xNN, e.g. © = "\xC2xA9" and 3-byte characters as "\xE2x80xA8"; both forms
+ * are accepted here. The escape introducer x is only consumed while a multi-byte
+ * UTF-8 sequence is still expecting continuation bytes, so literal text is kept.
+ */
+int cs2d_net_utf8_unescape(const char *src, char *dst, int cap)
+{
+    if (!src || !dst || cap <= 0) return 0;
+
+    if (strncmp(src, "UTF-8:", 6) != 0) {
+        int n = (int)strlen(src);
+        if (n > cap - 1) n = cap - 1;
+        memcpy(dst, src, (size_t)n);
+        dst[n] = '\0';
+        return n;
+    }
+
+    const unsigned char *s = (const unsigned char *)src + 6;
+    int n = 0;
+    int continuation = 0;   /* continuation bytes still expected by the last lead byte */
+    while (*s && n < cap - 1) {
+        int skip = 0;
+        if (s[0] == '\\' && s[1] == 'x') skip = 2;
+        else if (s[0] == 'x' && continuation > 0) skip = 1;
+
+        int v = skip ? cs2d_hex_digit(s[skip]) : -1;
+        if (v >= 0) {
+            s += skip + 1;
+            if (cs2d_hex_digit(*s) >= 0) {
+                v = v * 16 + cs2d_hex_digit(*s);
+                s++;
+            }
+            v &= 0xff;
+            dst[n++] = (char)v;
+
+            if (v >= 0xc2 && v <= 0xdf) continuation = 1;
+            else if (v >= 0xe0 && v <= 0xef) continuation = 2;
+            else if (v >= 0xf0 && v <= 0xf4) continuation = 3;
+            else if (continuation > 0 && v >= 0x80 && v <= 0xbf) continuation--;
+            else continuation = 0;
+        } else {
+            dst[n++] = (char)*s++;
+            continuation = 0;
+        }
+    }
+    dst[n] = '\0';
+    return n;
+}
+
 /* --- MD5 Implementation (0x1400c9ed0) --- */
 static const uint32_t MD5_K[64] = {
     0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,

@@ -17,7 +17,10 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
   `Tgui_joinmen.errorprompt(201)` (vtable +0xa8). **No `[253]` is sent there** — `[253,9]` is sent by the error
   window's Okay/Cancel, so the socket stays open until the user answers.
 - **Snapshot section 2 (hostages):** `[252,7,2,n] + n×{id,health,look,follow,x u16,y u16}` (see `hostages-bomb.md`).
-- **Snapshot section 4:** the non-zero entity states, `{x u16, y u16, state u8}`.
+- **Snapshot section 4:** the non-zero entity states, `{x u16, y u16, state u8}`. Like sections 1/2/3/5 it is
+  **chunked and closed by a count-0 packet** (the dedicated uses 180 entries per message). The client's join step
+  stays at `joindata 4` until that terminator; without it every following section prints
+  `ERROR: unexpected joindata N (step 4 expected)` and the join hangs on "Loading map state...".
 - **Snapshot section 6 (ground projectiles, REA `0x1402c0000` 0x1402d1850):** `[252,7,6,count]`, then per ground projectile `{id u8, type u8, player u8, x u16, y u16}` (7 bytes each).
 - **Client data (proxy, Lua):** after the snapshot the original sends
   `[252,10, 0x1c,0x02, size u16 (=4+zlib len), raw size u32 (=1024), zlib(32x32 spray)]`.

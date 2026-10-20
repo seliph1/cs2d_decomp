@@ -16,6 +16,8 @@
 #include "cs2d_dynobj.h"
 #include "cs2d_customtile.h"
 
+struct cs2d_sv_lua;   /* cs2d_sv_lua_t, forwarded to keep cs2d_server.h free of the Lua headers */
+
 #define CS2D_SV_MAX_PLAYERS  32
 #define CS2D_SV_MAX_PENDING  256   /* unacknowledged reliable datagrams per connection */
 #define CS2D_SV_MAX_MAPS     256
@@ -255,6 +257,7 @@ typedef struct {
     int      rot_flag;        /* +0x118: 1 turned since the last relay */
     int      relay_ctr;       /* +0x164: 0..2, far players get every 3rd update */
     float    aim;             /* +0x3a0: aim distance ([70]) */
+    bool     aim_valid;       /* [70]/[71]/[72] received since the last spawn */
     bool     team_chosen;     /* +0x2d8: first team choice done (the mp_postspawn spawn happens once) */
     int      team_changes;    /* +0x2a0: team switches since last spawn */
     int      pending_team;    /* +0x400: team chosen with look 5, waiting for the skin */
@@ -312,6 +315,15 @@ typedef struct {
     uint32_t ignore_until; /* 0 = not ignored */
     int      rcon_fails;
 } cs2d_sv_iplimit_t;
+
+/* Trigger_Delay (95): the named trigger list fires after ints[1] ms (or ints[0] seconds). */
+#define CS2D_SV_MAX_PENDING_TRIGGERS 64
+typedef struct {
+    bool     active;
+    uint32_t fire_ms;
+    int      source;
+    char     names[256];
+} cs2d_sv_pending_trigger_t;
 
 typedef struct {
     SOCKET             sock;
@@ -405,6 +417,8 @@ typedef struct {
     char                 alias_name[8][32];
     char                 alias_cmd[8][160];
     int                  alias_count;
+    /* Trigger_Delay entities waiting to fire (cs2d_sv_trigger_entity) */
+    cs2d_sv_pending_trigger_t pending_triggers[CS2D_SV_MAX_PENDING_TRIGGERS];
 } cs2d_server_t;
 
 void cs2d_sv_settings_default(cs2d_sv_settings_t *s);
@@ -430,6 +444,12 @@ void cs2d_sv_team_ex(cs2d_server_t *sv, int id, int team, int look, bool force);
 void cs2d_sv_spawn(cs2d_server_t *sv, int id);                             /* FUN_140160740 */
 void cs2d_sv_spawn_at(cs2d_server_t *sv, int id, float custom_x, float custom_y); /* FUN_14017c910 */
 void cs2d_sv_relay_movement(cs2d_server_t *sv);                            /* FUN_1401a68e0 */
+/* Entity trigger graph (help.php: `trigger` command, Trigger_Start/Move/If/Delay/Once entities).
+ * source is 0 for map entities, 1 for the script `trigger` command (the Lua hook's second argument). */
+void cs2d_sv_trigger_names(cs2d_server_t *sv, const char *names, int source);
+void cs2d_sv_trigger_at_position(cs2d_server_t *sv, int x, int y, int source);
+void cs2d_sv_trigger_start_entities(cs2d_server_t *sv);
+void cs2d_sv_step_trigger_delays(cs2d_server_t *sv);
 int  cs2d_sv_count_team(const cs2d_server_t *sv, int team);                /* FUN_140026150 / FUN_140026210 */
 void cs2d_sv_write_spawn(cs2d_pkt_t *p, int id, const cs2d_sv_player_t *pl); /* [21] */
 int  cs2d_sv_rand(int lo, int hi);                                         /* FUN_1403977c0: Rand(lo, hi) */
@@ -547,7 +567,7 @@ void cs2d_sv_death_drop(cs2d_server_t *sv, int id);                       /* mp_
 void cs2d_sv_kill_player_buildings(cs2d_server_t *sv, int player, int mode); /* mp_killbuildings */
 int  cs2d_sv_spawn_item(cs2d_server_t *sv, int type, int tx, int ty, int clip, int reserve);
 void cs2d_sv_spawn_object(cs2d_server_t *sv, int typ, int tx, int ty, int mode, int team, int player, float rot);
-int  cs2d_sv_spawn_projectile(cs2d_server_t *sv, int type, int tx, int ty, int dir, int flydist);
+int  cs2d_sv_spawn_projectile(cs2d_server_t *sv, int player, int type, int x, int y, int flydist, int dir);
 
 int  cs2d_sv_bot_add(cs2d_server_t *sv, int team, int look, const char *name);
 void cs2d_sv_bot_kick(cs2d_server_t *sv, const char *name_or_id);
@@ -593,7 +613,9 @@ cs2d_server_t *cs2d_sv_get_active(void);
 
 /* [252,6,0,...]: the game settings of the join (FUN_1401dc530 0x1401ded48), exposed for the tests */
 void cs2d_sv_build_join_settings(cs2d_pkt_t *p, const cs2d_sv_settings_t *s, const cs2d_map_t *m, int score_t,
-                                 int score_ct, int32_t round_ms, int32_t seed);
+                                 int score_ct, int32_t round_ms, int32_t seed, const struct cs2d_sv_lua *lua);
+/* [224, count u16, count * key u16]: reliable Lua bind list update (SendBindListToClients) */
+void cs2d_sv_send_lua_binds(cs2d_server_t *sv);
 /* One player record of snapshot section 1 (FUN_1401dc530) */
 void cs2d_sv_write_player_record(cs2d_pkt_t *p, int id, const cs2d_sv_player_t *pl);
 /* Snapshot sections 4 (entity states) and 6 (ground projectiles); return the record count */

@@ -199,3 +199,12 @@ SOCKET cs2d_platform_tcp_connect(const char *host, const char *port)
     freeaddrinfo(res);
     return s;
 }
+
+void cs2d_platform_console_utf8(void)
+{
+#ifdef _WIN32
+    /* Lua/config strings are UTF-8; the console code page must match printf's bytes. */
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+}

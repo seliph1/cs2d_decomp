@@ -133,10 +133,13 @@ Source: dump / REA (addresses below), proxy of our client on the offline dedicat
   5 pos x, y (+32768), rot u16 x 360/65536, 6 free (Tdo.free(id, 40): images only), 7 frame (1-based, clamped to frames),
   8 physics parent typ u8, typid u16, mode u8, 9 shadow u8. Sent only to `player` when mode 2 and player != 0.
 - **[59, id u16, mode, xo + 32768, yo + 32768, w u16, h u16]** hit zone (FUN_14017d7e0); mode 0 removes it.
-- **[54] / [252,7,8] Ttween.receive** (0x1400b4420): `mode, target u16` (> 200 = Tdo id + 200, else hud text), body 0 / 1
-  `{ms i32, x, y +32768}`, 2 `{ms, rot u16}`, 3 `{speed f32}` (rot += speed each update, never ends), 4 `{ms, a u8}`,
-  5 `{ms, r, g, b}`, 6 `{ms, sx f32, sy f32}`, 7 / 8 `{ms, frame}` (8: every ms, 0 loop, 1 back, 2 / 3 ping-pong, 4 random).
+- **[54] / [252,7,8] Ttween.receive** (0x1400b4420): `mode, target u16` (> 200 = Tdo id + 200, else hud text), body 0
+  `{ms i32, x, y +32768}`, 1 `{ms, x, y +32768, rot u16}`, 2 `{ms, rot u16}`, 3 `{speed f32}` (rot += speed each update,
+  never ends), 4 `{ms, a u8}`, 5 `{ms, r, g, b}`, 6 `{ms, sx f32, sy f32}`, 7 `{ms, frame u8}`, 8 `{ms, mode u8}` (every ms,
+  0 loop forward, 1 back, 2 / 3 ping-pong, 4 random; the client keeps its current frame).
   Ttween.addtween replaces a tween of the same image when the modes conflict (moves / rotations, 7 with 8).
+  The **dedicated also creates the Ttween locally** and runs `Ttween.update` every frame; the interpolated
+  `Tdo.x/y/rot/alpha/color/scale/frame` are what `object()` and `imageparam()` read (C4 image projectiles).
 - **Join snapshot sections** (FUN_1402ce7c0 `switch(section - 3)`, proxy): 7 image data per object `{id, path str, r, g, b,
   alpha f32, sx f32, sy f32, blend, frame u16, parent typ (+ typid u16, mode), shadow, hitzone flag (+ mode, xo, yo, w, h)}`,
   8 tweens, 9 custom tiles (11 bytes each), 10 resource paths, 11 weapon settings (zlib), 12 map cycle, 13 mods.
@@ -418,5 +421,9 @@ below were read from.
 - **Network Snapshot & Round Reset**:
   - Join snapshot section 5 (`[252,7,5]`): serializes `CS2D_DO_IMAGE` objects, filtering out private HUD mode 2 images of other players.
   - Join snapshot section 7 (`[252,7,7]`): serializes full image data (color, alpha, scale, blend, frame, shadow, hitzone) in chunks of 20.
-  - Round start: all `CS2D_DO_IMAGE` objects are freed automatically on `cs2d_sv_round_start`.
+  - Round start (`FUN_1402520b0`): **all** dynamic objects are freed (`Tdo.freeall`), not only images, and
+    `FUN_140190e10` rebuilds the map's Env_Building (1..23) and Env_NPC (typ 30) entities in entity order.
+    The client does the same on `[22]`; player-built objects and Lua images do not survive the round.
+    `cs2d_dynobj_spawn_map_objects` implements the pass for both sides (`Env_NPC` health defaults:
+    1 zombie 150, 2 headcrab 30, 3 snark 20, 4 vortigaunt 200, 5 soldier 100).
 

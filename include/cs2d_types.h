@@ -316,9 +316,15 @@ typedef struct {
     cs2d_entity_type_t type;
     int32_t            x;            /* tile x coordinate (0..width-1) */
     int32_t            y;            /* tile y coordinate (0..height-1) */
-    char               trigger[64];
+    /* The .map stores these as CRLF lines of arbitrary length: fun_roleplay's longest trigger is
+     * 175 bytes and its longest strs[0] (Trigger_If Lua code) is 255 bytes. Only strs[0] ever
+     * exceeds 63 in the shipped maps, so it gets a dedicated 256-byte field (str0); the ten
+     * str_settings entries keep the compact 64-byte size to stay inside the linker's 2 GB
+     * static-data limit. */
+    char               trigger[256];
     int32_t            int_settings[10];
     char               str_settings[10][64];
+    char               str0[256];    /* full strs[0]; str_settings[0] holds its first 63 bytes */
     int                param1;       /* alias for int_settings[0] */
     int                param2;       /* alias for int_settings[1] */
 } cs2d_entity_t;

@@ -72,7 +72,10 @@ typedef struct {
     float    rotvar;     /* Turret idle sweep phase (degrees) */
     int      target;     /* Turret target player ([36,id,0,target]) */
     int      countdown;  /* Turret: frames left of the shooting burst */
+    int      idle;       /* Tdo.idle: generic per-type idle counter (object(id, "idle")) */
     int      shots;      /* Turret bursts fired since the client last read it (each fires every barrel) */
+    /* Tdo.entity: [0] 1 when a map entity spawned the object, [1] / [2] that entity's tile (x, y) */
+    int      entity[3];
     int      upgrade;    /* Building: Wrench upgrade points (Tdo.upgrade, +0x6c); NPC Vortigaunt: charge 1..89 */
     /* Server-side timers (Tdo.t1 / Tdo.t2, absolute ms of cs2d_server_t). 0 = inactive */
     uint32_t t1_ms;      /* Construction Site: the moment it becomes the building stored in mode */
@@ -173,8 +176,12 @@ cs2d_dynobj_t *cs2d_dynobj_spawn(cs2d_dynobj_world_t *w, int id, int typ, int x,
 /* Tdo.kill: removes the object; fx (may be NULL) gets the kill effect */
 bool cs2d_dynobj_kill(cs2d_dynobj_world_t *w, int id, cs2d_dynobj_fx_t *fx);
 
-/* Offline: the Env_Building entities of the map, as the server spawns them at round start (FUN_140190e10) */
-void cs2d_dynobj_spawn_map_buildings(cs2d_dynobj_world_t *w);
+/* FUN_140190e10: the map's Env_Building and Env_NPC entities, in entity order (the client runs the
+ * same pass at round start so both sides allocate the same Tdo ids) */
+void cs2d_dynobj_spawn_map_objects(cs2d_dynobj_world_t *w);
+
+/* Tdo.add default health of NPC type 1..5 (0 for an invalid type) */
+int  cs2d_dynobj_npc_health(int type);
 
 /*
  * Server messages. Each returns the bytes consumed from buf[pos] (the opcode included), or -1 when the

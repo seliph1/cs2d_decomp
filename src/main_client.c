@@ -394,15 +394,21 @@ static bool client_frame(void)
                 }
                 break;
 
+            case SDL_EVENT_WINDOW_FOCUS_LOST:
+                cs2d_client_release_lua_binds(&g_client);
+                break;
+
             case SDL_EVENT_TEXT_INPUT:
                 if (cs2d_client_any_ui_open(&g_client)) {
                     cs2d_client_handle_text_input(&g_client, event.text.text);
                 }
                 break;
 
-            case SDL_EVENT_MOUSE_WHEEL:
-                cs2d_client_handle_mouse_wheel(&g_client, (int)event.wheel.y);
+            case SDL_EVENT_MOUSE_WHEEL: {
+                int dy = (int)event.wheel.y;
+                cs2d_client_handle_mouse_wheel(&g_client, dy);
                 break;
+            }
 
             case SDL_EVENT_KEY_DOWN:
                 if (event.key.key == SDLK_GRAVE && !event.key.repeat) {

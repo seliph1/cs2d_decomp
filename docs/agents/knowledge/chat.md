@@ -25,9 +25,13 @@ chat prompt `FUN_14029f7b0`, opcode 240 handler `FUN_1402c8100` (`recv 240 msg`)
   - Terrorist: `(255, 25, 0)` (red/orange)
   - Counter-Terrorist: `(50, 150, 255)` (blue)
   - Dead player formatting: prefix `*DEAD* <name>: ` (mode 1) and `*DEAD*(TEAM) <name>: ` (mode 2).
-- **Server messages & tag `@C` (`FUN_1401de400`):**
+- **Server messages & tag `@C` (`FUN_140153900` dedicated, `FUN_1401de400` client):**
   - Server messages from `sv_msg`, `sv_msg2`, `msg`, `msg2`, or opcode 226/240.
-  - If message ends with `@C` or `@c` (or mode == 2): tag `@C` is stripped, routed to `Thud_msg.add_center` (screen center).
+  - **The dedicated performs the center tag:** `FUN_140153900` at `0x1401546a0` compares the end of the text
+    with the `@C` literal (`0x1405e80e0`), removes those 2 characters and sends `[240, 0, 2, ...]` (mode 2).
+    Only the uppercase `@C` exists in `cs2d_dedicated.exe`.
+  - Client `FUN_1401de400` case 1 -> `Thud_msg.add_chat`; case 2 (sender 0) -> `Thud_msg.add_center`.
+    Our client also strips a trailing `@C` in `cs2d_client_handle_server_msg` for opcode 226/local paths.
   - Otherwise routed to `Thud_msg.add_chat` (HUD chat log).
   - All messages are echoed to the console (`cs2d_con_print` / `cs2d_client_console_print`).
   - Color tag: leading `\xA9RRRGGGBBB` (`U+00A9` / `\xC2\xA9` + 9 ASCII digits) sets line RGB and strips the 10-char prefix.
@@ -39,6 +43,10 @@ chat prompt `FUN_14029f7b0`, opcode 240 handler `FUN_1402c8100` (`recv 240 msg`)
 - **Network opcode 240 (`CS2D_NET_MSG2`):**
   - Client send: `[240, mode u8 (1=say, 2=sayteam), char_len u16 LE, char_len * 2 bytes UTF-16LE]`.
   - Server recv & broadcast: `[240, sender_id u8, mode u8, char_len u16 LE, char_len * 2 bytes UTF-16LE]`.
+  - Our client now converts its UTF-8 input buffer to UTF-16LE with `cs2d_net_utf8_to_utf16`; the
+    server does the same for Lua `msg`/`menu`/`hudtxt` strings (2026-10-20).
+  - Server text may also arrive as `"UTF-8:\xNN..."` (Changelog; WQ2D `utf8.convert`), including the
+    `\xC2xA9` continuation-byte spelling; `cs2d_net_utf8_unescape` decodes it before the wire conversion.
 - **Kill feed (`Thud_msg.add_kill` 0x1401aef60, `draw_kill` 0x14010f8d0; code `cs2d_client_add_kill`,
   `render_kill_msgs`):**
   - Client path of `[19]` (FUN_1401eaf60, DAT_140ddf400 == 0): `add_kill(killer, weapon, victim, assist, -1, "")`

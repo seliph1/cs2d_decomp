@@ -78,6 +78,7 @@ static void print_usage(const char *prog)
 
 int main(int argc, char **argv)
 {
+    cs2d_platform_console_utf8();
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 

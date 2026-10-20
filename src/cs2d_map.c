@@ -300,7 +300,12 @@ bool cs2d_map_load_file(cs2d_map_t *map, const char *filepath)
 
         for (int j = 0; j < 10; j++) {
             temp_ent.int_settings[j] = stream_read_int(&s);
-            stream_read_line(&s, temp_ent.str_settings[j], sizeof(temp_ent.str_settings[j]));
+            if (j == 0) {
+                stream_read_line(&s, temp_ent.str0, sizeof(temp_ent.str0));
+                snprintf(temp_ent.str_settings[0], sizeof(temp_ent.str_settings[0]), "%s", temp_ent.str0);
+            } else {
+                stream_read_line(&s, temp_ent.str_settings[j], sizeof(temp_ent.str_settings[j]));
+            }
         }
         temp_ent.param1 = temp_ent.int_settings[0];
         temp_ent.param2 = temp_ent.int_settings[1];
@@ -416,7 +421,14 @@ bool cs2d_map_save_file(const cs2d_map_t *map, const char *filepath)
         write_line_crlf(f, e->trigger);
         for (int j = 0; j < 10; j++) {
             fwrite(&e->int_settings[j], sizeof(int32_t), 1, f);
-            write_line_crlf(f, e->str_settings[j]);
+            if (j == 0) {
+                /* str0 holds the full string; if the editor changed str_settings[0], prefer it. */
+                const char *s0 = (e->str0[0] && strncmp(e->str0, e->str_settings[0], 63) == 0)
+                                 ? e->str0 : e->str_settings[0];
+                write_line_crlf(f, s0);
+            } else {
+                write_line_crlf(f, e->str_settings[j]);
+            }
         }
     }
 

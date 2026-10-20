@@ -45,6 +45,13 @@ Source: REA `cs2d_dedicated.exe` `FUN_1401ce010` (recv 27), `FUN_140190000` (pro
   - `dir` received in `[27]` as 16-bit angle `dir * (360.0 / 65536.0)`.
   - Impact weapons (Rocket 48, RPG 47, Grenade Launcher 49, Molotov 73, Snowball 75, Gut Bomb 86): detonate immediately on contact with any map wall (`sv_tile_blocks`), dynamic object building (`cs2d_dynobj`), or living player (`fabs(x - px) < 20 && fabs(y - py) < 20`).
   - Bouncing weapons (HE 51, Flash 52, Smoke 53, Gas 72, Flare 54, Air Strike 76): bounce off blocking tiles by reflecting velocity components (`vx = -vx * 0.5f`, `vy = -vy * 0.5f`), reducing remaining fly distance by 50% (`flydist *= 0.5f`), and reducing speed by 35% (`speed *= 0.65f`).
+- **Lua/console `spawnprojectile` (2026-10-20)**: syntax is
+  `spawnprojectile <player> <type> <x> <y> <flydist> <dir>` (help.php). `x`, `y` and `flydist` are
+  **pixels** (not tiles); `flydist 0` spawns the projectile lying on the ground. It mirrors
+  `Tpro.spawnprojectile` (`CS2D.exe 0x1400a8d50`): the id is a per-owner byte (1..255) and `[58]` is sent
+  reliably to every joined player (`player` may be 0 = server-owned). The C4 mod's
+  `cm.spawnprojectile(uid,type,x,y,dist,rot)` uses exactly this command; before the fix the parser read
+  `type, tx, ty, dir, flydist` and multiplied x/y by 32, so projectiles landed off-map and were invisible.
 - **Detonation Radii & Radial Damage (`FUN_140167fa0`, `cs2d_sv_detonate_projectile`)**:
   - Linear falloff: `damage * (radius - dist) / radius`.
   - **HE Grenade (51)**: Building radius 40 px, player radius 160 px, base damage 105. Fuse 1800 ms (1.8s) from spawn.

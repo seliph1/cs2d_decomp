@@ -6,7 +6,7 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 |---|---|---|
 | Position | `[10 run / 11 walk][x u16][y u16]` | Unreliable, sent on every frame where the integer position changed |
 | Move + rot + aim | `[71 run / 72 walk][x u16][y u16][rot u16][aim/2 u8]` | 7 bytes after the opcode (ded `FUN_1401d3fb0` / `FUN_1401d4430`; proxy `47 10 04 6b 05 c1 d6 87`), sent while moving and turning. Misreading the length makes the leftover bytes run as opcodes |
-| Rotation | `[70][angle u16 = deg·65536/360][aim distance/2 u8]` | Sent on change |
+| Rotation | `[70][angle u16 = deg·65536/360][aim distance/2 u8]` | Sent on change. The aim byte feeds the Lua `player(id,"mousex"/"mousey"/"mousemapx"/"mousemapy"/"mousedist")` properties (the dedicated derives the cursor from `rot` + `aim*2`, no extra traffic) |
 | Fire | `[7][seed u8]` | Unreliable. Melee always 0; firearms 0, 2, 3, 4, … (global counter across weapons). The ded stores it at player+0x58, reading 0 as 1 (ded `FUN_1401c8930`) |
 | Select weapon | `[9][type][0]` | |
 | Reload | `[16][1]` | |
@@ -16,6 +16,7 @@ Part of the shared knowledge; index and source conventions in `docs/agents/KNOWL
 | Use | `[26][mode u8][target i32][x u16][y u16]` | Always sent on E (FUN_14014f820). Mode 100 = Trigger_Use with its tile; 1/2 = hostage use/release (target = hostage id), 3 = defuse (target = defuse kit); nothing found = mode 0 with zeros, still reported to the Lua `use` hook (verified, `use_probe.lua`). Target ray at 0, 16 and 32 px along the aim |
 | Team | `[20][team][look]` | `team`: 0 Spectator (`look = 5`), 1 T, 2 CT; `look`: `0..3` class skin or `4` Auto-Select skin |
 | Projectile | `[27][type][x u16][y u16][dir u16 = deg·65536/360][flydist u16]` | Sent on throw/fire; flydist clamped to 385 px (0x181) for throwables |
+| Lua key | `[227][key u16]` / `[228][key u16]` | Reliable (`Createpacket(1,0)`). `key` is a Win32 VK code from the server's `[252,6]` / `[224]` bind list; the client only reports announced keys. `mouse1..3` = 1..3, `mwheelup/down` = 0x122/0x123, `f1..f12` = 0x70..0x7B |
 | Spectate | `[67][player]` | Reliable. Followed player, 0 = free look; only sent while dead or Spectator |
 | Process | `[30][mode]` | 1 plant start, 2 plant abort, 4 defuse abort (`FUN_1401cb510`, `FUN_1401f5f60`) |
 | Spec position | `[32][x+32768 u16][y+32768 u16]` | Unreliable, once per second while dead or Spectator: the camera center |

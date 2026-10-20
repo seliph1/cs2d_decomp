@@ -145,6 +145,20 @@ static void utf16_to_colored_utf8(
     for (int i = start; i < char_len; i++) {
         uint16_t wc = (uint16_t)utf16_le[i * 2] | ((uint16_t)utf16_le[i * 2 + 1] << 8);
         if (wc == '\r' || wc == '\n' || wc == 0) continue;
+        /* Surrogate pair -> 4-byte UTF-8 (Lua messages may carry emoji). */
+        if (wc >= 0xd800 && wc <= 0xdbff && i + 1 < char_len) {
+            uint16_t lo = (uint16_t)utf16_le[(i + 1) * 2] | ((uint16_t)utf16_le[(i + 1) * 2 + 1] << 8);
+            if (lo >= 0xdc00 && lo <= 0xdfff) {
+                uint32_t cp = 0x10000u + ((uint32_t)(wc - 0xd800) << 10) + (uint32_t)(lo - 0xdc00);
+                if (out_pos + 4 >= max_utf8) break;
+                out_utf8[out_pos++] = (char)(0xf0 | (cp >> 18));
+                out_utf8[out_pos++] = (char)(0x80 | ((cp >> 12) & 0x3f));
+                out_utf8[out_pos++] = (char)(0x80 | ((cp >> 6) & 0x3f));
+                out_utf8[out_pos++] = (char)(0x80 | (cp & 0x3f));
+                i++;
+                continue;
+            }
+        }
         if (wc < 0x80) {
             if (out_pos + 1 >= max_utf8) break;
             out_utf8[out_pos++] = (char)wc;
@@ -620,6 +634,41 @@ void cs2d_client_send_udp(cs2d_client_t *client, const uint8_t *payload, size_t 
     }
 }
 
+static void client_send_lua_packet(cs2d_client_t *client, uint16_t vk, bool pressed)
+{
+    uint8_t pkt[3];
+    pkt[0] = pressed ? CS2D_NET_LUABIND_PRESS : CS2D_NET_LUABIND_RELEASE;
+    pkt[1] = (uint8_t)(vk & 0xff);
+    pkt[2] = (uint8_t)(vk >> 8);
+    cs2d_client_send_udp(client, pkt, sizeof(pkt), true);
+}
+
+void cs2d_client_send_lua_key(cs2d_client_t *client, uint16_t vk, bool pressed)
+{
+    if (!client || !client->connected || client->net_sock == INVALID_SOCKET) return;
+    if (client->scene != CS2D_SCENE_GAME) return;
+    bool bound = false;
+    for (int i = 0; i < client->lua_bind_count; i++) {
+        if (client->lua_binds[i] == vk) { bound = true; break; }
+    }
+    if (!bound) return;
+    if (vk < (uint16_t)(sizeof(client->lua_bind_held) / sizeof(client->lua_bind_held[0]))) {
+        if (!pressed && !client->lua_bind_held[vk]) return;
+        client->lua_bind_held[vk] = pressed;
+    }
+    client_send_lua_packet(client, vk, pressed);
+}
+
+void cs2d_client_release_lua_binds(cs2d_client_t *client)
+{
+    if (!client) return;
+    for (uint16_t vk = 0; vk < (uint16_t)(sizeof(client->lua_bind_held) / sizeof(client->lua_bind_held[0])); vk++) {
+        if (!client->lua_bind_held[vk]) continue;
+        client->lua_bind_held[vk] = false;
+        if (client->net_sock != INVALID_SOCKET) client_send_lua_packet(client, vk, false);
+    }
+}
+
 static void cs2d_client_send_ack(cs2d_client_t *client, uint16_t srv_seq)
 {
     if (!client || client->net_sock == INVALID_SOCKET) return;
@@ -662,6 +711,9 @@ bool cs2d_client_connect(cs2d_client_t *client, const char *ip, int port)
     client->net_send_seq = 2;
     client->join_stage   = 0;
     client->connected    = false;
+    client->lua_bind_count = 0;
+    memset(client->lua_binds, 0, sizeof(client->lua_binds));
+    memset(client->lua_bind_held, 0, sizeof(client->lua_bind_held));
     client->net_sent_x   = client->net_sent_y = client->net_sent_rot = -1;
     client->fire_seed    = -1;
     client->download_open = false;
@@ -1059,16 +1111,17 @@ void cs2d_client_send_chat(cs2d_client_t *client, uint8_t mode, const char *text
     if (!client || !text || text[0] == '\0') return;
 
     if (client->connected && client->join_stage == 5) {
-        size_t slen = strlen(text);
-        if (slen > 120) slen = 120;
+        /* The input buffer is UTF-8; [240] carries UTF-16LE code units. */
+        uint16_t chars[128];
+        int slen = cs2d_net_utf8_to_utf16(text, chars, 120);
         uint8_t pkt[4 + 128 * 2];
         pkt[0] = (uint8_t)CS2D_NET_MSG2; /* 240 */
         pkt[1] = mode;
         pkt[2] = (uint8_t)(slen & 0xFF);
         pkt[3] = (uint8_t)((slen >> 8) & 0xFF);
-        for (size_t i = 0; i < slen; i++) {
-            pkt[4 + i * 2]     = (uint8_t)text[i];
-            pkt[4 + i * 2 + 1] = 0;
+        for (int i = 0; i < slen; i++) {
+            pkt[4 + i * 2]     = (uint8_t)(chars[i] & 0xff);
+            pkt[4 + i * 2 + 1] = (uint8_t)(chars[i] >> 8);
         }
         cs2d_client_send_udp(client, pkt, 4 + slen * 2, true);
     } else {
@@ -1081,11 +1134,12 @@ void cs2d_client_send_luamenu(cs2d_client_t *client, uint8_t button)
 {
     if (!client || !client->connected) return;
     const char *title = client->luamenu.title;
-    uint16_t slen = (uint16_t)strlen(title);
-    if (slen > 400) slen = 400;
+    /* The title was decoded from UTF-16 into UTF-8; send it back as UTF-16LE. */
+    uint16_t chars[400];
+    int slen = cs2d_net_utf8_to_utf16(title, chars, 400);
 
     /* Packet: 1 byte opcode (235), 1 byte pid, 2 bytes slen (LE), slen*2 bytes UTF-16LE, 1 byte button */
-    size_t pkt_len = 1 + 1 + 2 + slen * 2 + 1;
+    size_t pkt_len = 1 + 1 + 2 + (size_t)slen * 2 + 1;
     uint8_t pkt[1024];
     if (pkt_len > sizeof(pkt)) return;
 
@@ -1093,9 +1147,9 @@ void cs2d_client_send_luamenu(cs2d_client_t *client, uint8_t button)
     pkt[1] = client->local_player_id;
     pkt[2] = (uint8_t)(slen & 0xFF);
     pkt[3] = (uint8_t)((slen >> 8) & 0xFF);
-    for (uint16_t i = 0; i < slen; i++) {
-        pkt[4 + i * 2]     = (uint8_t)title[i];
-        pkt[4 + i * 2 + 1] = 0;
+    for (int i = 0; i < slen; i++) {
+        pkt[4 + i * 2]     = (uint8_t)(chars[i] & 0xff);
+        pkt[4 + i * 2 + 1] = (uint8_t)(chars[i] >> 8);
     }
     pkt[4 + slen * 2] = button;
 
@@ -1728,6 +1782,20 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                                         client->net_lagcomp   = buffer[b + 19];
                                         client->net_lua       = buffer[b + 20] != 0;
                                         client->net_lag_ticks = buffer[b + 21];
+                                        /* Lua bind list: count u8 + n * VK u16. The client reports
+                                         * [227]/[228] only for these keys. */
+                                        int bind_n = buffer[b + 22];
+                                        if (b + 23 + 2 * bind_n <= recvd) {
+                                            if (bind_n > 64) bind_n = 64;
+                                            client->lua_bind_count = bind_n;
+                                            memset(client->lua_bind_held, 0, sizeof(client->lua_bind_held));
+                                            for (int bi = 0; bi < bind_n; bi++) {
+                                                client->lua_binds[bi] = (uint16_t)(buffer[b + 23 + 2 * bi] |
+                                                                                  (buffer[b + 24 + 2 * bi] << 8));
+                                            }
+                                        } else {
+                                            client->lua_bind_count = 0;
+                                        }
                                         int t = b + 23 + 2 * buffer[b + 22] + 4;
                                         if (t + 3 <= recvd) {
                                             client->net_offscreen   = buffer[t] == 1;
@@ -2082,7 +2150,11 @@ void cs2d_client_poll_network(cs2d_client_t *client)
 
                 cs2d_ents_round_start(&client->ents);
                 cs2d_fx_clear(&client->fx);
-                cs2d_dynobj_clear(&client->dynobj); /* FUN_1402520b0: Tdo.freeall; the server respawns them ([49]) */
+                /* FUN_1402520b0: Tdo.freeall then FUN_140190e10 rebuilds the map's Env_Building and
+                 * Env_NPC entities. Both sides run the same pass, so the ids stay in step without
+                 * extra [49] messages; round-start Lua images arrive afterwards. */
+                cs2d_dynobj_clear(&client->dynobj);
+                cs2d_dynobj_spawn_map_objects(&client->dynobj);
                 /* FUN_1402520b0: bomb timers cleared, Thostage.freeall + one per Info_Hostage when
                  * 0x140a14e48[1] == 0 (taken as sv_gamemode 0, inferred: the same flag gates achievements) */
                 client->game.bomb_planted = false;
@@ -2480,6 +2552,20 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     }
                 }
                 pos += 5 + byte_len;
+            } else if (opcode == CS2D_NET_LUA_BIND_DATA) {
+                /* Server -> Client: [224, count u16, count * key u16] (CS2D.exe
+                 * lua_bind.SendBindListToClients 0x14005be90): the Lua bind list changed. */
+                if (pos + 3 > recvd) break;
+                int n = buffer[pos + 1] | (buffer[pos + 2] << 8);
+                if (pos + 3 + 2 * n > recvd) break;
+                int store = n > 64 ? 64 : n;
+                client->lua_bind_count = store;
+                memset(client->lua_bind_held, 0, sizeof(client->lua_bind_held));
+                for (int i = 0; i < store; i++) {
+                    client->lua_binds[i] = (uint16_t)(buffer[pos + 3 + 2 * i] |
+                                                      (buffer[pos + 4 + 2 * i] << 8));
+                }
+                pos += 3 + 2 * n;
             } else if (opcode == CS2D_NET_ENTITYEVENT) {
                 /* Server -> Client: [31, x u16, y u16, state u8] (6 bytes): entity at tile (x, y) changed state */
                 if (pos + 6 > recvd) break;
@@ -3885,6 +3971,13 @@ void cs2d_client_handle_console_key(cs2d_client_t *client, int sdl_key)
 void cs2d_client_handle_mouse_wheel(cs2d_client_t *client, int delta_y)
 {
     if (!client) return;
+    if (client->scene == CS2D_SCENE_GAME) {
+        uint16_t wvk = delta_y > 0 ? 0x122 : 0x123; /* mwheelup / mwheeldown */
+        for (int i = 0; i < abs(delta_y); i++) {
+            cs2d_client_send_lua_key(client, wvk, true);
+            cs2d_client_send_lua_key(client, wvk, false);
+        }
+    }
     if (client->scene == CS2D_SCENE_GAME && !cs2d_client_any_ui_open(client)) {
         const char *cmd = cs2d_binds_find(&client->binds, delta_y > 0 ? "mwheelup" : "mwheeldown");
         for (int i = 0; cmd && i < abs(delta_y); i++) cs2d_scene_game_inv_cmd(client, cmd);
@@ -3893,9 +3986,34 @@ void cs2d_client_handle_mouse_wheel(cs2d_client_t *client, int delta_y)
     client->ui_wheel_delta += delta_y;
 }
 
+/* sys/controls.cfg key code -> Lua bind VK code (the two coincide for letters/digits; the
+ * remaining keys are the subset the game maps). */
+static uint16_t cs2d_key_to_lua_vk(int key)
+{
+    if ((key >= 'A' && key <= 'Z') || (key >= '0' && key <= '9')) return (uint16_t)key;
+    if (key >= CS2D_KEY_F1 && key < CS2D_KEY_F1 + 12) return (uint16_t)(0x70 + (key - CS2D_KEY_F1));
+    switch (key) {
+        case VK_SHIFT:    return 0xA0;  /* leftshift (sys/controls.cfg "speed") */
+        case VK_LCONTROL: return 0xA2;
+        case VK_MENU:     return 0xA4;
+        case VK_TAB:      return 0x09;
+        case VK_BACK:     return 0x08;
+        case VK_RETURN:   return 0x0D;
+        case VK_ESCAPE:   return 0x1B;
+        case VK_SPACE:    return 0x20;
+        case VK_UP:       return 0x26;
+        case VK_DOWN:     return 0x28;
+        case VK_LEFT:     return 0x25;
+        case VK_RIGHT:    return 0x27;
+        default:          return 0;
+    }
+}
+
 void cs2d_client_handle_key(cs2d_client_t *client, int key, bool pressed)
 {
     if (!client) return;
+    uint16_t lvk = cs2d_key_to_lua_vk(key);
+    if (lvk) cs2d_client_send_lua_key(client, lvk, pressed);
     if (cs2d_client_any_ui_open(client)) {
         client->show_scores = false; /* The key release goes to the window */
         if (pressed && !client->console_open && !client->create_server_open && !client->options_open) {
@@ -3923,6 +4041,10 @@ void cs2d_client_handle_mouse(cs2d_client_t *client, float mx, float my, int but
 
     client->mouse_screen_x = mx;
     client->mouse_screen_y = my;
+
+    if (button >= 1 && button <= 3) {
+        cs2d_client_send_lua_key(client, (uint16_t)button, pressed);
+    }
 
     if (cs2d_client_any_ui_open(client)) {
         if (button == 1) {

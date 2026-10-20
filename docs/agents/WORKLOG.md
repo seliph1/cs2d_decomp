@@ -1,4 +1,189 @@
 # Work log (append-only, newest first)
+## 2026-10-20 — Cline — Dedicated: UTF-8 text fields and Func_Teleport walkover
+
+- **Symptoms:** WQ2D Lua messages with accents arrived in game as `"nÃ£o"`; walking onto the map's
+  `Func_Teleport` entities in `fun_roleplay` did not move the player.
+- **Causes:** `cs2d_sv_msg`, the Lua menu/hudtxt builders and the `sys/serverinfo.txt` lines expanded
+  each UTF-8 byte to one UTF-16 code unit, so accented text was double-encoded. The server walkover
+  (`cs2d_sv_validate_move`) only handled the Tdo Teleporter Entrance/Exit buildings and never the
+  `CS2D_ENT_FUNC_TELEPORT` map entity (222 in fun_roleplay).
+- **Fixes:** new `cs2d_net_utf8_to_utf16` (valid UTF-8, surrogate pairs, Latin-1 fallback) used by
+  `cs2d_sv_msg`, `sv_sound`, menu `[235]`, hudtxt `[234]`, server info `[240,51]`, our client's chat /
+  Lua-menu echo, and the client's UTF-16 -> UTF-8 decoder; Windows console now uses `CP_UTF8`.
+  `cs2d_sv_validate_move` teleports to the centre of `(ints[0], ints[1])` for an active Func_Teleport
+  and sends `[15]`; `Trigger_Move` is now gated by entity state like the client.
+- **Follow-up (escaped UTF-8):** the engine's textual form documented by the Changelog
+  (`"UTF-8:\x68\x65..."`) is now decoded by `cs2d_net_utf8_unescape`, including WQ2D's
+  `\xC2xA9` spelling (first byte `\xNN`, continuation bytes bare `xNN`). Applied to `msg`/`msg2`/
+  `sv_msg`, Lua `menu`, `hudtxt`, `print` and `parse` (WQ2D's `parse(utf8.convert(cmd))`).
+- **Center tag:** `cs2d_sv_msg` now mirrors `FUN_140153900` (`0x1401546a0`): text ending in the
+  uppercase `@C` loses those two characters and is sent as `[240, 0, 2, ...]` (center), otherwise
+  mode 1. The client's mode-2 path calls `Thud_msg.add_center`.
+- **Tests:** `test_dedicated_map_teleport` (state 0 teleports, state 1 does not, `[15]` bytes) and
+  `test_dedicated_utf8_messages` (`[240]`/`[234]`/`[235]`, surrogate pair, the `©` example,
+  `parse` of an escaped command, and `@C` -> mode 2 with the tag removed). `test_cs2d.exe` -> **109 / 109**.
+
+
+
+## 2026-10-20 — Cline — Join original travava em "Loading map state" (seção 4 sem terminador)
+
+- **Sintoma (cliente original contra o nosso dedicated):** a tela ficava em `Loading server data... /
+  Loading map state...` e o console repetia `ERROR: unexpected joindata 5 (step 4 expected)` (depois 6,
+  10, 7, 8, 9, 11, 12, 13 e 200).
+- **Causa:** o cliente original só sai da seção 4 (estados de entidade) quando recebe um pacote
+  `[252,7,4,0]`. O nosso `cs2d_sv_send_join_snapshot` enviava a seção 4 uma única vez, com até 255
+  registros e **sem o count-0**; o cliente continuava esperando `joindata 4` e rejeitava todas as
+  seções seguintes.
+- **Correção:** seção 4 agora é enviada em blocos de 180 registros (como o original) e termina com
+  `[252,7,4,0]`. Regressão em `test_dedicated_trigger_graph` (varre os datagramas pendentes atrás de
+  `fc 07 04 00`). `test_cs2d.exe` -> **107 / 107**.
+
+
+## 2026-10-20 — Cline — WQ2D roleplay: trigger graph, bot reqcld, API types
+
+- **Symptom:** the WQ2D RP script loaded but did not initialise `fun_roleplay`: `rp.shutdown` was
+  rejected, two `geoip_lookup` timer errors appeared for the bots, `login.query` was never loaded,
+  and the map's Trigger_Start / Trigger_If chains never ran (no doors, items, lights or dungeons).
+- **Root causes and fixes:**
+  - `shutdown` was missing from the hook table (it exists in 1.0.1.8; probe: `rp.shutdown` adds to
+    `mapchange` and `shutdown`). Added.
+  - `player(bot,"ip")` was empty; the original returns `"0.0.0.0"`. Set in `cs2d_sv_bot_add`;
+    `player(bot,"ping")` now reports 0 while the internal value stays 0xfffe.
+  - Bots now answer `reqcld` (clientdata modes 0..6; mode 4 carries the file SHA-256), so
+    `menu.join`/`menu.clientdata` load `login.query` like the original.
+  - Implemented the server-side entity trigger graph in `cs2d_sv_game.c`: Trigger_Start at round
+    start, Trigger_If (Lua `_cs2d_trigger_if=` chunk), Trigger_Once, Trigger_Delay (silent
+    forwarding), Trigger_Move on walkover; `trigger`/`triggerposition` and [31]/Trigger_Use paths
+    now use it. The Lua `trigger` hook runs once per list name and receives a boolean source;
+    `triggerentity` can cancel a single entity. Plain entities only toggle their state and do not
+    propagate their own trigger list.
+  - API corrections verified with a probe: `game("dedicated")` boolean, `game("timeleft")`,
+    `map("xsize"/"ysize")` = highest tile index, `map("tilesize")` 0, `map("botnodes")`,
+    `map("nobuying"/"noweapons")`, `entity("state")` boolean, full `strs[0]`.
+  - `steamstats` returns false (was an always-truthy empty table), fixing
+    `index.lua:2254 attempt to compare number with table`.
+  - `move`/`movetile`/`walkover` hooks are now called; the buy window is skipped before the first
+    round clock; entity trigger/str0 buffers are 256 bytes (only `strs[0]` needs it, keeping the
+    test binary under the 2 GB static-data limit).
+- **Verification:** `fun_roleplay` startup has no LUA/hook/timer errors, `login.query` loads twice,
+  the first 564 trigger-hook calls match the original exactly, object counts (27 Triple Turret / 57
+  Turret) and 120 items match. Residual: 43 extra state-1 entities / 22 extra hook calls after 16 s
+  (later If/Delay cascades; logged in OPEN_ISSUES). `test_cs2d.exe` -> **107 / 107**.
+
+
+
+## 2026-10-20 — Cline — Fix: imagens-projétil do C4 colidindo/paradas (Ttween não existia no servidor)
+
+- **Sintoma:** `cm.create_projectile` / `cm.projectile_update` (`sys/lua/c4/classmod2.lua`) fazem
+  imagens se moverem com `tween_move` e leem `object(img.id,"x"/"y"/"rot")` a cada `always`. No nosso
+  dedicado a imagem ficava na posição de criação (a colisão era verificada sempre no ponto de spawn,
+  daí o "colide no frame 1") e nunca chegava ao alvo.
+- **Causa:** `cs2d_sv_tween_*` apenas montavam e transmitiam `[54]`; **não criavam o `Ttween` local**.
+  O original (`cs2dlua_tween_move` 0x14009dda0 / `Ttween.update` 0x14027fc50) mantém a lista de tweens
+  no servidor e escreve `Tdo.x/y/rot/alpha/color/scale/frame` a cada frame. Sem isso `object()` e
+  `imageparam()` nunca refletiam a animação.
+- **Correção:** cada `cs2d_sv_tween_*` agora chama `cs2d_dynobj_read_tween` com o próprio pacote
+  `[54]` (a partir de `pkt + 1`, após o opcode) e `cs2d_server_frame` roda
+  `cs2d_dynobj_update_tweens` antes do hook `always`.
+- **Bugs de protocolo corrigidos junto:** `tween_move(id,time,x,y[,rot])` aceita o 5º parâmetro e usa
+  o modo 1 (`[54,1,dur,x,y,rot]`, corpo 10); antes só existia o modo 0. `tween_animate(id,speed,mode)`
+  agora tem a assinatura correta e envia `[54,8,speed,mode]` (corpo 5, só o modo; o cliente mantém o
+  frame atual). O leitor `cs2d_dynobj_read_tween` foi ajustado (modo 1 = 10, modo 8 = 5).
+- **`closeplayers`/`hascloseplayers`:** agora exigem jogador existente, vivo, de time (`team >= 1`,
+  `health >= 1`), como `cs2dlua_closeplayers`; slots vazios/mortos não são mais retornados (podiam
+  gerar hit falso no ponto de spawn).
+- **Teste:** `test_dedicated_dynamic_images` ganhou casos de `tween_move` (modo 0 e 1),
+  `tween_animate` e do filtro de `closeplayers`. `test_cs2d.exe` -> **106 / 106**.
+
+
+## 2026-10-20 — Cline — `object()` completo, `player("screenw"/"screenh"/"widescreen")` e espaço Tdo unificado
+
+- **`object(id, prop)` completo** (`cs2dlua_object` em `CS2D.exe` 0x1400dfc40): além dos campos já
+  existentes, agora expõe `typename`, `rootrot` (`rrot`), `rotvar`, `target`, `entity`, `entityx`,
+  `entityy` e `idle` como **número** (`Tdo.idle`, não booleano). `tilex/tiley` usam o arredondamento
+  do original `(int)((x + 1) * 0.03125)` (diferente de `objectat`, que usa `x / 32`). Objeto ou
+  propriedade inexistente -> `false`; `object(0, "table")` continua listando todos os Tdo.
+- **`closeobjects`**: passou a medir a distância euclidiana até a **posição do objeto** (canto
+  superior esquerdo), não até o centro (+16), como `cs2dlua_closeobjects` 0x140059330.
+- **`player(id, "screenw"/"screenh")`** já existiam; adicionado `widescreen` (0/1, inverso do
+  setting 4:3) e cobertos por teste (defaults 850x480, `[232,1]` sobrescreve).
+- **Espaço Tdo unificado (correção):** imagens (typ 40), construções (1..23) e NPCs (typ 30) já
+  dividiam `sv->dynobj` e o mesmo `next_free_id`. O erro estava no round start: só as imagens eram
+  removidas. O original faz `Tdo.freeall()` + `FUN_140190e10` (recria Env_Building e Env_NPC **na
+  ordem das entidades**), então construções de jogador também somem e os IDs voltam a coincidir com
+  o cliente. `cs2d_dynobj_spawn_map_objects` substitui `..._map_buildings` e também cria `Env_NPC`
+  (typ 31 do mapa: rot ints[0], tipo ints[1], health ints[2], `ints[3]==1` não spawna). Saúde padrão
+  dos NPCs (`Tdo.add` 0x1409ed7f0, init 0x14031a195): 1 zombie **150**, 2 headcrab **30**, 3 snark
+  **20**, 4 vortigaunt **200**, 5 soldier **100**. `Tdo.entity` agora é preenchido (spawn do mapa).
+- **Health de construções:** `spawnobject` usa `max_health` do tipo (como `Tdo.inibuilding` no
+  servidor) e `spawnnpc` usa a tabela de saúde do NPC.
+- **Cliente:** em `[22]` faz `dynobj_clear` e roda o mesmo `cs2d_dynobj_spawn_map_objects`, como o
+  `FUN_140190e10` do `CS2D.exe`.
+- **Teste:** `test_dedicated_dynobj_shared_space` (imagem + construção + NPC no mesmo ID space,
+  round start restaura só entidades do mapa) e novas asserções em `object()`/`player()`.
+  `test_cs2d.exe` -> **106 / 106**.
+
+
+## 2026-10-20 — Cline — Fix: `player(id, "mousex"/"mousemapx"/"mousedist")` no dedicated
+
+- **Sintoma:** as propriedades de mouse do `player()` retornavam a posição do jogador
+  (`mousemapx/y`) ou zero (`mousex/y/mousedist`), então `cm.mouse(uid)` do mod C4 mirava no
+  próprio jogador.
+- **Causa:** eram stubs. O servidor original **deriva** o cursor do `rot` + `aim` que o cliente já
+  manda em `[70]/[71]/[72]`, sem tráfego extra (`cs2d_dedicated.exe` 0x1400c936c..).
+- **Fórmula confirmada** com `tools/agent/lua/mouse_probe.lua` no servidor original e no nosso
+  (cliente original): `mousex = 425 + sin(rot)*aim`, `mousey = 240 - cos(rot)*aim` (tela virtual
+  850x480), `mousemapx = x + (mousex-425)`, `mousemapy = y + (mousey-240)`,
+  `mousedist = (int)distância`. Jogador morto ou sem `[70]/[71]/[72]` ainda recebido -> **-1**.
+- **Implementação:** `sv_lua_mouse` em `src/cs2d_sv_lua.c`; `aim_valid` em `cs2d_sv_player_t`,
+  marcado nos opcodes 70/71/72 e limpo no spawn.
+- **Teste:** `test_dedicated_mouse_properties` com os valores medidos no original
+  (`x=1360 y=816 rot=118.07007 aim=254 -> 649/359, 1584/935, 253`) e os casos -1.
+  `test_cs2d.exe` -> **105 / 105**.
+
+## 2026-10-20 — Cline — Fix: `addbind` não chegava ao cliente original (snapshot sem a lista de binds)
+
+- **Sintoma:** o mod C4 registra `addbind("Q")`, `"E"`, `"leftshift"`, `"space"`, `"mouse1"`,
+  `"mouse2"`, mas o hook `key` nunca disparava no cliente original.
+- **Causa:** o `[252,6]` do nosso servidor escrevia **0 binds** (`src/cs2d_server.c`, byte b+22). O
+  `CS2D.exe` só envia `[227]/[228]` para teclas anunciadas nessa lista (confirmado com um probe no
+  `cs2d_dedicated.exe`: 6 binds -> `06 51 00 45 00 a0 00 20 00 02 00 01 00`). Sem a lista, o cliente
+  não reporta nenhuma tecla.
+- **Correção:** `cs2d_sv_build_join_settings` agora recebe o estado Lua e escreve `count u8 + n * u16`
+  com as **VK codes** reais (`cs2d_bind_key_code`). `addbind/removebind/removeallbinds` também
+  transmitem `[224, count u16, count * key u16]` (`lua_bind.SendBindListToClients`, `0x14005be90`), e
+  `sv_resolve_key_name` resolve o VK code para o nome canônico (incluindo `f1`/`kp_*`, que colidem com
+  ASCII e por isso usam `cs2d_bind_vk_name`).
+- **Nomes:** `addbind` valida o nome, normaliza `F1` -> `f1` (a tabela original usa minúsculas) e
+  recusa duplicados/desconhecidos, como `lua_bind.AddBindString`.
+- **Teste:** novo `test_dedicated_lua_binds` cobre `[224]`, o `[252,6]`, duplicados, `F1`, remoção e
+  o hook `key` recebendo `Q` (0x51), `f1` (0x70) e `mouse1` (1); `test_client_lua_bind_events` cobre o
+  envio `[227]/[228]` do cliente. `test_cs2d.exe` -> **104 / 104**.
+- **Cliente:** `cs2d_client` agora guarda a lista de binds de `[252,6]`/`[224]`, mapeia teclas,
+  mouse e wheel para VK codes e envia `[227]/[228]` só para as teclas anunciadas; ao perder o foco,
+  solta as binds pressionadas. Validado de ponta a ponta com `bind_probe.lua`: `Q`, `mouse1` e
+  `mwheelup` chegam ao hook `key` do servidor.
+- **Probe:** `tools/agent/lua/bind_probe.lua` registra os binds e mostra a lista no pacote real.
+
+## 2026-10-20 — Cline — Fix: `spawnprojectile` do dedicated (C4 mod sem projéteis no cliente original)
+
+- **Sintoma:** o mod em `sys/lua/c4` (`cm.spawnprojectile`, que chama
+  `parse("spawnprojectile uid type x y dist rot")`) não gerava projéteis no `CS2D.exe` original.
+- **Causa:** o parser em `cs2d_sv_exec` esperava `spawnprojectile <type> <tx> <ty> <dir> <flydist>` e
+  `cs2d_sv_spawn_projectile` tratava x/y como **tiles** (`* 32`). A ordem real (help.php e
+  `Tpro.spawnprojectile`, `CS2D.exe 0x1400a8d50`) é `player type x y flydist dir`, com coordenadas em
+  **pixels** e `flydist 0` = projétil no chão. O comando antigo gerava um projétil de tipo errado,
+  pertencente ao "server" (player 0), fora do mapa.
+- **Correção:** parser e assinatura de `cs2d_sv_spawn_projectile` agora seguem a ordem do help.php;
+  x/y são pixels; o `player` vai no byte 1 do `[58]`; `flydist <= 0` deixa `is_flying = false`; ids de
+  projétil passaram a ser por dono (1..255, como `Tpro.add`) em vez de um contador global que estourava
+  o byte.
+- **Teste:** novo `test_dedicated_spawnprojectile_command` (ordem dos argumentos, coordenadas em pixels,
+  layout do `[58]`, `flydist 0` no chão) e ajuste do `test_dedicated_p1_rules` para a sintaxe correta.
+  `test_cs2d.exe` → **102 / 102**.
+- **Nota:** o teste de API Lua do Phase 4 agora desativa `mp_luaserver`, porque o `sys/lua/server.lua`
+  atual carrega o mod C4, cujo `menu_backend.lua` define um global `menu` que sombreia a função nativa
+  `menu()` (falha pré-existente, não relacionada a projéteis).
 
 ## 2026-10-19 — Cline — Fix: cliente expulso ("Idle") logo ao entrar
 

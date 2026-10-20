@@ -74,6 +74,8 @@ void cs2d_sv_lua_log(cs2d_server_t *sv, const char *msg);
 /* Script runners */
 bool cs2d_sv_lua_dofile(cs2d_server_t *sv, const char *path);
 bool cs2d_sv_lua_dostring(cs2d_server_t *sv, const char *code);
+/* Trigger_If condition type 0: runs "_cs2d_trigger_if=" + code and returns the result. */
+bool cs2d_sv_lua_trigger_if(cs2d_server_t *sv, const char *code, bool *result);
 void cs2d_sv_lua_load_server(cs2d_server_t *sv);
 void cs2d_sv_lua_load_autorun(cs2d_server_t *sv);
 void cs2d_sv_lua_load_map(cs2d_server_t *sv, const char *mapname);
@@ -129,10 +131,10 @@ void cs2d_sv_lua_hook_suicide(cs2d_server_t *sv, int id);
 void cs2d_sv_lua_hook_specswitch(cs2d_server_t *sv, int id, int target);
 void cs2d_sv_lua_hook_voice(cs2d_server_t *sv, int id);
 void cs2d_sv_lua_hook_vote(cs2d_server_t *sv, int id, int mode, const char *param);
-void cs2d_sv_lua_hook_walkover(cs2d_server_t *sv, int id, int iid, int type, int ain, int a, int mode);
+int cs2d_sv_lua_hook_walkover(cs2d_server_t *sv, int id, int iid, int type, int ain, int a, int mode);
 void cs2d_sv_lua_hook_usebutton(cs2d_server_t *sv, int id, int x, int y);
-void cs2d_sv_lua_hook_trigger(cs2d_server_t *sv, const char *trigger, int source);
-void cs2d_sv_lua_hook_triggerentity(cs2d_server_t *sv, int x, int y);
+int cs2d_sv_lua_hook_trigger(cs2d_server_t *sv, const char *trigger, int source);
+int cs2d_sv_lua_hook_triggerentity(cs2d_server_t *sv, int x, int y);
 void cs2d_sv_lua_hook_vipescape(cs2d_server_t *sv, int id, int x, int y);
 void cs2d_sv_lua_hook_dominate(cs2d_server_t *sv, int id, int team, int x, int y);
 void cs2d_sv_lua_hook_flagtake(cs2d_server_t *sv, int id, int team, int x, int y);
@@ -204,12 +206,12 @@ void cs2d_sv_image_physicsparent(cs2d_server_t *sv, int id, int parent_type, int
 void cs2d_sv_image_hitzone(cs2d_server_t *sv, int id, int mode, int xo, int yo, int w, int h);
 void cs2d_sv_tween_alpha(cs2d_server_t *sv, int id, int duration, float alpha);
 void cs2d_sv_tween_color(cs2d_server_t *sv, int id, int duration, int r, int g, int b);
-void cs2d_sv_tween_move(cs2d_server_t *sv, int id, int duration, float x, float y);
+void cs2d_sv_tween_move(cs2d_server_t *sv, int id, int duration, float x, float y, float rot);
 void cs2d_sv_tween_rotate(cs2d_server_t *sv, int id, int duration, float rot);
 void cs2d_sv_tween_rotateconstantly(cs2d_server_t *sv, int id, float speed);
 void cs2d_sv_tween_scale(cs2d_server_t *sv, int id, int duration, float sx, float sy);
 void cs2d_sv_tween_frame(cs2d_server_t *sv, int id, int duration, int frame);
-void cs2d_sv_tween_animate(cs2d_server_t *sv, int id, int duration, int frame, int mode);
+void cs2d_sv_tween_animate(cs2d_server_t *sv, int id, int speed, int mode);
 
 #endif /* CS2D_SV_LUA_H */
 

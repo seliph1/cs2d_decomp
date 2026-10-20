@@ -260,6 +260,9 @@ struct cs2d_client {
     bool                net_leaderboard;   /* Leaderboard available (0x140a14dd8) */
     int                 net_ticks;         /* Server ticks from [247] (DAT_140ddf3e0), -1 until received */
     int                 net_seed;          /* Spread seed from [252,6] (TRandom.GenerateSeed, 0x1402d0560) */
+    uint16_t            lua_binds[64];     /* Lua bind VK codes from [252,6] / [224] */
+    int                 lua_bind_count;
+    bool                lua_bind_held[0x124]; /* bound keys currently pressed (release on focus loss) */
     char                net_password[64];  /* Server password sent in [252,1] (connect <ip> <port> [password]) */
     uint8_t             net_seen_seq[8192]; /* Reliable sequence numbers already handled (1 bit each) */
     cs2d_client_pending_t net_pending[CS2D_CLIENT_MAX_PENDING]; /* Outbound reliable packets pending ACK */
@@ -446,6 +449,11 @@ void cs2d_client_render(cs2d_client_t *client, int screen_w, int screen_h);
 /* Network functions */
 bool cs2d_client_connect(cs2d_client_t *client, const char *ip, int port);
 void cs2d_client_send_udp(cs2d_client_t *client, const uint8_t *payload, size_t len, bool reliable);
+/* Lua bind key report: [227, key u16] press / [228, key u16] release, only when the server
+ * announced the VK code in [252,6] / [224]. */
+void cs2d_client_send_lua_key(cs2d_client_t *client, uint16_t vk, bool pressed);
+/* Release every bound key still held (window focus loss) */
+void cs2d_client_release_lua_binds(cs2d_client_t *client);
 /* Opcode 40: tell the server a dropped item is gone (Titem.fadeout 0x14004cd20) - [40, id u16] */
 void cs2d_client_send_kill_dropped_weapon(cs2d_client_t *client, uint16_t item_id);
 /* One step of the ground item drop timer (Titem.draw 0x1401483a0): returns true when the item expires.

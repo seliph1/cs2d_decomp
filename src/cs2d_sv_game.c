@@ -298,6 +298,8 @@ void cs2d_sv_spawn_at(cs2d_server_t *sv, int id, float custom_x, float custom_y)
     pl->armor = 0;
     pl->speedmod = 0;
     pl->alive = true;
+    pl->aim = 0.0f;
+    pl->aim_valid = false;
     pl->move_flag = pl->rot_flag = 0;
     pl->is_reloading = false;
     pl->reload_end_ms = 0;
@@ -895,6 +897,14 @@ void cs2d_sv_spawn_object(cs2d_server_t *sv, int typ, int tx, int ty, int mode, 
     float py = (float)(ty * CS2D_TILE_SIZE);
     cs2d_dynobj_t *o = cs2d_dynobj_spawn(&sv->dynobj, -1, typ, px, py, rot, mode, team, player);
     if (!o) return;
+    /* Tdo.inibuilding sets max_health[typ] on the server; spawnnpc uses the NPC type's default health */
+    const cs2d_dynobj_def_t *def = cs2d_dynobj_def(typ);
+    if (def && def->category == 1) {
+        o->health = cs2d_sv_building_health(sv, typ);
+    } else if (typ == CS2D_DO_NPC) {
+        int hp = cs2d_dynobj_npc_health(player);
+        if (hp > 0) o->health = hp;
+    }
     uint8_t msg[13];
     msg[0] = 49;
     msg[1] = (uint8_t)(o->id & 0xff); msg[2] = (uint8_t)(o->id >> 8);
@@ -910,29 +920,53 @@ void cs2d_sv_spawn_object(cs2d_server_t *sv, int typ, int tx, int ty, int mode, 
     sv_broadcast_joined(sv, msg, sizeof(msg));
 }
 
-/* spawnprojectile (help.php): [58, player u8, type u8, id u8, x_bias u16, y_bias u16, flydist u16, dir u16] */
-int cs2d_sv_spawn_projectile(cs2d_server_t *sv, int type, int tx, int ty, int dir, int flydist)
+/* Tpro.add(-1, type, player) (CS2D.exe 0x1400a8b30): projectile ids are bytes that are unique
+ * per owner (1..255). The original scans that range and fails when every id is in use. */
+static int sv_next_projectile_id(const cs2d_server_t *sv, int player)
+{
+    for (int id = 1; id < 256; id++) {
+        bool used = false;
+        for (int i = 0; i < CS2D_SV_MAX_PROJECTILES; i++) {
+            const cs2d_sv_projectile_t *p = &sv->projectiles[i];
+            if (p->active && (int)p->player == player && (int)p->id == id) {
+                used = true;
+                break;
+            }
+        }
+        if (!used) return id;
+    }
+    return 0;
+}
+
+/* spawnprojectile (help.php) / Tpro.spawnprojectile (CS2D.exe 0x1400a8d50):
+ * [58, player u8, type u8, id u8, x+0x8000 u16, y+0x8000 u16, flydist u16, dir u16] (12 bytes).
+ * x / y and flydist are in PIXELS; flydist <= 0 spawns the projectile lying on the ground. */
+int cs2d_sv_spawn_projectile(cs2d_server_t *sv, int player, int type, int x, int y, int flydist, int dir)
 {
     if (!sv || type <= 0 || type >= CS2D_MAX_WEAPONS) return 0;
+    if (player < 0 || player > CS2D_SV_MAX_PLAYERS) return 0;
     int slot = -1;
     for (int i = 0; i < CS2D_SV_MAX_PROJECTILES; i++) {
         if (!sv->projectiles[i].active) { slot = i; break; }
     }
     if (slot < 0) return 0;
-    if (sv->next_proj_id == 0) sv->next_proj_id = 1;
+    int proj_id = sv_next_projectile_id(sv, player);
+    if (proj_id == 0) return 0;
+
     cs2d_sv_projectile_t *p = &sv->projectiles[slot];
     float speed, lifetime, def_fly;
     sv_projectile_props(type, &speed, &lifetime, &def_fly);
-    float px = (float)(tx * CS2D_TILE_SIZE + CS2D_TILE_SIZE / 2);
-    float py = (float)(ty * CS2D_TILE_SIZE + CS2D_TILE_SIZE / 2);
-    float fd = (flydist > 0) ? (float)flydist : def_fly;
+    (void)def_fly;
+    if (flydist > 50000) flydist = 50000;   /* Tpro.spawnprojectile clamps to 0xc351 */
+    if (flydist < 0) flydist = 0;
+    float fd = (float)flydist;
     uint32_t now = cs2d_sv_now();
     p->active = true;
-    p->id = sv->next_proj_id++;
-    p->player = 0;
+    p->id = (uint16_t)proj_id;
+    p->player = (uint8_t)player;
     p->type = (uint8_t)type;
-    p->x = px;
-    p->y = py;
+    p->x = (float)x;
+    p->y = (float)y;
     p->dir = (float)((dir % 360 + 360) % 360);
     p->flydist = fd;
     p->speed = speed;
@@ -943,13 +977,13 @@ int cs2d_sv_spawn_projectile(cs2d_server_t *sv, int type, int tx, int ty, int di
 
     uint8_t msg[12];
     msg[0] = 58;
-    msg[1] = 0;                 /* player 0 = server */
+    msg[1] = (uint8_t)player;
     msg[2] = (uint8_t)type;
-    msg[3] = (uint8_t)p->id;
-    uint16_t bx = (uint16_t)((int)px + 0x8000), by = (uint16_t)((int)py + 0x8000);
+    msg[3] = (uint8_t)proj_id;
+    uint16_t bx = (uint16_t)(x + 0x8000), by = (uint16_t)(y + 0x8000);
     msg[4] = (uint8_t)(bx & 0xff); msg[5] = (uint8_t)(bx >> 8);
     msg[6] = (uint8_t)(by & 0xff); msg[7] = (uint8_t)(by >> 8);
-    uint16_t fw = (uint16_t)(int)fd;
+    uint16_t fw = (uint16_t)flydist;
     msg[8] = (uint8_t)(fw & 0xff); msg[9] = (uint8_t)(fw >> 8);
     uint16_t dw = (uint16_t)(p->dir * 182.04445f);
     msg[10] = (uint8_t)(dw & 0xff); msg[11] = (uint8_t)(dw >> 8);
@@ -987,6 +1021,8 @@ void cs2d_sv_init_env_items(cs2d_server_t *sv)
         int wep_type = e->int_settings[0];
         int spawn_mode = e->int_settings[1];
         if (wep_type <= 0 || wep_type >= CS2D_MAX_WEAPONS) continue;
+        /* A disabled Env_Item (state 1) does not spawn; Trigger_Start decides which ones are off. */
+        if (sv->map.entity_state[i] != 0) continue;
         if (spawn_mode == 0 || spawn_mode == 1 || spawn_mode == 2) {
             if (!sv_has_item_at_tile(sv, e->x, e->y, wep_type)) {
                 sv_spawn_item(sv, wep_type, e->x, e->y);
@@ -1013,6 +1049,324 @@ void cs2d_sv_trigger_env_items(cs2d_server_t *sv, const char *trigger_name)
     }
 }
 
+/* ==========================================================================
+ * Entity trigger graph
+ *
+ * The dedicated runs the map's trigger entities itself: round start fires every Trigger_Start
+ * (90), a `trigger <name>` command / Trigger_Use / Trigger_Move fires the names in the entity's
+ * "trigger" field, Trigger_If (96) evaluates its condition and Trigger_Delay (95) / Trigger_Once
+ * run their state machines. Verified against the original with a probe script:
+ *   - `parse("trigger guarita2")` toggles the Func_DynWall state and the Lua `trigger` hook runs
+ *     once per comma-separated name (source false for map entities, true for the script command);
+ *   - Trigger_If runs "_cs2d_trigger_if=" + strs[0] and only fires its list when true.
+ * ========================================================================== */
+
+#define SV_TRIGGER_MAX_DEPTH 16
+
+static int sv_trigger_find_at(cs2d_server_t *sv, int x, int y)
+{
+    if (!sv || !sv->map_loaded) return -1;
+    for (uint32_t i = 0; i < sv->map.entity_count && i < CS2D_MAX_ENTITIES; i++) {
+        if (sv->map.entities[i].x == x && sv->map.entities[i].y == y) return (int)i;
+    }
+    return -1;
+}
+
+static void sv_entity_state_set(cs2d_server_t *sv, int idx, uint8_t state, bool broadcast)
+{
+    if (!sv || idx < 0 || idx >= (int)sv->map.entity_count || idx >= CS2D_MAX_ENTITIES) return;
+    if (sv->map.entity_state[idx] == state) return;
+    sv->map.entity_state[idx] = state;
+    sv->map.entity_state_version++;
+    if (broadcast && state <= 1) {
+        const cs2d_entity_t *e = &sv->map.entities[idx];
+        uint8_t pkt[6] = { 31, (uint8_t)(e->x & 0xff), (uint8_t)((e->x >> 8) & 0xff),
+                           (uint8_t)(e->y & 0xff), (uint8_t)((e->y >> 8) & 0xff), state };
+        sv_broadcast_joined(sv, pkt, 6);
+    }
+}
+
+/* Env_Building / Env_NPC: keep the shared Tdo list in step with the entity state. The map spawn
+ * pass skips entities in state != 0; a trigger that hides one removes its object, showing it
+ * creates the object again (same parameters as cs2d_dynobj_spawn_map_objects). */
+static void sv_map_object_entity_apply(cs2d_server_t *sv, const cs2d_entity_t *e, int state)
+{
+    if (!sv || !e) return;
+    int found = 0;
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+        if (!o->active || !o->entity[0]) continue;
+        if (o->entity[1] != e->x || o->entity[2] != e->y) continue;
+        found = o->id;
+        if (state) {
+            cs2d_dynobj_kill(&sv->dynobj, o->id, NULL);
+            return;
+        }
+    }
+    if (found || state) return;
+
+    if (e->type == CS2D_ENT_ENV_BUILDING) {
+        cs2d_dynobj_t *o = cs2d_dynobj_spawn(&sv->dynobj, -1, e->int_settings[0], e->x << 5, e->y << 5,
+                                             (float)e->int_settings[2], 0, e->int_settings[1], 0);
+        if (o) {
+            o->entity[0] = 1;
+            o->entity[1] = e->x;
+            o->entity[2] = e->y;
+        }
+    } else if (e->type == CS2D_ENT_ENV_NPC && e->int_settings[3] == 0) {
+        int npc_type = e->int_settings[1];
+        if (npc_type <= 0) return;
+        cs2d_dynobj_t *o = cs2d_dynobj_spawn(&sv->dynobj, -1, CS2D_DO_NPC, (e->x << 5) + 16, (e->y << 5) + 16,
+                                             (float)e->int_settings[0], 0, 0, npc_type);
+        if (o) {
+            int hp = cs2d_dynobj_npc_health(npc_type);
+            o->health = (e->int_settings[2] > 0) ? e->int_settings[2] : hp;
+            o->entity[0] = 1;
+            o->entity[1] = e->x;
+            o->entity[2] = e->y;
+        }
+    }
+}
+
+/* Trigger_If condition (help.php entities.php?entity=Trigger_If). */
+static bool sv_trigger_if_condition(cs2d_server_t *sv, const cs2d_entity_t *e)
+{
+    if (!sv || !e) return false;
+    int type = e->int_settings[0];
+    int a = e->int_settings[1], b = e->int_settings[2], c = e->int_settings[3];
+    int d = e->int_settings[4], f = e->int_settings[5];
+
+    if (type == 0) {
+        if (!sv->set.mp_luamap) return false;
+        bool result = false;
+        cs2d_sv_lua_trigger_if(sv, e->str0[0] ? e->str0 : e->str_settings[0], &result);
+        return result;
+    }
+    if (type == 1 || type == 2) {
+        int cnt = 0;
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            cs2d_sv_player_t *pl = &sv->players[i];
+            if (!pl->used || !pl->alive) continue;
+            int tx = (int)(pl->x * 0.03125f), ty = (int)(pl->y * 0.03125f);
+            if (tx >= b && tx < b + d && ty >= c && ty < c + f) cnt++;
+        }
+        return (type == 1) ? (cnt >= a) : (cnt <= a);
+    }
+    if (type == 3 || type == 4) {
+        int idx = sv_trigger_find_at(sv, a, b);
+        if (idx < 0) return false;
+        bool hidden = sv->map.entity_state[idx] != 0;
+        return (type == 3) ? !hidden : hidden;
+    }
+    if (type >= 5 && type <= 8) {
+        int t = 0, ct = 0;
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            cs2d_sv_player_t *pl = &sv->players[i];
+            if (!pl->used || !pl->alive) continue;
+            if (pl->team == 1) t++;
+            else if (pl->team == 2) ct++;
+        }
+        int n = (type == 5 || type == 7) ? t : ct;
+        return (type == 5 || type == 6) ? (n >= a) : (n <= a);
+    }
+    if (type == 9 || type == 10) {
+        if (sv->set.mp_roundtime <= 0) return type == 9;
+        uint32_t limit = (uint32_t)sv->set.mp_roundtime * 60000u;
+        uint32_t elapsed = cs2d_sv_now() - sv->round_start_ms;
+        int left = (elapsed >= limit) ? 0 : (int)((limit - elapsed) / 1000u);
+        return (type == 9) ? (left >= a) : (left <= a);
+    }
+    if (type == 11 || type == 12) {
+        int cnt = 0;
+        for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+            if (sv->items[i].active && sv->items[i].tile_x == b && sv->items[i].tile_y == c) cnt++;
+        }
+        return (type == 11) ? (cnt >= a) : (cnt <= a);
+    }
+    if (type == 13 || type == 14) {
+        bool found = false;
+        for (int i = 0; i < CS2D_DYNOBJ_MAX && !found; i++) {
+            cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+            if (!o->active || o->typ < CS2D_DO_BARRICADE || o->typ > CS2D_DO_SUPER_SUPPLY) continue;
+            if ((int)(o->x / 32.0f) == a && (int)(o->y / 32.0f) == b) found = true;
+        }
+        return (type == 13) ? found : !found;
+    }
+    return false;
+}
+
+static void sv_trigger_entity(cs2d_server_t *sv, int idx, int source, int depth);
+
+static void sv_trigger_names_depth_ex(cs2d_server_t *sv, const char *names, int source, int depth,
+                                      bool lua_trigger_hook)
+{
+    if (!sv || !names || !names[0] || depth > SV_TRIGGER_MAX_DEPTH) return;
+    char list[256];
+    snprintf(list, sizeof(list), "%s", names);
+
+    char *p = list;
+    while (p && *p) {
+        char *comma = strchr(p, ',');
+        if (comma) *comma = '\0';
+        while (*p == ' ' || *p == '\t') p++;
+        char *end = p + strlen(p);
+        while (end > p && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) *--end = '\0';
+
+        if (*p) {
+            /* help.php: the trigger hook runs once per list entry, even when no entity matches,
+             * and source is false for map actions, true for the script `trigger` command.
+             * Trigger_Delay forwards its list without that Lua hook (measured on the original). */
+            if (!lua_trigger_hook || cs2d_sv_lua_hook_trigger(sv, p, source) != 1) {
+                /* Every entity with that name is affected (duplicate names are used to toggle
+                 * groups of sprites). Trigger_Delay forwarding is handled silently below. */
+                for (uint32_t i = 0; i < sv->map.entity_count && i < CS2D_MAX_ENTITIES; i++) {
+                    const cs2d_entity_t *e = &sv->map.entities[i];
+                    if (e->name[0] == '\0' || _stricmp(e->name, p) != 0) continue;
+                    if (cs2d_sv_lua_hook_triggerentity(sv, e->x, e->y) == 1) continue;
+                    sv_trigger_entity(sv, (int)i, source, depth + 1);
+                }
+            }
+        }
+        p = comma ? comma + 1 : NULL;
+    }
+}
+
+static void sv_trigger_names_depth(cs2d_server_t *sv, const char *names, int source, int depth)
+{
+    sv_trigger_names_depth_ex(sv, names, source, depth, true);
+}
+
+void cs2d_sv_trigger_names(cs2d_server_t *sv, const char *names, int source)
+{
+    sv_trigger_names_depth(sv, names, source, 0);
+}
+
+static void sv_schedule_trigger(cs2d_server_t *sv, const char *names, int source, uint32_t delay_ms)
+{
+    if (!sv || !names || !names[0]) return;
+    for (int i = 0; i < CS2D_SV_MAX_PENDING_TRIGGERS; i++) {
+        cs2d_sv_pending_trigger_t *pt = &sv->pending_triggers[i];
+        if (pt->active) continue;
+        pt->active = true;
+        pt->fire_ms = cs2d_sv_now() + delay_ms;
+        pt->source = source;
+        snprintf(pt->names, sizeof(pt->names), "%s", names);
+        return;
+    }
+}
+
+static void sv_trigger_entity(cs2d_server_t *sv, int idx, int source, int depth)
+{
+    if (!sv || idx < 0 || idx >= (int)sv->map.entity_count || idx >= CS2D_MAX_ENTITIES) return;
+    if (depth > SV_TRIGGER_MAX_DEPTH) return;
+    cs2d_entity_t *e = &sv->map.entities[idx];
+    uint8_t state = sv->map.entity_state[idx];
+
+    switch (e->type) {
+    case CS2D_ENT_TRIGGER_IF:
+        if (sv_trigger_if_condition(sv, e)) {
+            sv_trigger_names_depth(sv, e->trigger, source, depth + 1);
+        }
+        break;
+
+    case CS2D_ENT_TRIGGER_START:
+        /* Only Trigger_Start propagates its list when it is triggered by name. Trigger_Move and
+         * Trigger_Hit do that only on the event itself (walkover / hit), never when their name is
+         * in another trigger list (verified: Trigger_Start -> d31m2 stops at d31m2). */
+        sv_trigger_names_depth(sv, e->trigger, source, depth + 1);
+        break;
+
+    case CS2D_ENT_TRIGGER_MOVE:
+    case CS2D_ENT_TRIGGER_HIT:
+        break;
+
+    case CS2D_ENT_TRIGGER_ONCE:
+        if (state == 0) {
+            sv_entity_state_set(sv, idx, 1, true);
+            sv_trigger_names_depth(sv, e->trigger, source, depth + 1);
+        }
+        break;
+
+    case CS2D_ENT_TRIGGER_DELAY: {
+        /* ints[1] ms takes precedence over ints[0] seconds (same rule as the client). */
+        if (state == 0) {
+            uint32_t delay = (e->int_settings[1] > 0) ? (uint32_t)e->int_settings[1]
+                                                      : (uint32_t)e->int_settings[0] * 1000u;
+            sv_entity_state_set(sv, idx, 1, true);
+            sv_schedule_trigger(sv, e->trigger, source, delay);
+        }
+        break;
+    }
+
+    case CS2D_ENT_ENV_ITEM:
+        /* Env_Item toggles and spawns its item (knowledge/entities.md). Its "trigger" field is not
+         * propagated: only trigger entities do that (verified with `parse("trigger bank_btn")`). */
+        sv_entity_state_set(sv, idx, state ^ 1, true);
+        {
+            int wep_type = e->int_settings[0];
+            if (wep_type > 0 && wep_type < CS2D_MAX_WEAPONS &&
+                !sv_has_item_at_tile(sv, e->x, e->y, wep_type)) {
+                sv_spawn_item(sv, wep_type, e->x, e->y);
+            }
+        }
+        break;
+
+    case CS2D_ENT_ENV_BUILDING:
+    case CS2D_ENT_ENV_NPC:
+        sv_entity_state_set(sv, idx, state ^ 1, true);
+        sv_map_object_entity_apply(sv, e, sv->map.entity_state[idx]);
+        break;
+
+    default:
+        /* Every other entity (Func_DynWall, Gen_Weather, Env_Sprite, Env_Light, Trigger_Use, ...)
+         * is a plain toggle. It does not fire its own trigger field: the original only does that
+         * for Trigger_Start/Move/Hit/If/Once/Delay (and for a Trigger_Use pressed by a player). */
+        sv_entity_state_set(sv, idx, state ^ 1, true);
+        break;
+    }
+}
+
+void cs2d_sv_trigger_at_position(cs2d_server_t *sv, int x, int y, int source)
+{
+    int idx = sv_trigger_find_at(sv, x, y);
+    if (idx < 0) return;
+    if (cs2d_sv_lua_hook_triggerentity(sv, x, y) == 1) return;
+    sv_trigger_entity(sv, idx, source, 0);
+}
+
+void cs2d_sv_trigger_start_entities(cs2d_server_t *sv)
+{
+    if (!sv || !sv->map_loaded) return;
+    for (uint32_t i = 0; i < sv->map.entity_count && i < CS2D_MAX_ENTITIES; i++) {
+        if (sv->map.entities[i].type != CS2D_ENT_TRIGGER_START) continue;
+        if (sv->map.entities[i].trigger[0] == '\0') continue;
+        sv_trigger_entity(sv, (int)i, 0, 0);
+    }
+}
+
+void cs2d_sv_step_trigger_delays(cs2d_server_t *sv)
+{
+    if (!sv) return;
+    uint32_t now = cs2d_sv_now();
+    for (int i = 0; i < CS2D_SV_MAX_PENDING_TRIGGERS; i++) {
+        cs2d_sv_pending_trigger_t *pt = &sv->pending_triggers[i];
+        if (!pt->active || (int32_t)(now - pt->fire_ms) < 0) continue;
+        pt->active = false;
+        /* Delay entities return to state 0 when they fire (knowledge/entities.md). */
+        for (uint32_t j = 0; j < sv->map.entity_count && j < CS2D_MAX_ENTITIES; j++) {
+            cs2d_entity_t *e = &sv->map.entities[j];
+            if (e->type == CS2D_ENT_TRIGGER_DELAY && _stricmp(e->trigger, pt->names) == 0 &&
+                sv->map.entity_state[j] != 0) {
+                sv_entity_state_set(sv, (int)j, 0, true);
+                break;
+            }
+        }
+        /* Delay forwarding does not run the Lua trigger hook (measured on the original: a
+         * Trigger_Delay whose delay elapsed never called the hook for its names). */
+        sv_trigger_names_depth_ex(sv, pt->names, pt->source, 0, false);
+    }
+}
+
 /* FUN_1402520b0 / FUN_140123530: start of a new round, respawning players and sending [22] */
 void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
 {
@@ -1027,12 +1381,15 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
         memset(sv->map.entity_state, 0, sizeof(sv->map.entity_state));
         sv->map.entity_state_version++;
     }
-    /* Clear Lua images from previous round (Tdo typ 40) before hooks and client reset */
-    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
-        cs2d_dynobj_t *o = &sv->dynobj.objs[i];
-        if (o->active && o->typ == CS2D_DO_IMAGE) {
-            cs2d_dynobj_kill(&sv->dynobj, o->id, NULL);
-        }
+    /* FUN_1402520b0: Tdo.freeall() and then FUN_140190e10 rebuilds the map's Env_Building and Env_NPC
+     * entities. Built buildings, NPCs and Lua images share the one Tdo list, so all of them go; the
+     * map entities come back in entity order, which keeps the object ids in step with the client's
+     * own teardown/rebuild of the [22] packet. The server stores building health in points, so the
+     * rebuilt buildings get their maximum again. */
+    cs2d_dynobj_clear(&sv->dynobj);
+    if (sv->map_loaded) {
+        cs2d_dynobj_spawn_map_objects(&sv->dynobj);
+        cs2d_sv_fix_building_health(sv);
     }
 
     /* Standard mode: the map's mission counters and this round's VIP (0x1401717a1). The new round
@@ -1059,6 +1416,10 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
     memset(sv->projectiles, 0, sizeof(sv->projectiles));
     cs2d_sv_init_hostages(sv);
     cs2d_sv_init_env_items(sv);
+    /* Round start fires every Trigger_Start (help.php; the original's round-start trigger run was
+     * captured with a probe). This is what initialises the RP map: its Trigger_If entities run
+     * Lua (rp.spawnitem, doors, dungeons, ...), so it must happen after the Lua scripts loaded. */
+    cs2d_sv_trigger_start_entities(sv);
 
     /* Update team scores according to round end reason (FUN_1402520b0 / cs2d_game_apply_round_reason) */
     uint64_t bit = (reason >= 0 && reason <= 61) ? (1ULL << reason) : 0;
@@ -1583,7 +1944,8 @@ void cs2d_sv_buy(cs2d_server_t *sv, int id, int weapon_id)
     if (!pl->used || !pl->alive || pl->team < 1) return;
     if (pl->team == 3) return;   /* the V.I.P. "can't buy any equipment" (help/howtoplay.txt) */
 
-    if (cs2d_sv_lua_hook_buy(sv, id, weapon_id) == 1) return;
+    int buy_hook = cs2d_sv_lua_hook_buy(sv, id, weapon_id);
+    if (buy_hook == 1) return;
 
     cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, id);
 
@@ -1593,7 +1955,8 @@ void cs2d_sv_buy(cs2d_server_t *sv, int id, int weapon_id)
     if (sv->set.mp_buytime > 0.0) {
         uint32_t start = sv->round_clock_ms ? sv->round_clock_ms : sv->round_start_ms;
         uint32_t window = (uint32_t)(sv->set.mp_buytime * 60000.0);
-        if (window > 0 && cs2d_sv_now() - start > window) buy_denied = true;
+        /* No round clock yet (server just started / unit tests): there is no buy window to miss. */
+        if (start != 0 && window > 0 && cs2d_sv_now() - start > window) buy_denied = true;
     }
     if (sv_list_has_id(sv->set.mp_unbuyable, weapon_id)) buy_denied = true;
     /* mp_grenaderebuy 0: a grenade that was thrown/dropped cannot be bought again this life */
@@ -1913,6 +2276,8 @@ void cs2d_sv_step_items(cs2d_server_t *sv)
             }
 
             if (can_pickup) {
+                /* help.php walkover(id, iid, type, ain, a, mode): returning 1 prevents the pickup. */
+                if (cs2d_sv_lua_hook_walkover(sv, pid, it->id, it->type, it->clip, it->reserve, it->sub) == 1) continue;
                 if (cs2d_sv_lua_hook_collect(sv, pid, it->id, it->type, it->reserve, it->clip) == 1) continue;
 
                 if (is_consumable) {
@@ -2241,6 +2606,19 @@ void cs2d_sv_chat(cs2d_server_t *sv, int id, int mode, int char_len, const uint1
     int out = 0;
     for (int i = 0; i < char_len && out < (int)sizeof(utf8_text) - 4; i++) {
         uint16_t ch = chars[i];
+        /* Surrogate pair (a 4-byte UTF-8 character on the client) */
+        if (ch >= 0xd800 && ch <= 0xdbff && i + 1 < char_len) {
+            uint16_t lo = chars[i + 1];
+            if (lo >= 0xdc00 && lo <= 0xdfff) {
+                uint32_t cp = 0x10000u + ((uint32_t)(ch - 0xd800) << 10) + (uint32_t)(lo - 0xdc00);
+                utf8_text[out++] = (char)(0xf0 | (cp >> 18));
+                utf8_text[out++] = (char)(0x80 | ((cp >> 12) & 0x3f));
+                utf8_text[out++] = (char)(0x80 | ((cp >> 6) & 0x3f));
+                utf8_text[out++] = (char)(0x80 | (cp & 0x3f));
+                i++;
+                continue;
+            }
+        }
         if (ch < 0x80) {
             utf8_text[out++] = (char)ch;
         } else if (ch < 0x800) {
@@ -2405,6 +2783,41 @@ bool cs2d_sv_validate_move(cs2d_server_t *sv, int id, float new_x, float new_y, 
     pl->last_valid_y = new_y;
     pl->last_move_ms = now;
     pl->move_flag = (op == 10) ? 1 : 2;
+    cs2d_sv_lua_hook_move(sv, id, (int)new_x, (int)new_y, op == 11 ? 1 : 0);
+
+    if (new_tx != old_tx || new_ty != old_ty) {
+        cs2d_sv_lua_hook_movetile(sv, id, new_tx, new_ty);
+        int map_teleport = -1;
+        /* Walkover entities on the tile the player entered (Tpl.tilepos, the client-side
+         * cs2d_ents_enter_tile does the same). Only entities in state 0 are active. */
+        if (sv->map_loaded) {
+            for (uint32_t i = 0; i < sv->map.entity_count && i < CS2D_MAX_ENTITIES; i++) {
+                const cs2d_entity_t *te = &sv->map.entities[i];
+                if (te->x != new_tx || te->y != new_ty || sv->map.entity_state[i] != 0) continue;
+                if (te->type == CS2D_ENT_TRIGGER_MOVE) {
+                    /* Trigger_Move (91): ints[0] filters by team (0 everyone, 1 T, 2 CT).
+                     * Each affected entity gets the Lua triggerentity hook. */
+                    int filter = te->int_settings[0];
+                    if (filter != 0 && filter != pl->team) continue;
+                    if (cs2d_sv_lua_hook_triggerentity(sv, te->x, te->y) == 1) continue;
+                    cs2d_sv_trigger_names(sv, te->trigger, 0);
+                } else if (te->type == CS2D_ENT_FUNC_TELEPORT && map_teleport < 0) {
+                    map_teleport = (int)i;
+                }
+            }
+        }
+
+        /* Func_Teleport (70): walkover teleports to the centre of the target tile
+         * (ints[0], ints[1]) read from the map's entity properties. The original does
+         * this in Tpl.tilepos and only tells the clients through [15]. */
+        if (map_teleport >= 0) {
+            const cs2d_entity_t *te = &sv->map.entities[map_teleport];
+            cs2d_sv_set_pos(sv, id,
+                            (float)(te->int_settings[0] * CS2D_TILE_SIZE + CS2D_TILE_SIZE / 2),
+                            (float)(te->int_settings[1] * CS2D_TILE_SIZE + CS2D_TILE_SIZE / 2));
+            return true;
+        }
+    }
 
     /*
      * Teleport (Tpl.tilepos 0x14020f7d0, server side; the client only applies [15]): stepping onto one of
@@ -2676,6 +3089,22 @@ void cs2d_sv_set_teamscores(cs2d_server_t *sv, int score_t, int score_ct)
 void cs2d_sv_msg(cs2d_server_t *sv, const char *text, int target_id)
 {
     if (!text) return;
+    /* Lua msg/msg2 (and WQ2D's utf8.convert) may pass "UTF-8:\xNN..." instead of
+     * raw UTF-8; decode the escape form before the console echo and the wire. */
+    char decoded[2048];
+    cs2d_net_utf8_unescape(text, decoded, (int)sizeof(decoded));
+    text = decoded;
+
+    /* FUN_140153900 (0x1401546a0): a message ending in "@C" is a center message.
+     * The dedicated strips those two characters and sends [240, 0, 2, ...]; the
+     * client's mode-2 path calls Thud_msg.add_center (FUN_1401de400 case 2). */
+    int mode = 1;
+    size_t text_len = strlen(text);
+    if (text_len >= 2 && text[text_len - 2] == '@' && text[text_len - 1] == 'C') {
+        decoded[text_len - 2] = '\0';
+        mode = 2;
+    }
+
     if (sv) cs2d_sv_set_active(sv);
     if (target_id == 0) {
         cs2d_server_print("%s", text);
@@ -2683,8 +3112,10 @@ void cs2d_sv_msg(cs2d_server_t *sv, const char *text, int target_id)
         cs2d_server_print("(MSG to #%d) %s", target_id, text);
     }
 
-    int len = (int)strlen(text);
-    if (len > 255) len = 255;
+    /* Lua and config strings are UTF-8; the wire field is UTF-16LE (the byte-wise
+     * expansion here used to turn "não" into "nÃ£o"). */
+    uint16_t units[256];
+    int len = cs2d_net_utf8_to_utf16(text, units, 255);
 
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
         if (target_id > 0 && i != target_id) continue;
@@ -2693,10 +3124,10 @@ void cs2d_sv_msg(cs2d_server_t *sv, const char *text, int target_id)
         cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
         cs2d_pkt_w_byte(p, 240);
         cs2d_pkt_w_byte(p, 0);
-        cs2d_pkt_w_byte(p, 1);
+        cs2d_pkt_w_byte(p, (uint8_t)mode);
         cs2d_pkt_w_short(p, (uint16_t)len);
         for (int j = 0; j < len; j++) {
-            cs2d_pkt_w_short(p, (uint8_t)text[j]);
+            cs2d_pkt_w_short(p, units[j]);
         }
     }
 }
@@ -2756,8 +3187,11 @@ void cs2d_sv_explosion(cs2d_server_t *sv, int x, int y, int size, int damage, in
 void cs2d_sv_server_sound(cs2d_server_t *sv, int mode, const char *path, int target)
 {
     if (!sv || !path) return;
-    int len = (int)strlen(path);
-    if (len > 255) len = 255;
+    char decoded[1024];
+    cs2d_net_utf8_unescape(path, decoded, (int)sizeof(decoded));
+    path = decoded;
+    uint16_t units[256];
+    int len = cs2d_net_utf8_to_utf16(path, units, 255);
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
         if (target > 0 && i != target) continue;
         cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
@@ -2767,7 +3201,7 @@ void cs2d_sv_server_sound(cs2d_server_t *sv, int mode, const char *path, int tar
         cs2d_pkt_w_byte(p, 0);
         cs2d_pkt_w_byte(p, (uint8_t)mode);
         cs2d_pkt_w_short(p, (uint16_t)len);
-        for (int j = 0; j < len; j++) cs2d_pkt_w_short(p, (uint8_t)path[j]);
+        for (int j = 0; j < len; j++) cs2d_pkt_w_short(p, units[j]);
     }
 }
 
@@ -3119,18 +3553,10 @@ void cs2d_sv_use(cs2d_server_t *sv, int id, int mode, int32_t data, uint16_t x, 
                     if (e->x == x && e->y == y && e->type == CS2D_ENT_TRIGGER_USE) {
                         int team_filter = e->int_settings[2];
                         if (team_filter != 0 && team_filter != pl->team) continue;
-                        if (e->trigger[0] != '\0') {
-                            cs2d_sv_trigger_env_items(sv, e->trigger);
-                            cs2d_sv_lua_hook_trigger(sv, e->trigger, id);
-                        }
-                        /* Using a Trigger_Use toggles it (knowledge/entities.md). The server owns the
-                         * state, so every client (the user included) gets [31] with the new value. */
-                        uint8_t new_state = (uint8_t)(sv->map.entity_state[i] ^ 1);
-                        sv->map.entity_state[i] = new_state;
-                        sv->map.entity_state_version++;
-                        uint8_t ev[6] = { 31, (uint8_t)(x & 0xff), (uint8_t)(x >> 8),
-                                          (uint8_t)(y & 0xff), (uint8_t)(y >> 8), new_state };
-                        sv_broadcast_joined(sv, ev, 6);
+                        /* Toggle the Trigger_Use and run its linked trigger list (the Lua trigger
+                         * hook runs once per name, source 0). */
+                        cs2d_sv_trigger_at_position(sv, (int)x, (int)y, 0);
+                        if (e->trigger[0] != '\0') cs2d_sv_trigger_names(sv, e->trigger, 0);
                         break;
                     }
                 }
@@ -3606,11 +4032,12 @@ void cs2d_sv_projectile(cs2d_server_t *sv, int id, int type, uint16_t x, uint16_
     float dir_deg = (float)dir * (360.0f / 65536.0f);
 
     uint32_t now = cs2d_sv_now();
-    if (sv->next_proj_id == 0) sv->next_proj_id = 1;
+    int proj_id = sv_next_projectile_id(sv, id);
+    if (proj_id == 0) return;
 
     cs2d_sv_projectile_t *p = &sv->projectiles[slot];
     p->active = true;
-    p->id = sv->next_proj_id++;
+    p->id = (uint16_t)proj_id;
     p->player = (uint8_t)id;
     p->type = (uint8_t)type;
     p->x = (float)x;
@@ -3778,8 +4205,7 @@ void cs2d_sv_entity_event(cs2d_server_t *sv, int id, uint16_t x, uint16_t y, uin
                     sv->map.entity_state_version++;
                 }
                 if (e->trigger[0] != '\0') {
-                    cs2d_sv_trigger_env_items(sv, e->trigger);
-                    cs2d_sv_lua_hook_trigger(sv, e->trigger, id);
+                    cs2d_sv_trigger_names(sv, e->trigger, 0);
                 }
                 break;
             }
@@ -3862,20 +4288,30 @@ int cs2d_sv_bot_add(cs2d_server_t *sv, int team, int look, const char *name)
     pl->used = true;
     pl->bot = true;
     pl->conn = -1;
-    pl->ping = 0xfffe;
+    pl->ping = 0xfffe;            /* internal/network value; player(bot,"ping") reports 0 */
     pl->joined = true;
     pl->maxhealth = 100;
     pl->os = 1;
+    /* Original dedicated: bots are shown as 0.0.0.0 (probe: player(1,"ip") -> "0.0.0.0"), which also
+     * keeps the WQ2D geoip timer from calling geoip_lookup with an empty string. */
+    snprintf(pl->ip, sizeof(pl->ip), "0.0.0.0");
 
     if (name && name[0]) {
         cs2d_sv_sanitize_name(sv, name, pl->name, sizeof(pl->name));
     } else {
-        snprintf(pl->name, sizeof(pl->name), "Bot %d", slot);
+        const char *prefix = cs2d_sv_settings_get(&sv->set, "bot_prefix");
+        if (prefix && prefix[0]) {
+            snprintf(pl->name, sizeof(pl->name), "%.*sBot %d",
+                     (int)sizeof(pl->name) - 16, prefix, slot);
+        } else {
+            snprintf(pl->name, sizeof(pl->name), "Bot %d", slot);
+        }
     }
 
     int t = (team >= 1 && team <= 2) ? team
             : (cs2d_sv_count_team(sv, 1) <= cs2d_sv_count_team(sv, 2) ? 1 : 2);
     pl->team = t;
+    /* bot_add without a look picks a random skin (the original probe: looks 3 and 2). */
     pl->look = (look >= 0 && look <= 3) ? look : cs2d_sv_rand(0, 3);
 
     /* Broadcast [248] join notice */
@@ -4093,7 +4529,7 @@ bool cs2d_sv_change_map(cs2d_server_t *sv, const char *mapname)
 
     cs2d_sv_init_hostages(sv);
     cs2d_dynobj_init(&sv->dynobj, &sv->map);
-    cs2d_dynobj_spawn_map_buildings(&sv->dynobj);
+    cs2d_dynobj_spawn_map_objects(&sv->dynobj);
     cs2d_sv_fix_building_health(sv);
     if (sv->lua && sv->set.mp_luamap) {
         cs2d_sv_lua_load_map(sv, clean_map);
@@ -5047,10 +5483,43 @@ void cs2d_sv_wrench_hit(cs2d_server_t *sv, int id)
 
 /* reqcld(id, mode [, param]): FUN_140129a50 / FUN_1401780d0
  * Sends reliable packet [53, mode u8 (, param string if mode 4 or 5)] */
+/*
+ * A bot answers reqcld immediately (the original does: probe `reqcld(1, mode, "gfx/c4/c4.bmp")`
+ * emits clientdata for modes 0..6). Values measured on cs2d_dedicated.exe:
+ *   0/1/2 -> 0,0      3 -> 1,0 (advanced light engine on)     4 -> 0, checksum of the file
+ *   5 -> false,""     6 -> 0,0                                 missing file -> 0,""
+ */
+static void sv_bot_answer_reqcld(cs2d_server_t *sv, int id, int mode, const char *param)
+{
+    int data1 = 0;
+    int data2 = 0;
+    const char *sdata = NULL;
+    char hash[65] = "";
+
+    switch (mode) {
+    case 3: data1 = 1; break;
+    case 4:
+        if (param && param[0]) cs2d_net_sha256_file(param, hash);
+        sdata = hash;
+        break;
+    case 5:
+        sdata = "";
+        break;
+    default:
+        break;
+    }
+    cs2d_sv_lua_hook_clientdata(sv, id, mode, data1, data2, sdata);
+}
+
 void cs2d_sv_reqcld(cs2d_server_t *sv, int id, int mode, const char *param)
 {
     if (!sv) return;
     if (id > 0 && id <= CS2D_SV_MAX_PLAYERS) {
+        cs2d_sv_player_t *pl = &sv->players[id];
+        if (pl->used && pl->bot) {
+            sv_bot_answer_reqcld(sv, id, mode, param);
+            return;
+        }
         cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, id);
         if (c) {
             cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
@@ -5063,6 +5532,10 @@ void cs2d_sv_reqcld(cs2d_server_t *sv, int id, int mode, const char *param)
     } else if (id == 0) {
         for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
             if (!sv->players[i].used || !sv->players[i].joined) continue;
+            if (sv->players[i].bot) {
+                sv_bot_answer_reqcld(sv, i, mode, param);
+                continue;
+            }
             cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, i);
             if (c) {
                 cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);

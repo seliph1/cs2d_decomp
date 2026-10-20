@@ -6212,7 +6212,7 @@ static bool test_server_join(void)
     cs2d_sv_settings_t set;
     cs2d_sv_settings_default(&set);
     cs2d_pkt_t p = { .pos = 0 };
-    cs2d_sv_build_join_settings(&p, &set, &map, 0, 0, 0x2884, 0x00010272);
+    cs2d_sv_build_join_settings(&p, &set, &map, 0, 0, 0x2884, 0x00010272, NULL);
     cs2d_map_free(&map);
     if (p.pos != wn || memcmp(p.buf, want, (size_t)wn) != 0) {
         for (int i = 0; i < p.pos && i < wn; i++) {
@@ -7054,7 +7054,9 @@ static bool test_server_phase4_lua(void)
         pl->port = 36963 + i + 1;
     }
 
-    /* Initialize Lua subsystem */
+    /* Initialize Lua subsystem. Keep this API test independent from user content in sys/lua:
+     * server.lua may load mods that define globals such as `menu`, which would hide the native API. */
+    sv.set.mp_luaserver[0] = '\0';
     cs2d_sv_lua_init(&sv);
     if (!sv.lua) TEST_FAIL("Lua Init", "sv.lua is NULL after cs2d_sv_lua_init");
 
@@ -7683,7 +7685,7 @@ static bool test_server_phase6_lua(void)
     /* 1. Test game() and cvar fallback */
     bool rc = cs2d_sv_lua_dostring(&sv,
         "assert(game('version') == '1.0.1.8', 'game version mismatch')\n"
-        "assert(game('dedicated') == 1, 'game dedicated flag mismatch')\n"
+        "assert(game('dedicated') == true, 'game dedicated flag mismatch')\n"
         "assert(game('sv_name') == 'Phase6 Test Server', 'cvar sv_name mismatch')\n"
         "assert(game('custom_cvar') == 'hello_phase6', 'generic cvar fallback mismatch')\n"
         "assert(game('ticks') == 16, 'game ticks mismatch')\n"
@@ -7692,8 +7694,8 @@ static bool test_server_phase6_lua(void)
 
     /* 2. Test map() */
     rc = cs2d_sv_lua_dostring(&sv,
-        "assert(map('xsize') == 40, 'map xsize mismatch')\n"
-        "assert(map('ysize') == 30, 'map ysize mismatch')\n"
+        "assert(map('xsize') == 39, 'map xsize mismatch')\n"
+        "assert(map('ysize') == 29, 'map ysize mismatch')\n"
         "assert(map('tileset') == 'dust.bmp', 'map tileset mismatch')\n"
         "assert(map('mission_vips') == 1, 'map mission_vips count mismatch')\n"
         "assert(map('mission_bombspots') == 1, 'map mission_bombspots count mismatch')\n"
@@ -7736,6 +7738,19 @@ static bool test_server_phase6_lua(void)
     );
     if (!rc) TEST_FAIL("item() queries", "item() assertions failed");
 
+    cs2d_dynobj_t *obj1 = cs2d_dynobj_get(&sv.dynobj, 1);
+    if (!obj1) TEST_FAIL("object() setup", "object 1 is missing");
+    obj1->health  = 150;
+    obj1->rrot    = 45.0f;
+    obj1->rotvar  = 12.5f;
+    obj1->target  = 7;
+    obj1->upgrade = 3;
+    obj1->idle    = 9;
+    obj1->entity[0] = 1;
+    obj1->entity[1] = 8;
+    obj1->entity[2] = 8;
+
+
     /* 6. Test object(), objectat(), closeobjects() */
     rc = cs2d_sv_lua_dostring(&sv,
         "local otbl = object(0, 'table')\n"
@@ -7743,13 +7758,36 @@ static bool test_server_phase6_lua(void)
         "local obj_id = otbl[1]\n"
         "assert(object(obj_id, 'exists') == true, 'spawned building should exist')\n"
         "assert(object(obj_id, 'type') == 1, 'spawned building type should be 1 (Barricade)')\n"
-        "assert(object(obj_id, 'name') == 'Barricade', 'building name mismatch')\n"
+        "assert(object(obj_id, 'typename') == 'Barricade', 'building typename mismatch')\n"
+        "assert(object(obj_id, 'name') == 'Barricade', 'building name alias mismatch')\n"
+        "assert(object(obj_id, 'health') == 150, 'health mismatch')\n"
+        "assert(object(obj_id, 'rootrot') == 45, 'rootrot mismatch')\n"
+        "assert(object(obj_id, 'rotvar') == 12.5, 'rotvar mismatch')\n"
+        "assert(object(obj_id, 'target') == 7, 'target mismatch')\n"
+        "assert(object(obj_id, 'upgrade') == 3, 'upgrade mismatch')\n"
+        "assert(object(obj_id, 'idle') == 9, 'idle must be Tdo.idle (number), not a boolean')\n"
+        "assert(object(obj_id, 'entity') == true, 'entity flag mismatch')\n"
+        "assert(object(obj_id, 'entityx') == 8 and object(obj_id, 'entityy') == 8, 'entity tile mismatch')\n"
+        "assert(object(obj_id, 'alpha') == 0, 'building alpha')\n"
+        "assert(object(obj_id, 'no_such_prop') == false, 'unknown object prop must be false')\n"
+        "assert(object(0, 'no_such_table') == false, 'unknown object(0, ...) must be false')\n"
+        "assert(object(9999, 'exists') == false, 'missing object exists must be false')\n"
         "assert(objectat(8, 8) == obj_id, 'objectat(8, 8) mismatch')\n"
         "assert(objectat(0, 0) == 0, 'objectat(0, 0) should be 0')\n"
         "local close_objs = closeobjects(8 * 32, 8 * 32, 64)\n"
         "assert(#close_objs == 1 and close_objs[1] == obj_id, 'closeobjects mismatch')\n"
+        "assert(#closeobjects(8 * 32 + 16, 8 * 32 + 16, 1) == 0, 'closeobjects uses the object position, not its centre')\n"
     );
     if (!rc) TEST_FAIL("object() queries", "object() assertions failed");
+
+    /* cs2dlua_object rounds up by one pixel: 287 -> 9, while objectat keeps the plain x / 32 tile */
+    obj1->x = 8 * 32 + 31;
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(object(1, 'tilex') == 9, 'object() tilex must use (x + 1) / 32')\n"
+        "assert(objectat(8, 8) == 1, 'objectat must keep the plain x / 32 tile')\n"
+    );
+    if (!rc) TEST_FAIL("object() tilex", "tile rounding mismatch");
+    obj1->x = 8 * 32;
 
     /* 7. Test player(), closeplayers(), hascloseplayers() */
     rc = cs2d_sv_lua_dostring(&sv,
@@ -7759,8 +7797,12 @@ static bool test_server_phase6_lua(void)
         "local humans = player(0, 'tablehuman')\n"
         "assert(#humans == 1 and humans[1] == 1, 'tablehuman mismatch')\n"
         "assert(player(1, 'name') == 'HumanPlayer', 'player 1 name mismatch')\n"
-        "assert(player(1, 'mousemapx') == 100, 'mousemapx mismatch')\n"
+        "assert(player(1, 'mousemapx') == -1, 'mousemapx should be -1 without an aim packet')\n"
         "assert(player(1, 'language') == 'en', 'language mismatch')\n"
+        "assert(player(1, 'screenw') == 850, 'screenw default 850')\n"
+        "assert(player(1, 'screenh') == 480, 'screenh default 480')\n"
+        "assert(player(1, 'widescreen') == 1, 'widescreen is the inverted 4:3 setting')\n"
+        "assert(player(1, 'windowed') == false, 'windowed default false')\n"
         "local cp = closeplayers(100, 100, 50)\n"
         "assert(#cp == 1 and cp[1] == 1, 'closeplayers mismatch')\n"
         "assert(hascloseplayers(100, 100, 50) == true, 'hascloseplayers mismatch')\n"
@@ -9659,6 +9701,8 @@ static bool test_server_client_lua_communication(void)
     );
 
     /* 1. Test reqcld command from Lua / C */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
     cs2d_sv_reqcld(&sv, 1, 4, "gfx/player/t1.bmp");
     cs2d_pkt_t *out_p = &sv.conns[0].out;
     if (out_p->pos < 3 || out_p->buf[0] != 53 || out_p->buf[1] != 4) {
@@ -10074,6 +10118,60 @@ static bool test_dedicated_dynamic_images(void)
     );
     if (!rc) TEST_FAIL("DynImage freeimage", "freeimage did not destroy dynobj");
 
+    /* 10b. The dedicated keeps the Ttween state (Ttween.update): object()/imageparam() must animate.
+     * The C4 mod polls object(id,"x"/"y"/"rot") in its "always" hook for its image projectiles. */
+    uint32_t tw_start = cs2d_sv_now();
+    rc = cs2d_sv_lua_dostring(&sv,
+        "g_move = image('gfx/pointer.bmp', 100, 100, 3)\n"
+        "tween_move(g_move, 1000, 300, 100)\n"
+    );
+    if (!rc) TEST_FAIL("tween_move seed", "tween_move failed");
+    cs2d_dynobj_update_tweens(&sv.dynobj, tw_start + 500);
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(math.abs(object(g_move, 'x') - 200) < 3, 'tween_move must update Tdo.x')\n"
+        "assert(math.abs(object(g_move, 'y') - 100) < 3, 'tween_move must update Tdo.y')\n"
+        "assert(math.abs(imageparam(g_move, 'x') - object(g_move, 'x')) < 0.01, 'imageparam follows the tween')\n"
+    );
+    if (!rc) TEST_FAIL("tween_move server state", "object()/imageparam() did not follow tween_move");
+
+    tw_start = cs2d_sv_now();
+    rc = cs2d_sv_lua_dostring(&sv,
+        "g_rot = image('gfx/pointer.bmp', 100, 100, 3)\n"
+        "tween_move(g_rot, 1000, 300, 300, 90)\n"
+    );
+    if (!rc) TEST_FAIL("tween_move rot seed", "tween_move with rotation failed");
+    cs2d_dynobj_update_tweens(&sv.dynobj, tw_start + 500);
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(math.abs(object(g_rot, 'x') - 200) < 3, 'mode 1 x')\n"
+        "assert(math.abs(object(g_rot, 'y') - 200) < 3, 'mode 1 y')\n"
+        "assert(math.abs(object(g_rot, 'rot') - 45) < 3, 'mode 1 rotation')\n"
+    );
+    if (!rc) TEST_FAIL("tween_move mode 1", "tween_move rotation did not animate");
+
+    tw_start = cs2d_sv_now();
+    rc = cs2d_sv_lua_dostring(&sv,
+        "g_anim = image('<spritesheet:gfx/pointer.bmp:46:46:m>', 10, 10, 0)\n"
+        "tween_animate(g_anim, 100, 0)\n"
+    );
+    if (!rc) TEST_FAIL("tween_animate seed", "tween_animate(id, speed, mode) failed");
+    cs2d_dynobj_update_tweens(&sv.dynobj, tw_start + 150);
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(imageparam(g_anim, 'frame') == 2, 'tween_animate must advance the server frame (1-based 2)')\n"
+    );
+    if (!rc) TEST_FAIL("tween_animate server state", "tween_animate did not advance the frame");
+
+    /* closeplayers only sees existing, living team players (cs2dlua_closeplayers) */
+    sv.players[1].used = true;
+    sv.players[1].team = 1;
+    sv.players[1].alive = false;
+    sv.players[1].health = 0;
+    sv.players[1].x = 0.0f;
+    sv.players[1].y = 0.0f;
+    rc = cs2d_sv_lua_dostring(&sv, "assert(#closeplayers(0, 0, 32) == 0, 'dead/unused players must not be close')\n");
+    if (!rc) TEST_FAIL("closeplayers alive filter", "closeplayers returned a dead or unused player");
+    sv.players[1].used = false;
+
+
     /* 11. cs2d_sv_round_start clears all image dynobjs */
     int imgs_before = 0;
     for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
@@ -10094,6 +10192,125 @@ static bool test_dedicated_dynamic_images(void)
     TEST_PASS("Dedicated Server: Dynamic Image Objects (Tdo typ 40, all modes, [51], [59], snapshot 5/7, round cleanup)");
     return true;
 }
+
+/* ========================================================================= */
+/* Dedicated Server: one Tdo space for images, buildings and NPCs            */
+/* ========================================================================= */
+static bool test_dedicated_dynobj_shared_space(void)
+{
+    printf("\n=== Testing Dedicated Server: shared dynamic object space (buildings / NPCs / images) ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.sock = INVALID_SOCKET;
+    sv.map_loaded = true;
+    sv.map.width = 10;
+    sv.map.height = 10;
+    sv.map.collision = (uint8_t *)calloc(10 * 10, 1);
+    if (!sv.map.collision) TEST_FAIL("dynobj shared", "map allocation failed");
+
+    /* Entity order decides the Tdo ids on both sides (FUN_140190e10). */
+    sv.map.entity_count = 5;
+    sv.map.entities[0].type = CS2D_ENT_ENV_BUILDING;
+    sv.map.entities[0].x = 2;
+    sv.map.entities[0].y = 2;
+    sv.map.entities[0].int_settings[0] = CS2D_DO_BARRICADE;
+    sv.map.entities[0].int_settings[1] = 1;
+
+    sv.map.entities[1].type = CS2D_ENT_ENV_NPC;      /* zombie, default health 150 */
+    sv.map.entities[1].x = 4;
+    sv.map.entities[1].y = 3;
+    sv.map.entities[1].int_settings[0] = 90;         /* rotation */
+    sv.map.entities[1].int_settings[1] = 1;          /* NPC type zombie */
+
+    sv.map.entities[2].type = CS2D_ENT_ENV_NPC;      /* headcrab with a custom health */
+    sv.map.entities[2].x = 5;
+    sv.map.entities[2].y = 3;
+    sv.map.entities[2].int_settings[1] = 2;
+    sv.map.entities[2].int_settings[2] = 250;
+
+    sv.map.entities[3].type = CS2D_ENT_ENV_NPC;      /* ints[3] = 1: no spawn on start */
+    sv.map.entities[3].x = 6;
+    sv.map.entities[3].y = 3;
+    sv.map.entities[3].int_settings[1] = 2;
+    sv.map.entities[3].int_settings[3] = 1;
+
+    sv.map.entities[4].type = CS2D_ENT_INFO_T;       /* unrelated entity */
+    sv.map.entities[4].x = 1;
+    sv.map.entities[4].y = 1;
+
+    cs2d_dynobj_init(&sv.dynobj, &sv.map);
+    cs2d_dynobj_spawn_map_objects(&sv.dynobj);
+    if (cs2d_dynobj_count(&sv.dynobj) != 3) {
+        TEST_FAIL("dynobj shared spawn", "expected one building and two NPCs");
+    }
+
+    const cs2d_dynobj_t *o = cs2d_dynobj_get(&sv.dynobj, 1);
+    if (!o || o->typ != CS2D_DO_BARRICADE || o->entity[0] != 1 || o->entity[1] != 2 || o->entity[2] != 2) {
+        TEST_FAIL("dynobj building", "Env_Building object / entity tile mismatch");
+    }
+    o = cs2d_dynobj_get(&sv.dynobj, 2);
+    if (!o || o->typ != CS2D_DO_NPC || o->player != 1 || o->health != 150 ||
+        o->x != 4 * 32 + 16 || o->y != 3 * 32 + 16 || o->rot != 90.0f) {
+        TEST_FAIL("dynobj NPC", "zombie defaults mismatch");
+    }
+    if (o->entity[0] != 1 || o->entity[1] != 4 || o->entity[2] != 3) {
+        TEST_FAIL("dynobj NPC entity", "entity tile mismatch");
+    }
+    o = cs2d_dynobj_get(&sv.dynobj, 3);
+    if (!o || o->typ != CS2D_DO_NPC || o->player != 2 || o->health != 250) {
+        TEST_FAIL("dynobj NPC health", "int_settings[2] must override the type health");
+    }
+    if (cs2d_dynobj_get(&sv.dynobj, 4) != NULL) {
+        TEST_FAIL("dynobj NPC spawn", "ints[3] = 1 must suppress the spawn");
+    }
+
+    /* A player building and a Lua image share the same list and the same id space. */
+    cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_WALL_3, 8 << 5, 8 << 5, 0.0f, 0, 1, 1);
+    if (!cs2d_sv_lua_init(&sv)) TEST_FAIL("dynobj shared lua", "Lua init failed");
+    bool rc = cs2d_sv_lua_dostring(&sv,
+        "g_shared_img = image('gfx/pointer.bmp', 320, 240, 0)\n"
+        "assert(g_shared_img == 5, 'image takes the next shared object id')\n"
+        "assert(#object(0, 'table') == 5, 'object table holds buildings, NPCs and images')\n"
+        "assert(object(1, 'typename') == 'Barricade', 'building typename')\n"
+        "assert(object(2, 'typename') == 'NPC' and object(2, 'player') == 1, 'NPC typename / type')\n"
+        "assert(object(g_shared_img, 'typename') == 'Image', 'image typename')\n"
+        "assert(object(1, 'entity') == true and object(g_shared_img, 'entity') == false, 'entity flags')\n"
+    );
+    if (!rc) TEST_FAIL("dynobj shared objects", "shared object table assertions failed");
+
+    /* Round start (FUN_1402520b0): Tdo.freeall + FUN_140190e10. The player building and the Lua
+     * image go, the map's Env_Building / Env_NPC objects come back with the same ids. */
+    cs2d_sv_round_start(&sv, 0);
+    if (cs2d_dynobj_count(&sv.dynobj) != 3) {
+        TEST_FAIL("dynobj round start", "expected exactly the three map objects after the round start");
+    }
+    o = cs2d_dynobj_get(&sv.dynobj, 1);
+    if (!o || o->typ != CS2D_DO_BARRICADE || o->health != 150) {
+        TEST_FAIL("dynobj round start building", "map building did not come back with its server health");
+    }
+    o = cs2d_dynobj_get(&sv.dynobj, 2);
+    if (!o || o->typ != CS2D_DO_NPC || o->health != 150 || o->entity[0] != 1) {
+        TEST_FAIL("dynobj round start NPC", "map NPC did not come back");
+    }
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(object(4, 'exists') == false and object(5, 'exists') == false, 'built objects must not survive the round start')\n"
+        "assert(#object(0, 'table') == 3, 'only map objects remain')\n"
+    );
+    if (!rc) TEST_FAIL("dynobj round start table", "round start cleanup assertions failed");
+
+    cs2d_sv_lua_close(&sv);
+    free(sv.map.object_collision);
+    free(sv.map.object_shadow);
+    sv.map.object_collision = NULL;
+    sv.map.object_shadow = NULL;
+    free(sv.map.collision);
+
+    TEST_PASS("Dedicated Server: images, buildings and NPCs share one Tdo space (Env_NPC, entity fields, round reset)");
+    return true;
+}
+
 
 static bool test_dedicated_hudtxt(void)
 {
@@ -10249,6 +10466,322 @@ static bool test_dedicated_hudtxt(void)
     cs2d_sv_lua_close(&sv);
 
     TEST_PASS("Dedicated Server: HUD Texts (hudtxt/2, clear, tweens, [234], [54], Lua API & console)");
+    return true;
+}
+
+static bool test_dedicated_spawnprojectile_command(void)
+{
+    printf("\n=== Testing Dedicated Server: spawnprojectile command ([58]) ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.sock = INVALID_SOCKET;
+
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].conn = 0;
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+
+    /* help.php: spawnprojectile <player> <type> <x> <y> <flydist> <dir>.
+     * x / y are pixels, not tiles: 512 / 768 must stay 512 / 768. */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    if (!cs2d_sv_exec(&sv, "spawnprojectile 1 73 512 768 200 90")) {
+        TEST_FAIL("Dedicated spawnprojectile", "command failed");
+    }
+
+    cs2d_sv_projectile_t *proj = NULL;
+    for (int i = 0; i < CS2D_SV_MAX_PROJECTILES; i++) {
+        if (sv.projectiles[i].active) { proj = &sv.projectiles[i]; break; }
+    }
+    if (!proj) TEST_FAIL("Dedicated spawnprojectile", "projectile was not added");
+    if (proj->player != 1 || proj->type != CS2D_WEP_MOLOTOV) {
+        TEST_FAIL("Dedicated spawnprojectile", "player/type argument order is wrong");
+    }
+    if (proj->x != 512.0f || proj->y != 768.0f) {
+        TEST_FAIL("Dedicated spawnprojectile", "x/y must be pixel coordinates");
+    }
+    if (proj->flydist != 200.0f || proj->dir != 90.0f || !proj->is_flying) {
+        TEST_FAIL("Dedicated spawnprojectile", "flydist/dir/flight state mismatch");
+    }
+    if (proj->id < 1 || proj->id > 255) {
+        TEST_FAIL("Dedicated spawnprojectile", "projectile id must fit in a byte");
+    }
+
+    cs2d_pkt_t *pkt = &sv.conns[0].out;
+    if (pkt->pos < 12 || pkt->buf[0] != 58) {
+        TEST_FAIL("Dedicated spawnprojectile", "expected a 12-byte [58] packet");
+    }
+    int bx = pkt->buf[4] | (pkt->buf[5] << 8);
+    int by = pkt->buf[6] | (pkt->buf[7] << 8);
+    int fw = pkt->buf[8] | (pkt->buf[9] << 8);
+    int dw = pkt->buf[10] | (pkt->buf[11] << 8);
+    if (pkt->buf[1] != 1 || pkt->buf[2] != CS2D_WEP_MOLOTOV || pkt->buf[3] != (int)proj->id) {
+        TEST_FAIL("Dedicated spawnprojectile", "[58] player/type/id mismatch");
+    }
+    if (bx != 512 + 0x8000 || by != 768 + 0x8000) {
+        TEST_FAIL("Dedicated spawnprojectile", "[58] x/y bias mismatch");
+    }
+    if (fw != 200 || dw != 16384) {
+        TEST_FAIL("Dedicated spawnprojectile", "[58] flydist/dir mismatch");
+    }
+
+    /* flydist 0 -> the projectile is spawned lying on the ground (Tpro.spawnprojectile p6 < 1) */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    if (!cs2d_sv_exec(&sv, "spawnprojectile 0 51 320 480 0 45")) {
+        TEST_FAIL("Dedicated spawnprojectile ground", "command failed");
+    }
+    proj = NULL;
+    for (int i = 0; i < CS2D_SV_MAX_PROJECTILES; i++) {
+        if (sv.projectiles[i].active && sv.projectiles[i].player == 0 &&
+            sv.projectiles[i].type == CS2D_WEP_HE) {
+            proj = &sv.projectiles[i];
+            break;
+        }
+    }
+    if (!proj) TEST_FAIL("Dedicated spawnprojectile ground", "ground projectile was not added");
+    if (proj->is_flying || proj->x != 320.0f || proj->y != 480.0f || proj->flydist != 0.0f) {
+        TEST_FAIL("Dedicated spawnprojectile ground", "flydist 0 must spawn on the ground");
+    }
+    pkt = &sv.conns[0].out;
+    if (pkt->pos < 12 || pkt->buf[0] != 58 || pkt->buf[1] != 0 || pkt->buf[2] != CS2D_WEP_HE) {
+        TEST_FAIL("Dedicated spawnprojectile ground", "[58] server-owned projectile mismatch");
+    }
+
+    free(sv.conns[0].pending);
+    TEST_PASS("Dedicated Server: spawnprojectile <player> <type> <x> <y> <flydist> <dir> (pixels, [58], ground)");
+    return true;
+}
+
+static bool test_dedicated_lua_binds(void)
+{
+    printf("\n=== Testing Dedicated Server: Lua addbind/removebind & [252,6] bind list ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.set.mp_luaserver[0] = '\0';   /* keep the API test independent from sys/lua/user mods */
+    sv.sock = INVALID_SOCKET;
+
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].conn = 0;
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+
+    if (!cs2d_sv_lua_init(&sv) || !sv.lua) TEST_FAIL("Lua binds", "Lua init failed");
+    cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv.lua;
+    if (!cs2d_sv_lua_dostring(&sv,
+            "g_key_name = ''\n"
+            "function on_key(id, k, st) g_key_name = k end\n"
+            "addhook('key', 'on_key')\n")) {
+        TEST_FAIL("Lua binds", "key hook setup failed");
+    }
+
+    /* addbind("Q") -> reliable [224, count u16, key u16] using the VK code 0x51 */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    if (!cs2d_sv_lua_dostring(&sv, "assert(addbind('Q') == true)\n")) {
+        TEST_FAIL("Lua binds", "addbind Q failed");
+    }
+    if (lua->bind_key_count != 1 || strcmp(lua->bind_keys[0], "Q") != 0) {
+        TEST_FAIL("Lua binds", "Q was not stored canonically");
+    }
+    cs2d_pkt_t *p = &sv.conns[0].out;
+    if (p->pos < 5 || p->buf[0] != 224 || p->buf[1] != 1 || p->buf[2] != 0 ||
+        p->buf[3] != 0x51 || p->buf[4] != 0) {
+        TEST_FAIL("Lua binds", "addbind did not broadcast [224, 1, 0x51]");
+    }
+
+    /* Case-insensitive duplicate and invalid names are refused, like AddBindString */
+    if (!cs2d_sv_lua_dostring(&sv,
+            "assert(addbind('q') == false, 'duplicate Q accepted')\n"
+            "assert(addbind('nope') == false, 'invalid name accepted')\n")) {
+        TEST_FAIL("Lua binds", "duplicate/invalid addbind assertions failed");
+    }
+
+    /* F1 normalizes to the table's lowercase f1 and the VK code 0x70 */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    if (!cs2d_sv_lua_dostring(&sv, "assert(addbind('F1') == true)\n")) {
+        TEST_FAIL("Lua binds", "addbind F1 failed");
+    }
+    if (lua->bind_key_count != 2 || strcmp(lua->bind_keys[1], "f1") != 0 ||
+        p->buf[1] != 2 || p->buf[5] != 0x70) {
+        TEST_FAIL("Lua binds", "F1 did not become f1/0x70");
+    }
+
+    if (!cs2d_sv_lua_dostring(&sv,
+            "assert(addbind('leftshift') == true)\n"
+            "assert(addbind('space') == true)\n"
+            "assert(addbind('mouse1') == true)\n"
+            "assert(addbind('mouse2') == true)\n")) {
+        TEST_FAIL("Lua binds", "adding the C4 modifier/mouse binds failed");
+    }
+    if (lua->bind_key_count != 6) TEST_FAIL("Lua binds", "expected 6 binds");
+
+    /* The original client sends [227, VK code]; the key hook must get the canonical name */
+    {
+        static const uint8_t kq[] = { 227, 0x51, 0 };       /* Q */
+        static const uint8_t kf1[] = { 227, 0x70, 0 };      /* f1 */
+        static const uint8_t kmouse[] = { 227, 0x01, 0 };   /* mouse1 */
+        cs2d_sv_recv_payload(&sv, &sv.conns[0], kq, (int)sizeof(kq));
+        if (!cs2d_sv_lua_dostring(&sv, "assert(g_key_name == 'Q')\n")) {
+            TEST_FAIL("Lua binds", "VK 0x51 did not reach the key hook as Q");
+        }
+        cs2d_sv_recv_payload(&sv, &sv.conns[0], kf1, (int)sizeof(kf1));
+        if (!cs2d_sv_lua_dostring(&sv, "assert(g_key_name == 'f1')\n")) {
+            TEST_FAIL("Lua binds", "VK 0x70 did not reach the key hook as f1");
+        }
+        cs2d_sv_recv_payload(&sv, &sv.conns[0], kmouse, (int)sizeof(kmouse));
+        if (!cs2d_sv_lua_dostring(&sv, "assert(g_key_name == 'mouse1')\n")) {
+            TEST_FAIL("Lua binds", "VK 0x01 did not reach the key hook as mouse1");
+        }
+    }
+
+    /* removebind updates the clients too */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    if (!cs2d_sv_lua_dostring(&sv, "assert(removebind('f1') == true)\n")) {
+        TEST_FAIL("Lua binds", "removebind f1 failed");
+    }
+    if (lua->bind_key_count != 5 || p->buf[0] != 224 || p->buf[1] != 5 || p->buf[2] != 0) {
+        TEST_FAIL("Lua binds", "removebind did not broadcast [224, 5]");
+    }
+
+    /* The join snapshot carries the same list: count u8 + VK codes */
+    static cs2d_map_t map;
+    memset(&map, 0, sizeof(map));
+    static cs2d_pkt_t join;
+    join.pos = 0;
+    cs2d_sv_build_join_settings(&join, &sv.set, &map, 0, 0, 0, 0,
+                                (const struct cs2d_sv_lua *)lua);
+    static const uint8_t want[] = {
+        5, 0x51, 0x00, 0xA0, 0x00, 0x20, 0x00, 0x01, 0x00, 0x02, 0x00
+    };
+    bool found = false;
+    for (int i = 0; i + (int)sizeof(want) <= join.pos; i++) {
+        if (memcmp(join.buf + i, want, sizeof(want)) == 0) { found = true; break; }
+    }
+    if (!found) TEST_FAIL("Lua binds", "[252,6] bind list missing or wrong");
+
+    /* removeallbinds broadcasts an empty list */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    if (!cs2d_sv_lua_dostring(&sv, "assert(removeallbinds() == true)\n")) {
+        TEST_FAIL("Lua binds", "removeallbinds failed");
+    }
+    if (lua->bind_key_count != 0 || p->pos < 3 || p->buf[0] != 224 || p->buf[1] != 0 || p->buf[2] != 0) {
+        TEST_FAIL("Lua binds", "removeallbinds did not broadcast [224, 0]");
+    }
+
+    free(sv.conns[0].pending);
+    cs2d_sv_lua_close(&sv);
+    TEST_PASS("Dedicated Server: addbind/removebind/removeallbinds -> [224] and the [252,6] VK bind list");
+    return true;
+}
+
+static bool test_client_lua_bind_events(void)
+{
+    printf("\n=== Testing Client: Lua bind events ([252,6] / [224] -> [227]/[228]) ===\n");
+
+    static cs2d_client_t c;
+    memset(&c, 0, sizeof(c));
+    if (!cs2d_platform_net_init()) TEST_FAIL("Client Lua binds", "network init failed");
+    c.net_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (c.net_sock == INVALID_SOCKET) TEST_FAIL("Client Lua binds", "UDP socket failed");
+    c.server_addr.sin_family = AF_INET;
+    c.server_addr.sin_port = htons(9);
+    c.server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    c.net_send_seq = 2;
+    c.connected = true;
+    c.scene = CS2D_SCENE_GAME;
+    c.lua_bind_count = 1;
+    c.lua_binds[0] = 0x51; /* Q */
+
+    cs2d_client_send_lua_key(&c, 0x51, true);
+    if (c.net_pending[0].len < 5 || c.net_pending[0].data[2] != 227 ||
+        c.net_pending[0].data[3] != 0x51 || c.net_pending[0].data[4] != 0) {
+        TEST_FAIL("Client Lua binds", "key press did not send [227, 0x51, 0]");
+    }
+
+    cs2d_client_send_lua_key(&c, 0x51, false);
+    bool release = false;
+    for (int i = 0; i < CS2D_CLIENT_MAX_PENDING; i++) {
+        if (c.net_pending[i].len >= 5 && c.net_pending[i].data[2] == 228 &&
+            c.net_pending[i].data[3] == 0x51 && c.net_pending[i].data[4] == 0) {
+            release = true;
+            break;
+        }
+    }
+    if (!release) TEST_FAIL("Client Lua binds", "key release did not send [228, 0x51, 0]");
+
+    /* A key the server did not announce is not reported */
+    int before = 0;
+    for (int i = 0; i < CS2D_CLIENT_MAX_PENDING; i++) if (c.net_pending[i].len) before++;
+    cs2d_client_send_lua_key(&c, 0x45, true); /* E, not in lua_binds */
+    int after = 0;
+    for (int i = 0; i < CS2D_CLIENT_MAX_PENDING; i++) if (c.net_pending[i].len) after++;
+    if (after != before) TEST_FAIL("Client Lua binds", "unbound key was reported");
+
+    closesocket(c.net_sock);
+    TEST_PASS("Client Lua binds: [227]/[228] for announced VK codes, unbound keys ignored");
+    return true;
+}
+
+static bool test_dedicated_mouse_properties(void)
+{
+    printf("\n=== Testing Dedicated Server: player() mouse position (mousex/mousemapx/mousedist) ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    cs2d_sv_settings_default(&sv.set);
+    sv.set.mp_luaserver[0] = '\0';
+    sv.sock = INVALID_SOCKET;
+    if (!cs2d_sv_lua_init(&sv) || !sv.lua) TEST_FAIL("Mouse properties", "Lua init failed");
+
+    /* Measured on cs2d_dedicated.exe: x=1360 y=816 rot=118.07007 aim byte 127 (=254)
+     * -> mousex 649, mousey 359, mousemapx 1584, mousemapy 935, mousedist 253. */
+    cs2d_sv_player_t *pl = &sv.players[1];
+    pl->used = true;
+    pl->alive = true;
+    pl->x = 1360.0f;
+    pl->y = 816.0f;
+    pl->rot = 118.07006835938f;
+    pl->aim = 254.0f;
+    pl->aim_valid = true;
+
+    if (!cs2d_sv_lua_dostring(&sv,
+            "assert(player(1,'mousex') == 649, 'mousex')\n"
+            "assert(player(1,'mousey') == 359, 'mousey')\n"
+            "assert(player(1,'mousemapx') == 1584, 'mousemapx')\n"
+            "assert(player(1,'mousemapy') == 935, 'mousemapy')\n"
+            "assert(player(1,'mapmousex') == 1584, 'mapmousex alias')\n"
+            "assert(player(1,'mousedist') == 253, 'mousedist')\n")) {
+        TEST_FAIL("Mouse properties", "computed cursor differs from the original's values");
+    }
+
+    /* Dead / before the first [70]/[71]/[72] packet: -1 */
+    pl->aim_valid = false;
+    if (!cs2d_sv_lua_dostring(&sv,
+            "assert(player(1,'mousex') == -1 and player(1,'mousey') == -1)\n"
+            "assert(player(1,'mousemapx') == -1 and player(1,'mousemapy') == -1)\n"
+            "assert(player(1,'mousedist') == -1)\n")) {
+        TEST_FAIL("Mouse properties", "no-aim state did not return -1");
+    }
+    pl->aim_valid = true;
+    pl->alive = false;
+    if (!cs2d_sv_lua_dostring(&sv, "assert(player(1,'mousemapx') == -1)\n")) {
+        TEST_FAIL("Mouse properties", "dead player did not return -1");
+    }
+
+    cs2d_sv_lua_close(&sv);
+    TEST_PASS("Dedicated Server: player() mousex/mousey/mousemapx/mousemapy/mousedist from rot + aim");
     return true;
 }
 
@@ -10805,7 +11338,7 @@ static bool test_dedicated_p1_rules(void)
     if (!found_item) TEST_FAIL("spawnitem", "ground item was not created");
 
     memset(sv.projectiles, 0, sizeof(sv.projectiles));
-    if (!cs2d_sv_exec(&sv, "spawnprojectile 51 5 6 90 32")) TEST_FAIL("spawnprojectile", "command failed");
+    if (!cs2d_sv_exec(&sv, "spawnprojectile 0 51 160 192 32 90")) TEST_FAIL("spawnprojectile", "command failed");
     bool found_proj = false;
     for (int i = 0; i < CS2D_SV_MAX_PROJECTILES; i++) {
         if (sv.projectiles[i].active && sv.projectiles[i].type == CS2D_WEP_HE) found_proj = true;
@@ -11121,6 +11654,336 @@ static bool test_dedicated_idle_join(void)
     return true;
 }
 
+/* Entity trigger graph, bot reqcld answers and the API values the WQ2D roleplay script needs. */
+static bool test_dedicated_trigger_graph(void)
+{
+    printf("\n=== Testing Dedicated Server: entity trigger graph, bot reqcld, map/game API ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+    sv.set.mp_luaserver[0] = '\0';       /* no WQ2D scripts in this unit test */
+    sv.map_loaded = true;
+    sv.map.width = 16;
+    sv.map.height = 16;
+
+    /* 0: Trigger_Start -> door, 1: Func_DynWall door, 2: Trigger_If (Lua), 3: Trigger_Once,
+     * 4: Trigger_Delay, 5: Trigger_Move (must not propagate when merely named). */
+    snprintf(sv.map.entities[1].name, sizeof(sv.map.entities[1].name), "door");
+    sv.map.entities[1].type = CS2D_ENT_FUNC_DYNWALL;
+    sv.map.entities[1].x = 2; sv.map.entities[1].y = 2;
+
+    sv.map.entities[0].type = CS2D_ENT_TRIGGER_START;
+    sv.map.entities[0].x = 1; sv.map.entities[0].y = 1;
+    snprintf(sv.map.entities[0].trigger, sizeof(sv.map.entities[0].trigger), "door");
+
+    snprintf(sv.map.entities[2].name, sizeof(sv.map.entities[2].name), "cond");
+    sv.map.entities[2].type = CS2D_ENT_TRIGGER_IF;
+    sv.map.entities[2].x = 3; sv.map.entities[2].y = 3;
+    snprintf(sv.map.entities[2].str0, sizeof(sv.map.entities[2].str0), "(1) cond_ran = 1");
+    snprintf(sv.map.entities[2].trigger, sizeof(sv.map.entities[2].trigger), "door");
+
+    snprintf(sv.map.entities[3].name, sizeof(sv.map.entities[3].name), "once");
+    sv.map.entities[3].type = CS2D_ENT_TRIGGER_ONCE;
+    sv.map.entities[3].x = 4; sv.map.entities[3].y = 4;
+    snprintf(sv.map.entities[3].trigger, sizeof(sv.map.entities[3].trigger), "door");
+
+    snprintf(sv.map.entities[4].name, sizeof(sv.map.entities[4].name), "delay");
+    sv.map.entities[4].type = CS2D_ENT_TRIGGER_DELAY;
+    sv.map.entities[4].x = 5; sv.map.entities[4].y = 5;
+    sv.map.entities[4].int_settings[1] = 1000;
+    snprintf(sv.map.entities[4].trigger, sizeof(sv.map.entities[4].trigger), "door");
+
+    snprintf(sv.map.entities[5].name, sizeof(sv.map.entities[5].name), "mv");
+    sv.map.entities[5].type = CS2D_ENT_TRIGGER_MOVE;
+    sv.map.entities[5].x = 6; sv.map.entities[5].y = 6;
+    snprintf(sv.map.entities[5].trigger, sizeof(sv.map.entities[5].trigger), "door");
+    sv.map.entity_count = 6;
+
+    if (!cs2d_sv_lua_init(&sv)) TEST_FAIL("trigger graph", "Lua init failed");
+
+    /* The shutdown hook exists in 1.0.1.8 (probe: rp.shutdown registers on the original). */
+    bool rc = cs2d_sv_lua_dostring(&sv,
+        "function sh() end\n"
+        "assert(addhook('shutdown', 'sh') ~= false, 'shutdown hook rejected')\n"
+        "assert(steamstats('0', 'rank') == false, 'steamstats must return false without a stats store')\n");
+    if (!rc) TEST_FAIL("trigger graph", "shutdown hook / steamstats");
+
+    /* Round start: Trigger_Start fires the linked Func_DynWall (state 0 -> 1). */
+    cs2d_sv_trigger_start_entities(&sv);
+    if (sv.map.entity_state[1] != 1) TEST_FAIL("trigger start", "Trigger_Start did not toggle door");
+
+    /* Trigger_If: Lua condition code runs, then its trigger list fires. */
+    cs2d_sv_trigger_names(&sv, "cond", 0);
+    if (sv.map.entity_state[1] != 0) TEST_FAIL("trigger if", "Trigger_If did not toggle door");
+    rc = cs2d_sv_lua_dostring(&sv, "assert(cond_ran == 1, 'Trigger_If Lua code did not run')");
+    if (!rc) TEST_FAIL("trigger if", "Trigger_If Lua code did not run");
+
+    /* Trigger_Once fires only on the 0 -> 1 transition. */
+    cs2d_sv_trigger_names(&sv, "once", 0);
+    if (sv.map.entity_state[1] != 1 || sv.map.entity_state[3] != 1) {
+        TEST_FAIL("trigger once", "Trigger_Once did not toggle once");
+    }
+    cs2d_sv_trigger_names(&sv, "once", 0);
+    if (sv.map.entity_state[1] != 1) TEST_FAIL("trigger once", "Trigger_Once fired twice");
+
+    /* Trigger_Delay: state 1 while counting, forwards silently when the delay elapses. */
+    cs2d_sv_trigger_names(&sv, "delay", 0);
+    if (sv.map.entity_state[4] != 1) TEST_FAIL("trigger delay", "delay did not start");
+    for (int i = 0; i < CS2D_SV_MAX_PENDING_TRIGGERS; i++) {
+        if (sv.pending_triggers[i].active) sv.pending_triggers[i].fire_ms = cs2d_sv_now() - 1;
+    }
+    cs2d_sv_step_trigger_delays(&sv);
+    if (sv.map.entity_state[4] != 0 || sv.map.entity_state[1] != 0) {
+        TEST_FAIL("trigger delay", "delay did not finish/forward");
+    }
+
+    /* Trigger_Move propagates only on walkover, not when its name is triggered. */
+    uint8_t before = sv.map.entity_state[1];
+    cs2d_sv_trigger_names(&sv, "mv", 0);
+    if (sv.map.entity_state[1] != before) TEST_FAIL("trigger move", "Trigger_Move propagated by name");
+
+    /* A bot answers reqcld immediately (clientdata mode 4 with the file checksum). */
+    sv.players[1].used = true;
+    sv.players[1].bot = true;
+    sv.players[1].joined = true;
+    rc = cs2d_sv_lua_dostring(&sv,
+        "cd_mode = -1; cd_d1 = -1; cd_d2 = ''\n"
+        "function cd_probe(id, mode, d1, d2) cd_mode = mode; cd_d1 = d1; cd_d2 = d2 end\n"
+        "addhook('clientdata', 'cd_probe')\n");
+    if (!rc) TEST_FAIL("reqcld bot", "clientdata hook setup failed");
+    cs2d_sv_reqcld(&sv, 1, 4, "gfx/c4/c4.bmp");
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(cd_mode == 4 and cd_d1 == 0 and #cd_d2 == 64, 'bot reqcld did not answer mode 4')");
+    if (!rc) TEST_FAIL("reqcld bot", "bot reqcld did not answer mode 4");
+
+    /* Join snapshot: section 4 (entity states) must end with a count-0 packet. The original
+     * client stays on joindata 4 otherwise and rejects sections 5..200. */
+    sv.players[1].conn = 0;
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    sv.map.entity_state[0] = 1;   /* one entity state -> one section-4 record */
+    cs2d_sv_send_join_snapshot(&sv, &sv.conns[0]);
+    bool section4_terminator = false;
+    for (int slot = 0; slot < CS2D_SV_MAX_PENDING && !section4_terminator; slot++) {
+        const cs2d_sv_pending_t *pd = &sv.conns[0].pending[slot];
+        for (int i = 0; i + 3 < (int)pd->len; i++) {
+            const uint8_t *b = pd->data + i;
+            if (b[0] == 252 && b[1] == 7 && b[2] == 4 && b[3] == 0) { section4_terminator = true; break; }
+        }
+    }
+    free(sv.conns[0].pending);
+    sv.conns[0].pending = NULL;
+    if (!section4_terminator) TEST_FAIL("join snapshot", "section 4 has no count-0 terminator");
+
+    cs2d_sv_lua_close(&sv);
+    TEST_PASS("trigger graph (Start/If/Once/Delay/Move), shutdown hook, bot reqcld and steamstats");
+    return true;
+}
+
+
+/* Func_Teleport (70): stepping on an active entity teleports to the centre of its
+ * target tile (ints[0], ints[1]). fun_roleplay has 222 of them; the server used to
+ * ignore the map entity and only handled the Tdo teleporter buildings. */
+static bool test_dedicated_map_teleport(void)
+{
+    printf("\n=== Testing Dedicated Server: Func_Teleport walkover ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+    sv.map_loaded = true;
+    sv.map.width = 16;
+    sv.map.height = 16;
+
+    sv.map.entities[0].type = CS2D_ENT_FUNC_TELEPORT;
+    sv.map.entities[0].x = 2;
+    sv.map.entities[0].y = 2;
+    sv.map.entities[0].int_settings[0] = 6;   /* target tile x */
+    sv.map.entities[0].int_settings[1] = 7;   /* target tile y */
+    sv.map.entity_count = 1;
+
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].alive = true;
+    sv.players[1].team = CS2D_TEAM_T;
+    sv.players[1].conn = 0;
+    sv.players[1].x = 1 * 32 + 16;
+    sv.players[1].y = 2 * 32 + 16;
+    sv.players[1].last_valid_x = sv.players[1].x;
+    sv.players[1].last_valid_y = sv.players[1].y;
+    sv.players[1].last_move_ms = cs2d_sv_now() - 1000u;
+
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    if (!sv.conns[0].pending) TEST_FAIL("map teleport", "calloc failed");
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+
+    /* Step onto the entity: the position becomes the target tile centre and [15] is sent. */
+    cs2d_sv_validate_move(&sv, 1, 2 * 32 + 16, 2 * 32 + 16, 10);
+    if ((int)sv.players[1].x != 6 * 32 + 16 || (int)sv.players[1].y != 7 * 32 + 16) {
+        TEST_FAIL("map teleport", "the player was not moved to the target tile centre");
+    }
+    const uint8_t *b = sv.conns[0].out.buf;
+    if (sv.conns[0].out.pos != 6 || b[0] != 15 || b[1] != 1 ||
+        b[2] != (uint8_t)((6 * 32 + 16) & 0xff) || b[3] != (uint8_t)((6 * 32 + 16) >> 8) ||
+        b[4] != (uint8_t)((7 * 32 + 16) & 0xff) || b[5] != (uint8_t)((7 * 32 + 16) >> 8)) {
+        TEST_FAIL("map teleport", "[15] with the destination position was not sent");
+    }
+
+    /* An inactive entity (state 1) does not teleport. */
+    sv.map.entity_state[0] = 1;
+    sv.players[1].x = 1 * 32 + 16;
+    sv.players[1].y = 2 * 32 + 16;
+    sv.players[1].last_valid_x = sv.players[1].x;
+    sv.players[1].last_valid_y = sv.players[1].y;
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_validate_move(&sv, 1, 2 * 32 + 16, 2 * 32 + 16, 10);
+    if ((int)sv.players[1].x != 2 * 32 + 16 || (int)sv.players[1].y != 2 * 32 + 16) {
+        TEST_FAIL("map teleport", "an inactive Func_Teleport still teleported");
+    }
+
+    free(sv.conns[0].pending);
+    TEST_PASS("Dedicated Server: Func_Teleport walkover moves to the target tile and sends [15]");
+    return true;
+}
+
+/* UTF-8 -> UTF-16: Lua/config strings are UTF-8, the [234]/[235]/[240] wire fields
+ * are UTF-16LE. Expanding bytes showed WQ2D's "não" as "nÃ£o" in game. */
+static bool test_dedicated_utf8_messages(void)
+{
+    printf("\n=== Testing Dedicated Server: UTF-8 messages ([240], [234], [235]) ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].conn = 0;
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    if (!sv.conns[0].pending) TEST_FAIL("utf8", "calloc failed");
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+
+    /* "não" is 4 UTF-8 bytes but 3 UTF-16 code units: 6e 00 e3 00 6f 00 */
+    cs2d_sv_msg(&sv, "n\xc3\xa3o", 0);
+    const uint8_t *b = sv.conns[0].out.buf;
+    if (sv.conns[0].out.pos != 11 || b[0] != 240 || b[2] != 1 || b[3] != 3 || b[4] != 0 ||
+        b[5] != 'n' || b[6] != 0 || b[7] != 0xe3 || b[8] != 0 || b[9] != 'o' || b[10] != 0) {
+        TEST_FAIL("utf8 msg", "[240] did not carry UTF-16 code units");
+    }
+
+    /* Lua menu [235]: "ação" -> 4 code units (a, ç, ã, o) */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_menu_send(&sv, 1, "a\xc3\xa7\xc3\xa3o");
+    b = sv.conns[0].out.buf;
+    if (sv.conns[0].out.pos != 13 || b[0] != 235 || b[1] != 1 || b[2] != 4 || b[3] != 0 ||
+        b[4] != 'a' || b[5] != 0 || b[6] != 0xe7 || b[7] != 0 ||
+        b[8] != 0xe3 || b[9] != 0 || b[10] != 'o' || b[11] != 0 || b[12] != 0xff) {
+        TEST_FAIL("utf8 menu", "[235] did not carry UTF-16 code units");
+    }
+
+    /* hudtxt [234]: "é" -> one code unit 0x00e9 */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_hudtxt(&sv, 1, 0, "\xc3\xa9", 0, 0, 0, 0, 13);
+    b = sv.conns[0].out.buf;
+    if (b[0] != 234 || b[2] != 1 || b[3] != 0 || b[4] != 0xe9 || b[5] != 0) {
+        TEST_FAIL("utf8 hudtxt", "[234] did not carry UTF-16 code units");
+    }
+
+    /* A 4-byte code point becomes a surrogate pair (server -> client). */
+    uint16_t u[8];
+    int n = cs2d_net_utf8_to_utf16("A\xf0\x9f\x98\x80", u, 8); /* 'A' + U+1F600 */
+    if (n != 3 || u[0] != 'A' || u[1] != 0xd83d || u[2] != 0xde00) {
+        TEST_FAIL("utf8 surrogate", "4-byte UTF-8 was not converted to a surrogate pair");
+    }
+
+    /* CS2D's textual escape form (Changelog: print/msg/msg2/parse/hudtxt/sv_msg):
+     * "UTF-8:" + one escape per byte. WQ2D's utf8.convert writes \xNN for the first
+     * byte and bare xNN for the UTF-8 continuation bytes. */
+    const char *escaped =
+        "UTF-8:\\xC2xA9\\x30\\x30\\x30\\x32\\x35\\x35\\x32\\x35\\x35"
+        "\\x50\\x6C\\x61\\x79\\x65\\x72\\x20\\x63\\x6F\\x6D\\x6D\\x61\\x6E\\x64\\x3A"
+        "\\x20\\x5B\\x46\\x32\\x5D\\x20\\x66\\x6F\\x72\\x20\\x61\\x6C\\x6C\\x20"
+        "\\x63\\x61\\x74\\x65\\x67\\x6F\\x72\\x69\\x65\\x73";
+    const char *expect = "\xc2\xa9" "000255255Player command: [F2] for all categories";
+    char decoded[256];
+    int dn = cs2d_net_utf8_unescape(escaped, decoded, (int)sizeof(decoded));
+    if (dn != (int)strlen(expect) || strcmp(decoded, expect) != 0) {
+        TEST_FAIL("utf8 escape", "the \"UTF-8:\" escaped text was not decoded");
+    }
+
+    /* 3-byte form "€" = E2 80 AC -> "\xE2x82xAC" (bare x continuation bytes). */
+    cs2d_net_utf8_unescape("UTF-8:\\xE2x82xAC", decoded, (int)sizeof(decoded));
+    if (strcmp(decoded, "\xe2\x82\xac") != 0) {
+        TEST_FAIL("utf8 escape", "3-byte continuation escapes were not decoded");
+    }
+
+    /* msg() with the escaped form: the wire gets © + the text, not the escapes. */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_msg(&sv, escaped, 0);
+    b = sv.conns[0].out.buf;
+    int expect_units = (int)strlen(expect) - 1;   /* © is two UTF-8 bytes, one unit */
+    if (b[0] != 240 || b[2] != 1 ||
+        (b[3] | (b[4] << 8)) != expect_units ||
+        b[5] != 0xa9 || b[6] != 0 || b[7] != '0' || b[8] != 0) {
+        TEST_FAIL("utf8 escape msg", "[240] did not carry the decoded text");
+    }
+
+    /* A trailing "@C" marks a center message: the dedicated strips it and sends
+     * [240, 0, 2, ...] (FUN_140153900 at 0x1401546a0). Only the uppercase spelling
+     * exists in the dedicated binary. */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_msg(&sv, "Center@C", 0);
+    b = sv.conns[0].out.buf;
+    if (b[0] != 240 || b[2] != 2 || (b[3] | (b[4] << 8)) != 6 ||
+        b[5] != 'C' || b[6] != 0 || b[15] != 'r' || b[16] != 0) {
+        TEST_FAIL("center msg", "\"@C\" was not stripped and sent as mode 2");
+    }
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_msg(&sv, "Center@c", 0);
+    b = sv.conns[0].out.buf;
+    if (b[2] != 1 || (b[3] | (b[4] << 8)) != 8) {
+        TEST_FAIL("center msg", "lowercase \"@c\" must stay a normal message");
+    }
+
+    /* parse() decodes the whole escaped command line (WQ2D hudtxts uses this). */
+    sv.set.mp_luaserver[0] = '\0';
+    if (!cs2d_sv_lua_init(&sv)) TEST_FAIL("utf8 parse", "Lua init failed");
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    if (!cs2d_sv_lua_dostring(&sv, "parse([[UTF-8:\\x6D\\x73\\x67\\x20\\x68\\x69]])")) {
+        TEST_FAIL("utf8 parse", "parse() of an escaped command failed");
+    }
+    b = sv.conns[0].out.buf;
+    if (b[0] != 240 || b[2] != 1 || (b[3] | (b[4] << 8)) != 2 ||
+        b[5] != 'h' || b[6] != 0 || b[7] != 'i' || b[8] != 0) {
+        TEST_FAIL("utf8 parse", "parse() did not execute the decoded msg command");
+    }
+    cs2d_sv_lua_close(&sv);
+
+    free(sv.conns[0].pending);
+    TEST_PASS("Dedicated Server: UTF-8 text/escapes -> UTF-16LE and @C -> center mode 2");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -11129,7 +11992,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 101;
+    int total = 109;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -11224,7 +12087,12 @@ int main(void)
     if (test_server_jump_table_opcodes()) passed++;
     if (test_server_reconnect_and_pw()) passed++;
     if (test_dedicated_dynamic_images()) passed++;
+    if (test_dedicated_dynobj_shared_space()) passed++;
     if (test_dedicated_hudtxt()) passed++;
+    if (test_dedicated_spawnprojectile_command()) passed++;
+    if (test_dedicated_lua_binds()) passed++;
+    if (test_client_lua_bind_events()) passed++;
+    if (test_dedicated_mouse_properties()) passed++;
     if (test_dedicated_settile()) passed++;
     if (test_dedicated_lua_items_and_weapons()) passed++;
     if (test_dedicated_snapshot_world_state()) passed++;
@@ -11232,6 +12100,9 @@ int main(void)
     if (test_dedicated_p2_rules()) passed++;
     if (test_dedicated_p3_rules()) passed++;
     if (test_dedicated_idle_join()) passed++;
+    if (test_dedicated_trigger_graph()) passed++;
+    if (test_dedicated_map_teleport()) passed++;
+    if (test_dedicated_utf8_messages()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

@@ -12,6 +12,11 @@ Source: Lua fixture, 331 samples.
 - **Func_GameAction:** 0 draw, 1 T win, 2 CT win, 3 restart in X s, 4 kill Ts, 5 kill CTs, 6 kill all, 7 load map.
 - **Round start:** the round-end intermission is 3 s. Round start is deterministic: every state goes back
   to 0, then the Trigger_Start entities fire. Entity states are not resent at round start.
+- **Func_Teleport (70), server side (2026-10-20):** on a walkover the dedicated checks the tile the
+  player entered (`Tpl.tilepos`, client `cs2d_ents_enter_tile`) and moves him to the **centre** of the
+  target tile `(ints[0], ints[1])`, broadcasting `[15]`. Only entities in state 0 apply. The same state
+  check gates Trigger_Move. fun_roleplay contains 222 Func_Teleport entities (one per ladder/pair), so
+  this is not the Tdo Teleporter Entrance/Exit building (Tdo 13/14/22/23).
 - **Dedicated quirk:** after some round restarts the dedicated stops broadcasting entity changes. The
   original client shows the same divergence.
 - **Env_Decal (24):** in a game, Te.setup (0x1401ad930, case 0x18) removes it from the entity list (so triggers and

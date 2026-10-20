@@ -286,6 +286,23 @@ void    cs2d_pkt_w_raw_str(cs2d_pkt_t *p, const uint8_t *b, int len);
 void    cs2d_pkt_w_lstr(cs2d_pkt_t *p, const char *s);
 int     cs2d_pkt_r_str(const uint8_t *buf, int len, int *pos, char *out, int max_out);
 
+/*
+ * UTF-8 -> UTF-16LE code units. CS2D text fields ([234] hudtxt, [235] Lua menu,
+ * [240] chat/server messages, server info) carry UTF-16, while Lua/map/config
+ * strings are UTF-8. Invalid UTF-8 bytes are kept as their Latin-1 code point
+ * (the byte-wise expansion the server used before). Surrogate pairs are emitted
+ * for code points above U+FFFF. Returns the number of code units written.
+ */
+int     cs2d_net_utf8_to_utf16(const char *src, uint16_t *dst, int max_units);
+
+/*
+ * Decodes the CS2D "UTF-8:" escaped text form (Changelog: "hello" =
+ * "UTF-8:\x68\x65\x6C\x6C\x6F"; WQ2D's utf8.convert emits \xC2xA9 for ©).
+ * Strings without that exact prefix are copied unchanged. Returns the decoded
+ * byte length; dst is always NUL-terminated.
+ */
+int     cs2d_net_utf8_unescape(const char *src, char *dst, int cap);
+
 /* Authentic CS2D Crypto & Hash Functions (0x140055400, 0x1401be680, 0x1401bef60) */
 void    cs2d_net_md5_hex(const char *str, char out_hex[33]);
 bool    cs2d_net_sha256_file(const char *filepath, char out_hex[65]);

@@ -71,6 +71,14 @@ mapexport.png
 serverstats.html
 
 # =============================================================================
+# Arquivos fora da estrutura de distribuição do CS2D
+# =============================================================================
+sys/lua*
+!sys/lua/autorun
+!sys/lua/samples
+!sys/lua/server.lua
+!sys/lua/wrapper.lua
+# =============================================================================
 # IDEs, Editores e Arquivos Temporários do Sistema Operacional
 # =============================================================================
 .vscode/

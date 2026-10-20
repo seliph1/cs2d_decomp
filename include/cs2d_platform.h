@@ -76,6 +76,9 @@ static inline uint32_t GetTickCount(void)
 /* WSAStartup on Windows (once), nothing elsewhere; false when sockets are unavailable */
 bool cs2d_platform_net_init(void);
 
+/* Puts the Windows console in UTF-8 mode so server/Lua messages print correctly; no-op elsewhere. */
+void cs2d_platform_console_utf8(void);
+
 /* Non-blocking mode for a UDP socket (FIONBIO) */
 void cs2d_platform_set_nonblocking(SOCKET s);
 /* Blocking TCP connect to host:port (first IPv4 address, like BlitzMax HostIp + TSocket.Connect); INVALID_SOCKET

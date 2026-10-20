@@ -143,8 +143,12 @@ const char *cs2d_bind_key_name(int key)
         return single;
     }
     switch (key) {
+        case 0x01:        return "mouse1";
+        case 0x02:        return "mouse2";
+        case 0x03:        return "mouse3";
+        case 0x122:       return "mwheelup";
+        case 0x123:       return "mwheeldown";
         case VK_SPACE:    return "space";
-        case VK_LCONTROL: return "leftctrl";
         case VK_SHIFT:    return "leftshift";
         case VK_TAB:      return "tab";
         case VK_BACK:     return "backspace";
@@ -154,6 +158,26 @@ const char *cs2d_bind_key_name(int key)
         case VK_RIGHT:    return "rightarrow";
         case VK_MENU:     return "leftalt";
         case VK_RETURN:   return "enter";
+        case 0x0C:        return "clear";
+        case 0x1B:        return "escape";
+        case 0x21:        return "pgup";
+        case 0x22:        return "pgdn";
+        case 0x23:        return "end";
+        case 0x24:        return "home";
+        case 0x29:        return "select";
+        case 0x2A:        return "print";
+        case 0x2B:        return "execute";
+        case 0x2C:        return "screen";
+        case 0x2D:        return "ins";
+        case VK_DELETE:   return "del";
+        case 0x5B:        return "leftsys";
+        case 0x5C:        return "rightsys";
+        case 0xA0:        return "leftshift";
+        case 0xA1:        return "rightshift";
+        case 0xA2:        return "leftctrl";
+        case 0xA3:        return "rightctrl";
+        case 0xA4:        return "leftalt";
+        case 0xA5:        return "rightalt";
         default:          break;
     }
     if (key >= CS2D_KEY_F1 && key < CS2D_KEY_F1 + 12) {
@@ -162,6 +186,87 @@ const char *cs2d_bind_key_name(int key)
         return fname;
     }
     return NULL;
+}
+
+/* Canonical name of a Win32 VK code as used by the Lua bind list ([252,6], [227]/[228]).
+ * The VK F1..F12 and numpad ranges overlap ASCII 'p'..'{' / 'a'..'o', so the client-facing
+ * cs2d_bind_key_name() cannot be used for them. */
+const char *cs2d_bind_vk_name(int key)
+{
+    if (key >= 0x70 && key <= 0x7B) {
+        static char lua_fname[4];
+        snprintf(lua_fname, sizeof(lua_fname), "f%d", key - 0x70 + 1);
+        return lua_fname;
+    }
+    switch (key) {
+        case 0x60: return "kp_ins";
+        case 0x61: return "kp_end";
+        case 0x62: return "kp_downarrow";
+        case 0x63: return "kp_pgdn";
+        case 0x64: return "kp_leftarrow";
+        case 0x65: return "kp_5";
+        case 0x66: return "kp_rightarrow";
+        case 0x67: return "kp_home";
+        case 0x68: return "kp_uparrow";
+        case 0x69: return "kp_pgup";
+        case 0x6A: return "kp_multiply";
+        case 0x6B: return "kp_add";
+        case 0x6C: return "kp_separator";
+        case 0x6D: return "kp_subtract";
+        case 0x6E: return "kp_decimal";
+        case 0x6F: return "kp_divide";
+        default:   return cs2d_bind_key_name(key);
+    }
+}
+
+/* Lua addbind()/removebind() key name -> Win32 VK code. The codes and accepted names were
+ * captured from cs2d_dedicated.exe in the [252,6] snapshot with a bind probe. */
+int cs2d_bind_key_code(const char *name)
+{
+    if (!name || !name[0]) return 0;
+    if (name[1] == '\0') {
+        unsigned char c = (unsigned char)name[0];
+        if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
+        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z')) return (int)c;
+        return 0;
+    }
+    static const struct { const char *name; int code; } keys[] = {
+        { "f1", 0x70 }, { "f2", 0x71 }, { "f3", 0x72 }, { "f4", 0x73 },
+        { "f5", 0x74 }, { "f6", 0x75 }, { "f7", 0x76 }, { "f8", 0x77 },
+        { "f9", 0x78 }, { "f10", 0x79 }, { "f11", 0x7A }, { "f12", 0x7B },
+        { "mouse1", 0x01 }, { "mouse2", 0x02 }, { "mouse3", 0x03 },
+        { "mwheelup", 0x122 }, { "mwheeldown", 0x123 },
+        { "leftshift", 0xA0 }, { "rightshift", 0xA1 },
+        { "leftctrl", 0xA2 }, { "rightctrl", 0xA3 },
+        { "leftalt", 0xA4 }, { "rightalt", 0xA5 },
+        { "leftsys", 0x5B }, { "rightsys", 0x5C },
+        { "leftarrow", 0x25 }, { "uparrow", 0x26 },
+        { "rightarrow", 0x27 }, { "downarrow", 0x28 },
+        { "backspace", 0x08 }, { "tab", 0x09 }, { "clear", 0x0C },
+        { "enter", 0x0D }, { "escape", 0x1B }, { "space", 0x20 },
+        { "pgup", 0x21 }, { "pgdn", 0x22 }, { "end", 0x23 },
+        { "home", 0x24 }, { "select", 0x29 }, { "print", 0x2A },
+        { "execute", 0x2B }, { "screen", 0x2C }, { "ins", 0x2D },
+        { "del", 0x2E },
+        { "kp_0", 0x60 }, { "kp_ins", 0x60 },
+        { "kp_1", 0x61 }, { "kp_end", 0x61 },
+        { "kp_2", 0x62 }, { "kp_downarrow", 0x62 },
+        { "kp_3", 0x63 }, { "kp_pgdn", 0x63 },
+        { "kp_4", 0x64 }, { "kp_leftarrow", 0x64 },
+        { "kp_5", 0x65 },
+        { "kp_6", 0x66 }, { "kp_rightarrow", 0x66 },
+        { "kp_7", 0x67 }, { "kp_home", 0x67 },
+        { "kp_8", 0x68 }, { "kp_uparrow", 0x68 },
+        { "kp_9", 0x69 }, { "kp_pgup", 0x69 },
+        { "kp_multiply", 0x6A }, { "kp_add", 0x6B },
+        { "kp_separator", 0x6C }, { "kp_subtract", 0x6D },
+        { "kp_decimal", 0x6E }, { "kp_del", 0x2E },
+        { "kp_divide", 0x6F }, { "kp_enter", 0x0D }, { "kp_clear", 0x0C },
+    };
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        if (_stricmp(keys[i].name, name) == 0) return keys[i].code;
+    }
+    return 0;
 }
 
 const char *cs2d_bind_mouse_name(int button)

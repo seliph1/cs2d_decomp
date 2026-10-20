@@ -443,17 +443,52 @@ bool cs2d_dynobj_kill(cs2d_dynobj_world_t *w, int id, cs2d_dynobj_fx_t *fx)
     return true;
 }
 
-void cs2d_dynobj_spawn_map_buildings(cs2d_dynobj_world_t *w)
+/* Tdo.add defaults for Env_NPC: health 0x1409ed7f0[type] (CS2D.exe init 0x14031a195: the array is
+ * {0, 150, 30, 20, 200, 100, ...}; index 0 is unused). Type 1 zombie, 2 headcrab, 3 snark,
+ * 4 vortigaunt, 5 soldier. */
+static const int s_npc_health[6] = { 0, 150, 30, 20, 200, 100 };
+
+int cs2d_dynobj_npc_health(int type)
+{
+    if (type <= 0 || type >= (int)(sizeof(s_npc_health) / sizeof(s_npc_health[0]))) return 0;
+    return s_npc_health[type];
+}
+
+/* FUN_140190e10: rebuild the map's dynamic objects from its entities in entity order. Both the server
+ * (round start) and the client (round start / offline map load) run this, so the Tdo ids agree:
+ * Env_Building -> building typ ints[0], team ints[1], rot ints[2]; Env_NPC -> typ 30 at the tile
+ * center, rot ints[0], `player` = NPC type ints[1], health ints[2] (0 = the type default), and
+ * ints[3] == 1 means "do not spawn on start". Every object remembers its entity tile (Tdo.entity). */
+void cs2d_dynobj_spawn_map_objects(cs2d_dynobj_world_t *w)
 {
     cs2d_map_t *map = w->map;
     if (!map) return;
     for (uint32_t i = 0; i < map->entity_count; i++) {
         const cs2d_entity_t *e = &map->entities[i];
-        if (e->type != CS2D_ENT_ENV_BUILDING || map->entity_state[i] != 0) continue;
+        if (map->entity_state[i] != 0) continue;
         if (e->x < 0 || e->y < 0 || (uint32_t)e->x >= map->width || (uint32_t)e->y >= map->height) continue;
-        /* FUN_140190e10: type ints[0], team ints[1], rotation ints[2] */
-        cs2d_dynobj_spawn(w, -1, e->int_settings[0], e->x << 5, e->y << 5, (float)e->int_settings[2], 0,
-                          e->int_settings[1], 0);
+
+        if (e->type == CS2D_ENT_ENV_BUILDING) {
+            /* FUN_140190e10: type ints[0], team ints[1], rotation ints[2] */
+            cs2d_dynobj_t *o = cs2d_dynobj_spawn(w, -1, e->int_settings[0], e->x << 5, e->y << 5,
+                                                 (float)e->int_settings[2], 0, e->int_settings[1], 0);
+            if (o) {
+                o->entity[0] = 1;
+                o->entity[1] = e->x;
+                o->entity[2] = e->y;
+            }
+        } else if (e->type == CS2D_ENT_ENV_NPC && e->int_settings[3] == 0) {
+            int npc_type = e->int_settings[1];
+            if (npc_type <= 0 || npc_type >= (int)(sizeof(s_npc_health) / sizeof(s_npc_health[0]))) continue;
+            cs2d_dynobj_t *o = cs2d_dynobj_spawn(w, -1, CS2D_DO_NPC, (e->x << 5) + 16, (e->y << 5) + 16,
+                                                 (float)e->int_settings[0], 0, 0, npc_type);
+            if (o) {
+                o->health = (e->int_settings[2] > 0) ? e->int_settings[2] : s_npc_health[npc_type];
+                o->entity[0] = 1;
+                o->entity[1] = e->x;
+                o->entity[2] = e->y;
+            }
+        }
     }
 }
 
@@ -1148,7 +1183,10 @@ static bool tween_conflict(int a, int b)
 
 bool cs2d_dynobj_read_tween(cs2d_dynobj_world_t *w, const uint8_t *buf, int len, int *pos, uint32_t now_ms)
 {
-    static const int body[9] = { 8, 8, 6, 4, 5, 7, 12, 5, 5 };
+    /* Ttween.send: mode 0/1 = duration + x/y (+ rot for mode 1), mode 2 = duration + rot,
+     * 3 = speed float, 4 = duration + alpha, 5 = duration + rgb, 6 = duration + scale,
+     * 7 = duration + frame, 8 = duration + animation mode. */
+    static const int body[9] = { 8, 10, 6, 4, 5, 7, 12, 5, 5 };
     int p = *pos;
     if (len - p < 3) return false;
     int mode = buf[p];
@@ -1173,12 +1211,14 @@ bool cs2d_dynobj_read_tween(cs2d_dynobj_world_t *w, const uint8_t *buf, int len,
     t->start_ms = now_ms;
     if (mode != 3) memcpy(&t->duration, d, 4);
     switch (mode) {
-        case 0: case 1:
+        case 0:
+        case 1:
             t->x[0] = o->x;
             t->y[0] = o->y;
             t->rot[0] = o->rot;
             t->x[1] = (float)(rd16(d + 4) - 0x8000);
             t->y[1] = (float)(rd16(d + 6) - 0x8000);
+            if (mode == 1) t->rot[1] = (float)rd16(d + 8) * 0.005493164f;
             break;
         case 2:
             t->rot[0] = o->rot;
