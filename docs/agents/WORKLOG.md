@@ -1,5 +1,91 @@
 # Work log (append-only, newest first)
 
+## 2026-10-19 — Cline — Dedicated P3: reqhttp, sons, FX, grenade rebuy, damagetile
+
+- **`reqhttp`/`httpdata`:** GET HTTP assíncrono (TCP 80, connect bloqueante + leitura não bloqueante
+  no `cs2d_sv_lua_frame`, timeout de 5 s); resposta entregue como `(requestid, state, data)`, com
+  `mode 1` virando tabela de bytes.
+- **Sons:** `sv_sound` usa `[240,0,10,len,UTF16 path]` (modo 10); `sv_sound2`/`sv_soundpos` usam
+  `[65,x+0x8000,y+0x8000,len,path]`; `sv_stopsound` usa o modo 11. Cliente: modo 10 toca
+  `sfx/<path>` (volume opcional após `|`) e modo 11 para as vozes correspondentes.
+- **FX:** `[48, type, x+0x8000, y+0x8000, p1, p2, (type>=100) rgb]`; comandos `explosion` (tipo 1 +
+  dano radial com falloff linear) e `effect` (fire 100, smoke/colorsmoke 101, flare/sparkles 102,
+  blood 8). Cliente implementa explosão, sangue, fogo, fumaça e sparkles.
+- **Regras:** `mp_grenaderebuy` (flag por granada lançada/derrubada, reset no spawn) e
+  `mp_mapgoalscore` (pontuação de resgate de refém).
+- **`damagetile`** para construções no tile.
+- **Verificação:** `build.bat` limpo; `test_cs2d.exe` → **100 / 100** (teste P3 estendido com
+  formatos de som, explosão/effect, httpdata, grenade rebuy e damagetile).
+
+## 2026-10-19 — Cline — Dedicated P2: morte/drop, tempban, construções, votos e comandos de mundo
+
+- **Dano/armadura:** `mp_kevlar` agora é double (default 0.35, `DAT_1405a6508`) e o cálculo segue
+  FUN_1401658c0 (armadura perde o dano bruto enquanto durar; armaduras especiais 201..205 escalam o
+  HP sem perder pontos). Teste de fase 2 atualizado para o valor autêntico (armor 50 -> 10).
+- **Morte/saída:** `mp_deathdrop` (0..4) derruba itens com `[24]` ao morrer e ao sair; `mp_killbuildings`
+  (0..3) remove/keepa construções do jogador ao sair; `mp_killbuildingmoney` e
+  `mp_killteambuildings` (0 unkillable, 1 killable, 2 killable+penalty) aplicados no dano/morte de Tdo.
+- **Zumbis:** `mp_zombiedmg`, `mp_zombiekillscore`, `mp_zombiekillequip` e `mp_zombierecover`.
+- **Admin:** `mp_tempbantime` com expiração em `cs2d_sv_ban_t.expire_ms`; `mp_kickpercent` e
+  `mp_mapvoteratio` contam votos de toda a base e executam kick/tempban/mapchange; `mp_antispeeder 1`
+  usa tempban; `mp_turretdamage` configurável.
+- **Comandos:** `damageobject`, `killobject`, `triggerposition`, `restart`/`restartround`, `resources`.
+- **Verificação:** `build.bat` limpo; `test_cs2d.exe` → **99 / 99** (novo `test_dedicated_p2_rules`).
+
+## 2026-10-19 — Cline — Dedicated P1: hooks inválidos, config/exec, flood guard, regras e spawn
+
+- **Hooks:** `frame`, `http`, `filetransfer`, `post_endround`, `oncollision`, `oncollisionhit`,
+  `onhit` e `shutdown` removidos da lista válida (não existem em 1.0.1.8).
+- **Config:** `sys/server.cfg` passa por `cs2d_sv_exec` (`cs2d_sv_exec_config`); `exec`/`include`,
+  `alias`/`aliases` e `mp_wpndmg` implementados; nomes simplificados de armas (`ak47`) resolvem.
+- **Limites:** flood guard por IP (`FUN_1400d4c90`, janelas 60/200/30 por 60 s + ignore), cache de
+  falhas de RCON, `mp_connectionlimit`, `mp_maxclientsip` (status 23) e `mp_reservations` (expulsa
+  não-reservado); medição de ping por `[229]`/`[249]` + `mp_pinglimit`; idle (`mp_idle*`).
+- **Regras:** `mp_buytime` (float), `mp_unbuyable`, `mp_damagefactor`, `mp_wpndmg`,
+  `mp_weaponfadeout`, `mp_dropgrenades`, `mp_teamkillpenalty`, `mp_tkpunish`,
+  `mp_hostagepenalty`, `mp_vulnerablehostages`, `mp_unbuildable`, `mp_antispeeder` 1..6,
+  `mp_roundlimit`/`mp_winlimit` (mapchange), `sv_gm`.
+- **Comandos:** `spawnitem` (clip/reserve), `spawnobject`, `spawnnpc`, `spawnprojectile`, `banname`,
+  `bans`, `unbanall`, `connections`, `mapinfo`, `maps`, `serverinfo`.
+- **Correção de mapa:** `cs2d_sv_change_map` agora zera `round_number` e `mapchange_pending` (antes o
+  contador de rounds nunca reiniciava, o que faria `mp_roundlimit` trocar de mapa em loop).
+- **Verificação:** `build.bat` limpo; `test_cs2d.exe` → **98 / 98** (novo `test_dedicated_p1_rules`).
+- **Restante (P2):** `reqhttp`/`steamstats`/`ai_*` (stubs), `sv_sound*`, `damagetile`/
+  `damageobject`/`killobject`/`explosion`/`effect`/`flash*`, cvars de economia/zombie/mapvote.
+
+## 2026-10-19 — Cline — Dedicated P0: hooks de conexão + snapshot 4/6
+
+- **Hooks de conexão (help.php):** `connect_initplayer(id)` no fim de `sv_recv_join1` (instância criada),
+  `connect(id)` no início de `sv_recv_join5` (antes de `joined`/`join`), `disconnect(id, reason id)` no
+  fim de `sv_remove_player` (jogador já removido); bots disparam `connect` + `join` na hora. `connect`
+  passou a receber só o `id` (a assinatura antiga ip/porta/usgn/nome estava errada) e `disconnect` o
+  reason numérico (não a string do `leave`).
+- **Snapshot seção 4:** `[252,7,4,count]` + `{x u16, y u16, state u8}` com os estados não-zero de
+  `map.entity_state`; `[31]` grava o estado, Trigger_Use (`[26,100]`) alterna e faz broadcast de `[31]`,
+  e o round start zera todos os estados (`knowledge/entities.md`).
+- **Snapshot seção 6:** `[252,7,6,count]` + `{id u8, type u8, player u8, x u16, y u16}` com os
+  projéteis que já pousaram (`is_flying == false`).
+- **Verificação:** `build.bat` limpo; `test_cs2d.exe` → **97 / 97** (novo `test_dedicated_snapshot_world_state`
+  e asserções de `connect`/`connect_initplayer`/`disconnect` na fase 4).
+
+## 2026-10-19 — Cline — Dedicated: auditoria de lacunas + hook `select`
+
+- **Bug corrigido:** `cs2d_sv_lua_is_valid_hook` não listava `"select"`, então `addhook("select", ...)`
+  era rejeitado (o `dispatch_hook("select", ...)` já existia em `cs2d_sv_lua_hook_select`).
+  Regressão adicionada em `test_server_phase4_lua` (registra, dispara e libera o hook).
+- **Auditoria (código + strings UTF-16/refs de `cs2d_dedicated.exe` + `docs/cs2d_help_db_complete.json`):**
+  - hooks reais em 1.0.1.8 sem chamador no port: `connect`, `connect_initplayer`, `disconnect`
+    (`connect` também tem assinatura errada: a doc é `connect(id)`, nosso wrapper recebe ip/porta/usgn/nome);
+  - hooks aceitos pelo nosso `addhook` que não existem no binário: `frame`, `http`, `filetransfer`,
+    `post_endround`, `oncollision`, `oncollisionhit`, `onhit`, `shutdown`;
+  - stubs Lua: `reqhttp` (nada), `steamstats` (tabela vazia), 19 `ai_*` (sem IA por decisão);
+  - snapshot: seções 4 (estados de entidades) e 6 (projéteis no chão) sempre vazias, seção 11 é literal
+    de captura;
+  - ~50 cvars documentadas sem campo/comportamento, flood guard `FUN_1400d4c90` ausente,
+    `server.cfg` carregado fora do `cs2d_sv_exec`, gerador do secret ainda aleatório.
+- **Verificação:** `build.bat` limpo; `test_cs2d.exe` → **96 / 96**.
+- **Restante:** lista priorizada em `OPEN_ISSUES.md` ("Dedicated gap audit").
+
 Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by a few bullets covering:
 
 - what changed;

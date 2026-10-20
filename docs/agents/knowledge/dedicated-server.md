@@ -359,6 +359,81 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
 - Our client decodes only some of them (client `FUN_1401e3f10`: 3, 11, 14, 16, 19, 20, 22 do something visible); the
   rest are stored in the settings arrays. Port: `sv_broadcast_setting` in `src/cs2d_server.c`.
 
+## Lua hook inventory of 1.0.1.8 (2026-10-19)
+
+- Checked against the UTF-16 literals in `cs2d_dedicated.exe` and their code references (objdump),
+  plus `docs/cs2d_help_db_complete.json`: the real hooks of this build include `connect`,
+  `connect_initplayer`, `disconnect` and `select`; there is **no** literal (and no reference) for
+  `shutdown`, `frame`, `http`, `filetransfer`, `post_endround`, `oncollision`, `oncollisionhit` or
+  `onhit`. `addhook` on those names must therefore fail like the original ("hook does not exist").
+- Documented argument lists: `connect_initplayer(id)`, `connect(id)`, `disconnect(id, reason id)`;
+  execution order is `connect_attempt` → `connect_initplayer` → `connect` → `join`, and `disconnect`
+  runs after the player is removed (so `player(id)` no longer works inside it).
+
+## P1 rules, admin limits and spawn commands (2026-10-19)
+
+- **Server-to-client spawn formats** (client handlers, `src/cs2d_client.c` / `src/cs2d_dynobj.c`):
+  - `[33, type u8, id u16, tx u16, ty u16, clip+1 u16, reserve+1 u16]` (12 bytes): ground item; 0 in
+    clip/reserve means "use the type defaults" (FUN_14011c0b0 reads `ushort - 1`).
+  - `[49, id u16, typ u8, x u16, y u16, rot u16, mode u8, team u8, player u8]` (13 bytes): dynamic
+    object; x/y are pixels, rot is degrees * 182.04445, NPCs are typ 30 with the NPC type in `player`.
+  - `[58, player u8, type u8, id u8, x+0x8000 u16, y+0x8000 u16, flydist u16, dir u16]` (12 bytes):
+    projectile; player 0 = server.
+- **Flood guard `FUN_1400d4c90(ip, 0xfc, n, 60000)`**: per `[252]` sub-op, n = 60 for 0/3/100, 200 for
+  1, 30 for 5. Our port counts per IP in a 60 s window and, on excess, ignores the IP for
+  `mp_floodprotignoretime` seconds (help.php default 600, max 86400). `mp_floodprot 0` disables it.
+- **RCON failures (`mp_maxrconfails`)**: failed `[236]`/`[241]`/`[242]` passwords are counted per IP;
+  at the limit the IP's RCON attempts are ignored. A correct password resets the counter.
+- **Ping**: the `[229, srv_ts, cli_ts]` / `[249, srv_ts]` replies carry `sv_now() - start_ms`, so the
+  RTT is `(sv_now() - start_ms) - ts` (stored in `Tpl +0xd0`, sent in `[247]`).
+- **Config**: `sys/server.cfg` is executed line by line through the console parser (as `exec`/`include`),
+  so parser-only commands (`mp_building_price`, `alias`, `settile`, ...) work from the config.
+- **help.php cvars ported**: `mp_buytime` (float minutes), `mp_roundlimit`, `mp_winlimit`,
+  `mp_damagefactor`, `mp_wpndmg <name> <dmg>` (simplified names like `ak47`), `mp_weaponfadeout`,
+  `mp_dropgrenades`, `mp_teamkillpenalty`, `mp_tkpunish`, `mp_hostagepenalty`,
+  `mp_vulnerablehostages`, `mp_unbuyable`, `mp_unbuildable`, `mp_idlekick`/`mp_idletime`/
+  `mp_idleaction`, `mp_pinglimit`, `mp_connectionlimit`, `mp_maxclientsip`, `mp_reservations`,
+  `mp_maxrconfails`, `mp_antispeeder` 1..6, `sv_gm`, `sv_lan`, `sv_checkusgnlogin`.
+
+## P2 rules and world commands (2026-10-19)
+
+- **Armor (`FUN_1401658c0`, decompiled in `src/cs2d_weapons.c:610-633`)**: with `0 < armor < 201`,
+  `absorbed = (int)(dmg * mp_kevlar)` and `new_armor = armor - dmg` (armor loses the full raw damage
+  while it lasts; when it would go below 0, `absorbed = (int)(armor * mp_kevlar)` and armor = 0).
+  `mp_kevlar` default is **0.35** (`DAT_1405a6508`; help.php text says 0.3). Armors 201..205 do not
+  lose points and scale HP damage by 0.75/0.50/0.25/0.50/0.05.
+- **mp_deathdrop**: 0 all, 1 primary+secondary+defuse+NV, 2 primary+secondary+defuse, 3 primary+
+  secondary, 4 nothing. Drops use the normal `[24, id, type, clip, reserve, sub, item_id, tx, ty,
+  held_weapon]` message; the C4 is never dropped.
+- **mp_killbuildings** on leave: 0 all, 1 all except walls (3/4/5), 2 dispensers/turrets/supplies
+  (7/8/9/11/12/15) only, 3 keep all; removed objects broadcast `[35]`.
+- **mp_killteambuildings**: 0 teammate buildings unkillable, 1 killable, 2 killable + score/money
+  penalty. `mp_killbuildingmoney` gates the `def->kill_reward` money.
+- **Votes (`[43]`)**: `mp_kickpercent` / `mp_mapvoteratio` are fractions of the whole player base
+  (`ceil(ratio * players)`); a reached kick vote tempbans the IP for `mp_tempbantime` and kicks.
+- **Temporary bans**: `cs2d_sv_ban_t.expire_ms` (0 = permanent); `mp_tempbantime` is clamped to
+  1..1440 minutes.
+- **World commands**: `damageobject <id> <dmg> [player]`, `killobject <id>`,
+  `triggerposition <tx> <ty>` (toggles the entity state and broadcasts `[31]`).
+
+## P3: HTTP, server sounds and FX (2026-10-19)
+
+- **reqhttp(url, path, mode)** (`FUN_140...` handler, `reqhttp` Lua command): HTTP GET to port 80;
+  response goes to `httpdata(requestid, state, data)` (state 1 = 2xx data, 0 = failure). Our port
+  connects synchronously and polls the socket from `cs2d_sv_lua_frame` (5 s timeout, 256 KiB cap).
+- **Server sounds** (`cs2d_dedicated.exe` parser 0x140144c28 / 0x140144d28 / 0x140144e58 /
+  0x140144fa0):
+  - `sv_sound <file>`: `[240, 0, 10, len u16, UTF-16LE "path[|volume]"]` to all (FUN_140153900).
+  - `sv_sound2 <player> <file>`: `[65, 0x8000, 0x8000, len u8, path]` to that player (FUN_140107560).
+  - `sv_soundpos <file> <x> <y> [player]`: `[65, x+0x8000, y+0x8000, len, path]` (FUN_140107560).
+  - `sv_stopsound <file> [player]`: `[240, 0, 11, len, UTF-16LE path]` (mode 11 = stopServer).
+- **[48] FX** (`FUN_14014e350` -> `FUN_14014cf50`): `[48, type, x+0x8000, y+0x8000, p1 u16, p2 u16,
+  (type>=100) r,g,b, (type>=200) len u8 + path]`. Types: 1 explosion, 2 screen shake, 3 object fx,
+  4 flashposition, 5 flashplayer, 8 blood, 100 fire, 101 smoke (colorized), 102 sparkles.
+- **Grenade re-buy** (`mp_grenaderebuy`): a thrown or dropped grenade sets a per-life flag; with the
+  cvar at 0 the same grenade cannot be bought again until the next spawn.
+- **Map goals** (`mp_mapgoalscore`): gates the +2 score for rescuing a hostage.
+
 ## Dedicated server command line flags (`src/main_dedicated.c`)
 
 - Original parameters: `-offline` / `-off`, `-map <map>`, `-port <port>`, `-lua <script>`, `-pw` / `-password <pass>`, `-name <name>`, `-rcon <pass>`, `-maxplayers <n>`.

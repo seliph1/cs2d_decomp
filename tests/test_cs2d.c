@@ -6347,8 +6347,9 @@ static bool test_server_join(void)
 
     /* Deal 40 damage from player 1 (CT) to player 2 (T) */
     cs2d_sv_damage(&sv, 2, 1, 40, 1);
-    /* 40 dmg * 0.35 kevlar = 14 absorbed, armor drops from 50 to 36, health drops by 26 to 74 */
-    if (sv.players[2].health != 74 || sv.players[2].armor != 36) TEST_FAIL("damage", "health / armor not absorbed correctly");
+    /* FUN_1401658c0: absorbed = (int)(40 * 0.35) = 14 -> health 74; while the armor lasts it loses
+     * the full raw damage (new_armor = 50 - 40 = 10), not only the absorbed part. */
+    if (sv.players[2].health != 74 || sv.players[2].armor != 10) TEST_FAIL("damage", "health / armor not absorbed correctly");
 
     /* Kill player 2 */
     cs2d_sv_kill(&sv, 2, 1, 0, 1);
@@ -7119,6 +7120,47 @@ static bool test_server_phase4_lua(void)
 
     hook_ret = cs2d_sv_lua_hook_team(&sv, 1, 2, 0);
     if (hook_ret != 0) TEST_FAIL("freehook verify", "after freehook, return value should be 0");
+
+    /* The documented "select" hook must be registerable and dispatched (it was missing from the
+     * is_valid_hook table, so addhook('select', ...) was rejected and the hook never ran). */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "select_hook_ran = false\n"
+        "function hook_select(id, weapon, mode)\n"
+        "    select_hook_ran = true\n"
+        "end\n"
+        "addhook('select', 'hook_select', 0)\n"
+    );
+    if (!rc) TEST_FAIL("select addhook", "addhook('select', ...) setup failed");
+    cs2d_sv_lua_hook_select(&sv, 1, 30, 0);
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(select_hook_ran, 'select hook did not run')\n"
+        "freehook('select', 'hook_select')\n"
+    );
+    if (!rc) TEST_FAIL("select hook", "addhook('select') must register and the hook must run");
+
+    /* Connection lifecycle hooks: connect_initplayer(id), connect(id), disconnect(id, reason id).
+     * They were defined but never invoked (and connect had the wrong argument list). */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "cip_ran = false; con_ran = false; disc_id = 0; disc_reason = -1\n"
+        "function h_cip(id) cip_ran = true end\n"
+        "function h_con(id) con_ran = true end\n"
+        "function h_disc(id, reason) disc_id = id; disc_reason = reason end\n"
+        "addhook('connect_initplayer', 'h_cip')\n"
+        "addhook('connect', 'h_con')\n"
+        "addhook('disconnect', 'h_disc')\n"
+    );
+    if (!rc) TEST_FAIL("connection hooks setup", "failed registering connect/connect_initplayer/disconnect");
+    cs2d_sv_lua_hook_connect_initplayer(&sv, 2);
+    cs2d_sv_lua_hook_connect(&sv, 2);
+    cs2d_sv_lua_hook_disconnect(&sv, 2, 2);
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(cip_ran and con_ran, 'connect_initplayer/connect did not run')\n"
+        "assert(disc_id == 2 and disc_reason == 2, 'disconnect arguments must be (id, reason id)')\n"
+        "freehook('connect_initplayer', 'h_cip')\n"
+        "freehook('connect', 'h_con')\n"
+        "freehook('disconnect', 'h_disc')\n"
+    );
+    if (!rc) TEST_FAIL("connection hooks", "connect_initplayer/connect/disconnect assertion failed");
 
     /* 3. Test parse() - server commands and HUD text */
     rc = cs2d_sv_lua_dostring(&sv,
@@ -10574,6 +10616,454 @@ static bool test_dedicated_lua_items_and_weapons(void)
     return true;
 }
 
+/* Sections 4 and 6 of the join snapshot (FUN_1401dc530 / FUN_1402ce7c0 cases 4 and 6):
+ * entity states and ground projectiles, so a client joining mid-round sees the world as it is. */
+static bool test_dedicated_snapshot_world_state(void)
+{
+    printf("\n=== Testing Dedicated Server: Join Snapshot Sections 4 (entity states) & 6 (ground projectiles) ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+    if (!cs2d_map_load_file(&sv.map, "maps/de_dust2.map")) {
+        TEST_FAIL("Map load", "failed to load maps/de_dust2.map for the snapshot state test");
+    }
+    sv.map_loaded = true;
+    if (sv.map.entity_count < 2) TEST_FAIL("entity count", "de_dust2 must have at least two entities");
+
+    /* Section 4: non-zero states only, in entity order. */
+    uint32_t e0 = 0, e1 = 1;
+    sv.map.entity_state[e0] = 1;
+    cs2d_pkt_t p = { .pos = 0 };
+    int n = cs2d_sv_write_entity_states(&sv, &p);
+    if (n != 1 || p.pos != 4 + 5) TEST_FAIL("section 4 size", "expected [252,7,4,1] plus one 5-byte record");
+    if (p.buf[0] != 252 || p.buf[1] != 7 || p.buf[2] != 4 || p.buf[3] != 1) {
+        TEST_FAIL("section 4 header", "expected [252,7,4,1]");
+    }
+    if ((p.buf[4] | (p.buf[5] << 8)) != sv.map.entities[e0].x ||
+        (p.buf[6] | (p.buf[7] << 8)) != sv.map.entities[e0].y || p.buf[8] != 1) {
+        TEST_FAIL("section 4 record", "entity x/y/state mismatch");
+    }
+
+    /* [31] stores the new state (a later snapshot must carry it). */
+    cs2d_sv_entity_event(&sv, 1, sv.map.entities[e1].x, sv.map.entities[e1].y, 1);
+    if (sv.map.entity_state[e1] != 1) TEST_FAIL("entity event", "[31] did not store the entity state");
+
+    /* Round start clears every state (knowledge/entities.md). */
+    cs2d_sv_round_start(&sv, 5);
+    if (sv.map.entity_state[e0] != 0 || sv.map.entity_state[e1] != 0) {
+        TEST_FAIL("round reset", "entity states must be 0 after a round start");
+    }
+    p.pos = 0;
+    n = cs2d_sv_write_entity_states(&sv, &p);
+    if (n != 0 || p.pos != 4 || p.buf[3] != 0) TEST_FAIL("section 4 empty", "expected [252,7,4,0]");
+
+    /* Section 6: ground projectiles only, 7 bytes each. */
+    memset(sv.projectiles, 0, sizeof(sv.projectiles));
+    sv.projectiles[0].active = true;
+    sv.projectiles[0].id = 7;
+    sv.projectiles[0].type = CS2D_WEP_HE;
+    sv.projectiles[0].player = 1;
+    sv.projectiles[0].x = 100.0f;
+    sv.projectiles[0].y = 200.0f;
+    sv.projectiles[0].is_flying = false;
+    sv.projectiles[1].active = true;
+    sv.projectiles[1].id = 8;
+    sv.projectiles[1].is_flying = true;   /* in flight: not part of the ground section */
+
+    p.pos = 0;
+    n = cs2d_sv_write_ground_projectiles(&sv, &p);
+    if (n != 1 || p.pos != 4 + 7) TEST_FAIL("section 6 size", "expected [252,7,6,1] plus one 7-byte record");
+    if (p.buf[0] != 252 || p.buf[1] != 7 || p.buf[2] != 6 || p.buf[3] != 1) {
+        TEST_FAIL("section 6 header", "expected [252,7,6,1]");
+    }
+    if (p.buf[4] != 7 || p.buf[5] != CS2D_WEP_HE || p.buf[6] != 1 ||
+        (p.buf[7] | (p.buf[8] << 8)) != 100 || (p.buf[9] | (p.buf[10] << 8)) != 200) {
+        TEST_FAIL("section 6 record", "id/type/player/x/y mismatch");
+    }
+
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Dedicated Server: join snapshot sections 4 (entity states) and 6 (ground projectiles)");
+    return true;
+}
+
+/* P1 rules: cvar aliases/floats, aliases, mp_wpndmg + mp_damagefactor, mp_buytime,
+ * mp_weaponfadeout, ping measurement and the invalid-hook filter. */
+static bool test_dedicated_p1_rules(void)
+{
+    printf("\n=== Testing Dedicated Server P1: rules, config aliases & admin cvars ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+    if (!cs2d_map_load_file(&sv.map, "maps/de_dust2.map")) {
+        TEST_FAIL("Map load", "failed to load maps/de_dust2.map for the P1 test");
+    }
+    sv.map_loaded = true;
+
+    /* help.php aliases and float values */
+    cs2d_sv_settings_set(&sv.set, "sv_gm", "3");
+    if (sv.set.sv_gamemode != 3) TEST_FAIL("sv_gm alias", "sv_gm must set sv_gamemode");
+    cs2d_sv_settings_set(&sv.set, "mp_maxclientsip", "2");
+    if (sv.set.sv_maxclientsperip != 2) TEST_FAIL("mp_maxclientsip alias", "alias not applied");
+    cs2d_sv_settings_set(&sv.set, "mp_buytime", "0.25");
+    if (sv.set.mp_buytime < 0.249 || sv.set.mp_buytime > 0.251) {
+        TEST_FAIL("mp_buytime float", "floats must be accepted");
+    }
+    if (!cs2d_sv_settings_get(&sv.set, "sv_gm") || strcmp(cs2d_sv_settings_get(&sv.set, "sv_gm"), "3") != 0) {
+        TEST_FAIL("sv_gm get", "sv_gm must read back sv_gamemode");
+    }
+    sv.set.sv_gamemode = 0;
+
+    /* alias expansion in the console parser */
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].team = 1;
+    sv.players[1].alive = true;
+    sv.players[1].money = 0;
+    if (!cs2d_sv_exec(&sv, "alias moneyset setmoney 1 9500")) TEST_FAIL("alias", "alias command failed");
+    if (!cs2d_sv_exec(&sv, "moneyset")) TEST_FAIL("alias expansion", "alias was not expanded");
+    if (sv.players[1].money != 9500) TEST_FAIL("alias effect", "alias did not run setmoney");
+
+    /* mp_wpndmg override and mp_damagefactor */
+    if (!cs2d_sv_exec(&sv, "mp_wpndmg ak47 7")) TEST_FAIL("mp_wpndmg", "command failed");
+    sv.players[1].health = 100;
+    sv.players[1].armor = 0;
+    sv.set.mp_damagefactor = 1.0;
+    cs2d_sv_damage(&sv, 1, 0, 5, CS2D_WEP_AK47);
+    if (sv.players[1].health != 93) TEST_FAIL("mp_wpndmg effect", "expected 7 damage");
+    sv.players[1].health = 100;
+    sv.set.mp_damagefactor = 2.0;
+    cs2d_sv_damage(&sv, 1, 0, 5, CS2D_WEP_AK47);
+    if (sv.players[1].health != 86) TEST_FAIL("mp_damagefactor", "expected 14 damage (7 x 2)");
+    sv.set.mp_damagefactor = 1.0;
+    sv.players[1].health = 100;
+
+    /* mp_buytime: allowed 10 s after round start, refused after 20 s (0.25 min = 15 s) */
+    sv.set.mp_buytime = 0.25;
+    sv.players[1].money = 16000;
+    sv.players[1].item_count = 0;
+    sv.round_clock_ms = cs2d_sv_now() - 10000;
+    cs2d_sv_buy(&sv, 1, CS2D_WEP_AK47);
+    if (sv.players[1].money >= 16000) TEST_FAIL("mp_buytime inside", "buy during the window must succeed");
+    int money_after = sv.players[1].money;
+    sv.round_clock_ms = cs2d_sv_now() - 20000;
+    cs2d_sv_buy(&sv, 1, CS2D_WEP_USP);
+    if (sv.players[1].money != money_after) TEST_FAIL("mp_buytime outside", "buy after the window must be refused");
+    sv.set.mp_buytime = 0.0;
+
+    /* mp_weaponfadeout: 1 s removes, 0 keeps */
+    memset(sv.items, 0, sizeof(sv.items));
+    sv.items[0].active = true;
+    sv.items[0].dropped = true;
+    sv.items[0].drop_time_ms = cs2d_sv_now() - 5000;
+    sv.set.mp_weaponfadeout = 1;
+    cs2d_sv_step_items(&sv);
+    if (sv.items[0].active) TEST_FAIL("mp_weaponfadeout", "1 s must remove an old drop");
+    sv.items[0].active = true;
+    sv.set.mp_weaponfadeout = 0;
+    cs2d_sv_step_items(&sv);
+    if (!sv.items[0].active) TEST_FAIL("mp_weaponfadeout 0", "0 must keep the item forever");
+    sv.items[0].active = false;
+
+    /* ping measurement from the [229] clock reply: start_ms 1000 ms ago, ts 950 -> ~50 ms */
+    sv.start_ms = cs2d_sv_now() - 1000;
+    sv.players[2].used = true;
+    sv.players[2].joined = true;
+    sv.players[2].alive = true;
+    sv.players[2].ping = 0;
+    sv.conns[0].active = true;
+    sv.conns[0].player = 2;
+    uint8_t ping_pkt[9];
+    ping_pkt[0] = 229;
+    int32_t ts = 950, cli = 0;
+    memcpy(&ping_pkt[1], &ts, 4);
+    memcpy(&ping_pkt[5], &cli, 4);
+    cs2d_sv_recv_payload(&sv, &sv.conns[0], ping_pkt, sizeof(ping_pkt));
+    if (sv.players[2].ping < 40 || sv.players[2].ping > 60) {
+        TEST_FAIL("ping measurement", "expected ~50 ms from the [229] reply");
+    }
+    sv.conns[0].active = false;
+    sv.conns[0].player = 0;
+
+    /* server spawn commands (help.php): spawnitem / spawnobject / spawnprojectile */
+    memset(sv.items, 0, sizeof(sv.items));
+    if (!cs2d_sv_exec(&sv, "spawnitem ak47 5 6 30 90")) TEST_FAIL("spawnitem", "command failed");
+    bool found_item = false;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (sv.items[i].active && sv.items[i].type == CS2D_WEP_AK47 &&
+            sv.items[i].tile_x == 5 && sv.items[i].tile_y == 6) {
+            if (sv.items[i].clip != 30 || sv.items[i].reserve != 90) {
+                TEST_FAIL("spawnitem ammo", "custom ammo was not applied");
+            }
+            found_item = true;
+            break;
+        }
+    }
+    if (!found_item) TEST_FAIL("spawnitem", "ground item was not created");
+
+    memset(sv.projectiles, 0, sizeof(sv.projectiles));
+    if (!cs2d_sv_exec(&sv, "spawnprojectile 51 5 6 90 32")) TEST_FAIL("spawnprojectile", "command failed");
+    bool found_proj = false;
+    for (int i = 0; i < CS2D_SV_MAX_PROJECTILES; i++) {
+        if (sv.projectiles[i].active && sv.projectiles[i].type == CS2D_WEP_HE) found_proj = true;
+    }
+    if (!found_proj) TEST_FAIL("spawnprojectile", "projectile was not created");
+
+    cs2d_dynobj_init(&sv.dynobj, &sv.map);
+    if (!cs2d_sv_exec(&sv, "spawnobject 1 5 6")) TEST_FAIL("spawnobject", "command failed");
+    if (cs2d_dynobj_count(&sv.dynobj) < 1) TEST_FAIL("spawnobject", "object was not created");
+    cs2d_dynobj_clear(&sv.dynobj);
+
+    /* mp_teamkillpenalty: the second/limit-th teamkill kicks the attacker */
+    memset(sv.players, 0, sizeof(sv.players));
+    sv.players[1].used = true; sv.players[1].alive = true; sv.players[1].team = 1; sv.players[1].health = 100;
+    sv.players[2].used = true; sv.players[2].alive = true; sv.players[2].team = 1; sv.players[2].health = 100;
+    snprintf(sv.players[1].name, sizeof(sv.players[1].name), "TKer");
+    snprintf(sv.players[2].name, sizeof(sv.players[2].name), "Victim");
+    sv.set.mp_teamkillpenalty = 1;
+    cs2d_sv_kill(&sv, 2, 1, 0, CS2D_WEP_AK47);
+    if (sv.players[1].used) TEST_FAIL("mp_teamkillpenalty", "the teamkiller must be kicked at the limit");
+    sv.set.mp_teamkillpenalty = 0;
+    memset(sv.players, 0, sizeof(sv.players));
+
+    /* hooks that do not exist in 1.0.1.8 must be rejected by addhook */
+    cs2d_sv_lua_init(&sv);
+    if (!sv.lua) TEST_FAIL("Lua init", "sv.lua is NULL");
+    if (cs2d_sv_lua_addhook(&sv, "frame", "f", 0) != 0) TEST_FAIL("frame hook", "frame must not be a valid hook");
+    if (cs2d_sv_lua_addhook(&sv, "oncollision", "f", 0) != 0) TEST_FAIL("oncollision hook", "must not be valid");
+    if (cs2d_sv_lua_addhook(&sv, "post_endround", "f", 0) != 0) TEST_FAIL("post_endround hook", "must not be valid");
+    cs2d_sv_lua_close(&sv);
+
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Dedicated Server P1: cvar aliases/floats, aliases, damage/buy/fadeout rules, ping, hook filter");
+    return true;
+}
+
+/* P2 rules: mp_deathdrop, temporary bans, team buildings, world commands and vote thresholds. */
+static bool test_dedicated_p2_rules(void)
+{
+    printf("\n=== Testing Dedicated Server P2: death drop, tempban, buildings, world commands, votes ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+    if (!cs2d_map_load_file(&sv.map, "maps/de_dust2.map")) {
+        TEST_FAIL("Map load", "failed to load maps/de_dust2.map for the P2 test");
+    }
+    sv.map_loaded = true;
+
+    /* mp_deathdrop 3 = primary + secondary */
+    cs2d_sv_player_t *pl = &sv.players[1];
+    pl->used = true; pl->alive = true; pl->team = 1; pl->x = 320.0f; pl->y = 320.0f;
+    pl->item_count = 1; pl->items[0] = CS2D_WEP_AK47; pl->clip[CS2D_WEP_AK47] = 30;
+    pl->reserve[CS2D_WEP_AK47] = 90;
+    memset(sv.items, 0, sizeof(sv.items));
+    sv.set.mp_deathdrop = 3;
+    cs2d_sv_kill(&sv, 1, 0, 0, CS2D_WEP_AK47);
+    bool dropped = false;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (sv.items[i].active && sv.items[i].type == CS2D_WEP_AK47 &&
+            sv.items[i].clip == 30 && sv.items[i].reserve == 90) dropped = true;
+    }
+    if (!dropped || sv.players[1].item_count != 0) TEST_FAIL("mp_deathdrop", "primary item was not dropped");
+
+    /* mp_deathdrop 4 = nothing */
+    pl->used = true; pl->alive = true; pl->item_count = 1; pl->items[0] = CS2D_WEP_AK47;
+    memset(sv.items, 0, sizeof(sv.items));
+    sv.set.mp_deathdrop = 4;
+    cs2d_sv_kill(&sv, 1, 0, 0, CS2D_WEP_AK47);
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
+        if (sv.items[i].active && sv.items[i].type == CS2D_WEP_AK47) {
+            TEST_FAIL("mp_deathdrop 4", "mode 4 must not drop anything");
+        }
+    }
+    sv.set.mp_deathdrop = 0;
+    memset(sv.players, 0, sizeof(sv.players));
+
+    /* mp_tempbantime: the entry expires with cs2d_sv_now() */
+    memset(sv.bans, 0, sizeof(sv.bans));
+    sv.ban_count = 0;
+    cs2d_sv_tempban_ip(&sv, "192.0.2.7", 1, "test");
+    if (!cs2d_sv_is_banned(&sv, "192.0.2.7", 0, 0, NULL, 0)) {
+        TEST_FAIL("mp_tempbantime", "temporary ban not active");
+    }
+    sv.bans[0].expire_ms = cs2d_sv_now() - 1;
+    if (cs2d_sv_is_banned(&sv, "192.0.2.7", 0, 0, NULL, 0)) {
+        TEST_FAIL("mp_tempbantime", "expired ban must be ignored");
+    }
+    sv.ban_count = 0;
+
+    /* mp_killteambuildings 0 / 1 */
+    cs2d_dynobj_init(&sv.dynobj, &sv.map);
+    cs2d_dynobj_t *o = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_BARRICADE, 5 * 32.0f, 6 * 32.0f,
+                                         0.0f, 0, 1, 1);
+    if (!o) TEST_FAIL("dynobj", "could not spawn a barricade");
+    int obj_id = o->id;
+    int hp0 = o->health;
+    sv.players[2].used = true; sv.players[2].alive = true; sv.players[2].team = 1; sv.players[2].health = 100;
+    sv.set.mp_killteambuildings = 0;
+    cs2d_sv_object_damage(&sv, obj_id, 10, 2);
+    if (o->health != hp0) TEST_FAIL("mp_killteambuildings 0", "teammate building must be unkillable");
+    sv.set.mp_killteambuildings = 1;
+    cs2d_sv_object_damage(&sv, obj_id, 10, 2);
+    if (o->health == hp0) TEST_FAIL("mp_killteambuildings 1", "teammate building must take damage");
+
+    /* damageobject / killobject / triggerposition */
+    int hp1 = o->health;
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "damageobject %d 5 0", obj_id);
+    if (!cs2d_sv_exec(&sv, cmd)) TEST_FAIL("damageobject", "command failed");
+    if (o->health >= hp1) TEST_FAIL("damageobject", "object health did not drop");
+    snprintf(cmd, sizeof(cmd), "killobject %d", obj_id);
+    if (!cs2d_sv_exec(&sv, cmd)) TEST_FAIL("killobject", "command failed");
+    if (cs2d_dynobj_get(&sv.dynobj, obj_id) != NULL) TEST_FAIL("killobject", "object still exists");
+
+    if (sv.map.entity_count > 0) {
+        const cs2d_entity_t *e = &sv.map.entities[0];
+        sv.map.entity_state[0] = 0;
+        snprintf(cmd, sizeof(cmd), "triggerposition %d %d", e->x, e->y);
+        if (!cs2d_sv_exec(&sv, cmd)) TEST_FAIL("triggerposition", "command failed");
+        if (sv.map.entity_state[0] != 1) TEST_FAIL("triggerposition", "entity state was not toggled");
+    }
+    cs2d_dynobj_clear(&sv.dynobj);
+
+    /* mp_kickpercent: two of three players vote to kick #3 */
+    memset(sv.players, 0, sizeof(sv.players));
+    memset(sv.conns, 0, sizeof(sv.conns));
+    for (int i = 1; i <= 3; i++) {
+        sv.players[i].used = true;
+        sv.players[i].joined = true;
+        sv.players[i].team = 1;
+        sv.players[i].alive = true;
+        sv.players[i].health = 100;
+        snprintf(sv.players[i].name, sizeof(sv.players[i].name), "Voter%d", i);
+    }
+    sv.conns[0].active = true; sv.conns[0].player = 1;
+    sv.conns[1].active = true; sv.conns[1].player = 2;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    sv.conns[1].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    sv.set.mp_kickpercent = 0.5;
+    uint8_t vote[4] = { 43, 1, 3, 0 };   /* [43, type 1, target u16 = 3] */
+    cs2d_sv_recv_payload(&sv, &sv.conns[0], vote, sizeof(vote));
+    if (!sv.players[3].used) TEST_FAIL("mp_kickpercent", "one vote must not kick");
+    cs2d_sv_recv_payload(&sv, &sv.conns[1], vote, sizeof(vote));
+    if (sv.players[3].used) TEST_FAIL("mp_kickpercent", "two of three votes must kick");
+    sv.set.mp_kickpercent = 0.0;
+    free(sv.conns[0].pending);
+    free(sv.conns[1].pending);
+
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Dedicated Server P2: death drop, tempban expiry, team buildings, world commands, kick vote");
+    return true;
+}
+
+/* P3 rules: httpdata hook signature, mp_grenaderebuy and damagetile. */
+static bool test_dedicated_p3_rules(void)
+{
+    printf("\n=== Testing Dedicated Server P3: httpdata hook, grenade re-buy, damagetile ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+    if (!cs2d_map_load_file(&sv.map, "maps/de_dust2.map")) {
+        TEST_FAIL("Map load", "failed to load maps/de_dust2.map for the P3 test");
+    }
+    sv.map_loaded = true;
+
+    /* httpdata(requestid, state, data) */
+    cs2d_sv_lua_init(&sv);
+    if (!sv.lua) TEST_FAIL("Lua init", "sv.lua is NULL");
+    bool rc = cs2d_sv_lua_dostring(&sv,
+        "http_id = -1; http_state = -1; http_data = ''\n"
+        "function h_http(id, state, data) http_id = id; http_state = state; http_data = data end\n"
+        "addhook('httpdata', 'h_http')\n");
+    if (!rc) TEST_FAIL("httpdata setup", "addhook/handler failed");
+    cs2d_sv_lua_hook_httpdata(&sv, 7, 1, "hello", 5);
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(http_id == 7 and http_state == 1 and http_data == 'hello', 'httpdata arguments mismatch')\n"
+        "freehook('httpdata', 'h_http')\n");
+    if (!rc) TEST_FAIL("httpdata hook", "expected (requestid, state, data)");
+    cs2d_sv_lua_close(&sv);
+
+    /* mp_grenaderebuy 0 blocks a second buy after the grenade was thrown */
+    cs2d_sv_player_t *pl = &sv.players[1];
+    pl->used = true; pl->alive = true; pl->team = 1; pl->money = 16000;
+    sv.set.mp_grenaderebuy = 0;
+    pl->grenade_rebuy[CS2D_WEP_HE] = 1;
+    cs2d_sv_buy(&sv, 1, CS2D_WEP_HE);
+    if (pl->money != 16000) TEST_FAIL("mp_grenaderebuy 0", "re-buy must be refused");
+    pl->grenade_rebuy[CS2D_WEP_HE] = 0;
+    cs2d_sv_buy(&sv, 1, CS2D_WEP_HE);
+    if (pl->money >= 16000) TEST_FAIL("mp_grenaderebuy 1", "the first buy must succeed");
+    sv.set.mp_grenaderebuy = 1;
+
+    /* sv_sound (mode 10, opcode 240) and sv_soundpos (opcode 65) wire formats */
+    memset(sv.conns, 0, sizeof(sv.conns));
+    sv.players[1].joined = true;
+    sv.players[1].conn = 0;
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_server_sound(&sv, 10, "a.wav", 0);
+    if (sv.conns[0].out.pos != 5 + 5 * 2 || sv.conns[0].out.buf[0] != 240 ||
+        sv.conns[0].out.buf[1] != 0 || sv.conns[0].out.buf[2] != 10 ||
+        sv.conns[0].out.buf[3] != 5 || sv.conns[0].out.buf[5] != 'a') {
+        TEST_FAIL("sv_sound", "expected [240,0,10,5,UTF-16LE path]");
+    }
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_positional_sound(&sv, 100, 200, "p.wav", 0);
+    if (sv.conns[0].out.pos != 1 + 2 + 2 + 1 + 5 || sv.conns[0].out.buf[0] != 65 ||
+        (sv.conns[0].out.buf[1] | (sv.conns[0].out.buf[2] << 8)) != 100 + 0x8000 ||
+        (sv.conns[0].out.buf[3] | (sv.conns[0].out.buf[4] << 8)) != 200 + 0x8000) {
+        TEST_FAIL("sv_soundpos", "expected [65,x+0x8000,y+0x8000,path]");
+    }
+    /* explosion -> [48, type 1, x+0x8000, y+0x8000, size, 0] */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_explosion(&sv, 100, 100, 64, 0, 0);
+    if (sv.conns[0].out.pos != 10 || sv.conns[0].out.buf[0] != 48 || sv.conns[0].out.buf[1] != 1 ||
+        (sv.conns[0].out.buf[2] | (sv.conns[0].out.buf[3] << 8)) != 100 + 0x8000 ||
+        (sv.conns[0].out.buf[6] | (sv.conns[0].out.buf[7] << 8)) != 64) {
+        TEST_FAIL("explosion FX", "expected [48,1,x,y,size,0]");
+    }
+    /* effect fire -> [48, 100, x, y, p1, p2, r, g, b] */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    if (!cs2d_sv_exec(&sv, "effect fire 100 100 5 50 10 20 30")) TEST_FAIL("effect", "command failed");
+    if (sv.conns[0].out.pos != 13 || sv.conns[0].out.buf[0] != 48 || sv.conns[0].out.buf[1] != 100 ||
+        sv.conns[0].out.buf[10] != 10 || sv.conns[0].out.buf[11] != 20 || sv.conns[0].out.buf[12] != 30) {
+        TEST_FAIL("effect FX", "expected [48,100,...,r,g,b]");
+    }
+
+    free(sv.conns[0].pending);
+    sv.conns[0].pending = NULL;
+    sv.conns[0].active = false;
+    sv.players[1].joined = false;
+    sv.players[1].conn = -1;
+
+    /* damagetile damages the building on the tile */
+    cs2d_dynobj_init(&sv.dynobj, &sv.map);
+    cs2d_dynobj_t *o = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_BARRICADE, 5 * 32.0f, 6 * 32.0f,
+                                         0.0f, 0, 1, 1);
+    if (!o) TEST_FAIL("dynobj", "could not spawn a barricade");
+    int hp = o->health;
+    if (!cs2d_sv_exec(&sv, "damagetile 5 6 10")) TEST_FAIL("damagetile", "command failed");
+    if (o->health >= hp) TEST_FAIL("damagetile", "building health did not drop");
+    cs2d_dynobj_clear(&sv.dynobj);
+
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Dedicated Server P3: httpdata(requestid,state,data), grenade re-buy gate, damagetile");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -10582,7 +11072,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 96;
+    int total = 100;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -10680,6 +11170,10 @@ int main(void)
     if (test_dedicated_hudtxt()) passed++;
     if (test_dedicated_settile()) passed++;
     if (test_dedicated_lua_items_and_weapons()) passed++;
+    if (test_dedicated_snapshot_world_state()) passed++;
+    if (test_dedicated_p1_rules()) passed++;
+    if (test_dedicated_p2_rules()) passed++;
+    if (test_dedicated_p3_rules()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

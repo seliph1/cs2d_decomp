@@ -8,6 +8,7 @@
 
 #define CS2D_SV_MAX_HOOKS       128
 #define CS2D_SV_MAX_TIMERS      256
+#define CS2D_SV_MAX_HTTP        8
 
 /* Hook listener entry (ordered by priority ascending) */
 typedef struct cs2d_hook_node {
@@ -33,6 +34,20 @@ typedef struct {
     char     param[128];
 } cs2d_sv_timer_t;
 
+/* Pending reqhttp() request (HTTP GET, non-blocking reads in cs2d_sv_lua_frame) */
+typedef struct {
+    bool     active;
+    bool     failed;
+    bool     headers_done;
+    int      request_id;
+    SOCKET   sock;
+    int      mode;          /* 0 = string, 1 = byte table */
+    uint32_t start_ms;
+    char    *buf;
+    int      len, cap;
+    int      body_off;      /* offset after "\r\n\r\n" */
+} cs2d_sv_http_t;
+
 /* Lua subsystem state */
 typedef struct cs2d_sv_lua {
     lua_State        *L;
@@ -45,6 +60,8 @@ typedef struct cs2d_sv_lua {
     uint32_t          last_minute;
     char              bind_keys[64][32];
     int               bind_key_count;
+    cs2d_sv_http_t    http[CS2D_SV_MAX_HTTP];
+    int               next_http_id;
 } cs2d_sv_lua_t;
 
 /* Lifetime */
@@ -134,7 +151,9 @@ void cs2d_sv_lua_hook_clientdata(cs2d_server_t *sv, int id, int mode, int data1,
 void cs2d_sv_lua_hook_clientsetting(cs2d_server_t *sv, int id, int setting, int val1, int val2);
 void cs2d_sv_lua_hook_itemfadeout(cs2d_server_t *sv, int iid, int type, int x, int y);
 void cs2d_sv_lua_hook_shutdown(cs2d_server_t *sv);
-int  cs2d_sv_lua_hook_connect(cs2d_server_t *sv, const char *ip, int port, const char *usgn, const char *name);
+/* connect(id): help.php lists a single player id (the old ip/port/usgn/name signature was wrong).
+ * It runs after connect_initplayer and before join. */
+int  cs2d_sv_lua_hook_connect(cs2d_server_t *sv, int id);
 /*
  * connect_attempt(name, ip, port, usgnID, usgnName, steamID, steamName), the 7 arguments of
  * help.php. steamID is a string there and the original pushes it as one (cs2d_dedicated.exe
@@ -148,9 +167,11 @@ int  cs2d_sv_lua_hook_connect_attempt(cs2d_server_t *sv, const char *name, const
                                       int usgn, const char *usgn_name, int64_t steam_id,
                                       const char *steam_name, char *out_reason, size_t max_reason);
 void cs2d_sv_lua_hook_connect_initplayer(cs2d_server_t *sv, int id);
-void cs2d_sv_lua_hook_disconnect(cs2d_server_t *sv, int id, const char *reason);
+/* disconnect(id, reason id): runs after the player is fully removed (player(id) no longer works).
+ * reason is the numeric reason of the [253] message: 0 = normal, 1 = timeout, 2/16 = kick/ban. */
+void cs2d_sv_lua_hook_disconnect(cs2d_server_t *sv, int id, int reason);
 int  cs2d_sv_lua_hook_hitzone(cs2d_server_t *sv, int image_id, int player, float x, float y);
-void cs2d_sv_lua_hook_httpdata(cs2d_server_t *sv, const char *data, int id);
+void cs2d_sv_lua_hook_httpdata(cs2d_server_t *sv, int request_id, int state, const char *data, size_t len);
 int  cs2d_sv_lua_hook_sayutf8(cs2d_server_t *sv, int id, const char *text);
 int  cs2d_sv_lua_hook_sayteamutf8(cs2d_server_t *sv, int id, const char *text);
 void cs2d_sv_lua_hook_shieldhit(cs2d_server_t *sv, int id, int weapon, int damage, int attacker);

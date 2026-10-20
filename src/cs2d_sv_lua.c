@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <errno.h>
 
 /* Helper for UTF-16LE conversion */
 static int to_utf16le(const char *src, uint16_t *dst, int max_chars)
@@ -1584,11 +1585,57 @@ static int l_reqcld(lua_State *L)
     return 0;
 }
 
-/* reqhttp(...) */
+/* ---------------------------------------------------------------------------------------------
+ * reqhttp(url, path, mode): HTTP GET. Reads are polled from cs2d_sv_lua_frame and the result goes
+ * to the httpdata hook as (requestid, state, data) (help.php).
+ * ------------------------------------------------------------------------------------------- */
+
+static bool http_would_block(void)
+{
+#ifdef _WIN32
+    return WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+    return errno == EAGAIN || errno == EWOULDBLOCK;
+#endif
+}
+
 static int l_reqhttp(lua_State *L)
 {
-    (void)L;
-    return 0;
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv || !sv->lua) return 0;
+    cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
+    const char *url = luaL_checkstring(L, 1);
+    const char *path = luaL_checkstring(L, 2);
+    int mode = (int)luaL_optinteger(L, 3, 0);
+
+    cs2d_sv_http_t *h = NULL;
+    for (int i = 0; i < CS2D_SV_MAX_HTTP; i++) {
+        if (!lua->http[i].active) { h = &lua->http[i]; break; }
+    }
+    if (!h) return 0;
+
+    memset(h, 0, sizeof(*h));
+    h->active = true;
+    h->mode = mode;
+    h->start_ms = cs2d_sv_now();
+    if (lua->next_http_id <= 0) lua->next_http_id = 1;
+    h->request_id = lua->next_http_id++;
+
+    SOCKET s = cs2d_platform_tcp_connect(url, "80");
+    if (s == INVALID_SOCKET) {
+        h->failed = true;
+        lua_pushinteger(L, h->request_id);
+        return 1;
+    }
+    h->sock = s;
+
+    char req[1024];
+    int n = snprintf(req, sizeof(req), "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",
+                     path, url);
+    if (n <= 0 || send(s, req, n, 0) != n) h->failed = true;
+    cs2d_platform_set_nonblocking(s);
+    lua_pushinteger(L, h->request_id);
+    return 1;
 }
 
 /* checksumfile("path") */
@@ -2062,6 +2109,11 @@ void cs2d_sv_lua_close(cs2d_server_t *sv)
             n = next;
         }
     }
+    for (int i = 0; i < CS2D_SV_MAX_HTTP; i++) {
+        if (!lua->http[i].active) continue;
+        if (lua->http[i].sock != INVALID_SOCKET) closesocket(lua->http[i].sock);
+        free(lua->http[i].buf);
+    }
     if (cs2d_sv_get_active() == sv) cs2d_sv_set_active(NULL);
     free(lua);
     sv->lua = NULL;
@@ -2204,17 +2256,16 @@ static bool cs2d_sv_lua_is_valid_hook(const char *name)
 {
     static const char *s_hooks[] = {
         "connect", "join", "collect", "attack", "walkover", "clientsetting", "leave",
-        "spawn", "startround", "second", "team", "minute", "name", "endround", "mapchange",
+        "spawn", "select", "startround", "second", "team", "minute", "name", "endround", "mapchange",
         "serveraction", "always", "trigger", "ms100", "parse", "rcon", "buy", "triggerentity",
         "drop", "startround_prespawn", "reload", "attack2", "move", "projectile", "itemfadeout",
         "movetile", "kill", "hit", "projectile_impact", "break", "die", "suicide", "usebutton",
         "use", "shieldhit", "say", "sayteamutf8", "sayutf8", "sayteam", "spray", "radio", "vote",
-        "menu", "assist", "build", "log", "flashlight", "buildattempt", "httpdata", "http",
+        "menu", "assist", "build", "log", "flashlight", "buildattempt", "httpdata",
         "flagcapture", "flagtake", "key", "bombplant", "dominate", "bombexplode", "bombdefuse",
         "hostagerescue", "vipescape", "objectdamage", "objectupgrade", "clientdata", "hitzone",
-        "specswitch", "shutdown", "objectkill", "turretscan", "oncollision", "oncollisionhit",
-        "onhit", "hostageuse", "hostagedamage", "hostagekill", "disconnect", "voice",
-        "connect_attempt", "connect_initplayer", "frame", "post_endround", "filetransfer"
+        "specswitch", "objectkill", "turretscan", "hostageuse", "hostagedamage", "hostagekill",
+        "disconnect", "voice", "connect_attempt", "connect_initplayer"
     };
     if (!name) return false;
     for (size_t i = 0; i < sizeof(s_hooks)/sizeof(s_hooks[0]); i++) {
@@ -2934,19 +2985,11 @@ void cs2d_sv_lua_hook_shutdown(cs2d_server_t *sv)
     dispatch_hook(sv, "shutdown", 0, NULL, NULL, NULL, 0);
 }
 
-static int push_connect(lua_State *L, void *ctx) {
-    hook_args_t *a = (hook_args_t *)ctx;
-    lua_pushstring(L, a->s1 ? a->s1 : "");
-    lua_pushinteger(L, a->a);
-    lua_pushstring(L, a->s2 ? a->s2 : "");
-    lua_pushstring(L, a->s3 ? a->s3 : "");
-    return 4;
-}
-
-int cs2d_sv_lua_hook_connect(cs2d_server_t *sv, const char *ip, int port, const char *usgn, const char *name)
+int cs2d_sv_lua_hook_connect(cs2d_server_t *sv, int id)
 {
-    hook_args_t a = { .s1 = ip, .a = port, .s2 = usgn, .s3 = name };
-    return dispatch_hook(sv, "connect", 4, push_connect, &a, NULL, 0);
+    /* help.php: connect(id) - executed in the last step before join (after connect_initplayer) */
+    hook_args_t a = { .a = id };
+    return dispatch_hook(sv, "connect", 1, push_1int, &a, NULL, 0);
 }
 
 /*
@@ -2993,10 +3036,11 @@ void cs2d_sv_lua_hook_connect_initplayer(cs2d_server_t *sv, int id)
     dispatch_hook(sv, "connect_initplayer", 1, push_1int, &a, NULL, 0);
 }
 
-void cs2d_sv_lua_hook_disconnect(cs2d_server_t *sv, int id, const char *reason)
+void cs2d_sv_lua_hook_disconnect(cs2d_server_t *sv, int id, int reason)
 {
-    hook_args_t a = { .a = id, .s1 = reason };
-    dispatch_hook(sv, "disconnect", 2, push_leave, &a, NULL, 0);
+    /* help.php: disconnect(id, reason) - reason is the numeric reason id, not the leave string */
+    hook_args_t a = { .a = id, .b = reason };
+    dispatch_hook(sv, "disconnect", 2, push_2int, &a, NULL, 0);
 }
 
 static int push_hitzone(lua_State *L, void *ctx) {
@@ -3014,10 +3058,109 @@ int cs2d_sv_lua_hook_hitzone(cs2d_server_t *sv, int image_id, int player, float 
     return dispatch_hook(sv, "hitzone", 4, push_hitzone, &a, NULL, 0);
 }
 
-void cs2d_sv_lua_hook_httpdata(cs2d_server_t *sv, const char *data, int id)
+typedef struct {
+    int id, state, mode;
+    const char *data;
+    size_t len;
+} http_hook_args_t;
+
+static int push_httpdata(lua_State *L, void *ctx)
 {
-    hook_args_t a = { .s1 = data, .a = id };
-    dispatch_hook(sv, "httpdata", 2, push_trigger, &a, NULL, 0);
+    http_hook_args_t *a = (http_hook_args_t *)ctx;
+    lua_pushinteger(L, a->id);
+    lua_pushinteger(L, a->state);
+    if (a->mode == 1) {
+        lua_newtable(L);
+        for (size_t i = 0; i < a->len; i++) {
+            lua_pushinteger(L, (lua_Integer)(i + 1));
+            lua_pushinteger(L, (lua_Integer)(unsigned char)a->data[i]);
+            lua_settable(L, -3);
+        }
+    } else {
+        lua_pushlstring(L, a->data ? a->data : "", a->len);
+    }
+    return 3;
+}
+
+static void dispatch_httpdata(cs2d_server_t *sv, int id, int state, int mode,
+                              const char *data, size_t len)
+{
+    http_hook_args_t a = { .id = id, .state = state, .mode = mode, .data = data, .len = len };
+    dispatch_hook(sv, "httpdata", 3, push_httpdata, &a, NULL, 0);
+}
+
+void cs2d_sv_lua_hook_httpdata(cs2d_server_t *sv, int request_id, int state, const char *data, size_t len)
+{
+    dispatch_httpdata(sv, request_id, state, 0, data, len);
+}
+
+/* Polls the pending reqhttp() sockets; called once per frame. */
+static void cs2d_sv_lua_http_poll(cs2d_server_t *sv)
+{
+    if (!sv || !sv->lua) return;
+    cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
+    uint32_t now = cs2d_sv_now();
+
+    for (int i = 0; i < CS2D_SV_MAX_HTTP; i++) {
+        cs2d_sv_http_t *h = &lua->http[i];
+        if (!h->active) continue;
+        bool done = false, ok = false;
+
+        if (h->failed) {
+            done = true;
+        } else {
+            for (;;) {
+                char tmp[4096];
+                int n = recv(h->sock, tmp, sizeof(tmp), 0);
+                if (n > 0) {
+                    if (h->len + n > 262144) { h->failed = true; break; }
+                    if (h->len + n > h->cap) {
+                        int cap = h->cap ? h->cap : 4096;
+                        while (cap < h->len + n) cap *= 2;
+                        char *nb = (char *)realloc(h->buf, (size_t)cap);
+                        if (!nb) { h->failed = true; break; }
+                        h->buf = nb;
+                        h->cap = cap;
+                    }
+                    memcpy(h->buf + h->len, tmp, (size_t)n);
+                    h->len += n;
+                    if (!h->headers_done) {
+                        for (int k = 0; k + 3 < h->len; k++) {
+                            if (h->buf[k] == '\r' && h->buf[k + 1] == '\n' &&
+                                h->buf[k + 2] == '\r' && h->buf[k + 3] == '\n') {
+                                h->headers_done = true;
+                                h->body_off = k + 4;
+                                break;
+                            }
+                        }
+                    }
+                } else if (n == 0) {
+                    done = true;
+                    break;
+                } else if (http_would_block()) {
+                    break;
+                } else {
+                    h->failed = true;
+                    break;
+                }
+            }
+            if (!done && now - h->start_ms > 5000u) done = true;
+        }
+
+        if (done) {
+            if (!h->failed && h->headers_done && h->len >= 12 &&
+                strncmp(h->buf, "HTTP/", 5) == 0) {
+                int code = atoi(h->buf + 9);
+                ok = (code >= 200 && code < 300);
+            }
+            const char *body = ok ? h->buf + h->body_off : "";
+            size_t blen = ok ? (size_t)(h->len - h->body_off) : 0;
+            dispatch_httpdata(sv, h->request_id, ok ? 1 : 0, h->mode, body, blen);
+            if (h->sock != INVALID_SOCKET) closesocket(h->sock);
+            free(h->buf);
+            memset(h, 0, sizeof(*h));
+        }
+    }
 }
 
 int cs2d_sv_lua_hook_sayutf8(cs2d_server_t *sv, int id, const char *text)
@@ -3082,6 +3225,9 @@ void cs2d_sv_lua_frame(cs2d_server_t *sv)
     if (!sv || !sv->lua) return;
     cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
     uint32_t now = cs2d_sv_now();
+
+    /* pending reqhttp() responses */
+    cs2d_sv_lua_http_poll(sv);
 
     /* hook "always": every frame */
     dispatch_hook(sv, "always", 0, NULL, NULL, NULL, 0);

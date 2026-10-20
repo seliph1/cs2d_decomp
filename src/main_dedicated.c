@@ -145,7 +145,10 @@ int main(int argc, char **argv)
     cs2d_server_print("Starting server...");
 
     cs2d_sv_settings_default(&g_sv.set);
-    cs2d_sv_settings_load(&g_sv.set, "sys/server.cfg");
+    if (!cs2d_sv_exec_config(&g_sv, "sys/server.cfg")) {
+        /* Missing file: keep the built-in defaults; fall back for the tests' key/value reader */
+        cs2d_sv_settings_load(&g_sv.set, "sys/server.cfg");
+    }
 
     /* Apply commandline overrides */
     if (name_buf[0]) snprintf(g_sv.set.sv_name, sizeof(g_sv.set.sv_name), "%.63s", name_buf);

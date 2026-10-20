@@ -77,13 +77,54 @@ typedef struct {
     int     mp_randomspawn;
     int     mp_curtailedexplosions;
     int     mp_zombiespeedmod;
-    int     mp_kevlar;
     int     mp_teleportreload;   /* DAT_140a14d48 (CS2D.exe .data = 5): seconds to charge / recharge a teleporter */
     int     mp_dispenser_health; /* DAT_140a14dac (= 10): health a Dispenser grants per frame to a player in range */
     int     mp_dispenser_money;  /* DAT_140a14db0 (= 500): money a Dispenser grants per frame (clamped at 16000) */
     int     mp_dmspawnmoney;     /* DAT_1405a6554 (= 2000): money each spawn of a respawn mode, max every 15 s */
     int     mp_timelimit;        /* 0x1405c70e8: map time limit in minutes (0 = unlimited) */
     int     debuglua;            /* DAT_1405a6398: 1 = display Lua hook adds/removes, default 1 */
+    /* Game rules (P1 audit, help.php; defaults keep the previously verified behaviour) */
+    double  mp_buytime;          /* minutes, floats allowed (0 = no limit here) */
+    double  mp_damagefactor;     /* damage multiplier (1 = normal) */
+    int     mp_roundlimit;       /* played rounds before mapchange (0 = off) */
+    int     mp_winlimit;         /* team wins before mapchange (0 = off) */
+    int     mp_weaponfadeout;    /* seconds a dropped item stays on the ground (default 15) */
+    int     mp_dropgrenades;     /* allow dropping grenades */
+    int     mp_grenaderebuy;     /* allow re-buying thrown grenades */
+    int     mp_teamkillpenalty;  /* teamkills before a kick (0 = off) */
+    int     mp_tkpunish;         /* kill teamkillers at the next round start */
+    int     mp_idlekick;         /* perform mp_idleaction on idle players */
+    int     mp_idletime;         /* idle seconds (help: 10..3600) */
+    int     mp_idleaction;       /* 0 kick, 1 spec, 2 slap, 3 kill, 4 message */
+    int     mp_pinglimit;        /* kick players above this ping (0 = off) */
+    int     mp_floodprot;        /* UDP flood guard on/off */
+    int     mp_floodprotignoretime; /* seconds an flooding IP is ignored (default 600) */
+    int     mp_antispeeder;      /* 0..6, knowledge/low-level default 1 (reset position) */
+    int     mp_maxrconfails;     /* failed RCON passwords per IP before ignoring it (0 = off) */
+    int     mp_tempbantime;      /* temporary ban minutes (1..1440) */
+    int     mp_connectionlimit;  /* concurrent UDP connections (0 = unlimited) */
+    int     mp_vulnerablehostages; /* hostages can be damaged */
+    int     mp_hostagepenalty;     /* money/score penalty for killing a hostage */
+    int     mp_deathdrop;          /* 0 all, 1 primary+secondary+defuse+nv, 2 .., 3 .., 4 nothing */
+    int     mp_turretdamage;       /* damage of each turret hit (default 5) */
+    double  mp_kevlar;             /* armor absorption (DAT_1405a6508 default 0.35) */
+    double  mp_zombiedmg;          /* damage zombies take (default 0.5) */
+    int     mp_zombiekillscore;    /* score a zombie gets for a survivor (default 3) */
+    int     mp_zombiekillequip;    /* item a zombie gets for a kill (default 86, 0 = none) */
+    int     mp_zombierecover;      /* HP a zombie recovers per second (default 3) */
+    int     mp_killbuildingmoney;  /* 1 = money for killing buildings */
+    int     mp_killteambuildings;  /* 0 unkillable, 1 killable, 2 killable+penalty */
+    int     mp_killbuildings;      /* what happens to a builder's objects when he leaves (0..3) */
+    double  mp_kickpercent;        /* fraction of players needed for a kick vote (0 = off) */
+    double  mp_mapvoteratio;       /* fraction needed for a map vote (0 = off) */
+    int     mp_mapgoalscore;       /* score for map goals */
+    int     mp_autogamemode;       /* automatic gamemode switching */
+    char    mp_buymenu[256];     /* custom buy menu ("groups" separated by |, items by ,) */
+    char    mp_reservations[128];/* USGN ids that may join a full server */
+    char    mp_unbuyable[128];   /* item ids that cannot be bought */
+    char    mp_unbuildable[128]; /* building types that cannot be built */
+    int     sv_lan;              /* LAN mode (serverlist only; we are always offline) */
+    int     sv_checkusgnlogin;   /* U.S.G.N. login check (offline build keeps the field) */
     /* Generic cvar store */
     cs2d_sv_cvar_t cvars[CS2D_SV_MAX_CVARS];
     int     cvar_count;
@@ -175,6 +216,7 @@ typedef struct {
     int32_t usgn;
     int64_t steam_id;
     char    reason[64];
+    uint32_t expire_ms;   /* 0 = permanent; otherwise cs2d_sv_now() after which it is ignored */
 } cs2d_sv_ban_t;
 
 /* Tpl fields the join snapshot and the ping list read (FUN_1401dc530, 0x1401e505d) */
@@ -249,12 +291,27 @@ typedef struct {
     int32_t  portal_x[2];
     int32_t  portal_y[2];
     bool     portal_active[2];
+    /* P2 rules: grenade re-buy tracking (mp_grenaderebuy) */
+    uint8_t  grenade_rebuy[CS2D_MAX_WEAPONS]; /* grenade thrown/dropped since the last buy */
+    /* P1 rules: teamkill / hostage-kill punishment */
+    int      teamkills;       /* teamkills since this spawn */
+    int      hostage_kills;   /* hostage kills (mp_hostagepenalty) */
+    bool     tk_punish;       /* kill at the next round start (mp_tkpunish) */
     /* Client display settings & resolution (Opcode 232) */
     int      screen_w;
     int      screen_h;
     uint8_t  screen_aspect;
     uint8_t  screen_windowed;
 } cs2d_sv_player_t;
+
+/* Per-IP flood / RCON-failure state (FUN_1400d4c90 and mp_maxrconfails) */
+typedef struct {
+    char     ip[32];
+    uint32_t window_ms;    /* start of the current 60 s window */
+    int      count;        /* messages in the window */
+    uint32_t ignore_until; /* 0 = not ignored */
+    int      rcon_fails;
+} cs2d_sv_iplimit_t;
 
 typedef struct {
     SOCKET             sock;
@@ -323,6 +380,9 @@ typedef struct {
     /* Ban list (Phase 5) */
     cs2d_sv_ban_t      bans[CS2D_SV_MAX_BANS];
     int                ban_count;
+    /* P1 flood guard / RCON attempts per IP */
+    cs2d_sv_iplimit_t  iplimits[CS2D_SV_MAX_BANS];
+    int                iplimit_count;
     /* Dynamic Objects (Phase 6, Tdo) */
     cs2d_dynobj_world_t dynobj;
     /* Construction building overrides (mp_building_price, mp_building_limit, mp_building_health) */
@@ -336,6 +396,15 @@ typedef struct {
     cs2d_sv_projectile_t projectiles[CS2D_SV_MAX_PROJECTILES];
     uint16_t             next_proj_id;
     uint32_t             last_proj_ms;
+    /* mp_wpndmg overrides (index = weapon type) */
+    int                  wpndmg[CS2D_MAX_WEAPONS];
+    bool                 wpndmg_set[CS2D_MAX_WEAPONS];
+    /* Set by round_start when mp_roundlimit / mp_winlimit is reached; the next tick changes map */
+    bool                 mapchange_pending;
+    /* Very small console alias table (alias <name> <command>, aliases) */
+    char                 alias_name[8][32];
+    char                 alias_cmd[8][160];
+    int                  alias_count;
 } cs2d_server_t;
 
 void cs2d_sv_settings_default(cs2d_sv_settings_t *s);
@@ -467,12 +536,26 @@ void cs2d_sv_weapon_impulse(cs2d_server_t *sv, int id, uint8_t val);            
 void cs2d_sv_fire_direction(cs2d_server_t *sv, int id, uint16_t dir);                          /* FUN_1401d3840: [68] */
 void cs2d_sv_reqcld(cs2d_server_t *sv, int id, int mode, const char *param);                   /* FUN_1401d16f0 / reqcld: [53] */
 
+/* Server-side spawn commands (help.php): spawnitem / spawnobject / spawnnpc / spawnprojectile */
+/* [48] FX and the explosion command */
+void cs2d_sv_send_fx(cs2d_server_t *sv, int type, int x, int y, int p1, int p2, int r, int g, int b);
+void cs2d_sv_explosion(cs2d_server_t *sv, int x, int y, int size, int damage, int source);
+/* Server sounds: mode 10 play / 11 stop (opcode 240) and positional sound (opcode 65) */
+void cs2d_sv_server_sound(cs2d_server_t *sv, int mode, const char *path, int target);
+void cs2d_sv_positional_sound(cs2d_server_t *sv, int x, int y, const char *path, int target);
+void cs2d_sv_death_drop(cs2d_server_t *sv, int id);                       /* mp_deathdrop */
+void cs2d_sv_kill_player_buildings(cs2d_server_t *sv, int player, int mode); /* mp_killbuildings */
+int  cs2d_sv_spawn_item(cs2d_server_t *sv, int type, int tx, int ty, int clip, int reserve);
+void cs2d_sv_spawn_object(cs2d_server_t *sv, int typ, int tx, int ty, int mode, int team, int player, float rot);
+int  cs2d_sv_spawn_projectile(cs2d_server_t *sv, int type, int tx, int ty, int dir, int flydist);
+
 int  cs2d_sv_bot_add(cs2d_server_t *sv, int team, int look, const char *name);
 void cs2d_sv_bot_kick(cs2d_server_t *sv, const char *name_or_id);
 void cs2d_sv_bot_kill(cs2d_server_t *sv, const char *name_or_id);
 
 bool cs2d_sv_is_banned(const cs2d_server_t *sv, const char *ip, int32_t usgn, int64_t steam_id, char *out_reason, size_t reason_size);
 void cs2d_sv_ban_ip(cs2d_server_t *sv, const char *ip, const char *reason);
+void cs2d_sv_tempban_ip(cs2d_server_t *sv, const char *ip, int minutes, const char *reason);
 void cs2d_sv_ban_usgn(cs2d_server_t *sv, int32_t usgn, const char *reason);
 void cs2d_sv_ban_steam(cs2d_server_t *sv, int64_t steam_id, const char *reason);
 void cs2d_sv_unban(cs2d_server_t *sv, const char *target);
@@ -490,6 +573,8 @@ void cs2d_sv_rcon(cs2d_server_t *sv, int id, const uint8_t *enc_pw, int enc_pw_l
 void cs2d_sv_public_rcon(cs2d_server_t *sv, const struct sockaddr_in *from,
                          const char *pw, const char *cmd);                                     /* FUN_1401be1c0: [242] */
 bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line);                                    /* FUN_140140a00 */
+/* exec/include entry: runs every line of a config through cs2d_sv_exec (server.cfg) */
+bool cs2d_sv_exec_config(cs2d_server_t *sv, const char *path);
 
 /* Server browser queries: ping echo [FA] (FUN_1400d4ed0) and info reply [FB] (FUN_1401da400) */
 size_t cs2d_sv_build_info_reply(const cs2d_server_t *sv, uint8_t mode, uint16_t req_ver,
@@ -511,6 +596,9 @@ void cs2d_sv_build_join_settings(cs2d_pkt_t *p, const cs2d_sv_settings_t *s, con
                                  int score_ct, int32_t round_ms, int32_t seed);
 /* One player record of snapshot section 1 (FUN_1401dc530) */
 void cs2d_sv_write_player_record(cs2d_pkt_t *p, int id, const cs2d_sv_player_t *pl);
+/* Snapshot sections 4 (entity states) and 6 (ground projectiles); return the record count */
+int cs2d_sv_write_entity_states(const cs2d_server_t *sv, cs2d_pkt_t *p);
+int cs2d_sv_write_ground_projectiles(const cs2d_server_t *sv, cs2d_pkt_t *p);
 /* FUN_14010d970: the name the server gives a joining player (trim, filter, unique) */
 void cs2d_sv_sanitize_name(const cs2d_server_t *sv, const char *in, char *out, size_t out_size);
 /* Strips directory prefix, quotes/whitespace and .map extension */

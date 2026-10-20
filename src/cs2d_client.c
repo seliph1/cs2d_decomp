@@ -2424,6 +2424,53 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     }
                 } else if (mode == 51) {
                     cs2d_client_serverinfo_add_utf16(client, wbytes, char_len);
+                } else if (mode == 10 || mode == 11) {
+                    /* Server sounds (FUN_1401de400 case 10/11): "path[|volume]"; Tserversound::playServer
+                     * / stopServer. Paths are relative to sfx/. */
+                    static struct { char path[256]; int voice; } s_server_sounds[16];
+                    char path[256];
+                    int k = 0;
+                    for (int i = 0; i < char_len && k < (int)sizeof(path) - 1; i++) {
+                        uint16_t ch = (uint16_t)wbytes[i * 2] | ((uint16_t)wbytes[i * 2 + 1] << 8);
+                        path[k++] = (ch < 128) ? (char)ch : '?';
+                    }
+                    path[k] = '\0';
+                    float vol = 1.0f;
+                    char *bar = strchr(path, '|');
+                    if (bar) {
+                        *bar = '\0';
+                        vol = (float)atof(bar + 1);
+                        if (vol <= 0.0f) vol = 1.0f;
+                    }
+                    char full[300];
+                    snprintf(full, sizeof(full), "sfx/%s", path);
+                    if (mode == 10) {
+                        int slot = -1;
+                        for (int i = 0; i < 16; i++) {
+                            if (s_server_sounds[i].voice == 0 || s_server_sounds[i].path[0] == '\0') {
+                                slot = i;
+                                break;
+                            }
+                            if (strcmp(s_server_sounds[i].path, path) == 0) {
+                                cs2d_sound_stop(s_server_sounds[i].voice);
+                                slot = i;
+                                break;
+                            }
+                        }
+                        if (slot >= 0) {
+                            s_server_sounds[slot].voice = cs2d_sound_play(full, vol, true);
+                            snprintf(s_server_sounds[slot].path, sizeof(s_server_sounds[slot].path), "%s", path);
+                        }
+                    } else {
+                        for (int i = 0; i < 16; i++) {
+                            if (s_server_sounds[i].voice == 0) continue;
+                            if (path[0] == '\0' || strcmp(s_server_sounds[i].path, path) == 0) {
+                                cs2d_sound_stop(s_server_sounds[i].voice);
+                                s_server_sounds[i].voice = 0;
+                                s_server_sounds[i].path[0] = '\0';
+                            }
+                        }
+                    }
                 } else {
                     uint8_t r = 255, g = 220, b = 0;
                     char utf8[CS2D_CONSOLE_LINE_LEN];
@@ -2558,6 +2605,54 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     p->rot = (float)rot;
                 }
                 pos += 13;
+            } else if (opcode == CS2D_NET_FX) {
+                /* Server -> Client: [48, type u8, x+0x8000 u16, y+0x8000 u16, p1 u16, p2 u16,
+                 * (type >= 100) r,g,b u8, (type >= 200) len u8 + path] (FUN_14014e350 -> FUN_14014cf50).
+                 * Implemented: explosion (1), blood (8), fire (100), smoke/colorsmoke (101), sparkles (102).
+                 * Screen shake (2) and the flash effects (4/5) are not ported yet. */
+                if (pos + 10 > recvd) break;
+                uint8_t fxt = buffer[pos + 1];
+                int fx_x = (int)(buffer[pos + 2] | (buffer[pos + 3] << 8)) - 0x8000;
+                int fx_y = (int)(buffer[pos + 4] | (buffer[pos + 5] << 8)) - 0x8000;
+                int fp1 = buffer[pos + 6] | (buffer[pos + 7] << 8);
+                int fp2 = buffer[pos + 8] | (buffer[pos + 9] << 8);
+                int fr = 0, fg = 0, fb = 0;
+                int flen = 10;
+                if (fxt >= 100) {
+                    if (pos + 13 > recvd) break;
+                    fr = buffer[pos + 10]; fg = buffer[pos + 11]; fb = buffer[pos + 12];
+                    flen = 13;
+                    if (fxt >= 200) {
+                        if (pos + 14 > recvd) break;
+                        int plen = buffer[pos + 13];
+                        if (pos + 14 + plen > recvd) break;
+                        flen = 14 + plen;
+                    }
+                }
+                if (fxt == 1) {
+                    cs2d_fx_explosion(&client->fx, (float)fx_x, (float)fx_y, fp1 > 0 ? (float)fp1 : 5.0f);
+                } else if (fxt == 8) {
+                    int n = fp1 < 35 ? fp1 : 35;
+                    if (n < 1) n = 1;
+                    cs2d_fx_blood_splat(&client->fx, (float)fx_x, (float)fx_y, n);
+                } else if (fxt == 100 || fxt == 101 || fxt == 102) {
+                    int n = fp1;
+                    int cap = (fxt == 102) ? 50 : 100;
+                    if (n > cap) n = cap;
+                    if (n < 1) n = 1;
+                    float radius = fp2 > 0 ? (float)fp2 : 0.0f;
+                    for (int k = 0; k < n; k++) {
+                        float ang = (float)k * 2.39996f;
+                        float rr = radius * (float)((k * 37) % 100) / 100.0f;
+                        float px = (float)fx_x + cosf(ang) * rr;
+                        float py = (float)fx_y + sinf(ang) * rr;
+                        if (fxt == 100) cs2d_fx_fire_puff(&client->fx, px, py, 1.0f + (float)(k % 3));
+                        else if (fxt == 101) cs2d_fx_smoke_puff(&client->fx, px, py,
+                                                                (float)fr, (float)fg, (float)fb, 1.0f, 0.2f);
+                        else cs2d_fx_sparkle(&client->fx, px, py, (float)fr, (float)fg, (float)fb);
+                    }
+                }
+                pos += flen;
             } else if (opcode == CS2D_NET_MOVE_PROJECTILE) {
                 /* Server -> Client: [63, id u8, player u8, x_bias u16, y_bias u16] (7 bytes, FUN_14007dce0) */
                 if (pos + 7 > recvd) break;

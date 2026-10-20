@@ -404,6 +404,74 @@ sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT 
   - Dropped weapon fadeout Opcode 40 after 15s verified and tested.
   - `mp_startmoney` default (800) and clamp (`0x3e80` = 16000) verified. Locked in `test_server_network_and_protocol` (84/84 tests pass).
 
+- **Gap audit (2026-10-19, code + `cs2d_dedicated.exe` UTF-16 strings/refs + `docs/cs2d_help_db_complete.json`):**
+  prioritized what the port still lacks. Evidence per item in `knowledge/dedicated-server.md` and the
+  code comments cited below.
+  - **Fixed:** the documented `select` hook was missing from `cs2d_sv_lua_is_valid_hook`, so
+    `addhook("select", ...)` was rejected although `cs2d_sv_lua_hook_select` dispatches it. Regression
+    in `test_server_phase4_lua` (96/96 now).
+  - **Done 2026-10-19 (P0):** `connect_initplayer(id)` fires when the player instance is created (join
+    step 1), `connect(id)` in the last join step (step 5, before `join`) and `disconnect(id, reason id)`
+    after the player is removed; `connect` now takes the documented single `id`; bots fire
+    `connect` + `join` instantly. Regression in `test_server_phase4_lua` (97/97).
+  - **Done 2026-10-19 (P1):** `frame`, `http`, `filetransfer`, `post_endround`, `oncollision`,
+    `oncollisionhit`, `onhit` and `shutdown` were removed from the valid-hook table; `addhook` now
+    rejects them like 1.0.1.8.
+  - **Lua stubs (P3):** `steamstats` returns an empty table (no Steam integration in this build); the
+    19 `ai_*` functions are no-ops (bots have no AI by decision - scripts must not rely on them).
+    `reqhttp` is implemented (see P3 below).
+  - **Done 2026-10-19 (P0):** snapshot sections 4 (entity states, only non-zero) and 6 (ground
+    projectiles) are now built from `map.entity_state` / `sv->projectiles`; `[31]` and Trigger_Use keep
+    the state, and round start clears it (`knowledge/entities.md`). Test:
+    `test_dedicated_snapshot_world_state`.
+  - **Join snapshot (P2):** section 11 is still the 170-byte capture literal instead of being built
+    from the weapon tables, and section 13 is always `""`.
+  - **Done 2026-10-19 (P1):** typed fields + parsing for `mp_roundlimit`, `mp_winlimit`,
+    `mp_buytime` (float), `mp_buymenu` (string), `mp_unbuyable`, `mp_unbuildable`, `mp_damagefactor`,
+    `mp_wpndmg`, `mp_teamkillpenalty`, `mp_tkpunish`, `mp_hostagepenalty`, `mp_vulnerablehostages`,
+    `mp_dropgrenades`, `mp_grenaderebuy`, `mp_weaponfadeout`, `mp_floodprot`,
+    `mp_floodprotignoretime`, `mp_antispeeder`, `mp_pinglimit`, `mp_connectionlimit`,
+    `mp_maxclientsip` (alias of `sv_maxclientsperip`), `mp_reservations`, `mp_maxrconfails`,
+    `mp_tempbantime`, `mp_idleaction`, `mp_idlekick`, `mp_idletime`, `mp_deathdrop`, `sv_lan`,
+    `sv_checkusgnlogin`, `sv_gm` (alias of `sv_gamemode`), plus ping measurement from `[229]`/`[249]`.
+    Behaviours wired: round/win limits (mapchange), buytime, unbuyable, damagefactor, wpndmg,
+    weapon fadeout, grenade drop block, teamkill kick/punish, hostage vulnerability/penalty,
+    unbuildable, idle/kick/ping kick, anti-speeder punishments 1..6, reservations/connection/IP limits,
+    RCON failure cache.
+  - **Done 2026-10-19 (P2):** `mp_deathdrop` (death and leave), `mp_killbuildings`,
+    `mp_killbuildingmoney`, `mp_killteambuildings`, `mp_kevlar` (authentic FUN_1401658c0 armor
+    formula incl. special armors 201..205), `mp_turretdamage`, `mp_zombiedmg`,
+    `mp_zombiekillscore`, `mp_zombiekillequip`, `mp_zombierecover`, `mp_kickpercent`,
+    `mp_mapvoteratio`, `mp_tempbantime` (ban entries now expire; anti-speeder mode 1 and vote kicks
+    use it).
+  - **Done 2026-10-19 (P3):** `mp_grenaderebuy` (thrown/dropped grenades cannot be re-bought until the
+    next spawn when 0), `mp_mapgoalscore` (hostage-rescue score), `reqhttp` + `httpdata(requestid,
+    state, data)` (non-blocking HTTP GET polled from the Lua frame, 5 s timeout) and `damagetile`.
+  - **CVars still inert (P3):** `mp_autogamemode`, `mp_shotweakening` (needs a server-side shot ray;
+    our damage arrives from [17]), `mp_lagcompensationdivisor`, `mp_trace`, `mp_natholepunching`,
+    `mp_localrconoutput`, `mp_radar`/`mp_hud`/`mp_smokeblock`/`mp_buymenu` (client display,
+    stored/broadcast through `[237]` only).
+  - **Done 2026-10-19 (P1) commands:** `spawnitem` (with optional clip/reserve), `spawnobject`,
+    `spawnnpc`, `spawnprojectile`, `exec`/`include`, `alias`/`aliases`, `banname`, `bans`,
+    `unbanall`, `connections`, `mapinfo`, `maps`, `serverinfo`, `mp_wpndmg`, `sv_gm`.
+  - **Done 2026-10-19 (P2) commands:** `damageobject` (damage/repair with source player),
+    `killobject`, `triggerposition`, `restart`/`restartround`, `resources`.
+  - **Done 2026-10-19 (P3):** `sv_sound`/`sv_sound2`/`sv_soundpos`/`sv_stopsound` (opcode 240
+    modes 10/11 + positional [65]), `damagetile`, `explosion` ([48] type 1 + radial damage),
+    `effect` (fire/smoke/colorsmoke/flare/sparkles/blood).
+  - **Commands still missing (P3):** `flashplayer` and `flashposition` (client needs the [48] flash
+    effect 4/5 and the screen overlay; [48] screen shake type 2 is also not drawn yet).
+  - **Done 2026-10-19 (P1): `server.cfg` now runs through `cs2d_sv_exec`** (`cs2d_sv_exec_config`,
+    used by `main_dedicated.c`), so `mp_building_price`/`exec`/`alias`/... lines execute; unknown keys
+    still fall back to the generic cvar store.
+  - **Done 2026-10-19 (P1): flood guard `FUN_1400d4c90`** (per-IP window + ignore list) applied to the
+    `[252]` sub-ops with their documented counts (60/200/30 per 60 s) and to RCON failures.
+  - **Secret generator (P2):** still a random 10 letters; `PTR_PTR_1405a6800`'s generator is not
+    decompiled.
+  - **Lower priority:** `[252,10]` spray path is byte-tested but not re-checked with the original
+    client; `FUN_1401dba60` (3 bytes at the end of `[252,6]`) still hardcoded zeros; U.S.G.N. login /
+    serverlist intentionally offline.
+
 ## GL 1.x / GDI+ removal (done 2026-10-12..2026-10-15, independent of the Wasm port)
 Goal: drop the two Windows-only backends the renderer still depends on. The UDP network layer is explicitly out
 of scope, and this is *not* the Wasm port — the phases just happen to be the same work the port needs.

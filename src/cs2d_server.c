@@ -131,6 +131,27 @@ void cs2d_sv_settings_default(cs2d_sv_settings_t *s)
     s->mp_dispenser_money  = 500;/* DAT_140a14db0 in CS2D.exe .data (Changelog: "defaults to 500") */
     s->mp_dmspawnmoney     = 2000;/* DAT_1405a6554 in cs2d_dedicated.exe .data (Changelog: "2000$ by default") */
     s->debuglua            = 1;   /* DAT_1405a6398 in cs2d_dedicated.exe .data: 1 by default */
+    /* P1 rules: defaults keep the behaviour verified before these cvars were configurable */
+    s->mp_damagefactor     = 1.0;
+    s->mp_weaponfadeout    = 15;
+    s->mp_dropgrenades     = 1;
+    s->mp_grenaderebuy     = 1;
+    s->mp_floodprot        = 1;
+    s->mp_floodprotignoretime = 600;  /* help.php: default duration 600 s */
+    s->mp_antispeeder      = 1;
+    s->mp_vulnerablehostages = 1;  /* keep the verified damage behaviour unless configured */
+    s->mp_tempbantime      = 30;
+    s->mp_idletime         = 60;
+    s->sv_checkusgnlogin   = 1;
+    /* P2 rules (help.php / measured defaults) */
+    s->mp_kevlar           = 0.35;  /* DAT_1405a6508 (help.php says 0.3; the binary and tests use 0.35) */
+    s->mp_turretdamage     = 5;     /* SV_TURRET_DAMAGE in cs2d_sv_game.c */
+    s->mp_zombiedmg        = 0.5;
+    s->mp_zombiekillscore  = 3;
+    s->mp_zombiekillequip  = 86;    /* gut bomb */
+    s->mp_zombierecover    = 3;
+    s->mp_killbuildingmoney = 1;
+    s->mp_mapgoalscore     = 1;
     s->cvar_count         = 0;
 }
 
@@ -148,12 +169,17 @@ static void cfg_value(char *v)
 void cs2d_sv_settings_set(cs2d_sv_settings_t *s, const char *key, const char *val)
 {
     if (!s || !key || !key[0]) return;
+    /* help.php aliases */
+    if (_stricmp(key, "sv_gm") == 0) key = "sv_gamemode";
+    else if (_stricmp(key, "mp_maxclientsip") == 0) key = "sv_maxclientsperip";
     if (_stricmp(key, "sv_rcon") == 0) {
         snprintf(s->sv_rcon, sizeof(s->sv_rcon), "%.50s", val);
     }
 #define SV_INT(name) else if (_stricmp(key, #name) == 0) { s->name = atoi(val); }
+#define SV_FLT(name) else if (_stricmp(key, #name) == 0) { s->name = atof(val); }
 #define SV_STR(name) else if (_stricmp(key, #name) == 0) { snprintf(s->name, sizeof(s->name), "%s", val); }
     SV_STR(sv_name) SV_STR(sv_map) SV_STR(sv_password) SV_STR(mp_supply_items) SV_STR(sv_rconusers) SV_STR(mp_luaserver)
+    SV_STR(mp_buymenu) SV_STR(mp_reservations) SV_STR(mp_unbuyable) SV_STR(mp_unbuildable)
     SV_INT(sv_hostport) SV_INT(sv_maxplayers) SV_INT(sv_fow) SV_INT(sv_specmode) SV_INT(sv_gamemode)
     SV_INT(sv_usgnonly) SV_INT(sv_friendlyfire) SV_INT(sv_forcelight) SV_INT(sv_daylighttime)
     SV_INT(sv_voicechat) SV_INT(sv_offscreendamage) SV_INT(sv_maxclientsperip) SV_INT(sv_antiaccel)
@@ -161,14 +187,27 @@ void cs2d_sv_settings_set(cs2d_sv_settings_t *s, const char *key, const char *va
     SV_INT(mp_infammo) SV_INT(mp_flashlight) SV_INT(mp_hovertext) SV_INT(mp_recoil) SV_INT(mp_hudscale)
     SV_INT(sv_spraytransfer) SV_INT(sv_maptransfer) SV_INT(mp_startmoney) SV_INT(mp_postspawn) SV_INT(mp_autoteambalance)
     SV_INT(lagcompensation) SV_INT(ticks) SV_INT(leaderboard) SV_INT(physics)
-    SV_INT(mp_luamap) SV_INT(mp_randomspawn) SV_INT(mp_curtailedexplosions) SV_INT(mp_zombiespeedmod) SV_INT(mp_kevlar)
+    SV_INT(mp_luamap) SV_INT(mp_randomspawn) SV_INT(mp_curtailedexplosions) SV_INT(mp_zombiespeedmod)
     SV_INT(mp_timelimit) SV_INT(debuglua)
     else if (_stricmp(key, "gamemode") == 0) { s->sv_gamemode = atoi(val); }
     else if (_stricmp(key, "timelimit") == 0) { s->mp_timelimit = atoi(val); }
     else if (_stricmp(key, "randomspawn") == 0) { s->mp_randomspawn = atoi(val); }
     /* Construction (read from the CS2D.exe .data defaults; not in the [237] live broadcast of the original) */
     SV_INT(mp_teleportreload) SV_INT(mp_dispenser_health) SV_INT(mp_dispenser_money) SV_INT(mp_dmspawnmoney)
+    /* P1 rules and admin settings (help.php) */
+    SV_INT(mp_roundlimit) SV_INT(mp_winlimit) SV_INT(mp_weaponfadeout) SV_INT(mp_dropgrenades)
+    SV_INT(mp_grenaderebuy) SV_INT(mp_teamkillpenalty) SV_INT(mp_tkpunish) SV_INT(mp_idlekick)
+    SV_INT(mp_idletime) SV_INT(mp_idleaction) SV_INT(mp_pinglimit) SV_INT(mp_floodprot)
+    SV_INT(mp_floodprotignoretime) SV_INT(mp_antispeeder) SV_INT(mp_maxrconfails) SV_INT(mp_tempbantime)
+    SV_INT(mp_connectionlimit) SV_INT(mp_vulnerablehostages) SV_INT(mp_hostagepenalty) SV_INT(mp_deathdrop)
+    SV_INT(sv_lan) SV_INT(sv_checkusgnlogin)
+    SV_INT(mp_turretdamage) SV_INT(mp_zombiekillscore) SV_INT(mp_zombiekillequip) SV_INT(mp_zombierecover)
+    SV_INT(mp_killbuildingmoney) SV_INT(mp_killteambuildings) SV_INT(mp_killbuildings)
+    SV_INT(mp_mapgoalscore) SV_INT(mp_autogamemode)
+    SV_FLT(mp_buytime) SV_FLT(mp_damagefactor) SV_FLT(mp_kevlar) SV_FLT(mp_zombiedmg)
+    SV_FLT(mp_kickpercent) SV_FLT(mp_mapvoteratio)
 #undef SV_INT
+#undef SV_FLT
 #undef SV_STR
 
     /* Store in generic cvar array */
@@ -195,8 +234,14 @@ const char *cs2d_sv_settings_get(const cs2d_sv_settings_t *s, const char *key)
     if (_stricmp(key, "sv_password") == 0) return s->sv_password;
     if (_stricmp(key, "mp_luaserver") == 0) return s->mp_luaserver;
     if (_stricmp(key, "mp_supply_items") == 0) return s->mp_supply_items;
+    if (_stricmp(key, "mp_buymenu") == 0) return s->mp_buymenu;
+    if (_stricmp(key, "mp_reservations") == 0) return s->mp_reservations;
+    if (_stricmp(key, "mp_unbuyable") == 0) return s->mp_unbuyable;
+    if (_stricmp(key, "mp_unbuildable") == 0) return s->mp_unbuildable;
 
-    static char num[16];
+    if (_stricmp(key, "sv_gm") == 0) key = "sv_gamemode";
+    else if (_stricmp(key, "mp_maxclientsip") == 0) key = "sv_maxclientsperip";
+    static char num[24];
 #define SV_GET_INT(name) if (_stricmp(key, #name) == 0) { snprintf(num, sizeof(num), "%d", (int)s->name); return num; }
     SV_GET_INT(sv_fow) SV_GET_INT(sv_specmode) SV_GET_INT(sv_gamemode) SV_GET_INT(mp_roundtime)
     SV_GET_INT(mp_freezetime) SV_GET_INT(mp_c4timer) SV_GET_INT(mp_respawndelay) SV_GET_INT(mp_infammo)
@@ -205,7 +250,20 @@ const char *cs2d_sv_settings_get(const cs2d_sv_settings_t *s, const char *key)
     SV_GET_INT(sv_offscreendamage) SV_GET_INT(mp_luamap) SV_GET_INT(debuglua)
     SV_GET_INT(mp_teleportreload) SV_GET_INT(mp_dispenser_health) SV_GET_INT(mp_dispenser_money)
     SV_GET_INT(mp_dmspawnmoney) SV_GET_INT(mp_timelimit) SV_GET_INT(mp_randomspawn)
+    SV_GET_INT(mp_roundlimit) SV_GET_INT(mp_winlimit) SV_GET_INT(mp_weaponfadeout) SV_GET_INT(mp_dropgrenades)
+    SV_GET_INT(mp_grenaderebuy) SV_GET_INT(mp_teamkillpenalty) SV_GET_INT(mp_tkpunish) SV_GET_INT(mp_idlekick)
+    SV_GET_INT(mp_idletime) SV_GET_INT(mp_idleaction) SV_GET_INT(mp_pinglimit) SV_GET_INT(mp_floodprot)
+    SV_GET_INT(mp_floodprotignoretime) SV_GET_INT(mp_antispeeder) SV_GET_INT(mp_maxrconfails)
+    SV_GET_INT(mp_tempbantime) SV_GET_INT(mp_connectionlimit) SV_GET_INT(mp_vulnerablehostages)
+    SV_GET_INT(mp_hostagepenalty) SV_GET_INT(mp_deathdrop) SV_GET_INT(sv_lan) SV_GET_INT(sv_checkusgnlogin)
+    SV_GET_INT(mp_turretdamage) SV_GET_INT(mp_zombiekillscore) SV_GET_INT(mp_zombiekillequip)
+    SV_GET_INT(mp_zombierecover) SV_GET_INT(mp_killbuildingmoney) SV_GET_INT(mp_killteambuildings)
+    SV_GET_INT(mp_killbuildings) SV_GET_INT(mp_mapgoalscore) SV_GET_INT(mp_autogamemode)
 #undef SV_GET_INT
+#define SV_GET_FLT(name) if (_stricmp(key, #name) == 0) { snprintf(num, sizeof(num), "%g", s->name); return num; }
+    SV_GET_FLT(mp_buytime) SV_GET_FLT(mp_damagefactor) SV_GET_FLT(mp_kevlar) SV_GET_FLT(mp_zombiedmg)
+    SV_GET_FLT(mp_kickpercent) SV_GET_FLT(mp_mapvoteratio)
+#undef SV_GET_FLT
     if (_stricmp(key, "gamemode") == 0) { snprintf(num, sizeof(num), "%d", (int)s->sv_gamemode); return num; }
     if (_stricmp(key, "timelimit") == 0) { snprintf(num, sizeof(num), "%d", (int)s->mp_timelimit); return num; }
     if (_stricmp(key, "randomspawn") == 0) { snprintf(num, sizeof(num), "%d", (int)s->mp_randomspawn); return num; }
@@ -665,6 +723,64 @@ void cs2d_sv_write_player_record(cs2d_pkt_t *p, int id, const cs2d_sv_player_t *
     cs2d_pkt_w_short(p, (uint16_t)(pl->votemap ? pl->votemap : 0xffff)); /* +0x3e0 votemap: -1 = no vote (proxy) */
 }
 
+/* Snapshot section 4 (entity states): [252,7,4,count] then count x {x u16, y u16, state u8}.
+ * Only non-zero states are sent; the client clears every entity when the first section arrives
+ * (FUN_1402ce7c0 case 4). The server keeps them in map.entity_state, updated by [31] and by the
+ * Trigger_Use path, and resets them at round start (knowledge/entities.md). */
+int cs2d_sv_write_entity_states(const cs2d_server_t *sv, cs2d_pkt_t *p)
+{
+    int count = 0;
+    uint32_t n = sv->map.entity_count;
+    if (n > CS2D_MAX_ENTITIES) n = CS2D_MAX_ENTITIES;
+    for (uint32_t i = 0; i < n; i++) {
+        if (sv->map.entity_state[i] != 0) count++;
+    }
+    if (count > 255) count = 255;
+
+    cs2d_pkt_w_byte(p, 252);
+    cs2d_pkt_w_byte(p, 7);
+    cs2d_pkt_w_byte(p, 4);
+    cs2d_pkt_w_byte(p, (uint8_t)count);
+    int sent = 0;
+    for (uint32_t i = 0; i < n && sent < count; i++) {
+        if (sv->map.entity_state[i] == 0) continue;
+        cs2d_pkt_w_short(p, sv->map.entities[i].x);
+        cs2d_pkt_w_short(p, sv->map.entities[i].y);
+        cs2d_pkt_w_byte(p, sv->map.entity_state[i]);
+        sent++;
+    }
+    return sent;
+}
+
+/* Snapshot section 6 (ground projectiles): [252,7,6,count] then count x
+ * {id u8, type u8, player u8, x u16, y u16} (7 bytes, FUN_1402ce7c0 case 6). Only projectiles that
+ * already landed are part of it; the client reconstructs them in state ground. */
+int cs2d_sv_write_ground_projectiles(const cs2d_server_t *sv, cs2d_pkt_t *p)
+{
+    int count = 0;
+    for (int i = 0; i < CS2D_SV_MAX_PROJECTILES; i++) {
+        if (sv->projectiles[i].active && !sv->projectiles[i].is_flying) count++;
+    }
+    if (count > 255) count = 255;
+
+    cs2d_pkt_w_byte(p, 252);
+    cs2d_pkt_w_byte(p, 7);
+    cs2d_pkt_w_byte(p, 6);
+    cs2d_pkt_w_byte(p, (uint8_t)count);
+    int sent = 0;
+    for (int i = 0; i < CS2D_SV_MAX_PROJECTILES && sent < count; i++) {
+        const cs2d_sv_projectile_t *pr = &sv->projectiles[i];
+        if (!pr->active || pr->is_flying) continue;
+        cs2d_pkt_w_byte(p, (uint8_t)pr->id);
+        cs2d_pkt_w_byte(p, pr->type);
+        cs2d_pkt_w_byte(p, pr->player);
+        cs2d_pkt_w_short(p, (uint16_t)(int)pr->x);
+        cs2d_pkt_w_short(p, (uint16_t)(int)pr->y);
+        sent++;
+    }
+    return sent;
+}
+
 void cs2d_sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
 {
     cs2d_pkt_t *p;
@@ -741,9 +857,9 @@ void cs2d_sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
     p = sv_packet(sv, c, true, true);
     cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 3); cs2d_pkt_w_byte(p, 0);
 
-    /* Section 4 terminator (entity states) */
+    /* Section 4: entity states (doors opened, breakables broken, flags taken, ...) */
     p = sv_packet(sv, c, true, true);
-    cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 4); cs2d_pkt_w_byte(p, 0);
+    cs2d_sv_write_entity_states(sv, p);
 
     /* Section 5: dynamic objects (Tdo), 60 per message */
     int active_objs = 0;
@@ -784,9 +900,9 @@ void cs2d_sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
     p = sv_packet(sv, c, true, true);
     cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 5); cs2d_pkt_w_byte(p, 0);
 
-    /* Section 6 terminator (ground projectiles) */
+    /* Section 6: ground projectiles (grenades that already landed) */
     p = sv_packet(sv, c, true, true);
-    cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 6); cs2d_pkt_w_byte(p, 0);
+    cs2d_sv_write_ground_projectiles(sv, p);
 
     /* Section 10: resource paths (DAT_1407df6f0), 15 per message (lVar38 * -0x11111111 < 0x11111112 is
      * "index % 15 == 0") */
@@ -1008,6 +1124,120 @@ void cs2d_sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
 /* recv 252                                                                                         */
 /* ------------------------------------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------------------------------------
+ * P1: per-IP flood guard (FUN_1400d4c90) and RCON failure cache (mp_maxrconfails)
+ * ---------------------------------------------------------------------------------------------- */
+
+static cs2d_sv_iplimit_t *sv_iplimit_get(cs2d_server_t *sv, const char *ip)
+{
+    if (!sv || !ip || !ip[0]) return NULL;
+    for (int i = 0; i < sv->iplimit_count; i++) {
+        if (_stricmp(sv->iplimits[i].ip, ip) == 0) return &sv->iplimits[i];
+    }
+    if (sv->iplimit_count >= CS2D_SV_MAX_BANS) return NULL;
+    cs2d_sv_iplimit_t *e = &sv->iplimits[sv->iplimit_count++];
+    memset(e, 0, sizeof(*e));
+    snprintf(e->ip, sizeof(e->ip), "%s", ip);
+    return e;
+}
+
+/* True while the IP is in the flood ignore window (mp_floodprotignoretime seconds). */
+static bool sv_ip_ignored(cs2d_server_t *sv, const char *ip)
+{
+    if (!sv || !ip || !ip[0] || sv->set.mp_floodprot == 0) return false;
+    for (int i = 0; i < sv->iplimit_count; i++) {
+        cs2d_sv_iplimit_t *e = &sv->iplimits[i];
+        if (_stricmp(e->ip, ip) != 0 || e->ignore_until == 0) continue;
+        if ((int32_t)(sv_now() - e->ignore_until) >= 0) {
+            e->ignore_until = 0;
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+/* FUN_1400d4c90(ip, 0xfc, max, window_ms): max messages per window; on excess the IP is ignored
+ * for mp_floodprotignoretime seconds (help.php: default 600, max 86400). */
+static bool sv_flood_allow(cs2d_server_t *sv, const char *ip, int max, uint32_t window_ms)
+{
+    if (!sv || !ip || sv->set.mp_floodprot == 0 || max <= 0) return true;
+    uint32_t now = sv_now();
+    cs2d_sv_iplimit_t *e = sv_iplimit_get(sv, ip);
+    if (!e) return true;
+    if (e->window_ms == 0 || now - e->window_ms >= window_ms) {
+        e->window_ms = now;
+        e->count = 0;
+    }
+    if (++e->count > max) {
+        int secs = sv->set.mp_floodprotignoretime;
+        if (secs <= 0) secs = 600;
+        if (secs > 86400) secs = 86400;
+        if (e->ignore_until == 0) {
+            cs2d_server_print("FLOOD PROTECTION: ignoring %s for %d seconds", ip, secs);
+        }
+        e->ignore_until = now + (uint32_t)secs * 1000u;
+        e->count = 0;
+        e->window_ms = now;
+        return false;
+    }
+    return true;
+}
+
+static bool sv_rcon_allow(cs2d_server_t *sv, const char *ip)
+{
+    if (!sv || !ip || sv->set.mp_maxrconfails <= 0) return true;
+    for (int i = 0; i < sv->iplimit_count; i++) {
+        cs2d_sv_iplimit_t *e = &sv->iplimits[i];
+        if (_stricmp(e->ip, ip) == 0) return e->rcon_fails < sv->set.mp_maxrconfails;
+    }
+    return true;
+}
+
+static void sv_rcon_fail(cs2d_server_t *sv, const char *ip)
+{
+    if (!sv || !ip || sv->set.mp_maxrconfails <= 0) return;
+    cs2d_sv_iplimit_t *e = sv_iplimit_get(sv, ip);
+    if (!e) return;
+    if (e->rcon_fails < 1000000) e->rcon_fails++;
+    if (e->rcon_fails == sv->set.mp_maxrconfails) {
+        cs2d_server_print("RCON: too many failed attempts from %s - ignoring it", ip);
+    }
+}
+
+/* Comma/space separated id list (sv_rconusers, mp_reservations, mp_supply_items style). */
+static bool sv_usgn_listed(const char *list, int32_t usgn)
+{
+    if (!list || !list[0] || usgn <= 0) return false;
+    const char *p = list;
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == ',' || *p == '|') p++;
+        if (!*p) break;
+        int v = atoi(p);
+        if (v == (int)usgn) return true;
+        while (*p && *p != ',' && *p != '|' && *p != ' ' && *p != '\t') p++;
+    }
+    return false;
+}
+
+static int sv_count_ip(const cs2d_server_t *sv, const char *ip)
+{
+    int n = 0;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (sv->players[i].used && _stricmp(sv->players[i].ip, ip) == 0) n++;
+    }
+    return n;
+}
+
+static int sv_count_active_conns(const cs2d_server_t *sv)
+{
+    int n = 0;
+    for (size_t i = 0; i < sizeof(sv->conns) / sizeof(sv->conns[0]); i++) {
+        if (sv->conns[i].active) n++;
+    }
+    return n;
+}
+
 static void sv_join_fail_log(cs2d_sv_conn_t *c, const char *name, const char *why)
 {
     cs2d_server_print("JOIN FAILURE: %s (%s:%d) %s", name, inet_ntoa(c->addr.sin_addr), ntohs(c->addr.sin_port), why);
@@ -1090,9 +1320,37 @@ static void sv_recv_join1(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
         if (!pw_ok) {
             if (pw[0]) sv_join_fail_log(c, name, "can't join (wrong password)");
             status = 1;
-        } else if (sv_player_count(sv) >= sv->set.sv_maxplayers) {
+        } else if (sv->set.mp_connectionlimit > 0 &&
+                   sv_count_active_conns(sv) >= sv->set.mp_connectionlimit &&
+                   c->player == 0) {
+            /* help.php: mp_connectionlimit caps concurrent UDP connections */
+            sv_join_fail_log(c, name, "can't join (connection limit reached)");
+            status = 3;
+        } else if (sv_player_count(sv) >= sv->set.sv_maxplayers &&
+                   !sv_usgn_listed(sv->set.mp_reservations, usgn)) {
             sv_join_fail_log(c, name, "can't join (server is full)");
             status = 3;
+        } else if (sv_player_count(sv) >= sv->set.sv_maxplayers) {
+            /* mp_reservations: a reserved U.S.G.N. user joins a full server; kick a non-reserved player */
+            int kick_id = 0;
+            for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+                if (!sv->players[i].used) continue;
+                if (sv_usgn_listed(sv->set.mp_reservations, sv->players[i].usgn)) continue;
+                if (sv->players[i].bot) { kick_id = i; break; }
+                kick_id = i;
+            }
+            if (kick_id > 0) {
+                cs2d_server_print("Reserved slot: kicking %s for %s", sv->players[kick_id].name, name);
+                cs2d_sv_kick(sv, kick_id, "Reserved slot");
+            } else {
+                sv_join_fail_log(c, name, "can't join (server is full)");
+                status = 3;
+            }
+        } else if (sv->set.sv_maxclientsperip > 0 &&
+                   sv_count_ip(sv, ip_str) >= sv->set.sv_maxclientsperip) {
+            /* DAT_1405a6514 clients per IP -> status 23 */
+            sv_join_fail_log(c, name, "can't join (too many clients from this IP)");
+            status = 23;
         } else if (!ver_ok) {
             sv_join_fail_log(c, name, "can't join (wrong game version)");
             status = 5;
@@ -1147,6 +1405,10 @@ static void sv_recv_join1(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
     pl->screen_h = 480;
     c->player = id;
     c->join_step = 2;
+
+    /* help.php: connect_initplayer runs once the player instance exists (the hooks may already query
+     * player(id, ...)); it cannot cancel the join. The reply tells the client its id afterwards. */
+    cs2d_sv_lua_hook_connect_initplayer(sv, id);
 
     cs2d_pkt_w_byte(&c->out, 0);
     cs2d_pkt_w_byte(&c->out, (uint8_t)id);
@@ -1257,6 +1519,9 @@ static void sv_recv_join5(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
         sv_flush(sv, c);
         return;
     }
+    /* help.php: connect is the last step of the connection process, after connect_initplayer and
+     * after the client's map is accepted; join follows once the snapshot has been sent. */
+    cs2d_sv_lua_hook_connect(sv, c->player);
     pl->joined = true;   /* +0xf4 */
     cs2d_pkt_t *p = sv_packet(sv, c, true, true);
     int32_t round_ms = (int32_t)(sv_now() - sv->round_start_ms);
@@ -1270,6 +1535,16 @@ static void sv_recv_join(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
 {
     if (rd_left(r) < 1) return;
     int sub = rd_byte(r);
+    /* FUN_1400d4c90(ip, 0xfc, n, 60000) is called per sub-op (knowledge/dedicated-server.md):
+     * 60 for 0 / 3 / 100, 200 for 1, 30 for 5. */
+    {
+        int n = (sub == 1) ? 200 : ((sub == 0 || sub == 3 || sub == 100) ? 60 : ((sub == 5) ? 30 : 0));
+        if (n > 0) {
+            char ip[32];
+            snprintf(ip, sizeof(ip), "%s", inet_ntoa(c->addr.sin_addr));
+            if (!sv_flood_allow(sv, ip, n, 60000)) return;
+        }
+    }
     switch (sub) {
     case 0: {
         /* [252,0] -> [252,0,secret] */
@@ -1420,6 +1695,9 @@ static void sv_remove_player(cs2d_server_t *sv, int id, int reason, const char *
         cs2d_server_print("%s has left the game", sv->players[id].name);
     }
     cs2d_sv_lua_hook_leave(sv, id, has_reason ? reason_str : "");
+    /* mp_deathdrop and mp_killbuildings also apply when a player leaves (help.php) */
+    cs2d_sv_death_drop(sv, id);
+    cs2d_sv_kill_player_buildings(sv, id, sv->set.mp_killbuildings);
     sv->players[id].used = false;
 
     /* [253, id, reason] to all connected/joined players (FUN_1401502a0, cmp edi, 0xf at 0x140150ae0:
@@ -1435,6 +1713,10 @@ static void sv_remove_player(cs2d_server_t *sv, int id, int reason, const char *
             cs2d_pkt_w_str(p, reason_str);
         }
     }
+
+    /* help.php: disconnect runs after the player has been fully removed (player(id) no longer works),
+     * with the numeric reason id of the [253] message. */
+    cs2d_sv_lua_hook_disconnect(sv, id, reason);
 
     /* Removing a player is one of the events that run the win check in the original: the check at
      * 0x14015085b sits in FUN_1401502a0, the removal function itself (it gates on DAT_1407dfe6c == 0
@@ -1480,12 +1762,15 @@ void cs2d_sv_rcon_check(cs2d_server_t *sv, int id, const uint8_t *enc_pw, int en
     cs2d_sv_player_t *pl = &sv->players[id];
     cs2d_sv_conn_t *c = conn_of_player(sv, id);
 
+    if (!sv_rcon_allow(sv, pl->ip)) return;
+
     char pw[256];
     cs2d_net_decrypt(enc_pw, enc_pw_len, "mysecretremotecontrolpw", pw, sizeof(pw));
 
     bool ok = sv_is_rcon_user(sv, pl->usgn) ||
               (sv->set.sv_rcon[0] != '\0' && strcmp(pw, sv->set.sv_rcon) == 0);
     if (ok) pl->rcon_auth = true;
+    else sv_rcon_fail(sv, pl->ip);
 
     if (c) {
         cs2d_pkt_t *p = sv_packet(sv, c, true, false);
@@ -1502,6 +1787,8 @@ void cs2d_sv_rcon(cs2d_server_t *sv, int id, const uint8_t *enc_pw, int enc_pw_l
     if (id < 1 || id > CS2D_SV_MAX_PLAYERS || !sv->players[id].used) return;
     cs2d_sv_player_t *pl = &sv->players[id];
     cs2d_sv_conn_t *c = conn_of_player(sv, id);
+
+    if (!sv_rcon_allow(sv, pl->ip)) return;
 
     char pw[256], cmd[1024];
     cs2d_net_decrypt(enc_pw, enc_pw_len, "mysecretremotecontrolpw", pw, sizeof(pw));
@@ -1523,6 +1810,7 @@ void cs2d_sv_rcon(cs2d_server_t *sv, int id, const uint8_t *enc_pw, int enc_pw_l
             return;
         }
         if (strcmp(pw, sv->set.sv_rcon) != 0) {
+            sv_rcon_fail(sv, pl->ip);
             /* 0x1401bd90d: wrong password -> [241, enc("1"), enc("")] */
             if (c) {
                 uint8_t ep[16];
@@ -1538,6 +1826,9 @@ void cs2d_sv_rcon(cs2d_server_t *sv, int id, const uint8_t *enc_pw, int enc_pw_l
     }
 
     pl->rcon_auth = true;
+    for (int i = 0; i < sv->iplimit_count; i++) {
+        if (_stricmp(sv->iplimits[i].ip, pl->ip) == 0) sv->iplimits[i].rcon_fails = 0;
+    }
     cs2d_server_print("Parse RCon (%s:%d): %s", pl->ip, pl->port, cmd);
     cs2d_sv_exec(sv, cmd);
 }
@@ -1546,11 +1837,16 @@ void cs2d_sv_rcon(cs2d_server_t *sv, int id, const uint8_t *enc_pw, int enc_pw_l
 void cs2d_sv_public_rcon(cs2d_server_t *sv, const struct sockaddr_in *from,
                          const char *pw, const char *cmd)
 {
+    char src_ip[32] = "";
+    if (from) snprintf(src_ip, sizeof(src_ip), "%s", inet_ntoa(from->sin_addr));
+    if (src_ip[0] && !sv_rcon_allow(sv, src_ip)) return;
+
     const char *err_code = NULL;
     if (sv->set.sv_rcon[0] == '\0') {
         err_code = "2"; /* 0x1401bdc50 */
     } else if (!pw || strcmp(pw, sv->set.sv_rcon) != 0) {
         err_code = "4"; /* 0x1401bdd16 */
+        if (src_ip[0]) sv_rcon_fail(sv, src_ip);
     }
 
     if (err_code) {
@@ -1570,6 +1866,9 @@ void cs2d_sv_public_rcon(cs2d_server_t *sv, const struct sockaddr_in *from,
     }
 
     if (from) {
+        for (int i = 0; i < sv->iplimit_count; i++) {
+            if (_stricmp(sv->iplimits[i].ip, src_ip) == 0) sv->iplimits[i].rcon_fails = 0;
+        }
         cs2d_server_print("Parse RCon ext. (%s:%d): %s",
                           inet_ntoa(from->sin_addr), ntohs(from->sin_port), cmd ? cmd : "");
     }
@@ -1724,14 +2023,33 @@ static int sv_resolve_kick_player(const cs2d_server_t *sv, const char *tok)
 }
 
 /* FUN_140071f40: resolve weapon by numeric ID or weapon name */
+/* help.php: weapon names may also be the "simplified version (lowercase without whitespaces/special
+ * characters, just letters and numbers)", e.g. "ak47" for "AK-47". */
+static void sv_simplify_name(const char *in, char *out, size_t out_size)
+{
+    size_t k = 0;
+    if (!in || out_size == 0) return;
+    for (const char *p = in; *p && k + 1 < out_size; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) out[k++] = (char)c;
+    }
+    out[k] = '\0';
+}
+
 static int sv_resolve_weapon(const char *tok)
 {
     if (!tok || !tok[0]) return 0;
     int id = atoi(tok);
     if (id > 0 && id < CS2D_MAX_WEAPONS) return id;
+    char want[64], have[64];
+    sv_simplify_name(tok, want, sizeof(want));
     for (int i = 1; i < CS2D_MAX_WEAPONS; i++) {
         const cs2d_weapon_def_t *w = cs2d_weapon_get((uint8_t)i);
-        if (w && w->name && w->name[0] && _stricmp(w->name, tok) == 0) return i;
+        if (!w || !w->name || !w->name[0]) continue;
+        if (_stricmp(w->name, tok) == 0) return i;
+        sv_simplify_name(w->name, have, sizeof(have));
+        if (want[0] && strcmp(want, have) == 0) return i;
     }
     return 0;
 }
@@ -1819,6 +2137,47 @@ static void sv_broadcast_setting(cs2d_server_t *sv, const char *key, const char 
     }
 }
 
+/* exec / include: run every line of a script file (relative paths are tried under sys/ first).
+ * help.php: "Execute all scripts in a script (text) file. Same as include!" */
+static int s_exec_depth;
+
+static bool sv_exec_file(cs2d_server_t *sv, const char *path, int depth)
+{
+    if (!sv || !path || !path[0] || depth > 8 || s_exec_depth > 8) return false;
+    char full[512];
+    FILE *f = NULL;
+    if (path[0] == '/' || path[0] == '\\' || strchr(path, ':') || strchr(path, '/') || strchr(path, '\\')) {
+        f = fopen(path, "rb");
+        if (!f) {
+            snprintf(full, sizeof(full), "sys/%s", path);
+            f = fopen(full, "rb");
+        }
+    } else {
+        snprintf(full, sizeof(full), "sys/%s", path);
+        f = fopen(full, "rb");
+        if (!f) f = fopen(path, "rb");
+    }
+    if (!f) return false;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        size_t n = strlen(p);
+        while (n > 0 && (p[n - 1] == '\r' || p[n - 1] == '\n' || p[n - 1] == ' ' || p[n - 1] == '\t')) p[--n] = '\0';
+        if (!p[0] || (p[0] == '/' && p[1] == '/') || p[0] == '#' || p[0] == ';') continue;
+        s_exec_depth = depth + 1;
+        cs2d_sv_exec(sv, p);
+        s_exec_depth = depth;
+    }
+    fclose(f);
+    return true;
+}
+
+bool cs2d_sv_exec_config(cs2d_server_t *sv, const char *path)
+{
+    return sv_exec_file(sv, path, 0);
+}
+
 bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
 {
     if (!sv || !cmd_line) return false;
@@ -1826,6 +2185,19 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
     const char *cur = cmd_line;
     char cmd[64];
     if (!sv_next_arg(&cur, cmd, sizeof(cmd))) return false;
+
+    /* alias expansion (aliases table below) */
+    for (int i = 0; i < sv->alias_count; i++) {
+        if (_stricmp(sv->alias_name[i], cmd) == 0) {
+            char expanded[320];
+            snprintf(expanded, sizeof(expanded), "%s%s%s", sv->alias_cmd[i],
+                     (cur && *cur) ? " " : "", (cur && *cur) ? cur : "");
+            s_exec_depth++;
+            bool r = cs2d_sv_exec(sv, expanded);
+            s_exec_depth--;
+            return r;
+        }
+    }
 
     char a1[256], a2[256], a3[256];
     if (_stricmp(cmd, "setmoney") == 0) { /* 0x140149bf1 -> 0x140183c00 */
@@ -1993,7 +2365,110 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
         cs2d_sv_spawn_at(sv, atoi(a1), (float)atoi(a2), (float)atoi(a3));
         return true;
     }
-    if (_stricmp(cmd, "sv_restart") == 0 || _stricmp(cmd, "sv_restartround") == 0) {
+    if (_stricmp(cmd, "triggerposition") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        int tx = atoi(a1), ty = atoi(a2);
+        int state = 1;
+        for (uint32_t i = 0; i < sv->map.entity_count && i < CS2D_MAX_ENTITIES; i++) {
+            if (sv->map.entities[i].x == tx && sv->map.entities[i].y == ty) {
+                state = sv->map.entity_state[i] ^ 1;
+                break;
+            }
+        }
+        cs2d_sv_entity_event(sv, 0, (uint16_t)tx, (uint16_t)ty, (uint8_t)state);
+        return true;
+    }
+    if (_stricmp(cmd, "killobject") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        cs2d_sv_object_damage(sv, atoi(a1), 1000000, 0);
+        return true;
+    }
+    if (_stricmp(cmd, "effect") == 0) {
+        char name[32], a4[32], a5[32], a6[32], a7[32], a8[32], a9[32];
+        sv_next_arg(&cur, name, sizeof(name));
+        sv_next_arg(&cur, a1, sizeof(a1));   /* x (pixels) */
+        sv_next_arg(&cur, a2, sizeof(a2));   /* y (pixels) */
+        int p1 = sv_next_arg(&cur, a4, sizeof(a4)) ? atoi(a4) : 0;
+        int p2 = sv_next_arg(&cur, a5, sizeof(a5)) ? atoi(a5) : 0;
+        int r = sv_next_arg(&cur, a6, sizeof(a6)) ? atoi(a6) : 0;
+        int g = sv_next_arg(&cur, a7, sizeof(a7)) ? atoi(a7) : 0;
+        int b = sv_next_arg(&cur, a8, sizeof(a8)) ? atoi(a8) : 0;
+        (void)a9;
+        int type = 0;
+        if (_stricmp(name, "fire") == 0) type = 100;
+        else if (_stricmp(name, "smoke") == 0) { type = 101; r = 120; g = 120; b = 120; }
+        else if (_stricmp(name, "colorsmoke") == 0) type = 101;
+        else if (_stricmp(name, "flare") == 0) type = 102;
+        else if (_stricmp(name, "sparkles") == 0) type = 102;
+        else if (_stricmp(name, "blood") == 0) type = 8;
+        if (type == 0) return false;
+        cs2d_sv_send_fx(sv, type, atoi(a1), atoi(a2), p1, p2, r, g, b);
+        return true;
+    }
+    if (_stricmp(cmd, "explosion") == 0) {
+        char a4[32], a5[32];
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        sv_next_arg(&cur, a3, sizeof(a3));
+        int dmg = sv_next_arg(&cur, a4, sizeof(a4)) ? atoi(a4) : 0;
+        int src = sv_next_arg(&cur, a5, sizeof(a5)) ? atoi(a5) : 0;
+        cs2d_sv_explosion(sv, atoi(a1), atoi(a2), atoi(a3), dmg, src);
+        return true;
+    }
+    if (_stricmp(cmd, "sv_sound") == 0) {
+        sv_rest_arg(cur, a1, sizeof(a1));
+        cs2d_sv_server_sound(sv, 10, a1, 0);
+        return true;
+    }
+    if (_stricmp(cmd, "sv_sound2") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_rest_arg(cur, a2, sizeof(a2));
+        int pid = atoi(a1);
+        if (pid >= 1 && pid <= CS2D_SV_MAX_PLAYERS) cs2d_sv_positional_sound(sv, 0, 0, a2, pid);
+        return true;
+    }
+    if (_stricmp(cmd, "sv_soundpos") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        sv_next_arg(&cur, a3, sizeof(a3));
+        char a4[32];
+        int pid = sv_next_arg(&cur, a4, sizeof(a4)) ? atoi(a4) : 0;
+        cs2d_sv_positional_sound(sv, atoi(a2), atoi(a3), a1, pid);
+        return true;
+    }
+    if (_stricmp(cmd, "sv_stopsound") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        cs2d_sv_server_sound(sv, 11, a1, atoi(a2));
+        return true;
+    }
+    if (_stricmp(cmd, "damagetile") == 0) {
+        /* help.php: only static objects on that tile (buildings; Env_Breakable is client-side here) */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        sv_next_arg(&cur, a3, sizeof(a3));
+        cs2d_dynobj_t *o = cs2d_dynobj_at_tile(&sv->dynobj, atoi(a1), atoi(a2));
+        if (o) cs2d_sv_object_damage(sv, o->id, atoi(a3), 0);
+        return true;
+    }
+    if (_stricmp(cmd, "damageobject") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        int player = sv_next_arg(&cur, a3, sizeof(a3)) ? atoi(a3) : 0;
+        cs2d_sv_object_damage(sv, atoi(a1), atoi(a2), player);
+        return true;
+    }
+    if (_stricmp(cmd, "resources") == 0) {
+        int imgs = 0;
+        for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+            if (sv->dynobj.objs[i].active && sv->dynobj.objs[i].typ == CS2D_DO_IMAGE) imgs++;
+        }
+        cs2d_server_print("Resources: %d loaded dynamic images, map '%s'", imgs, sv->set.sv_map);
+        return true;
+    }
+    if (_stricmp(cmd, "sv_restart") == 0 || _stricmp(cmd, "sv_restartround") == 0 ||
+        _stricmp(cmd, "restart") == 0 || _stricmp(cmd, "restartround") == 0) {
         /* 0x140145180 -> 0x14015d2a0 */
         int delay = sv_next_arg(&cur, a1, sizeof(a1)) ? atoi(a1) : 0;
         if (delay < 0) delay = 0;
@@ -2002,7 +2477,45 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
         if (delay == 0) cs2d_sv_round_start(sv, 5);
         return true;
     }
-    if (_stricmp(cmd, "sv_gamemode") == 0 || _stricmp(cmd, "gamemode") == 0) {
+    if (_stricmp(cmd, "exec") == 0 || _stricmp(cmd, "include") == 0) {
+        sv_rest_arg(cur, a1, sizeof(a1));
+        return sv_exec_file(sv, a1, s_exec_depth);
+    }
+    if (_stricmp(cmd, "alias") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_rest_arg(cur, a2, sizeof(a2));
+        if (!a1[0] || !a2[0]) return false;
+        int slot = -1;
+        for (int i = 0; i < sv->alias_count; i++) {
+            if (_stricmp(sv->alias_name[i], a1) == 0) { slot = i; break; }
+        }
+        if (slot < 0) {
+            if (sv->alias_count >= (int)(sizeof(sv->alias_name) / sizeof(sv->alias_name[0]))) return false;
+            slot = sv->alias_count++;
+        }
+        snprintf(sv->alias_name[slot], sizeof(sv->alias_name[slot]), "%.31s", a1);
+        snprintf(sv->alias_cmd[slot], sizeof(sv->alias_cmd[slot]), "%.159s", a2);
+        return true;
+    }
+    if (_stricmp(cmd, "aliases") == 0) {
+        for (int i = 0; i < sv->alias_count; i++) {
+            cs2d_server_print("%s = %s", sv->alias_name[i], sv->alias_cmd[i]);
+        }
+        return true;
+    }
+    if (_stricmp(cmd, "mp_wpndmg") == 0) {
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        int wpn = sv_resolve_weapon(a1);
+        if (wpn > 0 && wpn < CS2D_MAX_WEAPONS) {
+            sv->wpndmg[wpn] = atoi(a2);
+            sv->wpndmg_set[wpn] = true;
+            return true;
+        }
+        return false;
+    }
+    if (_stricmp(cmd, "sv_gamemode") == 0 || _stricmp(cmd, "gamemode") == 0 ||
+        _stricmp(cmd, "sv_gm") == 0) {
         if (!sv_next_arg(&cur, a1, sizeof(a1)) || a1[0] == '\0') {
             cs2d_server_print("sv_gamemode is \"%d\"", sv->set.sv_gamemode);
         } else {
@@ -2094,7 +2607,47 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
         cs2d_sv_unban(sv, a1);
         return true;
     }
-    if (_stricmp(cmd, "listbans") == 0) {
+    if (_stricmp(cmd, "banname") == 0) {
+        /* help.php: ban a player by name (all identifiers of that player) */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_rest_arg(cur, a2, sizeof(a2));
+        int pid = sv_resolve_player(sv, a1);
+        if (pid > 0) {
+            cs2d_sv_player_t *pl = &sv->players[pid];
+            cs2d_sv_ban_ip(sv, pl->ip, a2);
+            if (pl->usgn > 0) cs2d_sv_ban_usgn(sv, pl->usgn, a2);
+            if (pl->steam_id > 0) cs2d_sv_ban_steam(sv, pl->steam_id, a2);
+            cs2d_sv_kick(sv, pid, a2[0] ? a2 : "Banned");
+        }
+        return true;
+    }
+    if (_stricmp(cmd, "unbanall") == 0) {
+        memset(sv->bans, 0, sizeof(sv->bans));
+        sv->ban_count = 0;
+        cs2d_server_print("All bans removed");
+        return true;
+    }
+    if (_stricmp(cmd, "connections") == 0) {
+        cs2d_server_print("Connections: %d active, %d players",
+                          sv_count_active_conns(sv), sv_player_count(sv));
+        return true;
+    }
+    if (_stricmp(cmd, "mapinfo") == 0) {
+        cs2d_server_print("Map: %s (%ux%u tiles, %u entities, sha256 %s)",
+                          sv->set.sv_map, sv->map.width, sv->map.height,
+                          sv->map.entity_count, sv->map_sha);
+        return true;
+    }
+    if (_stricmp(cmd, "maps") == 0) {
+        for (int i = 0; i < sv->map_count; i++) cs2d_server_print("  %s", sv->maps[i]);
+        return true;
+    }
+    if (_stricmp(cmd, "serverinfo") == 0) {
+        cs2d_server_print("%s - %s - port %d - %d/%d players", sv->set.sv_name, sv->set.sv_map,
+                          sv->set.sv_hostport, sv_player_count(sv), sv->set.sv_maxplayers);
+        return true;
+    }
+    if (_stricmp(cmd, "listbans") == 0 || _stricmp(cmd, "bans") == 0) {
         for (int i = 0; i < sv->ban_count; i++) {
             const cs2d_sv_ban_t *b = &sv->bans[i];
             if (!b->active) continue;
@@ -2138,6 +2691,47 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
             }
         }
         return cs2d_sv_settile(sv, &st);
+    }
+    if (_stricmp(cmd, "spawnitem") == 0) {
+        char a4[32], a5[32];
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        sv_next_arg(&cur, a3, sizeof(a3));
+        int type = sv_resolve_weapon(a1);
+        int clip = sv_next_arg(&cur, a4, sizeof(a4)) ? atoi(a4) : -1;
+        int res = sv_next_arg(&cur, a5, sizeof(a5)) ? atoi(a5) : -1;
+        return cs2d_sv_spawn_item(sv, type, atoi(a2), atoi(a3), clip, res) != 0;
+    }
+    if (_stricmp(cmd, "spawnobject") == 0) {
+        char a4[32], a5[32], a6[32], a7[32];
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        sv_next_arg(&cur, a3, sizeof(a3));
+        int mode = sv_next_arg(&cur, a4, sizeof(a4)) ? atoi(a4) : 0;
+        int team = sv_next_arg(&cur, a5, sizeof(a5)) ? atoi(a5) : 0;
+        int player = sv_next_arg(&cur, a6, sizeof(a6)) ? atoi(a6) : 0;
+        float rot = sv_next_arg(&cur, a7, sizeof(a7)) ? (float)atof(a7) : 0.0f;
+        cs2d_sv_spawn_object(sv, atoi(a1), atoi(a2), atoi(a3), mode, team, player, rot);
+        return true;
+    }
+    if (_stricmp(cmd, "spawnnpc") == 0) {
+        /* help.php: NPCs are objects of type 30, the NPC type is stored in the player attribute */
+        char a4[32];
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        sv_next_arg(&cur, a3, sizeof(a3));
+        int team = sv_next_arg(&cur, a4, sizeof(a4)) ? atoi(a4) : 0;
+        cs2d_sv_spawn_object(sv, 30, atoi(a2), atoi(a3), 0, team, atoi(a1), 0.0f);
+        return true;
+    }
+    if (_stricmp(cmd, "spawnprojectile") == 0) {
+        char a4[32], a5[32];
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        sv_next_arg(&cur, a3, sizeof(a3));
+        int dir = sv_next_arg(&cur, a4, sizeof(a4)) ? atoi(a4) : 0;
+        int fly = sv_next_arg(&cur, a5, sizeof(a5)) ? atoi(a5) : 0;
+        return cs2d_sv_spawn_projectile(sv, sv_resolve_weapon(a1), atoi(a2), atoi(a3), dir, fly) != 0;
     }
     if (_stricmp(cmd, "mp_building_price") == 0) {
         sv_next_arg(&cur, a1, sizeof(a1));
@@ -2244,8 +2838,25 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
         if (pl) cs2d_sv_team(sv, c->player, team, look);
         return true;
     }
-    case 229: rd_int(r); rd_int(r); return true;       /* clock ping reply */
-    case 249: rd_int(r); return true;                  /* ping reply */
+    case 229: { /* clock ping reply: [229, srv ts, cli ts] */
+        int32_t ts = rd_int(r);
+        rd_int(r);
+        cs2d_sv_player_t *pp = (c->player > 0) ? &sv->players[c->player] : NULL;
+        if (pp && pp->used) {
+            uint32_t rtt = (sv_now() - sv->start_ms) - (uint32_t)ts;
+            if (rtt <= 30000u) pp->ping = (int)rtt;
+        }
+        return true;
+    }
+    case 249: { /* ping reply: [249, srv ts] (0x1401d9f10 echoes it) */
+        int32_t ts = rd_int(r);
+        cs2d_sv_player_t *pp = (c->player > 0) ? &sv->players[c->player] : NULL;
+        if (pp && pp->used) {
+            uint32_t rtt = (sv_now() - sv->start_ms) - (uint32_t)ts;
+            if (rtt <= 30000u) pp->ping = (int)rtt;
+        }
+        return true;
+    }
     case 10: case 11: { /* position [10 run / 11 walk, x, y] (FUN_1401cb570 / FUN_1401cb930) */
         if (rd_left(r) < 4) return false;
         int x = rd_short(r), y = rd_short(r);
@@ -2705,6 +3316,31 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
                 pl->votemap = val;
                 cs2d_sv_lua_hook_vote(sv, c->player, 2, val_str);
             }
+            /* mp_kickpercent / mp_mapvoteratio (help.php): the whole player base is counted */
+            int total = 0;
+            for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) if (sv->players[i].used) total++;
+            if (type == 1 && sv->set.mp_kickpercent > 0.0 &&
+                val >= 1 && val <= CS2D_SV_MAX_PLAYERS && sv->players[val].used) {
+                int votes = 0;
+                for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+                    if (sv->players[i].used && sv->players[i].votekick == val) votes++;
+                }
+                int need = (int)(sv->set.mp_kickpercent * total + 0.999999);
+                if (need < 1) need = 1;
+                if (votes >= need) {
+                    cs2d_sv_tempban_ip(sv, sv->players[val].ip, sv->set.mp_tempbantime, "Vote kicked");
+                    cs2d_sv_kick(sv, val, "Vote kicked");
+                }
+            } else if (type == 2 && sv->set.mp_mapvoteratio > 0.0 &&
+                       val >= 0 && val < sv->map_count) {
+                int votes = 0;
+                for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+                    if (sv->players[i].used && sv->players[i].votemap == val) votes++;
+                }
+                int need = (int)(sv->set.mp_mapvoteratio * total + 0.999999);
+                if (need < 1) need = 1;
+                if (votes >= need) cs2d_sv_change_map(sv, sv->maps[val]);
+            }
             /* Relay [43, voter, type, value] to all joined players */
             for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
                 cs2d_sv_conn_t *oc = conn_of_player(sv, i);
@@ -2862,6 +3498,11 @@ int cs2d_sv_recv_payload(cs2d_server_t *sv, cs2d_sv_conn_t *c, const uint8_t *bu
 void cs2d_sv_handle_datagram(cs2d_server_t *sv, const struct sockaddr_in *from, const uint8_t *buf, int n)
 {
     if (n < 2) return;
+    if (from) {
+        char ip[32];
+        snprintf(ip, sizeof(ip), "%s", inet_ntoa(from->sin_addr));
+        if (sv_ip_ignored(sv, ip)) return;
+    }
     uint16_t seq;
     memcpy(&seq, buf, 2);
     sv_rd_t r = { buf, n, 2 };
@@ -2923,6 +3564,7 @@ void cs2d_sv_handle_datagram(cs2d_server_t *sv, const struct sockaddr_in *from, 
 
 static void sv_second(cs2d_server_t *sv)
 {
+    uint32_t now = sv_now();
     sv->frames = 0;
     sv->bytes_in_sec = sv->bytes_in_acc * 8;
     sv->bytes_out_sec = sv->bytes_out_acc * 8;
@@ -2932,6 +3574,41 @@ static void sv_second(cs2d_server_t *sv)
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
         if (!sv->players[i].used) continue;
         if (sv->players[i].money_secs < 499) sv->players[i].money_secs++;
+    }
+
+    /* mp_idlekick / mp_idletime / mp_idleaction and mp_pinglimit (help.php) */
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_player_t *pl = &sv->players[i];
+        if (!pl->used) continue;
+
+        if (sv->set.mp_idlekick && !pl->bot) {
+            int limit = sv->set.mp_idletime;
+            if (limit < 10) limit = 10;
+            if (limit > 3600) limit = 3600;
+            if (now - pl->last_move_ms >= (uint32_t)limit * 1000u) {
+                switch (sv->set.mp_idleaction) {
+                case 0: cs2d_sv_kick(sv, i, "Idle"); break;
+                case 1: cs2d_sv_team_ex(sv, i, 0, 5, true); break;
+                case 2: cs2d_sv_slap(sv, i, false); break;
+                case 3: if (pl->alive) cs2d_sv_kill(sv, i, 0, 0, 0); break;
+                default: cs2d_sv_msg(sv, "A player is idle!", 0); break;
+                }
+                pl->last_move_ms = now;
+            }
+        }
+
+        if (sv->set.mp_pinglimit > 0 && !pl->bot && pl->ping > 0 &&
+            pl->ping > sv->set.mp_pinglimit) {
+            cs2d_sv_kick(sv, i, "Ping too high");
+        }
+
+        /* mp_zombierecover: zombies regain HP every second (help.php) */
+        if (sv->set.sv_gamemode == 4 && pl->team == 1 && pl->alive &&
+            sv->set.mp_zombierecover > 0 && pl->health < pl->maxhealth) {
+            int hp = pl->health + sv->set.mp_zombierecover;
+            if (hp > pl->maxhealth) hp = pl->maxhealth;
+            cs2d_sv_set_playerdata(sv, i, 0, hp);
+        }
     }
 
     /* Every 2nd second: [229, ms since start] (sv_antiaccel > 0) or [249, ...] to every connection */
