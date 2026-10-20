@@ -1403,6 +1403,10 @@ static void sv_recv_join1(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
     pl->maxhealth = 100;
     pl->screen_w = 850;
     pl->screen_h = 480;
+    /* Idle timer (mp_idlekick / mp_idletime): last_move_ms is a GetTickCount() stamp, so a fresh
+     * instance left at 0 looked idle since Windows boot and sv_second kicked it on the next 1 s tick,
+     * i.e. right after the join (before the player ever picks a team). The count starts at the join. */
+    pl->last_move_ms = cs2d_sv_now();
     c->player = id;
     c->join_step = 2;
 

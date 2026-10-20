@@ -394,6 +394,13 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   `mp_vulnerablehostages`, `mp_unbuyable`, `mp_unbuildable`, `mp_idlekick`/`mp_idletime`/
   `mp_idleaction`, `mp_pinglimit`, `mp_connectionlimit`, `mp_maxclientsip`, `mp_reservations`,
   `mp_maxrconfails`, `mp_antispeeder` 1..6, `sv_gm`, `sv_lan`, `sv_checkusgnlogin`.
+- **Idle (`mp_idlekick` / `mp_idletime` / `mp_idleaction`)**: the timer is `last_move_ms`, a
+  `cs2d_sv_now()` (`GetTickCount`) stamp. It must be set when `[252,1]` creates the player instance,
+  before the team choice: left at 0 it means "idle since Windows boot", so `sv_second` kicked every
+  fresh join on the next one-second tick (regression fixed 2026-10-19, `test_dedicated_idle_join`).
+  `cs2d_sv_spawn_at`, `cs2d_sv_set_pos` and accepted movement reset it. The original counts from the
+  join: `sys/logs/11-Oct-2026_09-09-30.txt` has the join at 09:09:33 and the idle kick at 09:10:34
+  (61 s with the default `mp_idletime` 60).
 
 ## P2 rules and world commands (2026-10-19)
 

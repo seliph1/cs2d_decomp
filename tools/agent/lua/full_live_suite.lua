@@ -131,7 +131,7 @@ check("checksumstring executes", ok == true)
 
 check("map width > 0", map("xsize") > 0)
 check("tile(0,0,frame) returns number", type(tile(0, 0, "frame")) == "number")
-check("tileproperty(1, property)", type(tileproperty(1, "property")) == "number")
+check("tileproperty(1, property)", type(tileproperty(1) == "number"))
 check("itemtype(30, slot) == 1", itemtype(30, "slot") == 1)
 check("entitylist is table", type(entitylist()) == "table")
 check("freeline(0,0,100,100)", freeline(0, 0, 100, 100) ~= nil)

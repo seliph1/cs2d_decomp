@@ -37,9 +37,9 @@
 --dofile("sys/lua/samples/cursors.lua")				-- sample.cursors [Show flares at cursor positions of players] hooks: - none -
 --dofile("sys/lua/samples/tween.lua")				-- sample.tween [Adds an image which follows player 1] hooks: second, startround
 --dofile("sys/lua/samples/hudtxt.lua")				-- sample.hudtxt [Adds a custom text to the HUD] hooks: second
-dofile("sys/lua/samples/hudimg.lua")				-- sample.hudimg [Adds custom images to the HUD] hooks: startround, join
+--dofile("sys/lua/samples/hudimg.lua")				-- sample.hudimg [Adds custom images to the HUD] hooks: startround, join
 --dofile("sys/lua/samples/imghover.lua")			-- sample.imghover [Adds a HUD image which reacts on mouseover] hooks: startround, join, clientdata
---dofile("sys/lua/samples/projectiles.lua")			-- sample.projectiles [Spawn 8 grenades at once when hitting F2 and other stuff with F3/F4] hooks: serveraction
+dofile("sys/lua/samples/projectiles.lua")			-- sample.projectiles [Spawn 8 grenades at once when hitting F2 and other stuff with F3/F4] hooks: serveraction
 --dofile("sys/lua/samples/hitzone.lua")				-- sample.hitzone [Creates an image with a hitzone] hooks: startround, serveraction, hitzone
 --dofile("sys/lua/samples/tilemapper.lua")			-- sample.tilemapper [Edit and inspect tiles] hooks: startround, serveraction, clientdata
 --dofile("sys/lua/samples/fadeoutexplode.lua")		-- sample.fadeoutexplode [Items explode on fadeout] hook: itemfadeout

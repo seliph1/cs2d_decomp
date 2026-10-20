@@ -1,3 +1,4 @@
+---@diagnostic disable: undefined-global
 -- trace assigments to global variables
 
 do

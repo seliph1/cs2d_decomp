@@ -1,5 +1,22 @@
 # Work log (append-only, newest first)
 
+## 2026-10-19 — Cline — Fix: cliente expulso ("Idle") logo ao entrar
+
+- **Sintoma:** com o `sys/server.cfg` de teste (`mp_idlekick 1`, `mp_idletime` default 60) o cliente era
+  chutado no primeiro segundo depois do join, antes de escolher time.
+- **Causa:** `sv_recv_join1` cria a instância com `memset` e não inicializava `last_move_ms`. O
+  `sv_second` compara esse campo com `cs2d_sv_now()` (`GetTickCount`), então 0 significa "ocioso desde o
+  boot do Windows" — a diferença já passava de `mp_idletime` e o kick "Idle" (reason 16) saía no tick
+  seguinte ao join.
+- **Correção:** `pl->last_move_ms = cs2d_sv_now()` ao criar o jogador (`src/cs2d_server.c`), com o
+  contador de idle passando a valer a partir do join.
+- **Teste:** novo `test_dedicated_idle_join` — monta o `[252,1]` real com
+  `cs2d_net_build_join_stage1`, simula servidor com 2 min de uptime, verifica que um tick de 1 s não
+  expulsa e que passado `mp_idletime` sem movimento o kick continua. `test_cs2d.exe` → **101 / 101**.
+- **Evidência do original:** `sys/logs/11-Oct-2026_09-09-30.txt` — join `real` às 09:09:33 e
+  `real has been kicked for being idle` às 09:10:34 (61 s com o default de 60), confirmando que o
+  contador começa no join.
+
 ## 2026-10-19 — Cline — Dedicated P3: reqhttp, sons, FX, grenade rebuy, damagetile
 
 - **`reqhttp`/`httpdata`:** GET HTTP assíncrono (TCP 80, connect bloqueante + leitura não bloqueante

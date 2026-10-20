@@ -11064,6 +11064,63 @@ static bool test_dedicated_p3_rules(void)
     return true;
 }
 
+/* mp_idlekick with the shipped sys/server.cfg (mp_idlekick 1, default mp_idletime 60): the player
+ * instance is created by [252,1], before the team choice, and its idle timer is a GetTickCount stamp.
+ * Leaving it 0 made sv_second compare the current tick with 0, i.e. the idle time since Windows boot,
+ * so every fresh join was kicked with "Idle" on the next one-second tick. */
+static bool test_dedicated_idle_join(void)
+{
+    printf("\n=== Testing Dedicated Server: idle kick must not fire right after the join ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+    sv.set.mp_idlekick = 1;
+    sv.set.mp_idletime = 10;                 /* the sv_second clamp floor */
+    snprintf(sv.secret, sizeof(sv.secret), "abcdefghij");
+
+    /* The server has been running for two minutes: a zero idle stamp is already past mp_idletime */
+    uint32_t now = cs2d_sv_now();
+    sv.start_ms = now - 120000u;
+    sv.round_start_ms = sv.map_start_ms = sv.second_ms = now;
+    sv.round_clock_ms = 0;
+
+    sv.conns[0].active = true;
+    sv.conns[0].next_seq = 2;
+    sv.conns[0].last_recv = cs2d_sv_now();   /* no transport timeout during the simulated ticks */
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    if (!sv.conns[0].pending) TEST_FAIL("idle join", "calloc failed");
+    sv.conns[0].addr.sin_family = AF_INET;
+    sv.conns[0].addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sv.conns[0].addr.sin_port = htons(40000);
+
+    /* The full [252,1] from the client-side builder, so the real join path creates the player.
+     * The dedicated parses fields 1..13 only (the screen/language flags stay unread, as in the original). */
+    cs2d_pkt_t p;
+    cs2d_net_build_join_stage1(&p, "IdleTester", "", sv.secret, "unrealsoftware.bmp",
+                               "EN-English", "\xfa" "01", 850, 480, 0);
+    (void)cs2d_sv_recv_payload(&sv, &sv.conns[0], p.buf, p.pos);
+    if (!sv.players[1].used) TEST_FAIL("idle join", "the join did not create a player");
+
+    /* One 1 s tick right after the join (the player is still in the team menu) must keep the player */
+    sv.second_ms = cs2d_sv_now() - 1500u;
+    cs2d_server_frame(&sv);
+    if (!sv.players[1].used) {
+        TEST_FAIL("idle join", "the player was kicked on the first second after the join");
+    }
+
+    /* The rule itself still applies: mp_idletime seconds without movement -> kick with reason 16 */
+    sv.players[1].last_move_ms = cs2d_sv_now() - (uint32_t)(sv.set.mp_idletime + 1) * 1000u;
+    sv.second_ms = cs2d_sv_now() - 1500u;
+    cs2d_server_frame(&sv);
+    if (sv.players[1].used) TEST_FAIL("idle timeout", "a player idle past mp_idletime was not kicked");
+
+    free(sv.conns[0].pending);
+    TEST_PASS("Dedicated Server: a fresh join is not idle (mp_idlekick), the real timeout still kicks");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -11072,7 +11129,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 100;
+    int total = 101;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -11174,6 +11231,7 @@ int main(void)
     if (test_dedicated_p1_rules()) passed++;
     if (test_dedicated_p2_rules()) passed++;
     if (test_dedicated_p3_rules()) passed++;
+    if (test_dedicated_idle_join()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

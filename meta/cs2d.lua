@@ -47,9 +47,8 @@ function sethookstate(hook, func, state) end
 ---@return table
 function funcs() end
 
----@param var string
 ---@return any
-function vars(var) end
+function vars() end
 
 ---Calls a Lua function once after a delay in milliseconds.
 ---@param ms integer
@@ -113,12 +112,8 @@ function map(what) end
 ---@return any
 function tile(x, y, what) end
 
----@param id integer
----@param x integer
----@param y integer
----@param what string
----@return any
-function tileproperty(id, x, y, what) end
+---@param tileframe integer
+function tileproperty(tileframe) end
 
 -- =========================================================================
 -- Entity
@@ -206,6 +201,38 @@ function reqcld(...) end
 function reqhttp(...) end
 function stats(...) end
 function steamstats(...) end
+
+-- =========================================================================
+-- Physics stub
+-- =========================================================================
+physics = {}
+function physics_platform_rectangle(...) end
+function physics_platform_circle(...) end
+function physics_platform_polygon(...) end
+function physics_object_rectangle(...) end
+function physics_object_circle(...) end
+function physics_object_polygon(...) end
+function physics_object_tire(...) end
+function physics_object_tile(...) end
+function physics_controller(...) end
+function physics_setparent(...) end
+function physics_setbounciness(...) end
+function physics_setfriction(...) end
+function physics_settorque(...) end
+function physics_settexture(...) end
+function physics_setmass(...) end
+function physics_setforce(...) end
+function physics_setlineardrag(...) end
+function physics_setrotationaldrag(...) end
+function physics_addforce(...) end
+function physics_addtorque(...) end
+function physics_clearforce(...) end
+function physics_cleartorque(...) end
+function physics_destroy(...) end
+function physics_setattribute(...) end
+function imagephysicsparent(...) end
+function imageshadow(...) end
+
 
 -- =========================================================================
 -- AI commands (used by bots/*.lua)
