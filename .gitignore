@@ -73,7 +73,7 @@ serverstats.html
 # =============================================================================
 # Arquivos fora da estrutura de distribuição do CS2D
 # =============================================================================
-sys/lua*
+sys/lua/*
 !sys/lua/autorun
 !sys/lua/samples
 !sys/lua/server.lua
