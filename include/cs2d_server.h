@@ -277,6 +277,19 @@ typedef struct {
     int      ping;            /* +0xd0 */
     char     ip[32];
     int      port;
+    /* Bot AI (bots/Standard AI.lua): the engine side of the ai_* API. The script keeps its own
+     * state (vai_*), these fields are the values the API stores on Tpl. */
+    float    ai_aim_x, ai_aim_y;   /* ai_aim(): target point in pixels (Tpl.ai_aim_x/y, +0x1b8/+0x1bc) */
+    int      ai_target;            /* Tpl.ai_target: last ai_findtarget() result */
+    float    ai_flash;             /* Tpl.ai_flash: seconds of flashbang blindness left (help.php) */
+    char     ai_debug[128];        /* Tpl.ai_debugtext: ai_debug(), shown by debugai */
+    uint32_t ai_next_fire_ms;      /* next shot allowed (weapon fire delay) */
+    /* ai_goto() path: waypoint tiles, rebuilt when the goal changes or the bot is stuck */
+    int      ai_path_goal_x, ai_path_goal_y;
+    int      ai_path_len, ai_path_idx;
+    int16_t  ai_path_x[256], ai_path_y[256];
+    uint32_t ai_path_ms;           /* last path build (throttle, original DAT_140ddf29c = 10 frames) */
+    bool     has_flag;             /* player(id, "flag"): carries a CTF flag */
     /* Spray logo data (sub-op 10 [28,2,...] / [28] relay) */
     uint8_t  spray_logo[1400];
     int      spray_logo_len;
@@ -468,7 +481,13 @@ void cs2d_sv_select_weapon(cs2d_server_t *sv, int id, int weapon, int mode); /* 
 void cs2d_sv_fire(cs2d_server_t *sv, int id, int seed);                    /* FUN_140191a70: [7] */
 void cs2d_sv_attack2(cs2d_server_t *sv, int id, int mode);                 /* FUN_1401fd590: [8] */
 void cs2d_sv_damage(cs2d_server_t *sv, int victim_id, int attacker_id, int dmg, int weapon); /* [17] */
+/* Same as cs2d_sv_damage, plus the dynamic object that caused the damage (NPC, turret, mine,
+ * gate field, ...). The id feeds the "hit" hook's `object` argument and the killerobject of
+ * "die"/"kill" when the victim dies. 0 means a player / the environment. */
+void cs2d_sv_damage_ex(cs2d_server_t *sv, int victim_id, int attacker_id, int dmg, int weapon, int object_id);
 void cs2d_sv_kill(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id, int weapon); /* FUN_1401647d0: [19] */
+/* Same, with the killerobject of the "die"/"kill" hooks (the NPC / turret / mine id). */
+void cs2d_sv_kill_ex(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id, int weapon, int killer_object);
 void cs2d_sv_buy(cs2d_server_t *sv, int id, int weapon_id);                /* FUN_1401cd710: [23] */
 void cs2d_sv_drop(cs2d_server_t *sv, int id, int type, int clip, int reserve, int sub);       /* FUN_14016bbd0: [24] */
 void cs2d_sv_reload(cs2d_server_t *sv, int id, int mode);                                      /* FUN_14018b1c0: [16] */
@@ -527,6 +546,11 @@ void cs2d_sv_explosion_objects(cs2d_server_t *sv, float x, float y, float radius
 /* A shot of player `id` that reaches a building: the Tshoot.Shoot server branch (an enemy wall / turret /
  * dispenser takes the weapon's damage). Called from cs2d_sv_fire for every non-melee shot. */
 void cs2d_sv_shot_at_building(cs2d_server_t *sv, int id, const cs2d_weapon_def_t *wep);
+/* Tdo image hit zone test at one shot sample (imagehitzone / [59] + the "hitzone" hook).
+ * Returns 0 = none, 1 = non-blocking, 2 = blocking (the shot stops). *damage is updated when
+ * the hook returns a replacement (> 0) or a negative value (set to 0). */
+int  cs2d_sv_hitzone_at(cs2d_server_t *sv, float px, float py, float prev_x, float prev_y,
+                        int player_id, int object_id, int weapon, int *damage);
 
 /* The Wrench primary attack (cs2d_sv_fire): repair or upgrade the own building on the player's aim tile.
  * Costs $50 per repair and $100 per upgrade ([42,id,2,money]; Tshoot.Shoot 0x14020745f / 0x1402096xx). */

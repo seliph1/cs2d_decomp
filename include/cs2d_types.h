@@ -327,6 +327,7 @@ typedef struct {
     char               str0[256];    /* full strs[0]; str_settings[0] holds its first 63 bytes */
     int                param1;       /* alias for int_settings[0] */
     int                param2;       /* alias for int_settings[1] */
+    int                ai_state;     /* setentityaistate()/entity(x,y,"aistate"), reset on round start */
 } cs2d_entity_t;
 
 /* A tile changed at runtime by settile (Tcustomtile, scope 0x140a021c0): its map values before the first change */

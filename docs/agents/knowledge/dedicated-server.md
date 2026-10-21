@@ -814,3 +814,115 @@ Measured by running the original `cs2d_dedicated.exe` and our `cs2d_server.exe` 
   items, but ended with 1618 vs 1574 entities in state 1 and 587 vs 565 hook calls. The extras are
   later Trigger_If/Delay cascades (e.g. `d4entrance`, `sc*_light`, `d4mp*`); see OPEN_ISSUES.
 
+## Bot AI and NPC AI (2026-10-20)
+
+The AI is **not native code in the dedicated**: 1.0.1.8 ships it as the Lua script
+`bots/Standard AI.lua` + `bots/includes/*.lua` (both are in the repository). The client loads it at
+startup (CS2D.exe `_global/140190000.c:2263` checks `FileType("bots/Standard AI.lua")`); the engine
+then calls the script's globals for every bot and the script drives the bot through the `ai_*` API.
+Our port: `src/cs2d_sv_ai.c` (engine side) + `src/cs2d_sv_lua.c` (bindings). `cs2d_sv_lua_init`
+loads `bots/Standard AI.lua` after the server/map scripts.
+
+- **Engine callbacks** (`bots/Standard AI.lua:58..244`): `ai_onspawn(id)` after every spawn,
+  `ai_update_living(id)` every frame for living bots, `ai_update_dead(id)` every second for dead
+  bots, `ai_hear_radio(source, radio)` and `ai_hear_chat(source, msg, teamonly)` per message. The
+  calls order is rotate -> `ai_update_living` (CS2D.exe `_global/1402a0000.c:3490..3560`).
+- **`ai_*` semantics** (help.php + `cs2dlua_ai_*` in `docs/dump/cs2d`):
+  - `ai_move(id, angle [, walk])` -> 1 moved / 0 blocked; `(2 + weapon bonus) * 1.2` per 60 Hz frame,
+    walk halves it (same model as KNOWLEDGE movement.md). `ai_goto(id, tx, ty [, walk])` -> 0 no
+    path / 1 reached / 2 still moving; BFS over `g_prop_class == 1` + map collision (original
+    `FUN_1401893c0` tries a straight line first, then `FUN_14017ac90`; ours is BFS, throttled 250 ms
+    after a failure like `DAT_140ddf29c`).
+  - `ai_aim` stores `Tpl.ai_aim_x/y` and the engine turns by `bot_skill` degrees per frame
+    (`AI_TURN_MIN 8 + 2 * skill`, calibrated: the original per-skill turn table
+    `PTR_bbEmptyArray_1409e9418` is a runtime BlitzMax array); `ai_rotate` sets the angle directly.
+  - `ai_findtarget` = closest enemy inside 420x235 (+ skill), line of sight only with `sv_fow 1`
+    (`FUN_14018bc30`); `ai_freeline` = 40 px ray (`FUN_14018b520`).
+  - `ai_attack`/`ai_iattack`: bots have no client, so the dedicated resolves the hit itself
+    (`cs2d_sv_damage`) in addition to the `[7]` effect relay; `iattack` reloads / switches to the
+    next usable weapon. Hit test uses the 24x24 player box (ray reach + 14 px).
+  - `ai_buy`, `ai_selectweapon`, `ai_reload`, `ai_drop`, `ai_use` (Trigger_Use in front of the bot),
+    `ai_respawn` (only `sv_gamemode` 1..4 and after `mp_respawndelay`), `ai_say` / `ai_sayteam`
+    (chat modes 1/2), `ai_radio` (`[240]` mode 3, text = id), `ai_spray` (`[28]`), `ai_build` (`[34]`
+    rules), `ai_debug` (printed with `debugai 1`).
+  - `setentityaistate(x,y,ai)` / `entity(x,y,"aistate")`: per map-entity scratch value, reset to 0 on
+    round start (help.php). `entity()` now reads it.
+  - `randomentity(type [, ai_state [, int0]])` returns **two values** (tile x, y) or `-100,-100`;
+    the earlier table return broke `vai_destx, vai_desty = randomentity(...)` in the AI script.
+  - `player(0, prop)` for a non-table prop is `false` (help.php); it used to return an empty table,
+    which made `player(0,"health")` a table in `fight.lua`.
+- **Bot settings** (`sys/server.cfg`, generic cvars): `bot_prefix`, `bot_count`, `bot_autofill`,
+  `bot_keepfreeslots`, `bot_jointeam`, `bot_skill`, `bot_weapons`, `bot_freeze`, `debugai` have
+  defaults now; `bot_count` / `bot_autofill` are enforced once per second, `bot_freeze` blocks the
+  `ai_*` movement/attack API, `bot_skill`/`bot_weapons` are read by the AI script through `game()`.
+- **Flashbang**: bots within 640x480 and with a free line get `ai_flash = Rand(4,6)` seconds
+  (CS2D.exe `Tpro.c:3227..3237`), decremented once per second; `player(id,"ai_flash")` returns it.
+- **Bot teams:** `bot_add` sets a team (given, else the smaller one) and must broadcast
+  `[20, id, team, look]` to every joined client — `[248]` carries no team. Without it a client keeps
+  the bot at team 0 (Spectator) while the server already runs its AI, so the bot walks and shoots
+  "as a spectator" (bug fixed 2026-10-20).
+- **NPCs** (`Tdo` 30, `FUN_140283f20`): movement (`FUN_140283120`) runs first: turn by the type's
+  turn table (zombie 5, headcrab 5, snark 4, vortigaunt 20, soldier 7 deg/frame) until within 3 deg
+  of `m_rot`, then walk the type's speed (1 / 2.5 / 6 / 7 / 3 px per 60 Hz frame) to `m_x`, `m_y`
+  while more than 3 px away (no map test; the client runs the identical motion). While it moves the
+  attack timer is reset; only when it has arrived does the **server** (the branch is gated by
+  `DAT_140ddf400`, so clients never attack) run it:
+  - target picker `FUN_140283760`: closest player with `team > 0` and health > 0 in a 405 x 220 box
+    and a clear `FUN_14011c3a0(x1,y1,x2,y2,32,0)` line (32 px steps, `g_prop_class == 1`); a
+    spectator (team 0), a dead player or a player behind a wall is never picked;
+  - path step `FUN_140283a10`: probe 45 px ahead, require that tile to be walkable, then choose an
+    adjacent walkable tile (free side tile first, else the diagonal), set `m_x/m_y` to its **tile
+    centre** and `m_rot` to the **raw degree** angle (`(int)m_rot`; **not** the 182.04445 fixed point
+    of the player rotation packets) and send reliable `[36,id,7]`;
+  - types 1..3 (`countdown` threshold 11) melee when the player is inside a 32 x 32 box and start a
+    cooldown of -50 / -20 / -15 frames; farther away they set a new waypoint at the player's
+    position. Damage (`FUN_1401ed310` -> `FUN_1401ec180`): zombie 10, headcrab 2, snark 1;
+  - Vortigaunt: `FUN_1401ed310` kind 0 melee 15 when within 32 px; kind 1 starts `+0x6c` (charge)
+    when farther, and after 40 idle frames kind 2 fires `Tdo.shoot` (400 px, 40 damage, weapon 0xf9);
+  - soldier (threshold 8, no 32 px test): `Tdo.shoot` with weapon 0xf8, 5 damage, 400 px; then it
+    walks to the last seen position (`+0x110/+0x114`), like the Vortigaunt.
+- **NPC damage:** `Tdo.damage` skips the max-health array for typ `0x1e` (NPC), so the building
+  table must not clamp NPC health; the NPC's health is its type default (150 / 30 / 20 / 200 / 100).
+  A player's shot stops on the NPC's tile (`Tshoot.Shoot` scans the Tdo before the players), and
+  `cs2d_sv_shot_at_building` must let the NPC through (the debris bitset only covers buildings).
+
+## NPC / dynamic object Lua hooks (2026-10-20)
+
+Source: `docs/cs2d_help_db_complete.json` (`lua_hooks`, category Object) and the Tdo damage / kill /
+attack paths. `help.php` argument lists, in order:
+
+- `objectdamage(id, damage, player)` — before Tdo.damage; returning 1 cancels. NPCs go through
+  `cs2d_sv_object_damage` (player shots, explosions, damage commands).
+- `objectkill(id, player)` — every Tdo death, NPCs included (`sv_object_kill`).
+- `objectupgrade(id, player, progress, total)` — each Wrench step (buildings); returning 1 cancels
+  the step. `progress` is 1..total.
+- `hit(id, source, weapon, hpdmg, apdmg, rawdmg, object)` — **7 arguments**. `object` is the
+  attacking dynamic object: the NPC `Tdo` id for NPC melee/ranged, the turret / mine / gate field /
+  barbed wire id for those. `source` stays 0 for an NPC. Use `cs2d_sv_damage_ex(..., object_id)`;
+  `cs2d_sv_damage` keeps `object = 0`.
+- `die(victim, killer, weapon, x, y, killerobject)` — every death. `killerobject` is the object id
+  for an NPC / turret / mine / gate / wire kill (killer is 0 for an NPC).
+- `kill(killer, victim, weapon, x, y, killerobject, assistant)` — **only when a player caused the
+  death** (killer id >= 1, directly or through a building). An NPC kill fires `die` only, with its id
+  in killerobject. `assistant` is the assist id (our damage path currently passes 0).
+- `hitzone(image id, player id, object id, weapon, x, y, damage)` — every shot sample that enters a
+  `Tdo` 40 image hit zone (`imagehitzone`). An NPC shot passes player 0 and the NPC id as object id;
+  a turret passes its owner and its own id; a player passes its id and 0. `image x/y` is the centre
+  and the zone is the axis-aligned rect `x+xo .. x+xo+w`, `y+yo .. y+yo+h`. Modes > 100 block the
+  shot; modes 1..4 do not. The return value replaces the damage (> 0) or zeroes it (< 0); 0 keeps
+  it. HUD images (mode 2) never have a working hit zone.
+- `projectile_impact(id, weapon, x, y, mode, projectileid)` — 0 wall, 1 player, 2 hostage, 3 NPC,
+  100 ground / maximum flight distance. Per help.php only the RPG-7, rocket launcher, snowball and
+  gut bomb collide with players/hostages/NPCs; every other projectile stops on walls/ground.
+- `projectile(id, weapon, x, y, projectileid)` — at detonation. (It used to be called at spawn.)
+
+`turretscan` and `build`/`buildattempt` are buildings, `use` covers supply objects; they are not NPC
+hooks. `startround_prespawn` is already wired and runs before the NPC rebuild.
+
+Residuals: bot secondary attack (`ai_attack(id, 1)`) only relays `[8]` (grenades are spawned by a
+client in the original); shotgun bots apply a single pellet hit; the original per-skill target range
+arrays and turn table are runtime arrays, so ranges/turn are calibrated; the NPC and client
+`[36,7]` positions use the same deterministic motion, but a lost/reordered reliable packet can
+still leave a temporary offset until the next waypoint.
+
+

@@ -8,6 +8,7 @@
  * +0x128 rstr, +0x130 rlstr). Createpacket(reliable, new) is the connection's vtable +0x98.
  */
 #include "cs2d_server.h"
+#include "cs2d_sv_ai.h"
 #include "cs2d_weapons.h"
 #include "cs2d_sv_lua.h"
 #include "cs2d_bind.h"
@@ -152,7 +153,21 @@ void cs2d_sv_settings_default(cs2d_sv_settings_t *s)
     s->mp_zombierecover    = 3;
     s->mp_killbuildingmoney = 1;
     s->mp_mapgoalscore     = 1;
-    s->cvar_count         = 0;
+    /* Bot / AI settings of the shipped sys/server.cfg (bot_* are generic cvars: the AI script reads
+     * them through game("bot_skill") etc. and the engine reads bot_freeze / bot_count / autofill). */
+    {
+        static const struct { const char *key, *val; } bot_defaults[] = {
+            { "bot_prefix", "[b]" }, { "bot_count", "0" }, { "bot_autofill", "0" },
+            { "bot_keepfreeslots", "0" }, { "bot_jointeam", "0" }, { "bot_skill", "4" },
+            { "bot_weapons", "0" }, { "bot_freeze", "0" }, { "debugai", "0" }
+        };
+        s->cvar_count = 0;
+        for (size_t i = 0; i < sizeof(bot_defaults) / sizeof(bot_defaults[0]); i++) {
+            snprintf(s->cvars[s->cvar_count].key, sizeof(s->cvars[0].key), "%s", bot_defaults[i].key);
+            snprintf(s->cvars[s->cvar_count].val, sizeof(s->cvars[0].val), "%s", bot_defaults[i].val);
+            s->cvar_count++;
+        }
+    }
 }
 
 static void cfg_value(char *v)
@@ -3683,6 +3698,7 @@ size_t cs2d_sv_build_pinglist(const cs2d_server_t *sv, uint8_t *out, size_t max_
 static void sv_second(cs2d_server_t *sv)
 {
     uint32_t now = sv_now();
+    cs2d_sv_ai_second(sv);
     sv->frames = 0;
     sv->bytes_in_sec = sv->bytes_in_acc * 8;
     sv->bytes_out_sec = sv->bytes_out_acc * 8;
@@ -3959,6 +3975,7 @@ void cs2d_server_frame(cs2d_server_t *sv)
         }
     }
 
+    cs2d_sv_ai_frame(sv);
     cs2d_sv_relay_movement(sv);
     cs2d_sv_step_round(sv);
     cs2d_sv_step_bomb(sv);

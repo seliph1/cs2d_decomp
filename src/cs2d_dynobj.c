@@ -663,6 +663,9 @@ bool cs2d_dynobj_read_snapshot(cs2d_dynobj_world_t *w, const uint8_t *buf, int l
             o->player = r[9];
             o->team   = r[10];
             o->rot    = rot;
+            /* Tdo.add leaves the NPC facing its spawn angle; m_rot is the turn target and must
+             * not stay 0 (the client would spin the NPC before its first [36,7]). */
+            if (o->typ == CS2D_DO_NPC) o->m_rot = rot;
         }
         p += 15;
     }

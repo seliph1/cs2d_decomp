@@ -90,8 +90,9 @@ void cs2d_sv_lua_hook_join(cs2d_server_t *sv, int id);
 void cs2d_sv_lua_hook_leave(cs2d_server_t *sv, int id, const char *reason);
 int  cs2d_sv_lua_hook_team(cs2d_server_t *sv, int id, int team, int look);
 int  cs2d_sv_lua_hook_spawn(cs2d_server_t *sv, int id, char *out_items, size_t max_items);
-void cs2d_sv_lua_hook_die(cs2d_server_t *sv, int victim, int killer, int weapon, int x, int y, int killerweapon);
-void cs2d_sv_lua_hook_kill(cs2d_server_t *sv, int killer, int victim, int weapon, int x, int y, int killerweapon);
+void cs2d_sv_lua_hook_die(cs2d_server_t *sv, int victim, int killer, int weapon, int x, int y, int killerobject);
+void cs2d_sv_lua_hook_kill(cs2d_server_t *sv, int killer, int victim, int weapon, int x, int y, int killerobject,
+                           int assistant);
 void cs2d_sv_lua_hook_menu(cs2d_server_t *sv, int id, const char *title, int button);
 void cs2d_sv_lua_hook_serveraction(cs2d_server_t *sv, int id, int action);
 int  cs2d_sv_lua_hook_say(cs2d_server_t *sv, int id, const char *text);
@@ -105,7 +106,8 @@ void cs2d_sv_lua_hook_reload(cs2d_server_t *sv, int id, int mode);
 int  cs2d_sv_lua_hook_drop(cs2d_server_t *sv, int id, int itemid, int type, int ammo, int ammoin);
 int  cs2d_sv_lua_hook_collect(cs2d_server_t *sv, int id, int itemid, int type, int ammo, int ammoin);
 int  cs2d_sv_lua_hook_buy(cs2d_server_t *sv, int id, int type);
-int  cs2d_sv_lua_hook_hit(cs2d_server_t *sv, int victim, int source, int weapon, int hpdmg, int apdmg, int rawdmg);
+int  cs2d_sv_lua_hook_hit(cs2d_server_t *sv, int victim, int source, int weapon, int hpdmg, int apdmg, int rawdmg,
+                          int object);
 int  cs2d_sv_lua_hook_rcon(cs2d_server_t *sv, int id, const char *ip, int port, const char *password, const char *cmd);
 int  cs2d_sv_lua_hook_name(cs2d_server_t *sv, int id, const char *oldname, const char *newname, bool forced);
 int  cs2d_sv_lua_hook_parse(cs2d_server_t *sv, const char *cmd);
@@ -146,7 +148,7 @@ int  cs2d_sv_lua_hook_buildattempt(cs2d_server_t *sv, int id, int type, int x, i
 /* "objectdamage": an object is about to take damage. 1 cancels it (Tdo.damage 0x140035207 reads the int). */
 int  cs2d_sv_lua_hook_objectdamage(cs2d_server_t *sv, int id, int damage, int player);
 void cs2d_sv_lua_hook_objectkill(cs2d_server_t *sv, int id, int player);
-void cs2d_sv_lua_hook_objectupgrade(cs2d_server_t *sv, int id, int player, int progress, int total);
+int  cs2d_sv_lua_hook_objectupgrade(cs2d_server_t *sv, int id, int player, int progress, int total);
 void cs2d_sv_lua_hook_move(cs2d_server_t *sv, int id, int x, int y, int walk);
 void cs2d_sv_lua_hook_movetile(cs2d_server_t *sv, int id, int x, int y);
 void cs2d_sv_lua_hook_clientdata(cs2d_server_t *sv, int id, int mode, int data1, int data2, const char *sdata);
@@ -172,7 +174,10 @@ void cs2d_sv_lua_hook_connect_initplayer(cs2d_server_t *sv, int id);
 /* disconnect(id, reason id): runs after the player is fully removed (player(id) no longer works).
  * reason is the numeric reason of the [253] message: 0 = normal, 1 = timeout, 2/16 = kick/ban. */
 void cs2d_sv_lua_hook_disconnect(cs2d_server_t *sv, int id, int reason);
-int  cs2d_sv_lua_hook_hitzone(cs2d_server_t *sv, int image_id, int player, float x, float y);
+/* "hitzone" (imagehitzone / [59]): (image id, player id, object id, weapon, impact x, impact y, damage).
+ * Returns 0 (keep the damage), > 0 (new damage) or < 0 (set the damage to 0). */
+int  cs2d_sv_lua_hook_hitzone(cs2d_server_t *sv, int image_id, int player, int object, int weapon,
+                              float x, float y, int damage);
 void cs2d_sv_lua_hook_httpdata(cs2d_server_t *sv, int request_id, int state, const char *data, size_t len);
 int  cs2d_sv_lua_hook_sayutf8(cs2d_server_t *sv, int id, const char *text);
 int  cs2d_sv_lua_hook_sayteamutf8(cs2d_server_t *sv, int id, const char *text);
@@ -183,6 +188,12 @@ int  cs2d_sv_lua_hook_turretscan(cs2d_server_t *sv, int object_id, int team, int
 
 /* Menu helper */
 void cs2d_sv_menu_send(cs2d_server_t *sv, int id, const char *menu_str);
+
+/* Bot AI callbacks (bots/Standard AI.lua). The AI module calls these; they are no-ops without Lua.
+ * `a` is the bot id for ai_onspawn/ai_update_*, the radio/chat source for ai_hear_*. */
+bool cs2d_sv_lua_call_ai(cs2d_server_t *sv, const char *func, int a);
+bool cs2d_sv_lua_call_ai_radio(cs2d_server_t *sv, const char *func, int a, int b);
+bool cs2d_sv_lua_call_ai_chat(cs2d_server_t *sv, const char *func, int a, const char *text, int c);
 
 /* HUD text packet helpers */
 void cs2d_sv_hudtxt(cs2d_server_t *sv, int target_pid, int id, const char *text, int x, int y, int align, int valign, int size);

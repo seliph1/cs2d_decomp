@@ -37,6 +37,7 @@
 #include "cs2d_gen.h"
 #include "cs2d_hudtxt.h"
 #include "cs2d_hostage.h"
+#include "cs2d_sv_ai.h"
 #include "cs2d_hudmen.h"
 #include "cs2d_server.h"
 #include "cs2d_sv_lua.h"
@@ -12017,7 +12018,7 @@ static bool test_dedicated_kick_message(void)
 }
 
 /* UTF-8 -> UTF-16: Lua/config strings are UTF-8, the [234]/[235]/[240] wire fields
- * are UTF-16LE. Expanding bytes showed WQ2D's "não" as "nÃ£o" in game. */
+ * are UTF-16LE. Expanding bytes showed WQ2D's "nÃ£o" as "nÃƒÂ£o" in game. */
 static bool test_dedicated_utf8_messages(void)
 {
     printf("\n=== Testing Dedicated Server: UTF-8 messages ([240], [234], [235]) ===\n");
@@ -12037,7 +12038,7 @@ static bool test_dedicated_utf8_messages(void)
     sv.conns[0].out.pos = 0;
     sv.conns[0].out_open = false;
 
-    /* "não" is 4 UTF-8 bytes but 3 UTF-16 code units: 6e 00 e3 00 6f 00 */
+    /* "nÃ£o" is 4 UTF-8 bytes but 3 UTF-16 code units: 6e 00 e3 00 6f 00 */
     cs2d_sv_msg(&sv, "n\xc3\xa3o", 0);
     const uint8_t *b = sv.conns[0].out.buf;
     if (sv.conns[0].out.pos != 11 || b[0] != 240 || b[2] != 1 || b[3] != 3 || b[4] != 0 ||
@@ -12045,7 +12046,7 @@ static bool test_dedicated_utf8_messages(void)
         TEST_FAIL("utf8 msg", "[240] did not carry UTF-16 code units");
     }
 
-    /* Lua menu [235]: "ação" -> 4 code units (a, ç, ã, o) */
+    /* Lua menu [235]: "aÃ§Ã£o" -> 4 code units (a, Ã§, Ã£, o) */
     sv.conns[0].out.pos = 0;
     sv.conns[0].out_open = false;
     cs2d_sv_menu_send(&sv, 1, "a\xc3\xa7\xc3\xa3o");
@@ -12056,7 +12057,7 @@ static bool test_dedicated_utf8_messages(void)
         TEST_FAIL("utf8 menu", "[235] did not carry UTF-16 code units");
     }
 
-    /* hudtxt [234]: "é" -> one code unit 0x00e9 */
+    /* hudtxt [234]: "Ã©" -> one code unit 0x00e9 */
     sv.conns[0].out.pos = 0;
     sv.conns[0].out_open = false;
     cs2d_sv_hudtxt(&sv, 1, 0, "\xc3\xa9", 0, 0, 0, 0, 13);
@@ -12087,18 +12088,18 @@ static bool test_dedicated_utf8_messages(void)
         TEST_FAIL("utf8 escape", "the \"UTF-8:\" escaped text was not decoded");
     }
 
-    /* 3-byte form "€" = E2 80 AC -> "\xE2x82xAC" (bare x continuation bytes). */
+    /* 3-byte form "â‚¬" = E2 80 AC -> "\xE2x82xAC" (bare x continuation bytes). */
     cs2d_net_utf8_unescape("UTF-8:\\xE2x82xAC", decoded, (int)sizeof(decoded));
     if (strcmp(decoded, "\xe2\x82\xac") != 0) {
         TEST_FAIL("utf8 escape", "3-byte continuation escapes were not decoded");
     }
 
-    /* msg() with the escaped form: the wire gets © + the text, not the escapes. */
+    /* msg() with the escaped form: the wire gets Â© + the text, not the escapes. */
     sv.conns[0].out.pos = 0;
     sv.conns[0].out_open = false;
     cs2d_sv_msg(&sv, escaped, 0);
     b = sv.conns[0].out.buf;
-    int expect_units = (int)strlen(expect) - 1;   /* © is two UTF-8 bytes, one unit */
+    int expect_units = (int)strlen(expect) - 1;   /* Â© is two UTF-8 bytes, one unit */
     if (b[0] != 240 || b[2] != 1 ||
         (b[3] | (b[4] << 8)) != expect_units ||
         b[5] != 0xa9 || b[6] != 0 || b[7] != '0' || b[8] != 0) {
@@ -12144,6 +12145,461 @@ static bool test_dedicated_utf8_messages(void)
     return true;
 }
 
+/* Bot AI (bots/Standard AI.lua driven by the engine) and NPC AI. Uses a synthetic 16 x 16 floor
+ * map so the movement/path assertions do not depend on a shipped map layout. */
+static bool test_dedicated_bot_and_npc_ai(void)
+{
+    printf("\n=== Testing Dedicated Server: bots (Standard AI.lua) and NPC AI ===\n");
+
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+    sv.set.mp_luaserver[0] = '\0';   /* no server script: only the AI script */
+    sv.set.mp_luamap = 0;
+
+    uint32_t w = 16, h = 16;
+    sv.map.width = w;
+    sv.map.height = h;
+    sv.map.tiles = (uint8_t *)calloc((size_t)w * h, 1);
+    sv.map.collision = (uint8_t *)calloc((size_t)w * h, 1);
+    sv.map.base_collision = (uint8_t *)calloc((size_t)w * h, 1);
+    sv.map.object_collision = (uint8_t *)calloc((size_t)w * h, 1);
+    if (!sv.map.tiles || !sv.map.collision || !sv.map.base_collision || !sv.map.object_collision) {
+        TEST_FAIL("bot ai", "could not allocate the synthetic map");
+    }
+    /* Two spawn entities so bot_add can pick a spawn point. */
+    sv.map.entities[0].type = CS2D_ENT_INFO_T;
+    sv.map.entities[0].x = 2; sv.map.entities[0].y = 2;
+    sv.map.entities[1].type = CS2D_ENT_INFO_CT;
+    sv.map.entities[1].x = 4; sv.map.entities[1].y = 2;
+    sv.map.entity_count = 2;
+    sv.map_loaded = true;
+
+    cs2d_dynobj_init(&sv.dynobj, &sv.map);
+    if (!cs2d_sv_lua_init(&sv)) TEST_FAIL("bot ai", "Lua init failed");
+
+    /* The shipped Standard AI.lua is loaded by cs2d_sv_lua_init and randomentity returns x, y. */
+    if (!cs2d_sv_lua_dostring(&sv,
+            "assert(type(ai_onspawn) == 'function', 'ai_onspawn missing')\n"
+            "assert(type(ai_update_living) == 'function', 'ai_update_living missing')\n"
+            "local x, y = randomentity(0)\n"
+            "assert(x == 2 and y == 2, 'randomentity did not return two tile coordinates')\n")) {
+        TEST_FAIL("bot ai", "bots/Standard AI.lua did not load");
+    }
+
+
+    /* A joined client (Spectator, team 0) so the bot team broadcast [20] can be observed:
+     * the join notice [248] carries no team. */
+    sv.conns[0].active = true;
+    sv.conns[0].player = 1;
+    sv.conns[0].pending = calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].team = 0;
+    sv.players[1].conn = 0;
+    sv.players[1].name[0] = 'S'; sv.players[1].name[1] = '\0';
+
+    int a = cs2d_sv_bot_add(&sv, 1, 0, "Alpha");
+    int b = cs2d_sv_bot_add(&sv, 2, 0, "Bravo");
+    if (a < 1 || b < 1) TEST_FAIL("bot ai", "bot_add failed");
+    if (!sv.players[a].alive || !sv.players[b].alive) TEST_FAIL("bot ai", "bots did not spawn");
+
+    /* bot_add must announce the team with [20]; otherwise every client keeps the bot as team 0
+     * (Spectator) while the server already runs its AI (walking / shooting "spectators"). */
+    bool saw_a = false, saw_b = false;
+    for (int k = 0; k + 3 < sv.conns[0].out.pos; k++) {
+        const uint8_t *m = &sv.conns[0].out.buf[k];
+        if (m[0] == 20 && m[1] == (uint8_t)a && m[2] == (uint8_t)sv.players[a].team &&
+            m[3] == (uint8_t)sv.players[a].look) saw_a = true;
+        if (m[0] == 20 && m[1] == (uint8_t)b && m[2] == (uint8_t)sv.players[b].team &&
+            m[3] == (uint8_t)sv.players[b].look) saw_b = true;
+    }
+    if (sv.players[a].team < 1 || sv.players[b].team < 1) TEST_FAIL("bot team", "bot_add left a bot without a team");
+    if (!saw_a || !saw_b) TEST_FAIL("bot team", "[20, id, team, look] was not broadcast for the bots");
+
+    /* ai_aim: smooth rotation by bot_skill degrees per frame (FUN_1402a6450). */
+    cs2d_sv_player_t *pa = &sv.players[a];
+    cs2d_sv_player_t *pb = &sv.players[b];
+    pa->rot = 0.0f;
+    pa->ai_aim_x = pa->x + 200.0f;
+    pa->ai_aim_y = pa->y;
+    cs2d_sv_ai_frame(&sv);
+    if (!(pa->rot > 1.0f && pa->rot < 80.0f)) {
+        TEST_FAIL("ai_aim", "rotation did not move smoothly towards the aim point");
+    }
+
+    /* ai_goto: BFS path across the open floor and return values 2 (moving) / 1 (reached). */
+    pa->x = 2 * 32.0f + 16.0f;
+    pa->y = 2 * 32.0f + 16.0f;
+    pa->ai_path_len = pa->ai_path_idx = 0;
+    pa->ai_path_goal_x = pa->ai_path_goal_y = -100;
+    int rc = 0, frames = 0;
+    for (; frames < 400; frames++) {
+        rc = cs2d_sv_ai_goto(&sv, a, 8, 8, 0);
+        if (rc == 1) break;
+        if (rc == 0) TEST_FAIL("ai_goto", "no path on an open floor map");
+    }
+    if (rc != 1) TEST_FAIL("ai_goto", "bot did not reach the target tile");
+    if ((int)(pa->x * 0.03125f) != 8 || (int)(pa->y * 0.03125f) != 8) {
+        TEST_FAIL("ai_goto", "bot stopped on the wrong tile");
+    }
+
+    /* ai_findtarget / ai_freeline: closest enemy in the virtual screen, clear line on open floor. */
+    pa->x = 2 * 32.0f + 16.0f;
+    pa->y = 2 * 32.0f + 16.0f;
+    pb->x = 5 * 32.0f + 16.0f;
+    pb->y = 2 * 32.0f + 16.0f;
+    pb->alive = true;
+    pb->health = 100;
+    pa->team = 1;
+    pb->team = 2;
+    if (cs2d_sv_ai_findtarget(&sv, a) != b) TEST_FAIL("ai_findtarget", "enemy not found");
+    if (!cs2d_sv_ai_freeline(&sv, a, pb->x, pb->y)) TEST_FAIL("ai_freeline", "open floor blocked");
+
+    /* ai_iattack: the dedicated resolves the bot's shot (no client sends [17]). */
+    pa->weapon = 1;                       /* USP */
+    pa->items[0] = 1;
+    pa->item_count = 1;
+    pa->clip[1] = 12;
+    pa->reserve[1] = 0;
+    pa->rot = 90.0f;
+    pa->ai_next_fire_ms = 0;
+    pb->health = 100;
+    pb->armor = 0;
+    cs2d_sv_ai_iattack(&sv, a);
+    if (pb->health >= 100) TEST_FAIL("ai_iattack", "the bot shot did not damage the enemy");
+
+    /* ai_flash: Rand(4,6) seconds for bots in range with a free line (Tpro.c:3236). */
+    pa->ai_flash = 0.0f;
+    cs2d_sv_ai_flashbang(&sv, pa->x, pa->y);
+    if (pa->ai_flash < 4.0f || pa->ai_flash > 6.0f) {
+        TEST_FAIL("ai_flash", "the flashbang did not set the bot flash timer");
+    }
+
+    /* setentityaistate / entity("aistate") and the round-start reset. */
+    if (!cs2d_sv_lua_dostring(&sv, "setentityaistate(2,2,7); assert(entity(2,2,'aistate') == 7)")) {
+        TEST_FAIL("setentityaistate", "AI state was not stored");
+    }
+    sv.map.entities[0].ai_state = 5;
+    cs2d_sv_round_start(&sv, 0);
+    if (sv.map.entities[0].ai_state != 0) TEST_FAIL("setentityaistate", "AI state was not reset on round start");
+
+    /* bot_count: the per-second autofill keeps this many bots on the server. */
+    cs2d_sv_settings_set(&sv.set, "bot_count", "4");
+    cs2d_sv_settings_set(&sv.set, "bot_freeze", "1");
+    cs2d_sv_ai_second(&sv);
+    int bots = 0;
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) if (sv.players[i].used && sv.players[i].bot) bots++;
+    cs2d_sv_settings_set(&sv.set, "bot_freeze", "0");
+    if (bots < 4) TEST_FAIL("bot_count", "bot_count did not fill the server with bots");
+
+    /* Only Alpha/Bravo: the autofill bots would stand on the NPC and become its target. */
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        if (i != a && i != b) sv.players[i].used = false;
+    }
+
+    /* NPC AI: a zombie walks towards the player and attacks it ([36,id,7] / [36,id,9]). */
+    pa->alive = true;
+    pa->team = 1;
+    pa->x = 1 * 32.0f + 16.0f;
+    pa->y = 1 * 32.0f + 16.0f;
+    pb->alive = true;
+    pb->team = 2;
+    pb->x = 6 * 32.0f + 16.0f;
+    pb->y = 2 * 32.0f + 16.0f;
+    pb->health = 100;
+    pb->armor = 0;
+    cs2d_dynobj_t *npc = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_NPC,
+                                           4 * 32.0f + 16.0f, 2 * 32.0f + 16.0f, 0.0f, 0, 0, 1);
+    if (!npc) TEST_FAIL("npc ai", "could not spawn the NPC");
+    npc->health = 100;
+    float npc_x0 = npc->x;
+    for (int i = 0; i < 240; i++) cs2d_sv_ai_npc_frame(&sv);
+    if (npc->x <= npc_x0 + 8.0f) TEST_FAIL("npc ai", "the NPC did not walk towards the player");
+    if (pb->health >= 100) TEST_FAIL("npc ai", "the NPC did not damage the player");
+
+    /* [36,7] carries m_rot in degrees (Tdo.getdata case 7) and a walkable tile centre as m_x/m_y.
+     * A player down-right of it gives 135 degrees, not 135 * 182.04445 = 24576. */
+    cs2d_dynobj_t *npc2 = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_NPC,
+                                            8 * 32.0f + 16.0f, 8 * 32.0f + 16.0f, 0.0f, 0, 0, 1);
+    if (!npc2) TEST_FAIL("npc ai", "could not spawn the second NPC");
+    npc2->health = 150;
+    pb->x = 11 * 32.0f + 16.0f;
+    pb->y = 11 * 32.0f + 16.0f;
+    pb->health = 100;
+    for (int i = 0; i < 12; i++) cs2d_sv_ai_npc_frame(&sv);
+    if (fabsf(npc2->m_rot - 135.0f) > 1.0f)
+        TEST_FAIL("npc ai", "m_rot must be sent as degrees (Tdo.getdata case 7)");
+    if ((int)npc2->m_x % 32 != 16 || (int)npc2->m_y % 32 != 16)
+        TEST_FAIL("npc ai", "the NPC waypoint must be a tile centre (FUN_140283a10)");
+
+    /* A wall hides the player from the NPC target picker (FUN_140283760 -> FUN_14011c3a0):
+     * the NPC neither walks through it nor damages through it. */
+    for (int k = 0; k < CS2D_DYNOBJ_MAX; k++) {
+        if (sv.dynobj.objs[k].active && sv.dynobj.objs[k].typ == CS2D_DO_NPC)
+            cs2d_dynobj_kill(&sv.dynobj, sv.dynobj.objs[k].id, NULL);
+    }
+    sv.map.tile_modes[1] = CS2D_TILE_WALL;
+    for (uint32_t ty = 0; ty < h; ty++) sv.map.tiles[ty * w + 10] = 1;
+    /* No other target for the isolated wall test. */
+    pa->team = 0;
+    pa->alive = false;
+    pa->health = 0;
+    cs2d_dynobj_t *npc3 = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_NPC,
+                                            8 * 32.0f + 16.0f, 5 * 32.0f + 16.0f, 0.0f, 0, 0, 1);
+    if (!npc3) TEST_FAIL("npc ai", "could not spawn the wall NPC");
+    npc3->health = 150;
+    pb->x = 12 * 32.0f + 16.0f;
+    pb->y = 5 * 32.0f + 16.0f;
+    pb->health = 100;
+    float wall_x = npc3->x, wall_y = npc3->y;
+    for (int i = 0; i < 300; i++) cs2d_sv_ai_npc_frame(&sv);
+    if (pb->health != 100) TEST_FAIL("npc ai", "the NPC damaged a player through a wall");
+    if (fabsf(npc3->x - wall_x) > 1.0f || fabsf(npc3->y - wall_y) > 1.0f)
+        TEST_FAIL("npc ai", "the NPC walked through a wall");
+
+    /* NPCs are shootable: the player's bullet stops on the NPC tile (Tshoot object scan) and
+     * Tdo.damage uses the NPC health, not the building table. */
+    cs2d_dynobj_t *npc4 = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_NPC,
+                                            3 * 32.0f + 16.0f, 12 * 32.0f + 16.0f, 0.0f, 0, 0, 1);
+    if (!npc4) TEST_FAIL("npc ai", "could not spawn the shootable NPC");
+    npc4->health = 150;
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(1);
+    if (!wep || wep->damage <= 0) TEST_FAIL("npc ai", "the USP definition is missing");
+    pa->x = 1 * 32.0f + 16.0f;
+    pa->y = 12 * 32.0f + 16.0f;
+    pa->rot = 90.0f;
+    pa->alive = true;
+    pa->team = 1;
+    pa->health = 100;
+    int npc4_id = npc4->id;
+    cs2d_sv_shot_at_building(&sv, a, wep);
+    npc4 = cs2d_dynobj_get(&sv.dynobj, npc4_id);
+    if (!npc4 || npc4->health >= 150) TEST_FAIL("npc ai", "a player shot did not damage the NPC");
+    npc4->health = 1;
+    cs2d_sv_shot_at_building(&sv, a, wep);
+    if (cs2d_dynobj_get(&sv.dynobj, npc4_id) != NULL)
+        TEST_FAIL("npc ai", "the NPC did not die from a player shot");
+
+    cs2d_sv_lua_close(&sv);
+    cs2d_dynobj_clear(&sv.dynobj);
+    cs2d_map_free(&sv.map);
+    free(sv.conns[0].pending);
+    TEST_PASS("Dedicated Server: Standard AI.lua bots (move/goto/target/attack/autofill) and NPC AI");
+    return true;
+}
+
+/* NPC-related Lua hooks: objectdamage / objectkill (NPC damage & death), hit (object id),
+ * die/kill (killerobject) and hitzone / projectile_impact (mode 3 = NPC). Uses direct server
+ * objects, no clients: the callbacks record their arguments in the Lua table L. */
+static bool test_dedicated_npc_hooks(void)
+{
+    printf("\n=== Testing Dedicated Server: NPC Lua hooks (objectdamage/objectkill/hit/die/hitzone/projectile_impact) ===\n");
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+    sv.set.mp_luaserver[0] = '\0';
+    sv.set.mp_luamap = 0;
+
+    uint32_t w = 16, h = 16;
+    sv.map.width = w;
+    sv.map.height = h;
+    sv.map.tiles = (uint8_t *)calloc((size_t)w * h, 1);
+    sv.map.collision = (uint8_t *)calloc((size_t)w * h, 1);
+    sv.map.base_collision = (uint8_t *)calloc((size_t)w * h, 1);
+    sv.map.object_collision = (uint8_t *)calloc((size_t)w * h, 1);
+    if (!sv.map.tiles || !sv.map.collision || !sv.map.base_collision || !sv.map.object_collision)
+        TEST_FAIL("npc hooks", "could not allocate the synthetic map");
+    sv.map_loaded = true;
+    cs2d_dynobj_init(&sv.dynobj, &sv.map);
+    if (!cs2d_sv_lua_init(&sv)) TEST_FAIL("npc hooks", "Lua init failed");
+
+    if (!cs2d_sv_lua_dostring(&sv,
+            "L = {}\n"
+            "block_objdamage = false\n"
+            "addhook('objectdamage','h_objdamage')\n"
+            "function h_objdamage(id, damage, player)\n"
+            "  L.objdamage = {id, damage, player}\n"
+            "  if block_objdamage then return 1 end\n"
+            "  return 0\n"
+            "end\n"
+            "addhook('objectkill','h_objkill')\n"
+            "function h_objkill(id, player) L.objkill = {id, player} end\n"
+            "addhook('hit','h_hit')\n"
+            "function h_hit(victim, source, weapon, hpdmg, apdmg, rawdmg, object)\n"
+            "  L.hit = {victim, source, weapon, hpdmg, apdmg, rawdmg, object}\n"
+            "  return 0\n"
+            "end\n"
+            "addhook('die','h_die')\n"
+            "function h_die(victim, killer, weapon, x, y, killerobject)\n"
+            "  L.die = {victim, killer, weapon, x, y, killerobject}\n"
+            "end\n"
+            "addhook('kill','h_kill')\n"
+            "function h_kill(killer, victim, weapon, x, y, killerobject, assistant)\n"
+            "  L.kill = {killer, victim, weapon, x, y, killerobject, assistant}\n"
+            "end\n"
+            "addhook('hitzone','h_hitzone')\n"
+            "function h_hitzone(image, player, object, weapon, x, y, damage)\n"
+            "  L.hitzone = {image, player, object, weapon, x, y, damage}\n"
+            "  return 0\n"
+            "end\n"
+            "addhook('projectile_impact','h_pimpact')\n"
+            "function h_pimpact(id, weapon, x, y, mode, projectileid)\n"
+            "  L.pimpact = {id, weapon, x, y, mode, projectileid}\n"
+            "end\n")) {
+        TEST_FAIL("npc hooks", "could not register the recording hooks");
+    }
+
+    /* --- 1) NPC melee: "hit" carries the NPC object id; the kill uses die + killerobject,
+     * and must NOT run "kill" (that hook is player-only). --- */
+    cs2d_sv_player_t *pl = &sv.players[1];
+    pl->used = true;
+    pl->joined = true;
+    pl->conn = -1;
+    pl->team = 2;
+    pl->alive = true;
+    pl->health = 100;
+    pl->maxhealth = 100;
+    pl->x = 6 * 32.0f + 10.0f;
+    pl->y = 5 * 32.0f + 16.0f;
+
+    cs2d_dynobj_t *npc = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_NPC,
+                                           6 * 32.0f + 16.0f, 5 * 32.0f + 16.0f, 0.0f, 0, 0, 1);
+    if (!npc) TEST_FAIL("npc hooks", "could not spawn the zombie");
+    npc->health = 150;
+    int npc_id = npc->id;
+    for (int i = 0; i < 12; i++) cs2d_sv_ai_npc_frame(&sv);
+    if (pl->health != 90) TEST_FAIL("npc hooks", "the zombie melee did not damage the player");
+    char script[256];
+    snprintf(script, sizeof(script),
+             "assert(L.hit and L.hit[7] == %d, 'hit object must be the NPC id')\n"
+             "assert(L.hit[2] == 0, 'source of an NPC hit must be 0')\n", npc_id);
+    if (!cs2d_sv_lua_dostring(&sv, script)) TEST_FAIL("npc hooks", "hit hook does not carry the NPC object id");
+
+    pl->health = 5;
+    npc->countdown = 10;   /* let the next attack happen immediately after turning */
+    for (int i = 0; i < 80 && pl->alive; i++) cs2d_sv_ai_npc_frame(&sv);
+    if (pl->alive) TEST_FAIL("npc hooks", "the zombie did not kill the player");
+    snprintf(script, sizeof(script),
+             "assert(L.die and L.die[2] == 0 and L.die[6] == %d, 'die killerobject must be the NPC id')\n"
+             "assert(L.kill == nil, 'kill must not run for an NPC kill')\n", npc_id);
+    if (!cs2d_sv_lua_dostring(&sv, script)) TEST_FAIL("npc hooks", "die hook does not carry the NPC id");
+
+    /* --- 2) NPC takes damage / dies: objectdamage (cancellable) and objectkill. --- */
+    pl->alive = true;
+    pl->health = 100;
+    pl->team = 2;
+    pl->x = 3 * 32.0f + 16.0f;
+    pl->y = 8 * 32.0f + 16.0f;
+    pl->rot = 90.0f;
+    npc->x = 5 * 32.0f + 16.0f;
+    npc->y = 8 * 32.0f + 16.0f;
+    npc->m_x = npc->x;
+    npc->m_y = npc->y;
+    npc->health = 150;
+    npc->countdown = 0;
+    const cs2d_weapon_def_t *wep = cs2d_weapon_get(1);
+    if (!wep || wep->damage <= 0) TEST_FAIL("npc hooks", "the USP definition is missing");
+    int npc_hp = npc->health;
+    cs2d_sv_shot_at_building(&sv, 1, wep);
+    if (npc->health >= npc_hp) TEST_FAIL("npc hooks", "the shot did not damage the NPC");
+    snprintf(script, sizeof(script),
+             "assert(L.objdamage and L.objdamage[1] == %d and L.objdamage[3] == 1, "
+             "'objectdamage must carry the NPC id and the shooter')\n", npc_id);
+    if (!cs2d_sv_lua_dostring(&sv, script)) TEST_FAIL("npc hooks", "objectdamage hook missing for the NPC");
+
+    if (!cs2d_sv_lua_dostring(&sv, "block_objdamage = true")) TEST_FAIL("npc hooks", "Lua state");
+    npc_hp = npc->health;
+    cs2d_sv_shot_at_building(&sv, 1, wep);
+    if (npc->health != npc_hp) TEST_FAIL("npc hooks", "objectdamage could not cancel the NPC damage");
+    if (!cs2d_sv_lua_dostring(&sv, "block_objdamage = false")) TEST_FAIL("npc hooks", "Lua state");
+
+    npc->health = 1;
+    cs2d_sv_shot_at_building(&sv, 1, wep);
+    if (cs2d_dynobj_get(&sv.dynobj, npc_id) != NULL) TEST_FAIL("npc hooks", "the NPC did not die");
+    snprintf(script, sizeof(script),
+             "assert(L.objkill and L.objkill[1] == %d and L.objkill[2] == 1, "
+             "'objectkill must carry the NPC id and the killer')\n", npc_id);
+    if (!cs2d_sv_lua_dostring(&sv, script)) TEST_FAIL("npc hooks", "objectkill hook missing for the NPC");
+
+    /* --- 3) An NPC shot hits a Lua image hit zone: player id 0, object id = NPC, blocking. --- */
+    pl->alive = true;
+    pl->health = 100;
+    pl->armor = 0;
+    pl->team = 2;
+    pl->x = 12 * 32.0f + 16.0f;
+    pl->y = 8 * 32.0f + 16.0f;
+    cs2d_dynobj_t *soldier = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_NPC,
+                                               2 * 32.0f + 16.0f, 8 * 32.0f + 16.0f, 0.0f, 0, 0, 5);
+    if (!soldier) TEST_FAIL("npc hooks", "could not spawn the soldier");
+    soldier->health = 100;
+    soldier->rot = 90.0f;
+    soldier->m_rot = 90.0f;
+    soldier->m_x = soldier->x;
+    soldier->m_y = soldier->y;
+    int soldier_id = soldier->id;
+    cs2d_dynobj_t *img = cs2d_dynobj_add(&sv.dynobj, -1, CS2D_DO_IMAGE,
+                                         4 * 32.0f + 16.0f, 8 * 32.0f + 16.0f);
+    if (!img) TEST_FAIL("npc hooks", "could not spawn the hit zone image");
+    img->hit_mode = 101;   /* blocking */
+    img->hit_xo = -16;
+    img->hit_yo = -16;
+    img->hit_w = 32;
+    img->hit_h = 32;
+    int img_id = img->id;
+    int player_hp = pl->health;
+    for (int i = 0; i < 10; i++) cs2d_sv_ai_npc_frame(&sv);
+    snprintf(script, sizeof(script),
+             "assert(L.hitzone and L.hitzone[1] == %d and L.hitzone[2] == 0 and L.hitzone[3] == %d "
+             "and L.hitzone[4] == 248 and L.hitzone[7] == 5, 'hitzone arguments for an NPC shot')\n",
+             img_id, soldier_id);
+    if (!cs2d_sv_lua_dostring(&sv, script)) TEST_FAIL("npc hooks", "hitzone hook missing for the NPC shot");
+    if (pl->health != player_hp) TEST_FAIL("npc hooks", "a blocking hit zone did not stop the NPC shot");
+
+    /* --- 4) projectile_impact mode 3 when a projectile hits an NPC. --- */
+    cs2d_dynobj_t *target = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_NPC,
+                                              8 * 32.0f + 16.0f, 8 * 32.0f + 16.0f, 0.0f, 0, 0, 1);
+    if (!target) TEST_FAIL("npc hooks", "could not spawn the projectile target");
+    target->health = 150;
+    pl->x = 1 * 32.0f + 16.0f;
+    pl->y = 1 * 32.0f + 16.0f;
+    cs2d_sv_projectile(&sv, 1, CS2D_WEP_SNOWBALL, 0, 0, 0, 0);
+    cs2d_sv_projectile_t *proj = NULL;
+    for (int i = 0; i < CS2D_SV_MAX_PROJECTILES; i++) {
+        if (sv.projectiles[i].active && sv.projectiles[i].player == 1 &&
+            sv.projectiles[i].type == CS2D_WEP_SNOWBALL) {
+            proj = &sv.projectiles[i];
+            break;
+        }
+    }
+    if (!proj) TEST_FAIL("npc hooks", "the snowball projectile was not created");
+    proj->x = 220.0f;
+    proj->y = 8 * 32.0f + 16.0f;
+    proj->dir = 90.0f;
+    proj->speed = 350.0f;
+    proj->flydist = 200.0f;
+    proj->is_flying = true;
+    for (int i = 0; i < 5; i++) {
+        sv.last_proj_ms = cs2d_sv_now() - 50;
+        cs2d_sv_step_projectiles(&sv);
+        if (!proj->active) break;
+    }
+    snprintf(script, sizeof(script),
+             "assert(L.pimpact and L.pimpact[5] == 3, 'projectile_impact mode 3 = NPC')\n"
+             "assert(L.pimpact[2] == %d, 'projectile_impact weapon must be the snowball')\n",
+             CS2D_WEP_SNOWBALL);
+    if (!cs2d_sv_lua_dostring(&sv, script))
+        TEST_FAIL("npc hooks", "projectile_impact (mode 3 / NPC) was not fired");
+
+    cs2d_sv_lua_close(&sv);
+    cs2d_dynobj_clear(&sv.dynobj);
+    cs2d_map_free(&sv.map);
+    TEST_PASS("Dedicated Server: NPC hooks (objectdamage/objectkill, hit/die with object ids, hitzone, projectile_impact 3)");
+    return true;
+}
+
 int main(void)
 {
     setbuf(stdout, NULL);
@@ -12152,7 +12608,7 @@ int main(void)
     printf("============================================================\n");
 
     int passed = 0;
-    int total = 110;
+    int total = 112;
 
     if (test_weapons()) passed++;
     if (test_player_logic()) passed++;
@@ -12264,6 +12720,8 @@ int main(void)
     if (test_dedicated_map_teleport()) passed++;
     if (test_dedicated_kick_message()) passed++;
     if (test_dedicated_utf8_messages()) passed++;
+    if (test_dedicated_bot_and_npc_ai()) passed++;
+    if (test_dedicated_npc_hooks()) passed++;
 
     printf("\n============================================================\n");
     printf("Tests Passed: %d / %d\n", passed, total);

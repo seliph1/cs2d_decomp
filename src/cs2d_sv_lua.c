@@ -16,6 +16,7 @@
  */
 
 #include "cs2d_sv_lua.h"
+#include "cs2d_sv_ai.h"
 #include "cs2d_weapons.h"
 #include "cs2d_bind.h"
 #include "cs2d_image.h"
@@ -334,6 +335,8 @@ static int l_player(lua_State *L)
             lua_pushinteger(L, cnt);
             return 1;
         }
+        lua_pop(L, 1);
+        lua_pushboolean(L, 0);
         return 1;
     }
 
@@ -426,7 +429,8 @@ static int l_player(lua_State *L)
     if (strcmp(prop, "defusekit") == 0) { lua_pushboolean(L, 0); return 1; }
     if (strcmp(prop, "gasmask") == 0) { lua_pushboolean(L, 0); return 1; }
     if (strcmp(prop, "bomb") == 0) { lua_pushboolean(L, 0); return 1; }
-    if (strcmp(prop, "flag") == 0) { lua_pushboolean(L, 0); return 1; }
+    if (strcmp(prop, "flag") == 0) { lua_pushboolean(L, pl->has_flag ? 1 : 0); return 1; }
+    if (strcmp(prop, "ai_flash") == 0) { lua_pushnumber(L, (double)pl->ai_flash); return 1; }
     if (strcmp(prop, "reloading") == 0) { lua_pushboolean(L, pl->is_reloading ? 1 : 0); return 1; }
     if (strcmp(prop, "process") == 0) { lua_pushinteger(L, 0); return 1; }
     if (strcmp(prop, "speedmod") == 0) { lua_pushinteger(L, pl->speedmod); return 1; }
@@ -1540,7 +1544,7 @@ static int l_entity(lua_State *L)
         lua_pushboolean(L, (ent_idx >= 0 && ent_idx < CS2D_MAX_ENTITIES) ? sv->map.entity_state[ent_idx] != 0 : 0);
         return 1;
     }
-    if (strcmp(prop, "aistate") == 0) { lua_pushinteger(L, 0); return 1; }
+    if (strcmp(prop, "aistate") == 0) { lua_pushinteger(L, ent->ai_state); return 1; }
 
     /* int0 .. int9 */
     if (strncmp(prop, "int", 3) == 0 && prop[3] >= '0' && prop[3] <= '9' && prop[4] == '\0') {
@@ -2031,35 +2035,50 @@ static int l_projectilelist(lua_State *L)
     return 1;
 }
 
-/* randomentity(type) -> {x, y} */
+/* randomentity(type [, ai_state [, int0]]) -> x, y (or -100, -100 when none).
+ * help.php: the AI-state (-1/omitted = ignore) and int0 (-1/omitted = ignore) are filters. */
 static int l_randomentity(lua_State *L)
 {
     cs2d_server_t *sv = get_sv_from_lua(L);
-    if (!sv || !sv->map_loaded) return 0;
+    if (!sv || !sv->map_loaded) { lua_pushinteger(L, -100); lua_pushinteger(L, -100); return 2; }
     int type = (int)luaL_checkinteger(L, 1);
+    int ai_filter = (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) ? (int)luaL_checkinteger(L, 2) : -1;
+    int int0_filter = (lua_gettop(L) >= 3 && !lua_isnil(L, 3)) ? (int)luaL_checkinteger(L, 3) : -1;
     int matches[256];
     int count = 0;
     for (uint32_t i = 0; i < sv->map.entity_count && count < 256; i++) {
-        if (sv->map.entities[i].type == (cs2d_entity_type_t)type) {
-            matches[count++] = (int)i;
-        }
+        const cs2d_entity_t *e = &sv->map.entities[i];
+        if (e->type != (cs2d_entity_type_t)type) continue;
+        if (ai_filter >= 0 && e->ai_state != ai_filter) continue;
+        if (int0_filter >= 0 && e->int_settings[0] != int0_filter) continue;
+        matches[count++] = (int)i;
     }
-    if (count > 0) {
-        const cs2d_entity_t *e = &sv->map.entities[matches[cs2d_sv_rand(0, count - 1)]];
-        lua_newtable(L);
-        lua_pushinteger(L, e->x);
-        lua_setfield(L, -2, "x");
-        lua_pushinteger(L, e->y);
-        lua_setfield(L, -2, "y");
-        return 1;
+    if (count <= 0) {
+        lua_pushinteger(L, -100);
+        lua_pushinteger(L, -100);
+        return 2;
     }
-    return 0;
+    const cs2d_entity_t *e = &sv->map.entities[matches[cs2d_sv_rand(0, count - 1)]];
+    lua_pushinteger(L, e->x);
+    lua_pushinteger(L, e->y);
+    return 2;
 }
 
-/* setentityaistate(x, y, ai) */
+/* setentityaistate(x, y, ai): a scratch integer on the map entity (help.php: CS2D does not use it).
+ * Reset to 0 on every round start. */
 static int l_setentityaistate(lua_State *L)
 {
-    (void)L;
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (!sv || !sv->map_loaded) return 0;
+    int x = (int)luaL_checkinteger(L, 1);
+    int y = (int)luaL_checkinteger(L, 2);
+    int ai = (int)luaL_checkinteger(L, 3);
+    for (uint32_t i = 0; i < sv->map.entity_count; i++) {
+        if (sv->map.entities[i].x == x && sv->map.entities[i].y == y) {
+            sv->map.entities[i].ai_state = ai;
+            break;
+        }
+    }
     return 0;
 }
 
@@ -2075,27 +2094,154 @@ static int l_steamstats(lua_State *L)
     return 1;
 }
 
-/* AI functions */
-static int l_ai_aim(lua_State *L) { (void)L; return 0; }
-static int l_ai_attack(lua_State *L) { (void)L; return 0; }
-static int l_ai_build(lua_State *L) { (void)L; return 0; }
-static int l_ai_buy(lua_State *L) { (void)L; return 0; }
-static int l_ai_debug(lua_State *L) { (void)L; return 0; }
-static int l_ai_drop(lua_State *L) { (void)L; return 0; }
-static int l_ai_findtarget(lua_State *L) { lua_pushinteger(L, 0); return 1; }
-static int l_ai_freeline(lua_State *L) { lua_pushboolean(L, 1); return 1; }
-static int l_ai_goto(lua_State *L) { (void)L; return 0; }
-static int l_ai_iattack(lua_State *L) { (void)L; return 0; }
-static int l_ai_move(lua_State *L) { (void)L; return 0; }
-static int l_ai_radio(lua_State *L) { (void)L; return 0; }
-static int l_ai_reload(lua_State *L) { (void)L; return 0; }
-static int l_ai_respawn(lua_State *L) { (void)L; return 0; }
-static int l_ai_rotate(lua_State *L) { (void)L; return 0; }
-static int l_ai_say(lua_State *L) { (void)L; return 0; }
-static int l_ai_sayteam(lua_State *L) { (void)L; return 0; }
-static int l_ai_selectweapon(lua_State *L) { (void)L; return 0; }
-static int l_ai_spray(lua_State *L) { (void)L; return 0; }
-static int l_ai_use(lua_State *L) { (void)L; return 0; }
+/* AI functions (engine side in src/cs2d_sv_ai.c; the behaviour lives in bots/Standard AI.lua). */
+static int l_ai_aim(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_aim(sv, (int)luaL_checkinteger(L, 1),
+                           (float)luaL_checknumber(L, 2), (float)luaL_checknumber(L, 3));
+    return 0;
+}
+
+static int l_ai_attack(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_attack(sv, (int)luaL_checkinteger(L, 1), (int)luaL_optinteger(L, 2, 0));
+    return 0;
+}
+
+static int l_ai_build(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_build(sv, (int)luaL_checkinteger(L, 1), (int)luaL_checkinteger(L, 2),
+                             (int)luaL_checkinteger(L, 3), (int)luaL_checkinteger(L, 4));
+    return 0;
+}
+
+static int l_ai_buy(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_buy(sv, (int)luaL_checkinteger(L, 1), (int)luaL_checkinteger(L, 2));
+    return 0;
+}
+
+static int l_ai_debug(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_debug(sv, (int)luaL_checkinteger(L, 1), lua_tostring(L, 2));
+    return 0;
+}
+
+static int l_ai_drop(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_drop(sv, (int)luaL_checkinteger(L, 1));
+    return 0;
+}
+
+static int l_ai_findtarget(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    lua_pushinteger(L, sv ? cs2d_sv_ai_findtarget(sv, (int)luaL_checkinteger(L, 1)) : 0);
+    return 1;
+}
+
+static int l_ai_freeline(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    int ok = sv ? cs2d_sv_ai_freeline(sv, (int)luaL_checkinteger(L, 1),
+                                      (float)luaL_checknumber(L, 2), (float)luaL_checknumber(L, 3)) : 0;
+    lua_pushboolean(L, ok);
+    return 1;
+}
+
+static int l_ai_goto(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    lua_pushinteger(L, sv ? cs2d_sv_ai_goto(sv, (int)luaL_checkinteger(L, 1),
+                                            (int)luaL_checkinteger(L, 2), (int)luaL_checkinteger(L, 3),
+                                            (int)luaL_optinteger(L, 4, 0)) : 0);
+    return 1;
+}
+
+static int l_ai_iattack(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_iattack(sv, (int)luaL_checkinteger(L, 1));
+    return 0;
+}
+
+static int l_ai_move(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    lua_pushinteger(L, sv ? cs2d_sv_ai_move(sv, (int)luaL_checkinteger(L, 1),
+                                            (float)luaL_checknumber(L, 2),
+                                            (int)luaL_optinteger(L, 3, 0)) : 0);
+    return 1;
+}
+
+static int l_ai_radio(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_radio(sv, (int)luaL_checkinteger(L, 1), (int)luaL_checkinteger(L, 2));
+    return 0;
+}
+
+static int l_ai_reload(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_reload(sv, (int)luaL_checkinteger(L, 1));
+    return 0;
+}
+
+static int l_ai_respawn(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_respawn(sv, (int)luaL_checkinteger(L, 1));
+    return 0;
+}
+
+static int l_ai_rotate(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_rotate(sv, (int)luaL_checkinteger(L, 1), (float)luaL_checknumber(L, 2));
+    return 0;
+}
+
+static int l_ai_say(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_say(sv, (int)luaL_checkinteger(L, 1), lua_tostring(L, 2), 0);
+    return 0;
+}
+
+static int l_ai_sayteam(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_say(sv, (int)luaL_checkinteger(L, 1), lua_tostring(L, 2), 1);
+    return 0;
+}
+
+static int l_ai_selectweapon(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_selectweapon(sv, (int)luaL_checkinteger(L, 1), (int)luaL_checkinteger(L, 2));
+    return 0;
+}
+
+static int l_ai_spray(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_spray(sv, (int)luaL_checkinteger(L, 1));
+    return 0;
+}
+
+static int l_ai_use(lua_State *L)
+{
+    cs2d_server_t *sv = get_sv_from_lua(L);
+    if (sv) cs2d_sv_ai_use(sv, (int)luaL_checkinteger(L, 1));
+    return 0;
+}
 
 /* ---------------------------------------------------------------------------
  * Initialization and Shutdown
@@ -2248,6 +2394,10 @@ bool cs2d_sv_lua_init(cs2d_server_t *sv)
     if (sv->set.mp_luamap && sv->set.sv_map[0] != '\0') {
         cs2d_sv_lua_load_map(sv, sv->set.sv_map);
     }
+
+    /* Bot AI: the shipped script is the AI the engine calls for every bot (ai_onspawn /
+     * ai_update_living / ai_update_dead). It is loaded last so it owns those globals. */
+    cs2d_sv_ai_load(sv);
 
     return true;
 }
@@ -2683,16 +2833,31 @@ static int push_die_kill(lua_State *L, void *ctx) {
     return 6;
 }
 
-void cs2d_sv_lua_hook_die(cs2d_server_t *sv, int victim, int killer, int weapon, int x, int y, int killerweapon)
+static int push_7int_vals(lua_State *L, void *ctx) {
+    hook_args_t *a = (hook_args_t *)ctx;
+    lua_pushinteger(L, a->a);
+    lua_pushinteger(L, a->b);
+    lua_pushinteger(L, a->c);
+    lua_pushinteger(L, a->d);
+    lua_pushinteger(L, a->e);
+    lua_pushinteger(L, a->f);
+    lua_pushinteger(L, a->g);
+    return 7;
+}
+
+void cs2d_sv_lua_hook_die(cs2d_server_t *sv, int victim, int killer, int weapon, int x, int y, int killerobject)
 {
-    hook_args_t a = { .a = victim, .b = killer, .c = weapon, .d = x, .e = y, .f = killerweapon };
+    /* help.php: die(victim, killer, weapon, x, y, killerobject) - 6 arguments. */
+    hook_args_t a = { .a = victim, .b = killer, .c = weapon, .d = x, .e = y, .f = killerobject };
     dispatch_hook(sv, "die", 6, push_die_kill, &a, NULL, 0);
 }
 
-void cs2d_sv_lua_hook_kill(cs2d_server_t *sv, int killer, int victim, int weapon, int x, int y, int killerweapon)
+void cs2d_sv_lua_hook_kill(cs2d_server_t *sv, int killer, int victim, int weapon, int x, int y, int killerobject,
+                           int assistant)
 {
-    hook_args_t a = { .a = killer, .b = victim, .c = weapon, .d = x, .e = y, .f = killerweapon };
-    dispatch_hook(sv, "kill", 6, push_die_kill, &a, NULL, 0);
+    /* help.php: kill(killer, victim, weapon, x, y, killerobject, assistant) - 7 arguments. */
+    hook_args_t a = { .a = killer, .b = victim, .c = weapon, .d = x, .e = y, .f = killerobject, .g = assistant };
+    dispatch_hook(sv, "kill", 7, push_7int_vals, &a, NULL, 0);
 }
 
 static int push_menu(lua_State *L, void *ctx) {
@@ -2813,10 +2978,13 @@ int cs2d_sv_lua_hook_buy(cs2d_server_t *sv, int id, int type)
     return dispatch_hook(sv, "buy", 2, push_2int, &a, NULL, 0);
 }
 
-int cs2d_sv_lua_hook_hit(cs2d_server_t *sv, int victim, int source, int weapon, int hpdmg, int apdmg, int rawdmg)
+int cs2d_sv_lua_hook_hit(cs2d_server_t *sv, int victim, int source, int weapon, int hpdmg, int apdmg, int rawdmg,
+                         int object)
 {
-    hook_args_t a = { .a = victim, .b = source, .c = weapon, .d = hpdmg, .e = apdmg, .f = rawdmg };
-    return dispatch_hook(sv, "hit", 6, push_die_kill, &a, NULL, 0);
+    /* help.php: hit(id, source, weapon, hpdmg, apdmg, rawdmg, object). object is the dynamic
+     * object that caused the damage (NPC, turret, mine, ...), 0 for players/environment. */
+    hook_args_t a = { .a = victim, .b = source, .c = weapon, .d = hpdmg, .e = apdmg, .f = rawdmg, .g = object };
+    return dispatch_hook(sv, "hit", 7, push_7int_vals, &a, NULL, 0);
 }
 
 static int push_rcon(lua_State *L, void *ctx) {
@@ -3128,10 +3296,10 @@ void cs2d_sv_lua_hook_objectkill(cs2d_server_t *sv, int id, int player)
     dispatch_hook(sv, "objectkill", 2, push_2int, &a, NULL, 0);
 }
 
-void cs2d_sv_lua_hook_objectupgrade(cs2d_server_t *sv, int id, int player, int progress, int total)
+int cs2d_sv_lua_hook_objectupgrade(cs2d_server_t *sv, int id, int player, int progress, int total)
 {
     hook_args_t a = { .a = id, .b = player, .c = progress, .d = total };
-    dispatch_hook(sv, "objectupgrade", 4, push_4int_vals, &a, NULL, 0);
+    return dispatch_hook(sv, "objectupgrade", 4, push_4int_vals, &a, NULL, 0);
 }
 
 void cs2d_sv_lua_hook_move(cs2d_server_t *sv, int id, int x, int y, int walk)
@@ -3242,17 +3410,24 @@ void cs2d_sv_lua_hook_disconnect(cs2d_server_t *sv, int id, int reason)
 
 static int push_hitzone(lua_State *L, void *ctx) {
     hook_args_t *a = (hook_args_t *)ctx;
-    lua_pushinteger(L, a->a);
-    lua_pushinteger(L, a->b);
-    lua_pushnumber(L, (double)a->c);
-    lua_pushnumber(L, (double)a->d);
-    return 4;
+    lua_pushinteger(L, a->a);                 /* image (dynamic object) id */
+    lua_pushinteger(L, a->b);                 /* player id (0 for an NPC / neutral turret) */
+    lua_pushinteger(L, a->c);                 /* shooting dynamic object id (0 for a player) */
+    lua_pushinteger(L, a->d);                 /* weapon type id */
+    lua_pushnumber(L, (double)a->e);          /* impact x (pixels) */
+    lua_pushnumber(L, (double)a->f);          /* impact y (pixels) */
+    lua_pushinteger(L, a->g);                 /* damage of the shot */
+    return 7;
 }
 
-int cs2d_sv_lua_hook_hitzone(cs2d_server_t *sv, int image_id, int player, float x, float y)
+int cs2d_sv_lua_hook_hitzone(cs2d_server_t *sv, int image_id, int player, int object, int weapon,
+                             float x, float y, int damage)
 {
-    hook_args_t a = { .a = image_id, .b = player, .c = (int)x, .d = (int)y };
-    return dispatch_hook(sv, "hitzone", 4, push_hitzone, &a, NULL, 0);
+    /* help.php: hitzone(image id, player id, object id, weapon, impact x, impact y, damage).
+     * Return 0 keeps the damage, > 0 replaces it and < 0 sets it to 0. */
+    hook_args_t a = { .a = image_id, .b = player, .c = object, .d = weapon,
+                      .e = (int)x, .f = (int)y, .g = damage };
+    return dispatch_hook(sv, "hitzone", 7, push_hitzone, &a, NULL, 0);
 }
 
 typedef struct {
@@ -3417,6 +3592,65 @@ void cs2d_sv_lua_step_timers(cs2d_server_t *sv)
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * Bot AI callbacks (bots/Standard AI.lua)
+ *
+ * The engine calls these globals directly (CS2D.exe 1402a0000.c:3490: FUN_14082fa00(g_lua,
+ * "ai_update_living") + one integer argument). A missing function is not an error: a server
+ * without the AI script simply has no bots driven by Lua.
+ * --------------------------------------------------------------------------- */
+static bool lua_ai_begin(cs2d_server_t *sv, const char *func, lua_State **out)
+{
+    if (!sv || !sv->lua) return false;
+    lua_State *L = ((cs2d_sv_lua_t *)sv->lua)->L;
+    if (!lua_push_func(L, func)) return false;   /* function first, arguments after it */
+    *out = L;
+    return true;
+}
+
+static bool lua_ai_end(cs2d_server_t *sv, const char *func, int nargs)
+{
+    (void)sv;
+    cs2d_sv_lua_t *lua = (cs2d_sv_lua_t *)sv->lua;
+    lua_State *L = lua->L;
+    int rc = lua_pcall(L, nargs, 0, 0);
+    if (rc != 0) {
+        const char *err = lua_tostring(L, -1);
+        cs2d_server_print("LUA ERROR: %s: %s", func, err ? err : "unknown error");
+        lua_pop(L, 1);
+        return false;
+    }
+    return true;
+}
+
+bool cs2d_sv_lua_call_ai(cs2d_server_t *sv, const char *func, int a)
+{
+    lua_State *L = NULL;
+    if (!lua_ai_begin(sv, func, &L)) return false;
+    lua_pushinteger(L, a);
+    return lua_ai_end(sv, func, 1);
+}
+
+bool cs2d_sv_lua_call_ai_radio(cs2d_server_t *sv, const char *func, int a, int b)
+{
+    lua_State *L = NULL;
+    if (!lua_ai_begin(sv, func, &L)) return false;
+    lua_pushinteger(L, a);
+    lua_pushinteger(L, b);
+    return lua_ai_end(sv, func, 2);
+}
+
+bool cs2d_sv_lua_call_ai_chat(cs2d_server_t *sv, const char *func, int a, const char *text, int c)
+{
+    lua_State *L = NULL;
+    if (!lua_ai_begin(sv, func, &L)) return false;
+    lua_pushinteger(L, a);
+    lua_pushstring(L, text ? text : "");
+    lua_pushinteger(L, c);
+    return lua_ai_end(sv, func, 3);
+}
+
+
 void cs2d_sv_lua_frame(cs2d_server_t *sv)
 {
     if (!sv || !sv->lua) return;
@@ -3495,7 +3729,7 @@ void cs2d_sv_hudtxt(cs2d_server_t *sv, int target_pid, int id, const char *text,
 {
     if (!sv) return;
     if (id < 0 || id >= CS2D_HUDTXT_MAX) {
-        cs2d_server_print("©255000000ERROR: hudtxt(2) - text id out of bounds (0-199 expected)!");
+        cs2d_server_print("Â©255000000ERROR: hudtxt(2) - text id out of bounds (0-199 expected)!");
         return;
     }
     if (!text) text = "";
@@ -3558,7 +3792,7 @@ void cs2d_sv_hudtxt_alphafade(cs2d_server_t *sv, int target_pid, int id, int dur
 {
     if (!sv) return;
     if (id < 0 || id >= CS2D_HUDTXT_MAX) {
-        cs2d_server_print("©255000000ERROR: hudtxtalphafade - text id out of bounds (0-199 expected)!");
+        cs2d_server_print("Â©255000000ERROR: hudtxtalphafade - text id out of bounds (0-199 expected)!");
         return;
     }
     if (duration < 0) duration = 0;
@@ -3587,7 +3821,7 @@ void cs2d_sv_hudtxt_colorfade(cs2d_server_t *sv, int target_pid, int id, int dur
 {
     if (!sv) return;
     if (id < 0 || id >= CS2D_HUDTXT_MAX) {
-        cs2d_server_print("©255000000ERROR: hudtxtcolorfade - text id out of bounds (0-199 expected)!");
+        cs2d_server_print("Â©255000000ERROR: hudtxtcolorfade - text id out of bounds (0-199 expected)!");
         return;
     }
     if (duration < 0) duration = 0;
@@ -3618,7 +3852,7 @@ void cs2d_sv_hudtxt_move(cs2d_server_t *sv, int target_pid, int id, int duration
 {
     if (!sv) return;
     if (id < 0 || id >= CS2D_HUDTXT_MAX) {
-        cs2d_server_print("©255000000ERROR: hudtxtmove - text id out of bounds (0-199 expected)!");
+        cs2d_server_print("Â©255000000ERROR: hudtxtmove - text id out of bounds (0-199 expected)!");
         return;
     }
     if (duration < 0) duration = 0;
@@ -3896,7 +4130,7 @@ int cs2d_sv_image_create(cs2d_server_t *sv, const char *path, float x, float y, 
         if (!cs2d_image_dimensions(file, &rw, &rh)) {
             FILE *f = fopen(file, "rb");
             if (!f) {
-                cs2d_server_print("©255000000LUA ERROR: image - can't load image at '%s'", path);
+                cs2d_server_print("Â©255000000LUA ERROR: image - can't load image at '%s'", path);
                 return 0;
             }
             fclose(f);
@@ -3916,7 +4150,7 @@ int cs2d_sv_image_create(cs2d_server_t *sv, const char *path, float x, float y, 
             frames = 0; /* In CS2D dedicated FUN_14012e5c0: framecount returns 0 for normal images */
         }
     } else {
-        cs2d_server_print("©255000000LUA ERROR: image - can't load image at '%s'", path);
+        cs2d_server_print("Â©255000000LUA ERROR: image - can't load image at '%s'", path);
         return 0;
     }
 

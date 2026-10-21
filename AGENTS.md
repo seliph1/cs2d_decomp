@@ -81,6 +81,7 @@ Our client must be able to play on the original dedicated server without the ser
 | `src/cs2d_ui.c` | Immediate-mode UI library (textbox, dropdown, numberbox, shared scrolling `cs2d_ui_scroll_*` / `cs2d_ui_scrollbar`) |
 | `src/cs2d_server.c`, `src/main_dedicated.c` | Dedicated server port (`cs2d_server.exe`, of `cs2d_dedicated.exe`): Tudp server side, join `FUN_1401dc530`, ping block |
 | `src/cs2d_sv_game.c`, `src/cs2d_sv_stubs.c` | Dedicated server game logic (team `FUN_1401624c0`, spawn `FUN_140160740`, movement relay `FUN_1401a68e0`); no-op sound stubs for the server link |
+| `src/cs2d_sv_ai.c` | Bot AI (engine callbacks for `bots/Standard AI.lua` + the `ai_*` API) and NPC AI (`Tdo` 30) |
 | `tests/test_cs2d.c` | Regression suite (`test_cs2d.exe`) |
 | `tools/agent/` | Capture and reverse-engineering scripts (see `docs/agents/TOOLS.md`) |
 | `tools/entity_truth/` | Generator of the entity fixture from the dedicated's Lua |

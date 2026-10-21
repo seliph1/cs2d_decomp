@@ -84,7 +84,8 @@ typedef struct {
 
     /* NPC (typ 30): player holds the NPC type 1 zombie, 2 headcrab, 3 snark, 4 vortigaunt, 5 soldier */
     float    m_x, m_y;   /* Movement target (+0x104 / +0x108, [36,id,7]); Tdo.add sets it to the spawn point */
-    float    m_rot;      /* Target angle (+0x10c) */
+    float    m_rot;      /* Target angle (+0x10c, raw degrees) */
+    int      npc_last_x, npc_last_y; /* +0x110 / +0x114: last seen target position (0 = none, FUN_140283f20) */
 
     /* Lua image (typ 40, Tdo.iniimage 0x14022b9f0): mode 0 floor, 1 top, 2 HUD, 3 super top, 4 background,
      * 101..132 / 133..164 / 201..232 / 233..263 follow player (mode - 100 / 132 / 200 / 232) */

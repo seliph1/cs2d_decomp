@@ -11,6 +11,7 @@
 #include "cs2d_weapons.h"
 #include "cs2d_network.h"
 #include "cs2d_sv_lua.h"
+#include "cs2d_sv_ai.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -360,6 +361,9 @@ void cs2d_sv_spawn_at(cs2d_server_t *sv, int id, float custom_x, float custom_y)
         if (!c || !sv->players[i].joined) continue;
         cs2d_sv_write_spawn(cs2d_sv_packet(sv, c, true, false), id, pl);
     }
+
+    /* The engine calls ai_onspawn(id) after the spawn (bots/Standard AI.lua:58). */
+    if (pl->bot) cs2d_sv_ai_on_spawn(sv, id);
 }
 
 void cs2d_sv_spawn(cs2d_server_t *sv, int id)
@@ -1380,6 +1384,8 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
     if (sv->map_loaded) {
         memset(sv->map.entity_state, 0, sizeof(sv->map.entity_state));
         sv->map.entity_state_version++;
+        /* setentityaistate is reset to 0 on every round start (help.php). */
+        for (uint32_t i = 0; i < sv->map.entity_count; i++) sv->map.entities[i].ai_state = 0;
     }
     /* FUN_1402520b0: Tdo.freeall() and then FUN_140190e10 rebuilds the map's Env_Building and Env_NPC
      * entities. Built buildings, NPCs and Lua images share the one Tdo list, so all of them go; the
@@ -1775,7 +1781,7 @@ void cs2d_sv_attack2(cs2d_server_t *sv, int id, int mode)
 }
 
 /* FUN_1401647d0: player killed -> update scores, alive=false, broadcast reliable [19, victim, killer, assist, weapon, x, y] */
-void cs2d_sv_kill(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id, int weapon)
+void cs2d_sv_kill_ex(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id, int weapon, int killer_object)
 {
     if (victim_id < 1 || victim_id > CS2D_SV_MAX_PLAYERS) return;
     cs2d_sv_player_t *v = &sv->players[victim_id];
@@ -1791,8 +1797,13 @@ void cs2d_sv_kill(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id
     v->death_ms = cs2d_sv_now();
     if (weapon != 0xfc) v->deaths++;
 
-    cs2d_sv_lua_hook_kill(sv, killer_id, victim_id, weapon, (int)v->x, (int)v->y, 0);
-    cs2d_sv_lua_hook_die(sv, victim_id, killer_id, weapon, (int)v->x, (int)v->y, 0);
+    /* help.php: die(victim, killer, weapon, x, y, killerobject) and
+     * kill(killer, victim, weapon, x, y, killerobject, assistant). "kill" only runs when a player
+     * caused the death (directly or through a building); an NPC / neutral object only gets "die"
+     * with its dynamic object id in killerobject. */
+    if (killer_id >= 1 && killer_id <= CS2D_SV_MAX_PLAYERS && sv->players[killer_id].used)
+        cs2d_sv_lua_hook_kill(sv, killer_id, victim_id, weapon, (int)v->x, (int)v->y, killer_object, assist_id);
+    cs2d_sv_lua_hook_die(sv, victim_id, killer_id, weapon, (int)v->x, (int)v->y, killer_object);
 
     cs2d_sv_player_t *k = (killer_id >= 1 && killer_id <= CS2D_SV_MAX_PLAYERS && sv->players[killer_id].used)
                         ? &sv->players[killer_id] : NULL;
@@ -1863,14 +1874,25 @@ void cs2d_sv_kill(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id
     cs2d_sv_check_win(sv);
 }
 
+void cs2d_sv_kill(cs2d_server_t *sv, int victim_id, int killer_id, int assist_id, int weapon)
+{
+    cs2d_sv_kill_ex(sv, victim_id, killer_id, assist_id, weapon, 0);
+}
+
 /* FUN_1401658c0 / [17]: apply damage to victim and broadcast [17, victim, attacker, new_hp, new_arm] */
 void cs2d_sv_damage(cs2d_server_t *sv, int victim_id, int attacker_id, int dmg, int weapon)
+{
+    cs2d_sv_damage_ex(sv, victim_id, attacker_id, dmg, weapon, 0);
+}
+
+/* Same with the dynamic object that caused the damage (NPC, turret, mine, ...). */
+void cs2d_sv_damage_ex(cs2d_server_t *sv, int victim_id, int attacker_id, int dmg, int weapon, int object_id)
 {
     if (victim_id < 1 || victim_id > CS2D_SV_MAX_PLAYERS) return;
     cs2d_sv_player_t *v = &sv->players[victim_id];
     if (!v->used || !v->alive || dmg <= 0) return;
 
-    if (cs2d_sv_lua_hook_hit(sv, victim_id, attacker_id, weapon, dmg, dmg, dmg) == 1) return;
+    if (cs2d_sv_lua_hook_hit(sv, victim_id, attacker_id, weapon, dmg, dmg, dmg, object_id) == 1) return;
 
     /* mp_wpndmg <name> <damage> overrides the weapon's damage (help.php); mp_damagefactor then
      * multiplies the result (1 = normal, 0 = no damage). */
@@ -1928,7 +1950,7 @@ void cs2d_sv_damage(cs2d_server_t *sv, int victim_id, int attacker_id, int dmg, 
         /* Broadcast final damage state before or as part of kill */
         uint8_t dmg_msg[5] = { 17, (uint8_t)victim_id, (uint8_t)attacker_id, (uint8_t)v->health, (uint8_t)v->armor };
         sv_broadcast_joined(sv, dmg_msg, sizeof(dmg_msg));
-        cs2d_sv_kill(sv, victim_id, attacker_id, 0, weapon);
+        cs2d_sv_kill_ex(sv, victim_id, attacker_id, 0, weapon, object_id);
         return;
     }
 
@@ -2659,6 +2681,14 @@ void cs2d_sv_chat(cs2d_server_t *sv, int id, int mode, int char_len, const uint1
         cs2d_pkt_w_byte(p, (uint8_t)mode);
         cs2d_pkt_w_short(p, (uint16_t)char_len);
         for (int i = 0; i < char_len; i++) cs2d_pkt_w_short(p, chars[i]);
+    }
+
+    /* Bot AI hears every chat/radio message (Standard AI.lua ai_hear_chat / ai_hear_radio).
+     * Mode 3 is the radio message: its text is the radio id as a decimal string. */
+    if (mode == 3) {
+        cs2d_sv_ai_hear_radio(sv, id, atoi(utf8_text));
+    } else if (mode == 1 || mode == 2) {
+        cs2d_sv_ai_hear_chat(sv, id, utf8_text, mode == 2);
     }
 }
 
@@ -3874,11 +3904,22 @@ static void sv_projectile_props(int type, float *out_speed, float *out_lifetime,
     if (out_flydist) *out_flydist = flydist;
 }
 
+/* Projectiles that collide with players/hostages/NPCs (help.php "projectile_impact": the RPG,
+ * rocket launcher, snowball and gut bomb; every other projectile only hits walls/ground). */
+static bool sv_projectile_hits_entities(int type)
+{
+    return type == CS2D_WEP_ROCKETLAUNCHER || type == CS2D_WEP_RPG7 ||
+           type == CS2D_WEP_SNOWBALL || type == CS2D_WEP_GUTBOMB;
+}
+
 /* FUN_140167fa0 / FUN_1401f1130: projectile detonation, applying object and player explosion damage */
 void cs2d_sv_detonate_projectile(cs2d_server_t *sv, cs2d_sv_projectile_t *p)
 {
     if (!sv || !p || !p->active) return;
     p->active = false;
+
+    /* help.php "projectile": fired when a projectile explodes (id, weapon, x, y, projectileid). */
+    cs2d_sv_lua_hook_projectile(sv, (int)p->player, p->type, (int)p->x, (int)p->y, (int)p->id);
 
     float radius_bld = 40.0f;
     float radius_pl = 160.0f;
@@ -3926,6 +3967,10 @@ void cs2d_sv_detonate_projectile(cs2d_server_t *sv, cs2d_sv_projectile_t *p)
             damage = 1500;
             break;
         case CS2D_WEP_FLASHBANG:
+            /* Bot AI: ai_flash = Rand(4,6) seconds for bots in range and in line of sight
+             * (CS2D.exe Tpro.c:3227..3237). */
+            cs2d_sv_ai_flashbang(sv, p->x, p->y);
+            return;
         case CS2D_WEP_SMOKE:
         case CS2D_WEP_GAS:
         case CS2D_WEP_FLARE:
@@ -4008,7 +4053,6 @@ void cs2d_sv_projectile(cs2d_server_t *sv, int id, int type, uint16_t x, uint16_
      * because the client already predicted and spawned the projectile locally (Tpro.spawnprojectile).
      * Sending it back to the sender causes duplicate visual projectiles. */
     sv_broadcast_joined_except(sv, id, pkt, 11);
-    cs2d_sv_lua_hook_projectile(sv, id, type, (int)x, (int)y, 0);
 
     /* Allocate slot in server projectile world (FUN_140095b80) */
     int slot = -1;
@@ -4104,17 +4148,45 @@ void cs2d_sv_step_projectiles(cs2d_server_t *sv)
             bool hit_solid = hit_solid_x || hit_solid_y || sv_tile_blocks(sv, tx_next, ty_next);
 
             bool hit_player = false;
-            for (int pl_idx = 1; pl_idx <= CS2D_SV_MAX_PLAYERS; pl_idx++) {
-                if (pl_idx == (int)p->player) continue;
-                const cs2d_sv_player_t *pl = &sv->players[pl_idx];
-                if (!pl->used || !pl->alive || pl->team < 1) continue;
-                if (fabsf(pl->x - next_x) < 20.0f && fabsf(pl->y - next_y) < 20.0f) {
-                    hit_player = true;
-                    break;
+            bool hit_hostage = false;
+            int hit_npc = 0;
+            if (sv_projectile_hits_entities(p->type)) {
+                for (int pl_idx = 1; pl_idx <= CS2D_SV_MAX_PLAYERS; pl_idx++) {
+                    if (pl_idx == (int)p->player) continue;
+                    const cs2d_sv_player_t *pl = &sv->players[pl_idx];
+                    if (!pl->used || !pl->alive || pl->team < 1) continue;
+                    if (fabsf(pl->x - next_x) < 20.0f && fabsf(pl->y - next_y) < 20.0f) {
+                        hit_player = true;
+                        break;
+                    }
+                }
+                if (!hit_player) {
+                    for (int h = 0; h < sv->hostage_count; h++) {
+                        const cs2d_sv_hostage_t *hos = &sv->hostages[h];
+                        if (!hos->active || hos->rescued || hos->health <= 0) continue;
+                        if (fabsf(hos->x - next_x) < 20.0f && fabsf(hos->y - next_y) < 20.0f) {
+                            hit_hostage = true;
+                            break;
+                        }
+                    }
+                }
+                if (!hit_player && !hit_hostage) {
+                    for (int k = 0; k < CS2D_DYNOBJ_MAX; k++) {
+                        const cs2d_dynobj_t *n = &sv->dynobj.objs[k];
+                        if (!n->active || n->typ != CS2D_DO_NPC || n->health <= 0) continue;
+                        if (fabsf(n->x - next_x) < 20.0f && fabsf(n->y - next_y) < 20.0f) {
+                            hit_npc = n->id;
+                            break;
+                        }
+                    }
                 }
             }
 
-            if (hit_solid || hit_player) {
+            if (hit_solid || hit_player || hit_hostage || hit_npc != 0) {
+                /* help.php "projectile_impact": mode 0 wall, 1 player, 2 hostage, 3 NPC. */
+                int mode = hit_npc ? 3 : (hit_player ? 1 : (hit_hostage ? 2 : 0));
+                cs2d_sv_lua_hook_projectile_impact(sv, (int)p->player, p->type, (int)next_x, (int)next_y, mode,
+                                                   (int)p->id);
                 if (sv_projectile_is_impact(p->type)) {
                     p->x = next_x;
                     p->y = next_y;
@@ -4137,6 +4209,8 @@ void cs2d_sv_step_projectiles(cs2d_server_t *sv)
             if (p->flydist <= 0.0f) {
                 p->is_flying = false;
                 p->speed = 0.0f;
+                /* The projectile reached its maximum/target flight distance: ground impact (100). */
+                cs2d_sv_lua_hook_projectile_impact(sv, (int)p->player, p->type, (int)p->x, (int)p->y, 100, (int)p->id);
                 if (sv_projectile_is_impact(p->type)) {
                     cs2d_sv_detonate_projectile(sv, p);
                     continue;
@@ -4313,6 +4387,18 @@ int cs2d_sv_bot_add(cs2d_server_t *sv, int team, int look, const char *name)
     pl->team = t;
     /* bot_add without a look picks a random skin (the original probe: looks 3 and 2). */
     pl->look = (look >= 0 && look <= 3) ? look : cs2d_sv_rand(0, 3);
+    pl->team_chosen = true;
+
+    /* The join notice [248] carries no team: a client only learns it from [20, id, team, look]
+     * (FUN_1401624c0 success path). Without it the bot stayed team 0 / Spectator on the clients
+     * while the server already ran its AI, which made it walk and shoot as a "spectator". */
+    uint8_t team_msg[4] = { 20, (uint8_t)slot, (uint8_t)t, (uint8_t)pl->look };
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_conn_t *oc = cs2d_sv_conn_of_player(sv, i);
+        if (!oc || !sv->players[i].joined) continue;
+        cs2d_pkt_t *pt = cs2d_sv_packet(sv, oc, true, false);
+        for (int k = 0; k < 4; k++) cs2d_pkt_w_byte(pt, team_msg[k]);
+    }
 
     /* Broadcast [248] join notice */
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
@@ -4886,14 +4972,17 @@ void cs2d_sv_object_damage(cs2d_server_t *sv, int obj_id, int damage, int player
     }
 
     int max_hp = cs2d_sv_building_health(sv, o->typ);
+    /* Tdo.damage skips the max-health array for typ 0x1e (NPC); their health is the NPC type
+     * default (150 / 30 / 20 / 200 / 100), so the building table must not clamp it. */
+    bool npc = (o->typ == CS2D_DO_NPC);
     o->health -= damage;
-    if (o->health != max_hp) o->upgrade = 0;
+    if (!npc && o->health != max_hp) o->upgrade = 0;
     if (o->health <= 0) {
         o->health = 0;
         sv_object_kill(sv, o, player);
         return;
     }
-    if (o->health > max_hp) o->health = max_hp;
+    if (!npc && o->health > max_hp) o->health = max_hp;
     cs2d_dynobj_refresh(&sv->dynobj, o);
     sv_broadcast_obj_health(sv, o); /* [37] */
 }
@@ -4930,11 +5019,16 @@ int cs2d_sv_object_upgrade(cs2d_server_t *sv, int obj_id, int player, int points
     if (!o) return 0;
     const cs2d_dynobj_def_t *def = cs2d_dynobj_def(o->typ);
     if (!def) return 0;
-    (void)player;
     if (def->upgrade_points <= 0 || def->upgrade_to <= 0) return 1;
 
+    int next = o->upgrade + points;
+    if (next > def->upgrade_points) next = def->upgrade_points;
+    /* help.php objectupgrade(id, player, progress, total): returning 1 cancels this upgrade step
+     * (and therefore the money the caller would charge). */
+    if (cs2d_sv_lua_hook_objectupgrade(sv, obj_id, player, next, def->upgrade_points) == 1) return 0;
+
     if (o->upgrade < def->upgrade_points) {
-        o->upgrade += points;
+        o->upgrade = next;
         sv_broadcast_obj_health(sv, o);
     }
     if (o->upgrade >= def->upgrade_points) {
@@ -4981,6 +5075,7 @@ static bool sv_tile_object_effect(cs2d_server_t *sv, int id, int tx, int ty)
                 float radius = (w && w->range > 0) ? (float)w->range : 200.0f;
                 int dmg = (w && w->damage > 0) ? w->damage : 150;
                 int attacker = o->player;
+                int obj_id = o->id;
                 sv_object_kill(sv, o, 0);   /* Tdo.kill(obj, 0) */
                 for (int p = 1; p <= CS2D_SV_MAX_PLAYERS; p++) {
                     cs2d_sv_player_t *pp = &sv->players[p];
@@ -4989,7 +5084,7 @@ static bool sv_tile_object_effect(cs2d_server_t *sv, int id, int tx, int ty)
                     float dist = sqrtf(ddx * ddx + ddy * ddy);
                     if (dist > radius) continue;
                     int d = (int)((radius - dist) * (float)dmg / radius);
-                    if (d > 0) cs2d_sv_damage(sv, p, attacker, d, CS2D_WEP_LASERMINE);
+                    if (d > 0) cs2d_sv_damage_ex(sv, p, attacker, d, CS2D_WEP_LASERMINE, obj_id);
                 }
                 cs2d_sv_explosion_objects(sv, mx, my, radius, dmg, attacker);
                 return true;
@@ -5000,7 +5095,7 @@ static bool sv_tile_object_effect(cs2d_server_t *sv, int id, int tx, int ty)
         if ((int)(o->x * 0.03125f) != tx || (int)(o->y * 0.03125f) != ty) continue;
 
         if (o->typ == CS2D_DO_BARBED_WIRE) {
-            cs2d_sv_damage(sv, id, o->player, 20, 0xff);
+            cs2d_sv_damage_ex(sv, id, o->player, 20, 0xff, o->id);
             cs2d_sv_object_damage(sv, o->id, 60, 0);
             sv_broadcast_obj_data(sv, o, 5, 0, false); /* [36,id,5]: the wobble */
             handled = true;
@@ -5011,7 +5106,7 @@ static bool sv_tile_object_effect(cs2d_server_t *sv, int id, int tx, int ty)
             if (sv->set.sv_gamemode == 1) other_side = (o->player != id);
             else other_side = (pl->team == 1 && o->team == 2) || (pl->team > 1 && o->team == 1);
             if (!other_side && o->team != 0) return true;
-            cs2d_sv_damage(sv, id, other_side ? o->player : 0, 20, 0xfe);
+            cs2d_sv_damage_ex(sv, id, other_side ? o->player : 0, 20, 0xfe, o->id);
             cs2d_sv_object_damage(sv, o->id, 100, 0);
             return true;
         }
@@ -5027,6 +5122,7 @@ static bool sv_tile_object_effect(cs2d_server_t *sv, int id, int tx, int ty)
             float mx = o->x + 16.0f, my = o->y + 16.0f;
             float radius = (w && w->range > 0) ? (float)w->range : 96.0f;
             int dmg = (w && w->damage > 0) ? w->damage : 150;
+            int obj_id = o->id;
             sv_object_kill(sv, o, 0);   /* Tdo.kill(obj, 0): the client shows the Tp.explosion */
             for (int p = 1; p <= CS2D_SV_MAX_PLAYERS; p++) {
                 cs2d_sv_player_t *pp = &sv->players[p];
@@ -5035,7 +5131,7 @@ static bool sv_tile_object_effect(cs2d_server_t *sv, int id, int tx, int ty)
                 float dist = sqrtf(ddx * ddx + ddy * ddy);
                 if (dist > radius) continue;
                 int d = (int)((radius - dist) * (float)dmg / radius);
-                if (d > 0) cs2d_sv_damage(sv, p, 0, d, CS2D_WEP_MINE);
+                if (d > 0) cs2d_sv_damage_ex(sv, p, 0, d, CS2D_WEP_MINE, obj_id);
             }
             cs2d_sv_explosion_objects(sv, mx, my, radius, dmg, 0);
             return true;
@@ -5054,24 +5150,70 @@ static bool sv_tile_blocks(const cs2d_server_t *sv, int tx, int ty)
     return false;
 }
 
+/* Tdo image hit zone (imagehitzone / [59], help.php "hitzone"). The image x/y is its centre; the
+ * zone is the axis-aligned rect x + xo .. x + xo + w, y + yo .. y + yo + h (no rotation).
+ * Returns 0 = no zone, 1 = non-blocking zone (shot continues) or 2 = blocking zone (mode > 100,
+ * the shot stops). The "hitzone" hook may replace *damage: 0 keeps it, > 0 replaces it and < 0
+ * sets it to 0. */
+int cs2d_sv_hitzone_at(cs2d_server_t *sv, float px, float py, float prev_x, float prev_y,
+                       int player_id, int object_id, int weapon, int *damage)
+{
+    if (!sv || !damage) return 0;
+    int result = 0;
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        cs2d_dynobj_t *o = &sv->dynobj.objs[i];
+        if (!o->active || o->typ != CS2D_DO_IMAGE || o->hit_mode == 0) continue;
+        if (o->mode == 2) continue;   /* help.php: hit zones do not work on HUD images */
+        float x0 = o->x + (float)o->hit_xo;
+        float y0 = o->y + (float)o->hit_yo;
+        if (px < x0 || px >= x0 + (float)o->hit_w) continue;
+        if (py < y0 || py >= y0 + (float)o->hit_h) continue;
+        bool was_inside = (prev_x >= x0 && prev_x < x0 + (float)o->hit_w &&
+                           prev_y >= y0 && prev_y < y0 + (float)o->hit_h);
+        if (!was_inside) {
+            int ret = cs2d_sv_lua_hook_hitzone(sv, o->id, player_id, object_id, weapon, px, py, *damage);
+            if (ret > 0) *damage = ret;
+            else if (ret < 0) *damage = 0;
+        }
+        if (o->hit_mode > 100) { result = 2; break; }
+        result = 1;
+    }
+    return result;
+}
+
 /* A bullet from (x, y) along `rot` up to `dist` px (Tshoot.Shoot): the first player hit, else 0. A player
  * is a 12 px box (the Lua "freeline" help: "mode 2+ checks player hitboxes (12px radius)"). obj_out (may
- * be NULL) gets the object that stopped the bullet, 0 for a bare wall. */
-static int sv_trace_shot(cs2d_server_t *sv, float x, float y, float rot, float dist, int skip, int *obj_out)
+ * be NULL) gets the object that stopped the bullet, 0 for a bare wall. damage_io (may be NULL) carries
+ * the shot damage through the "hitzone" hook; a blocking image hit zone stops the ray. */
+static int sv_trace_shot(cs2d_server_t *sv, float x, float y, float rot, float dist, int skip,
+                         int attacker_object, int weapon, int *damage_io, int *obj_out)
 {
     double a = (double)rot * 0.017453292519943295;
     float dx = (float)sin(a), dy = -(float)cos(a);
     int sx = (int)(x * 0.03125f), sy = (int)(y * 0.03125f);
     if (obj_out) *obj_out = 0;
+    float prev_px = x, prev_py = y;
     for (float d = 4.0f; d <= dist; d += 4.0f) {
         float px = x + dx * d, py = y + dy * d;
         int tx = (int)(px * 0.03125f), ty = (int)(py * 0.03125f);
+        if (damage_io && cs2d_sv_hitzone_at(sv, px, py, prev_px, prev_py, skip, attacker_object, weapon,
+                                            damage_io) == 2)
+            break;                                  /* a blocking image hit zone stops the shot */
+        prev_px = px;
+        prev_py = py;
         /* the muzzle sits inside the shooting building's own tile: that tile never blocks the bullet */
         if (!(tx == sx && ty == sy) && sv_tile_blocks(sv, tx, ty)) {
             if (obj_out) {
                 const cs2d_dynobj_t *o = cs2d_dynobj_at_tile(&sv->dynobj, tx, ty);
                 if (o) *obj_out = o->id;
             }
+            break;
+        }
+        /* An NPC on a floor tile does not change the map collision, but the original Tshoot scans
+         * the Tdo on the hit tile before the players, so it stops the bullet and takes the damage. */
+        const cs2d_dynobj_t *npc = cs2d_dynobj_at_tile(&sv->dynobj, tx, ty);
+        if (npc && npc->typ == CS2D_DO_NPC && npc->health > 0) {
+            if (obj_out) *obj_out = npc->id;
             break;
         }
         for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
@@ -5113,15 +5255,15 @@ static void sv_turret_fire(cs2d_server_t *sv, cs2d_dynobj_t *o)
         float bx = cx + (float)sin(a) * side, by = cy - (float)cos(a) * side;
         /* Tdo.shoot: the angle is rot + Rand(-3, 3), c_dist 400 */
         float rot = o->rot + (float)cs2d_sv_rand(-3, 3);
-        int hit = sv_trace_shot(sv, bx, by, rot, 400.0f, o->player, NULL);
+        int tdmg = sv->set.mp_turretdamage;
+        if (tdmg <= 0) tdmg = SV_TURRET_DAMAGE;
+        int hit = sv_trace_shot(sv, bx, by, rot, 400.0f, o->player, o->id, 0xfd, &tdmg, NULL);
         if (hit == 0) continue;
         /* Do not shoot your own team (the scan only picks enemies, a bystander can still be in the way) */
         const cs2d_sv_player_t *t = &sv->players[hit];
         bool enemy = (sv->set.sv_gamemode == 1) || (o->team == 1 && t->team > 1) || (o->team > 1 && t->team == 1);
         if (!enemy) continue;
-        int tdmg = sv->set.mp_turretdamage;
-        if (tdmg <= 0) tdmg = SV_TURRET_DAMAGE;
-        cs2d_sv_damage(sv, hit, o->player, tdmg, 0xfd);
+        cs2d_sv_damage_ex(sv, hit, o->player, tdmg, 0xfd, o->id);
     }
 }
 
@@ -5141,11 +5283,16 @@ void cs2d_sv_shot_at_building(cs2d_server_t *sv, int id, const cs2d_weapon_def_t
     if (!pl->used || !pl->alive || pl->team < 1) return;
 
     int obj_id = 0;
-    (void)sv_trace_shot(sv, pl->x, pl->y, pl->rot, cs2d_weapon_shot_reach(wep), id, &obj_id);
+    int dmg = wep->damage;
+    (void)sv_trace_shot(sv, pl->x, pl->y, pl->rot, cs2d_weapon_shot_reach(wep), id, 0, wep->id, &dmg, &obj_id);
     if (obj_id == 0) return;               /* the bullet flew into a bare wall (or a player stopped it) */
+    if (dmg <= 0) return;                  /* a hit zone zeroed the damage */
     const cs2d_dynobj_t *o = cs2d_dynobj_get(&sv->dynobj, obj_id);
-    if (!o || !cs2d_dynobj_hit_debris(o->typ) || o->typ == CS2D_DO_BARRICADE) return;
-    cs2d_sv_object_damage(sv, obj_id, wep->damage, id);
+    /* NPCs are shootable (Tshoot.Shoot checks the Tdo on the tile before the players); the
+     * debris gate only describes buildings. A Barricade still takes close combat / explosions only. */
+    if (!o) return;
+    if (o->typ != CS2D_DO_NPC && (!cs2d_dynobj_hit_debris(o->typ) || o->typ == CS2D_DO_BARRICADE)) return;
+    cs2d_sv_object_damage(sv, obj_id, dmg, id);
 }
 
 /* A free floor tile within one tile of the object, at most 8 tries (FUN_14028b980 / FUN_14028dba0): the
@@ -5340,6 +5487,7 @@ void cs2d_sv_step_buildings(cs2d_server_t *sv)
                 float radius = (w && w->range > 0) ? (float)w->range : 200.0f;
                 int dmg = (w && w->damage > 0) ? w->damage : 150;
                 int attacker = o->player;
+                int obj_id = o->id;
                 sv_object_kill(sv, o, 0);
                 for (int p = 1; p <= CS2D_SV_MAX_PLAYERS; p++) {
                     cs2d_sv_player_t *pp = &sv->players[p];
@@ -5348,7 +5496,7 @@ void cs2d_sv_step_buildings(cs2d_server_t *sv)
                     float dist = sqrtf(ddx * ddx + ddy * ddy);
                     if (dist > radius) continue;
                     int d = (int)((radius - dist) * (float)dmg / radius);
-                    if (d > 0) cs2d_sv_damage(sv, p, attacker, d, CS2D_WEP_LASERMINE);
+                    if (d > 0) cs2d_sv_damage_ex(sv, p, attacker, d, CS2D_WEP_LASERMINE, obj_id);
                 }
                 cs2d_sv_explosion_objects(sv, mx, my, radius, dmg, attacker);
                 continue;

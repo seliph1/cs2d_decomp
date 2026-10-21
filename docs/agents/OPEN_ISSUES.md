@@ -1,5 +1,27 @@
 # Open issues / next steps
 
+- **Dedicated server: bot and NPC AI (2026-10-20, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed/partial - the server now loads `bots/Standard AI.lua` and calls `ai_onspawn`,
+  `ai_update_living`, `ai_update_dead`, `ai_hear_radio` and `ai_hear_chat`; the whole `ai_*` engine
+  API, `bot_*` cvars, `ai_flash`, `setentityaistate`/`aistate` and `randomentity` (two return values,
+  AI-state/int0 filters) are implemented. `bot_add` also broadcasts `[20,id,team,look]` now (the
+  join notice has no team; without it the clients kept the bot as a Spectator while its AI ran).
+  NPC `Tdo` 30 now ports `FUN_140283f20`: the `FUN_140283760` picker (405x220 + clear 32 px line,
+  team > 0 only), the `FUN_140283a10` tile waypoints, raw-degree `m_rot` in `[36,7]` (the old
+  `* 182.04445` made the clients spin while the server chased) and the server-only attack timer with
+  the `FUN_1401ed310` damage values; player shots stop on and damage NPCs (they used to be
+  indestructible). The NPC/object Lua hooks are wired too: `objectdamage`/`objectkill` (NPC included),
+  `hit` 7th argument (attacking object id), `die`/`kill` killerobject (kill player-only) and
+  assistant, `objectupgrade`, `hitzone` (image id, player id, object id, weapon, x, y, damage) and
+  `projectile_impact` modes 0/1/2/3/100. Regression: `test_dedicated_bot_and_npc_ai` and
+  `test_dedicated_npc_hooks` (112/112). Residuals: bot secondary attack only relays `[8]` (no bot
+  grenade projectile), shotgun bots apply one pellet hit, the per-skill turn/range tables are runtime
+  arrays (ours calibrated), a lost/reordered reliable `[36,7]` can leave a temporary client offset
+  until the next waypoint, the damage-assist tracker (and the `assist` hook) is not implemented, and
+  the Tactical Shield (and its `shieldhit` / attacker-object-id hook) is not modelled in the damage
+  path.
+
+
 Keep this file current: remove items when they are done (and log them in `WORKLOG.md`), and add what
 you discover. Sign items that are being worked on (`[in progress: <agent>]`) so two agents do not take
 the same one.
@@ -429,12 +451,12 @@ sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT 
   team switch suicide (`FUN_1401624c0`), respawn modes & timers per mode (`sv_gamemode`, `mp_respawndelay`, `[39]`),
   position validation & anti-speeder (`FUN_1401c99a0`, `FUN_1401ca500`), per-spawn team change limit (`+0x2a0`, refusal code 12),
   Zombies team switch refusal (code 13) & >30s force-T rule, and spawn-time auto-teambalance (`FUN_140160740`).
-  Gaps inside what is done: mp_startmoney default (800 is not verified); Lua `spawn` / `team` / `die` / `kill` hooks (Phase 4).
+  Gaps inside what is done: mp_startmoney default (800 is not verified).
 
 - **Phase 3 (done 2026-10-15):** in-game name change `[238]` (`FUN_14010ddb0`, per-spawn `+0x2a4` limit 255, dead deferred `pending_name` 254 applied on spawn), RCON `[236]` (`rconcheck`), `[241]` (`rcon`), `[242]` (`public rcon`), `sv_rcon` / `sv_rconusers`, playerdata setter & broadcaster `[42]` (`FUN_140159840` modes 0..11), teleport `[15]` (`FUN_140102950`), team scores `[64]` (`FUN_140051ac0`), server messages `[240,0,1]`, `kick` (`FUN_1401502a0`), `slap` / `deathslap` (`FUN_140167e40`), and console command parser `cs2d_sv_exec` (`FUN_140140a00`: `server.cfg` cvars, `setmoney`, `sethealth`, `setmaxhealth`, `setarmor`, `setscore`, `setdeaths`, `setassists`, `setmvp`, `setrank`, `speedmod`, `equip`, `strip`, `setweapon`, `setpos`, `setname`, `setteamscores`, `sv_msg`, `sv_msg2`, `maket`, `makect`, `makespec`, `slap`, `deathslap`, `kick`, `killplayer`, `spawnplayer`, `sv_restart`, `sv_restartround`, `endround`, `listplayers`). `[237]` live cvar broadcast done 2026-10-16 with every id measured from `FUN_14015d960` (see `knowledge/dedicated-server.md`). `changemap`, `map` and the ban commands were done in Phase 5.
 - **Phase 4 (done 2026-10-15):** Lua subsystem integrated with vendored PUC Lua 5.1.4 (`third_party/lua51/lua_all.c`, `src/cs2d_sv_lua.c`, `include/cs2d_sv_lua.h`).
   Full `addhook` priority ascending execution & return value veto/cancellation semantics; auto-loads entry point `mp_luaserver`, `sys/lua/autorun/*.lua`, `maps/<map>.lua` (`wrapper.lua` not auto-loaded, loaded manually via script if needed);
-  native hooks wired (`join`, `leave`, `team`, `spawn`, `select`, `attack`, `attack2`, `hit`, `kill`, `die`, `buy`, `drop`, `collect`, `reload`, `say`, `sayteam`, `name`, `endround`, `startround`, `menu`, `serveraction`);
+  native hooks wired (`join`, `leave`, `team`, `spawn`, `select`, `attack`, `attack2`, `hit`, `kill`, `die`, `buy`, `drop`, `collect`, `reload`, `say`, `sayteam`, `name`, `endround`, `startround`, `menu`, `serveraction`, `objectdamage`, `objectkill`, `objectupgrade`, `hitzone`, `projectile_impact`, `projectile`, `turretscan`);
   `player(id, prop)` (40+ properties & tables), `playerweapons`, `playerammo`; `parse` with HUD text opcode `[234]` and tween `[54]`; dynamic images (`image`, `freeimage`, manipulation & tweens);
   timers (`timer`, `freetimer`); menu sending and response `[235]`. Locked in `test_server_phase4_lua` (66/66 tests pass).
 - **Phase 5 (done 2026-10-15):** bomb plant [30,1..3], defuse [26,3] / [30,4..5], explode [30,6] with 350px blast damage radius, round end modes 20 & 21; hostages ([29,1..5], use [26] follow/release, rescue rewards at Info_RescuePoint, damage & death); projectiles [27] (grenades consumed & relayed) and [41] (kill projectile); flashlight [57]; bot management (`bot_add`, `bot_kick`, `bot_kill` with ping 0xfffe and conn -1); ban management (`banip`, `banusgn`, `bansteam`, `unban`, `listbans`, join check status 4 refusal with reason); map change `cs2d_sv_change_map` (`[239,1]`, dynamic heap loading, SHA256, hostages re-init); snapshot sections 2 (hostages) and 3 (ground items) serialization. Locked in `test_server_phase5_bomb_hostages_bots` (67/67 tests pass).
