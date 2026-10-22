@@ -103,8 +103,10 @@ void cs2d_sv_lua_hook_attack(cs2d_server_t *sv, int id);
 void cs2d_sv_lua_hook_attack2(cs2d_server_t *sv, int id, int mode);
 void cs2d_sv_lua_hook_select(cs2d_server_t *sv, int id, int type, int mode);
 void cs2d_sv_lua_hook_reload(cs2d_server_t *sv, int id, int mode);
-int  cs2d_sv_lua_hook_drop(cs2d_server_t *sv, int id, int itemid, int type, int ammo, int ammoin);
-int  cs2d_sv_lua_hook_collect(cs2d_server_t *sv, int id, int itemid, int type, int ammo, int ammoin);
+int  cs2d_sv_lua_hook_drop(cs2d_server_t *sv, int id, int itemid, int type, int ammoin, int ammo,
+                           int mode, int xpos, int ypos);
+int  cs2d_sv_lua_hook_collect(cs2d_server_t *sv, int id, int itemid, int type, int ammoin, int ammo,
+                              int mode);
 int  cs2d_sv_lua_hook_buy(cs2d_server_t *sv, int id, int type);
 int  cs2d_sv_lua_hook_hit(cs2d_server_t *sv, int victim, int source, int weapon, int hpdmg, int apdmg, int rawdmg,
                           int object);

@@ -1,4 +1,28 @@
 # Work log (append-only, newest first)
+## 2026-10-21 — Cline — dedicated: drop/collect hook arguments (rp.lua Laser drop)
+
+- **Error:** `Lua Hook Error (drop:c4hook.drop): sys/lua/WQ2D/rp.lua:12624: bad argument #1 to
+  'tile' (number expected, got nil)`. `cs2d_sv_lua_hook_drop` pushed only 5 values
+  (`id, 0, type, reserve, clip`), so `rp.drop(uid, internal_id, item_id, ammoin, ammo, mode, xpos,
+  ypos)` got `xpos/ypos = nil` and called `tile(nil,nil)`. It happened for every droppable item,
+  not only the Laser; knife/wrench return before `tile()`.
+- **Measured on `cs2d_dedicated.exe`** (`tools/agent/lua/drop_probe.lua` + `ai_selectweapon`/
+  `ai_drop`, log `tools/agent/out/drop_orig5.log`): a Laser (45) drop gave
+  `drop(id=1, iid=1, type=45, ammoin=15, ammo=45, mode=0, x=74, y=40)`. So `iid` is the new ground
+  item id (reserved before the hook), `ammoin` = clip, `ammo` = reserve, `mode` = sub, `x/y` = the
+  player's tile.
+- **Fixed:** `drop(id, iid, type, ammoin, ammo, mode, xpos, ypos)` (8 args) and
+  `collect(id, iid, type, ain, a, mode)` (6 args); `sv_alloc_item_id` reserves the drop id before
+  the hook and `sv_place_dropped_item` now receives it (the bomb plant used `++next_item_id` and
+  could collide). `collect` uses `walkover`'s argument order (`clip, reserve, sub`) and its return
+  value is ignored (help.php: collect cannot cancel). Also fixed the medikit/bandage `[42]` field
+  (`1` = score, must be `0` = health) and made the client treat `[42,id,6,0]` as strip-all.
+- **Verified:** `test_cs2d.exe` -> **114 / 114** (new `test_dedicated_drop_collect_hooks`: exact
+  8/6 argument lists, drop cancellation, collect cannot cancel, Laser pickup with ammo). Live with a
+  client: `tools/agent/out/drop_live3_srv.log` -> `DL drop id=1 iid=1 type=45 ammoin=15 ammo=45
+  mode=0 x=78 y=45` and no `rp.lua` hook error. Probes: `drop_probe.lua`, `drop_live_probe.lua`.
+
+
 ## 2026-10-21 — Cline — dedicated: sayutf8/sayteamutf8 hooks and Trigger_Use re-use
 
 - **Chat hooks:** `cs2d_sv_chat` only ran `say` / `sayteam`; `sayutf8` / `sayteamutf8` were

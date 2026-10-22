@@ -237,6 +237,19 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
     (`0x14015bc60` redirects armor items `57->100`, `58->200`, `79..84->201..206` to mode `3`), `6` strip weapon (`0` strips all; armor items
     redirect to mode `3, val=0`), `7` speedmod (`wire = speedmod + 100`, clamped `0..200`, `Tpl +0x390`), `8` maxhealth (`1..250`, also sets
     `health = maxhealth`, `Tpl +0x268`), `9` assists, `10` mvp, `11` rank (`0..17`).
+  - The setter broadcasts the applied `[42, id, mode, val]` to every joined player (the loop at `0x1401599f1` writes
+    opcode `0x2a`). Lua `equip`/`strip` rely on it so the clients' inventory/HUD stays in sync.
+- **Item hooks `drop` / `collect` (help.php; measured 2026-10-21 on `cs2d_dedicated.exe` with
+  `tools/agent/lua/drop_probe.lua`):**
+  - `drop(id, iid, type, ammoin, ammo, mode, xpos, ypos)`; returning `1` cancels the default drop. A Laser (45)
+    drop produced `id=1 iid=1 type=45 ammoin=15 ammo=45 mode=0 x=74 y=40` (`ammoin` = clip, `ammo` = reserve,
+    `mode` = sub, `x/y` = the player's tile).
+  - `iid` is the id of the ground item that will be created; the original allocates it before the hook (the item
+    data itself is not readable yet). Our `sv_alloc_item_id` reserves it before `cs2d_sv_lua_hook_drop` and passes
+    it to `sv_place_dropped_item`.
+  - `collect(id, iid, type, ain, a, mode)` uses the same order as `walkover` (`ain` = clip/ammo in weapon,
+    `a` = spare ammo, `mode` = sub). Its return value cannot cancel the pickup (`walkover` does that).
+  - Passing fewer arguments made WQ2D `rp.drop` receive nil `xpos/ypos` and fail in `tile(nil,nil)` at `rp.lua:12624`.
 - **Admin & Server Commands (`FUN_140140a00`):**
   - `setpos <id> <x> <y>` (`0x14011be70` → `FUN_140102950`): teleports player and broadcasts reliable `[15, id u8, x u16, y u16]`.
   - `setteamscores <t> <ct>` (`0x14011f890` → `FUN_140051ac0`): clamps `0..65535` and broadcasts reliable `[64, t u16, ct u16]`.

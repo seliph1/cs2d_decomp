@@ -6793,6 +6793,109 @@ static bool test_dedicated_trigger_use(void)
     return true;
 }
 
+/*
+ * drop/collect hook arguments (help.php):
+ *   drop(id, iid, type, ammoin, ammo, mode, xpos, ypos)  -> 1 cancels the drop
+ *   collect(id, iid, type, ain, a, mode)                 -> the return value is ignored
+ * Measured on cs2d_dedicated.exe (tools/agent/lua/drop_probe.lua): dropping a Laser (45) gave
+ * id=1 iid=1 type=45 ammoin=15 ammo=45 mode=0 x=74 y=40. The old 5-argument call left xpos/ypos
+ * nil, so WQ2D rp.lua:12624 called tile(nil,nil) and its drop handler failed.
+ */
+static bool test_dedicated_drop_collect_hooks(void)
+{
+    printf("\n=== Testing Dedicated Server: drop/collect hook arguments ===\n");
+    /* Heap, not static: the suite already keeps many cs2d_server_t/map instances in .bss and one
+     * more static one made the test image too large for the Windows loader. */
+    cs2d_server_t *sv = (cs2d_server_t *)calloc(1, sizeof(*sv));
+    if (!sv) TEST_FAIL("drop/collect", "out of memory");
+    sv->sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv->set);
+    sv->set.mp_luaserver[0] = '\0';   /* no WQ2D scripts in this unit test */
+
+    if (!cs2d_sv_lua_init(sv) || !sv->lua) TEST_FAIL("drop/collect", "Lua init failed");
+    if (!cs2d_sv_lua_dostring(sv,
+        "drop_log=''; collect_log=''; drop_cancel=false\n"
+        "function h_drop(id,iid,typ,ammoin,ammo,mode,x,y)\n"
+        "  drop_log=id..','..iid..','..typ..','..ammoin..','..ammo..','..mode..','..x..','..y\n"
+        "  if drop_cancel then return 1 end\n"
+        "  return 0\n"
+        "end\n"
+        "function h_collect(id,iid,typ,ain,a,mode)\n"
+        "  collect_log=id..','..iid..','..typ..','..ain..','..a..','..mode\n"
+        "  return 1\n"
+        "end\n"
+        "addhook('drop','h_drop') addhook('collect','h_collect')\n")) {
+        TEST_FAIL("drop/collect", "hook setup failed");
+    }
+
+    cs2d_sv_player_t *pl = &sv->players[1];
+    pl->used = pl->joined = pl->alive = true;
+    pl->team = CS2D_TEAM_T;
+    pl->health = pl->maxhealth = 100;
+    pl->x = 10 * 32.0f + 16.0f;
+    pl->y = 10 * 32.0f + 16.0f;
+    pl->weapon = CS2D_WEP_LASER;
+    pl->item_count = 1;
+    pl->items[0] = CS2D_WEP_LASER;
+    pl->clip[CS2D_WEP_LASER] = 15;
+    pl->reserve[CS2D_WEP_LASER] = 45;
+    sv->next_item_id = 1;
+
+    /* 1. Drop: 8 arguments, iid reserved before the item exists */
+    cs2d_sv_drop(sv, 1, CS2D_WEP_LASER, 15, 45, 0);
+    if (!cs2d_sv_lua_dostring(sv, "assert(drop_log == '1,1,45,15,45,0,10,10', drop_log)"))
+        TEST_FAIL("drop args", "expected drop(id,iid,type,ammoin,ammo,mode,x,y) = 1,1,45,15,45,0,10,10");
+    if (!sv->items[0].active || sv->items[0].id != 1 || sv->items[0].type != CS2D_WEP_LASER ||
+        sv->items[0].clip != 15 || sv->items[0].reserve != 45 || sv->items[0].tile_x != 10 || sv->items[0].tile_y != 10)
+        TEST_FAIL("drop item", "the dropped Laser was not placed with id 1 and its ammo");
+    if (pl->item_count != 0) TEST_FAIL("drop item", "the Laser stayed in the player's inventory");
+
+    /* 2. A drop hook returning 1 cancels the drop (no item, weapon kept) */
+    if (!cs2d_sv_lua_dostring(sv, "drop_cancel=true drop_log=''")) TEST_FAIL("drop cancel", "Lua setup failed");
+    pl->item_count = 1;
+    pl->items[0] = CS2D_WEP_LASER;
+    pl->clip[CS2D_WEP_LASER] = 15;
+    pl->reserve[CS2D_WEP_LASER] = 45;
+    pl->weapon = CS2D_WEP_LASER;
+    cs2d_sv_drop(sv, 1, CS2D_WEP_LASER, 15, 45, 0);
+    int active = 0;
+    for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) if (sv->items[i].active) active++;
+    if (active != 1 || pl->item_count != 1)
+        TEST_FAIL("drop cancel", "a drop hook returning 1 must not place an item or strip the weapon");
+    if (!cs2d_sv_lua_dostring(sv, "drop_cancel=false")) TEST_FAIL("drop cancel", "Lua reset failed");
+
+    /* 3. Collect: (id, iid, type, ain, a, mode); a return of 1 must NOT cancel the pickup */
+    memset(sv->items, 0, sizeof(sv->items));
+    cs2d_sv_item_t *it = &sv->items[0];
+    it->active = true;
+    it->id = 7;
+    it->type = CS2D_WEP_LASER;
+    it->clip = 15;
+    it->reserve = 45;
+    it->sub = 0;
+    it->tile_x = 10;
+    it->tile_y = 10;
+    pl->item_count = 0;
+    pl->weapon = 0;
+    pl->clip[CS2D_WEP_LASER] = 0;
+    pl->reserve[CS2D_WEP_LASER] = 0;
+    pl->x = 10 * 32.0f + 16.0f;
+    pl->y = 10 * 32.0f + 16.0f;
+
+    cs2d_sv_step_items(sv);
+    if (!cs2d_sv_lua_dostring(sv, "assert(collect_log == '1,7,45,15,45,0', collect_log)"))
+        TEST_FAIL("collect args", "expected collect(id,iid,type,ain,a,mode) = 1,7,45,15,45,0");
+    if (pl->item_count != 1 || pl->items[0] != CS2D_WEP_LASER || pl->clip[CS2D_WEP_LASER] != 15 ||
+        pl->reserve[CS2D_WEP_LASER] != 45)
+        TEST_FAIL("collect pickup", "the Laser was not collected with its ammo");
+    if (it->active) TEST_FAIL("collect pickup", "the ground item stayed on the map");
+
+    cs2d_sv_lua_close(sv);
+    free(sv);
+    TEST_PASS("Dedicated server: drop(id,iid,type,ammoin,ammo,mode,x,y) and collect(...) arguments");
+    return true;
+}
+
 static bool test_server_phase2_respawn_and_speeder(void)
 {
     printf("\n=== Testing Dedicated Server Phase 2: Team Suicide, Respawn Modes & Anti-Speeder ===\n");
@@ -12838,6 +12941,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_server_spray_vote_leaderboard_messages);
     RUN_TEST(test_server_entity_and_world_interactions);
     RUN_TEST(test_dedicated_trigger_use);
+    RUN_TEST(test_dedicated_drop_collect_hooks);
     RUN_TEST(test_server_phase2_respawn_and_speeder);
     RUN_TEST(test_server_phase3_rcon_and_commands);
     RUN_TEST(test_server_phase4_lua);

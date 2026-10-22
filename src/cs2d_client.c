@@ -2456,7 +2456,17 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                             if (held) p->current_weapon = held; /* Lua equip does not switch weapons */
                             break;
                         }
-                        case 6: cs2d_player_strip_weapon(p, (uint8_t)value); break;
+                        case 6:
+                            /* mode 6 value 0 = strip all (help.php setammo/strip); a single
+                             * weapon otherwise (FUN_1401cc9d0 -> cs2d_player_strip_weapon) */
+                            if (value == 0) {
+                                for (int w = 1; w < CS2D_MAX_WEAPONS; w++) {
+                                    if (p->owned[w]) cs2d_player_strip_weapon(p, (uint8_t)w);
+                                }
+                            } else {
+                                cs2d_player_strip_weapon(p, (uint8_t)value);
+                            }
+                            break;
                         case 8: p->max_health = value; break;
                         default: break;
                     }

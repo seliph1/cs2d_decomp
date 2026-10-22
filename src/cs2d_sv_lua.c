@@ -2775,7 +2775,7 @@ static int dispatch_hook(cs2d_server_t *sv, const char *hook_name, int nargs, in
 
 /* Specific Hook Implementations */
 
-typedef struct { int a, b, c, d, e, f, g; const char *s1, *s2, *s3; } hook_args_t;
+typedef struct { int a, b, c, d, e, f, g, h; const char *s1, *s2, *s3; } hook_args_t;
 
 static int push_1int(lua_State *L, void *ctx) {
     hook_args_t *a = (hook_args_t *)ctx;
@@ -2950,26 +2950,36 @@ void cs2d_sv_lua_hook_reload(cs2d_server_t *sv, int id, int mode)
     dispatch_hook(sv, "reload", 2, push_2int, &a, NULL, 0);
 }
 
-static int push_5int(lua_State *L, void *ctx) {
+static int push_6int_vals(lua_State *L, void *ctx);
+
+static int push_8int(lua_State *L, void *ctx) {
     hook_args_t *a = (hook_args_t *)ctx;
     lua_pushinteger(L, a->a);
     lua_pushinteger(L, a->b);
     lua_pushinteger(L, a->c);
     lua_pushinteger(L, a->d);
     lua_pushinteger(L, a->e);
-    return 5;
+    lua_pushinteger(L, a->f);
+    lua_pushinteger(L, a->g);
+    lua_pushinteger(L, a->h);
+    return 8;
 }
 
-int cs2d_sv_lua_hook_drop(cs2d_server_t *sv, int id, int itemid, int type, int ammo, int ammoin)
+/* help.php: drop(id, iid, type, ammoin, ammo, mode, xpos, ypos); only returning 1 cancels the drop */
+int cs2d_sv_lua_hook_drop(cs2d_server_t *sv, int id, int itemid, int type, int ammoin, int ammo,
+                          int mode, int xpos, int ypos)
 {
-    hook_args_t a = { .a = id, .b = itemid, .c = type, .d = ammo, .e = ammoin };
-    return dispatch_hook(sv, "drop", 5, push_5int, &a, NULL, 0);
+    hook_args_t a = { .a = id, .b = itemid, .c = type, .d = ammoin, .e = ammo,
+                      .f = mode, .g = xpos, .h = ypos };
+    return dispatch_hook(sv, "drop", 8, push_8int, &a, NULL, 0);
 }
 
-int cs2d_sv_lua_hook_collect(cs2d_server_t *sv, int id, int itemid, int type, int ammo, int ammoin)
+/* help.php: collect(id, iid, type, ain, a, mode); it cannot cancel the pickup (walkover does) */
+int cs2d_sv_lua_hook_collect(cs2d_server_t *sv, int id, int itemid, int type, int ammoin, int ammo,
+                             int mode)
 {
-    hook_args_t a = { .a = id, .b = itemid, .c = type, .d = ammo, .e = ammoin };
-    return dispatch_hook(sv, "collect", 5, push_5int, &a, NULL, 0);
+    hook_args_t a = { .a = id, .b = itemid, .c = type, .d = ammoin, .e = ammo, .f = mode };
+    return dispatch_hook(sv, "collect", 6, push_6int_vals, &a, NULL, 0);
 }
 
 int cs2d_sv_lua_hook_buy(cs2d_server_t *sv, int id, int type)

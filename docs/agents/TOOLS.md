@@ -208,6 +208,8 @@ Lua probes:
 | `say_probe.lua`, `say_suppress_probe.lua` | Register all four chat hooks and drive `ai_say` / `ai_sayteam` with a bot: log the call order and the `xHH` text (`say` then `sayutf8`); the suppress probe returns 1 from `say` to check that `sayutf8` is skipped |
 | `trigger_use_probe.lua` | Prints `int0..int9` and the state of the fun_roleplay `Trigger_Use` buttons (e.g. (275,154) `rp_ticket`; its `ints[3]` re-use delay is 0) |
 | `button_reuse_probe.lua` | Puts the joining player on the (275,154) button tile and logs every `usebutton` + the button state (re-use check) |
+| `drop_probe.lua` | Gives a bot a Laser (45), selects it and drops it with `ai_drop`: logs the exact `drop` arguments, then spawns an item under the bot for `collect` |
+| `drop_live_probe.lua` | Human variant: joins, equips a Laser and logs its `drop`/`collect` calls (drive it with `slot1`, `!press G`, `walkto`) |
 
 Notes:
 

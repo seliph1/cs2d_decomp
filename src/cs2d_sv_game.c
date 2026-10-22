@@ -44,7 +44,7 @@ static const sv_mode_t *sv_mode(const cs2d_server_t *sv)
 }
 
 static void sv_projectile_props(int type, float *out_speed, float *out_lifetime, float *out_flydist);
-static void sv_place_dropped_item(cs2d_server_t *sv, cs2d_sv_player_t *pl, int type,
+static void sv_place_dropped_item(cs2d_server_t *sv, cs2d_sv_player_t *pl, uint16_t item_id, int type,
                                   int clip, int reserve, int sub);
 
 static bool sv_is_grenade_type(int t)
@@ -836,6 +836,15 @@ static void sv_step_phase(cs2d_server_t *sv)
     sv->round_clock_ms = sv->round_phase_ms;   /* mp_roundtime counts from the end of the freeze */
 }
 
+/* Ground item ids are one counter shared by every spawn path (Env_Item, spawnitem, drop, planted
+ * bomb). The id must be reserved BEFORE the Lua drop hook runs: the hook receives the id of the
+ * item that will be created (help.php drop: "iid : item id for new item on the map"). */
+static uint16_t sv_alloc_item_id(cs2d_server_t *sv)
+{
+    if (sv->next_item_id == 0) sv->next_item_id = 1;
+    return (uint16_t)sv->next_item_id++;
+}
+
 /*
  * FUN_14011ba70(type, tx, ty, clip, sub, reserve, ...): the server puts a ground item on a tile and sends
  * [33, type u8, item id u16, tile x u16, tile y u16, clip + 1 u16, reserve + 1 u16] (12 bytes). The binder
@@ -849,8 +858,7 @@ static int sv_spawn_item_ex(cs2d_server_t *sv, int type, int tx, int ty, int cli
         if (!sv->items[i].active) { slot = i; break; }
     }
     if (slot < 0) return 0;
-    if (sv->next_item_id == 0) sv->next_item_id = 1;
-    uint16_t item_id = (uint16_t)sv->next_item_id++;
+    uint16_t item_id = sv_alloc_item_id(sv);
     cs2d_sv_item_t *it = &sv->items[slot];
     it->active = true;
     it->id = item_id;
@@ -2081,7 +2089,17 @@ void cs2d_sv_drop(cs2d_server_t *sv, int id, int type, int clip, int reserve, in
     /* mp_dropgrenades 0 forbids dropping grenades (help.php) */
     if (!sv->set.mp_dropgrenades && sv_is_grenade_type(type)) return;
 
-    if (cs2d_sv_lua_hook_drop(sv, id, 0, type, reserve, clip) == 1) return;
+    /* help.php drop(id, iid, type, ammoin, ammo, mode, xpos, ypos), measured on the original
+     * (tools/agent/lua/drop_probe.lua): a Laser drop gave iid=1 type=45 ammoin=15 ammo=45
+     * mode=0 x=74 y=40. The id is reserved before the hook (the original creates the item object
+     * first); xpos/ypos are the player's tile. Passing only five arguments made rp.lua call
+     * tile(nil,nil) at line 12624. */
+    int tx = (int)(pl->x * 0.03125f);
+    int ty = (int)(pl->y * 0.03125f);
+    if (tx < 0) tx = 0;
+    if (ty < 0) ty = 0;
+    uint16_t item_id = sv_alloc_item_id(sv);
+    if (cs2d_sv_lua_hook_drop(sv, id, item_id, type, clip, reserve, sub, tx, ty) == 1) return;
 
     /* Remove from player's inventory */
     int idx = -1;
@@ -2106,11 +2124,12 @@ void cs2d_sv_drop(cs2d_server_t *sv, int id, int type, int clip, int reserve, in
         sv_best_weapon(sv, pl);
     }
 
-    sv_place_dropped_item(sv, pl, type, clip, reserve, sub);
+    sv_place_dropped_item(sv, pl, item_id, type, clip, reserve, sub);
 }
 
-/* Allocation and [24] broadcast shared by the drop key and mp_deathdrop. */
-static void sv_place_dropped_item(cs2d_server_t *sv, cs2d_sv_player_t *pl, int type,
+/* [24] broadcast shared by the drop key and mp_deathdrop; the caller reserves `item_id` first
+ * (cs2d_sv_drop needs it for the Lua drop hook, mp_deathdrop for the wire record). */
+static void sv_place_dropped_item(cs2d_server_t *sv, cs2d_sv_player_t *pl, uint16_t item_id, int type,
                                   int clip, int reserve, int sub)
 {
     int id = (int)(pl - sv->players);
@@ -2119,9 +2138,6 @@ static void sv_place_dropped_item(cs2d_server_t *sv, cs2d_sv_player_t *pl, int t
         if (!sv->items[i].active) { slot = i; break; }
     }
     if (slot < 0) slot = 0;
-
-    if (sv->next_item_id == 0) sv->next_item_id = 1;
-    uint16_t item_id = (uint16_t)sv->next_item_id++;
 
     int tx = (int)(pl->x * 0.03125f);
     int ty = (int)(pl->y * 0.03125f);
@@ -2187,7 +2203,7 @@ void cs2d_sv_death_drop(cs2d_server_t *sv, int id)
         pl->clip[type] = 0;
         pl->reserve[type] = 0;
         if (type == CS2D_WEP_DEFUSEKIT) pl->special &= ~1;
-        sv_place_dropped_item(sv, pl, type, clip, reserve, 0);
+        sv_place_dropped_item(sv, pl, sv_alloc_item_id(sv), type, clip, reserve, 0);
     }
 }
 
@@ -2299,9 +2315,11 @@ void cs2d_sv_step_items(cs2d_server_t *sv)
             }
 
             if (can_pickup) {
-                /* help.php walkover(id, iid, type, ain, a, mode): returning 1 prevents the pickup. */
+                /* help.php walkover(id, iid, type, ain, a, mode): returning 1 prevents the pickup.
+                 * collect(id, iid, type, ain, a, mode) has the same arguments but cannot cancel it
+                 * (its return value is ignored; the old call swapped ammoin/ammo and dropped mode). */
                 if (cs2d_sv_lua_hook_walkover(sv, pid, it->id, it->type, it->clip, it->reserve, it->sub) == 1) continue;
-                if (cs2d_sv_lua_hook_collect(sv, pid, it->id, it->type, it->reserve, it->clip) == 1) continue;
+                cs2d_sv_lua_hook_collect(sv, pid, it->id, it->type, it->clip, it->reserve, it->sub);
 
                 if (is_consumable) {
                     if (it->type == CS2D_WEP_PRIMARYAMMO) {
@@ -2322,12 +2340,13 @@ void cs2d_sv_step_items(cs2d_server_t *sv)
                         }
                     } else if (it->type == CS2D_WEP_MEDIKIT) {
                         pl->health = pl->maxhealth;
-                        uint8_t hmsg[5] = { 42, (uint8_t)pid, 1, (uint8_t)(pl->health & 0xff), (uint8_t)((pl->health >> 8) & 0xff) };
+                        /* [42] field 0 = health (field 1 is score, net-messages.md) */
+                        uint8_t hmsg[5] = { 42, (uint8_t)pid, 0, (uint8_t)(pl->health & 0xff), (uint8_t)((pl->health >> 8) & 0xff) };
                         sv_broadcast_joined(sv, hmsg, sizeof(hmsg));
                     } else if (it->type == CS2D_WEP_BANDAGE) {
                         pl->health += 20;
                         if (pl->health > pl->maxhealth) pl->health = pl->maxhealth;
-                        uint8_t hmsg[5] = { 42, (uint8_t)pid, 1, (uint8_t)(pl->health & 0xff), (uint8_t)((pl->health >> 8) & 0xff) };
+                        uint8_t hmsg[5] = { 42, (uint8_t)pid, 0, (uint8_t)(pl->health & 0xff), (uint8_t)((pl->health >> 8) & 0xff) };
                         sv_broadcast_joined(sv, hmsg, sizeof(hmsg));
                     } else if (it->type == CS2D_WEP_COINS || it->type == CS2D_WEP_MONEY || it->type == CS2D_WEP_GOLD) {
                         int add_m = (it->type == CS2D_WEP_COINS) ? 100 : (it->type == CS2D_WEP_MONEY) ? 500 : 1000;
@@ -3373,7 +3392,7 @@ void cs2d_sv_plant_complete(cs2d_server_t *sv, int id)
     for (int i = 0; i < CS2D_SV_MAX_GROUND_ITEMS; i++) {
         if (!sv->items[i].active) { slot = i; break; }
     }
-    uint16_t item_id = (uint16_t)++sv->next_item_id;
+    uint16_t item_id = sv_alloc_item_id(sv);
     uint16_t tx = (uint16_t)((int)pl->x / 32);
     uint16_t ty = (uint16_t)((int)pl->y / 32);
     if (slot >= 0) {
