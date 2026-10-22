@@ -4,7 +4,7 @@
 -- Uses physics to create cars                  --
 --------------------------------------------------
 
-dofile("sys/lua/physics.lua")
+Physics = dofile("sys/lua/physics.lua")
 
 physController = { movement_absolute = 0, movement_relative = 1, movement_vehicle = 2}
 physObject = { property_wall = 0, property_obstacle = 1, property_floor = 2}

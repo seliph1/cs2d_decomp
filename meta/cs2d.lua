@@ -155,6 +155,8 @@ function playerammo(id, slot) end
 function playerweapons(id) end
 function closeplayers(id, dist) end
 function hascloseplayers(id, dist) end
+---@param id integer
+---@return table
 function closeitems(id, dist) end
 
 -- =========================================================================
@@ -166,7 +168,6 @@ function closeitems(id, dist) end
 ---@return any
 function item(id, what) end
 function itemtype(id) end
-function closeitems(...) end
 
 ---@param id integer
 ---@param what string
