@@ -586,8 +586,22 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   - In dedicated server mode (`DAT_1407dfe48 != 0`), all four functions immediately return 3.
   - In `FUN_1401e3cf0`, any handler returning `> 0` breaks out of the datagram opcode loop, safely dropping the remainder of the packet.
 - **Use Button (Opcode 26 mode 100, `FUN_140138a40`)**:
-  - When a player presses USE within 45px Euclidean distance of a `Trigger_Use` tile center (`(x * 32 + 16, y * 32 + 16)`), fires Lua hook `usebutton(id, x, y)`.
-  - If team filter passes (`int_settings[2] == 0 || int_settings[2] == pl->team`), fires linked triggers and Lua `trigger` hook.
+  - The button must be a `Trigger_Use` (93) at `(x,y)`, in **state 0**, within 45px Euclidean
+    distance of its tile center (`(x * 32 + 16, y * 32 + 16)`) and pass its "Triggered by" filter
+    (`int_settings[2] == 0 || int_settings[2] == pl->team`).
+  - Re-Use Delay = `Te.ints[3]` ms (the map probe on fun_roleplay shows `ints[3] = 0` for most
+    buttons; the entity editor field is "Re-Use Delay (ms)"). The original keeps a `Te.timer`
+    (`Te+0x58`) and rejects the press while `now - timer.start < ints[3]`; the timer is restarted on
+    every accepted press. Our equivalent is `cs2d_server_t.entity_reuse_ms[]` (reset at round
+    start / map load).
+  - A press **does not toggle the button's state**. The original calls `Te.triggerentities(1)`
+    (vtable `Te` +0xf0), which runs the names in the button's `trigger` field (`usebutton` first,
+    then the per-name Lua `trigger` / `triggerentity` hooks), and relays `[26]` to the clients.
+    Toggling the button itself locks it forever afterwards — fun_roleplay's `rp_ticket` button at
+    (275,154) was only usable once this way.
+  - The client runs the same check in `FUN_14014f820`, including the `ints[3]` delay
+    (`cs2d_ents_tick_use_cooldowns` / `use_cooldown` in our client). Regression:
+    `test_dedicated_trigger_use`.
 
 ## Client -> Lua Communication: [53], [227/228], [232], [80..87], [225] (2026-10-17)
 

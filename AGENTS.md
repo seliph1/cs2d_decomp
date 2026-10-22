@@ -96,9 +96,14 @@ Our client must be able to play on the original dedicated server without the ser
 ## Build and test
 
 ```bat
-build.bat            :: builds test_cs2d.exe, cs2d_client.exe and cs2d_server.exe (MinGW gcc, C:\msys64\mingw64\bin)
-test_cs2d.exe        :: must print "Tests Passed: N / N"
+build.bat                    :: builds test_cs2d.exe, cs2d_client.exe and cs2d_server.exe (MinGW gcc, C:\msys64\mingw64\bin)
+test_cs2d.exe                :: must print "Tests Passed: N / N" and exit 0
+test_cs2d.exe trigger_use    :: runs only the suites whose function name contains the argument (exit 2 if none)
 ```
+
+`tests/test_cs2d.c` registers every suite with `RUN_TEST(test_x)`: the total is counted
+automatically, so adding a test never needs a manual number update, and a failing suite is printed
+as `[FAILED] test_x`.
 
 - **New `.c` file:** add it to **both** gcc lines in `build.bat`.
 - **Compiler:** MSYS2 MinGW-w64 gcc with SDL3, opengl32, gdi32, ws2_32 and zlib (static). Details are in `docs/agents/TOOLS.md`.

@@ -413,12 +413,18 @@ void cs2d_ents_round_start(cs2d_entity_world_t *w)
     }
 }
 
-void cs2d_ents_update(cs2d_entity_world_t *w, float dt)
+void cs2d_ents_tick_use_cooldowns(cs2d_entity_world_t *w, float dt)
 {
     if (!w || !w->map) return;
     for (uint32_t i = 0; i < w->map->entity_count; i++) {
         if (w->use_cooldown[i] > 0.0f) w->use_cooldown[i] -= dt;
     }
+}
+
+void cs2d_ents_update(cs2d_entity_world_t *w, float dt)
+{
+    if (!w || !w->map) return;
+    cs2d_ents_tick_use_cooldowns(w, dt);
 
     /* Fire expired delays; a fired delay may schedule new ones, so iterate over a snapshot */
     int count = w->delay_count;

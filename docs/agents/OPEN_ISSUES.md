@@ -156,7 +156,7 @@ the same one.
   [60] `specflash` (`FUN_1401d2d40`) parses 1-byte payload `[60, state u8]`, sets `pl->specflash = state`, and broadcasts 3-byte reliable `[60, pid, state]`;
   [68] `firedirection` (`FUN_1401d3840`) parses 2-byte payload `[68, dir u16]`, updates `pl->rot = (float)dir / 182.04445f`, and relays unreliable `[70, pid, dir]` to dead players spectating;
   [35, 36, 37, 65] server-to-client opcodes confirmed via disassembly of `0x1401cf350`, `0x1401cf4b0`, `0x1401cf630`, `0x1401d3430`: return 3 immediately when received on a dedicated server (`DAT_1407dfe48 != 0`), terminating datagram loop and cleanly dropping remainder of packet;
-  [26] `use` with `mode 100` (`usebutton`): checks Euclidean reach `<= 45 px` of `Trigger_Use` tile center, fires Lua hook `usebutton(id, x, y)`, and triggers linked entities if team matches (`int_settings[2]`). Locked by `test_server_entity_and_world_interactions` (89/89 tests passing).
+  [26] `use` with `mode 100` (`usebutton`): checks the `Trigger_Use` (93) state, team (`int_settings[2]`) and Euclidean reach `<= 45 px` of its tile centre, honours the `ints[3]` re-use delay (2026-10-21: `sv->entity_reuse_ms`), fires Lua hook `usebutton(id, x, y)` and then the button's trigger list. It does **not** toggle the button itself (the old toggle locked every button after one press; fun_roleplay (275,154) `rp_ticket`). Locked by `test_dedicated_trigger_use` and `test_server_entity_and_world_interactions`.
 - **Dedicated server: Dispatch de Opcodes [28] Spray, [43] Vote, [230] Leaderboard e Guarda < 7 (2026-10-17, `docs/agents/knowledge/dedicated-server.md`):**
   fixed - [28] spray (`FUN_1401bcd60`) desync corrected: now consumes full 6-byte in-game payload (`sub=0, x u16, y u16, mode u8`), calls `cs2d_sv_lua_hook_spray` and relays `[28, player, 0, x, y, mode]` reliably to other players (preventing trailing bytes from being misinterpreted as opcode 0);
   [43] vote (`FUN_1401d0050`) implemented: parses `type u8` and `value u16` for votekick (type 1) and votemap (type 2), updates `pl->votekick`/`pl->votemap`, triggers Lua hook `vote` and broadcasts reliable `[43, voter, type, value]`;
@@ -490,9 +490,9 @@ sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT 
     19 `ai_*` functions are no-ops (bots have no AI by decision - scripts must not rely on them).
     `reqhttp` is implemented (see P3 below).
   - **Done 2026-10-19 (P0):** snapshot sections 4 (entity states, only non-zero) and 6 (ground
-    projectiles) are now built from `map.entity_state` / `sv->projectiles`; `[31]` and Trigger_Use keep
-    the state, and round start clears it (`knowledge/entities.md`). Test:
-    `test_dedicated_snapshot_world_state`.
+    projectiles) are now built from `map.entity_state` / `sv->projectiles`; `[31]` keeps the state
+    (a Trigger_Use press no longer changes it, 2026-10-21), and round start clears it
+    (`knowledge/entities.md`). Test: `test_dedicated_snapshot_world_state`.
   - **Join snapshot (P2):** section 11 is still the 170-byte capture literal instead of being built
     from the weapon tables, and section 13 is always `""`.
   - **Done 2026-10-19 (P1):** typed fields + parsing for `mp_roundlimit`, `mp_winlimit`,

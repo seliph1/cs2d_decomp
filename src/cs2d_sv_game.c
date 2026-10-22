@@ -1383,6 +1383,7 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
      * with the [22] round packet and later joiners get the cleared states from snapshot section 4. */
     if (sv->map_loaded) {
         memset(sv->map.entity_state, 0, sizeof(sv->map.entity_state));
+        memset(sv->entity_reuse_ms, 0, sizeof(sv->entity_reuse_ms));
         sv->map.entity_state_version++;
         /* setentityaistate is reset to 0 on every round start (help.php). */
         for (uint32_t i = 0; i < sv->map.entity_count; i++) sv->map.entities[i].ai_state = 0;
@@ -2615,6 +2616,23 @@ void cs2d_sv_step_reloads(cs2d_server_t *sv)
     }
 }
 
+/* The sayutf8 / sayteamutf8 Lua hooks receive the chat text with every UTF-8 byte hex encoded
+ * as a lowercase 'x' plus two uppercase hex digits: "hello" -> "x68x65x6Cx6Cx6F" (Changelog.txt
+ * 1.0.1.8; probe on cs2d_dedicated.exe 2026-10-21: say and sayutf8 both run, say first, and a
+ * return 1 from either suppresses the message; "ol\u00e1" arrives as x6Fx6CxC3xA1...). */
+static void sv_chat_hex_utf8(const char *utf8, char *out, size_t max_out)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t o = 0;
+    for (const unsigned char *p = (const unsigned char *)utf8; *p; p++) {
+        if (o + 3 >= max_out) break;
+        out[o++] = 'x';
+        out[o++] = hex[*p >> 4];
+        out[o++] = hex[*p & 0x0f];
+    }
+    out[o] = '\0';
+}
+
 /* FUN_140153900: chat message [240, id, mode, char_len, UTF-16LE] */
 void cs2d_sv_chat(cs2d_server_t *sv, int id, int mode, int char_len, const uint16_t *chars)
 {
@@ -2654,10 +2672,17 @@ void cs2d_sv_chat(cs2d_server_t *sv, int id, int mode, int char_len, const uint1
     }
     utf8_text[out] = '\0';
 
-    if (mode == 1) {
-        if (cs2d_sv_lua_hook_say(sv, id, utf8_text) == 1) return;
-    } else if (mode == 2) {
-        if (cs2d_sv_lua_hook_sayteam(sv, id, utf8_text) == 1) return;
+    if (mode == 1 || mode == 2) {
+        /* say/sayteam run first; when they return 0 the UTF-8 variant runs with the hex text. */
+        char hex_text[4112];
+        sv_chat_hex_utf8(utf8_text, hex_text, sizeof(hex_text));
+        if (mode == 1) {
+            if (cs2d_sv_lua_hook_say(sv, id, utf8_text) == 1) return;
+            if (cs2d_sv_lua_hook_sayutf8(sv, id, hex_text) == 1) return;
+        } else {
+            if (cs2d_sv_lua_hook_sayteam(sv, id, utf8_text) == 1) return;
+            if (cs2d_sv_lua_hook_sayteamutf8(sv, id, hex_text) == 1) return;
+        }
     }
 
     cs2d_server_print("%s%s: %s", (mode == 2 ? "(TEAM) " : ""), pl->name, utf8_text);
@@ -3572,25 +3597,33 @@ void cs2d_sv_use(cs2d_server_t *sv, int id, int mode, int32_t data, uint16_t x, 
     } else if (mode == 3) {
         cs2d_sv_defuse_start(sv, id, x, y);
     } else if (mode == 100) {
+        /* FUN_140138a40 mode 100 (client FUN_14014f820): the button must be a Trigger_Use (93) in
+         * state 0, pass its "Triggered by" filter (ints[2]) and sit within 45 px of the player.
+         * The original does NOT toggle the button itself: it calls Te.triggerentities(1), which
+         * runs the names in the button's trigger field (the Lua usebutton hook fires first). The
+         * re-use delay is Te.ints[3] ms, kept in Te.timer and compared against the current tick;
+         * pressing does not change the state, so a button stays usable forever (a state 1 button
+         * is one a trigger disabled). Toggling it here used to lock every button after one use. */
         float tx_px = (float)x * 32.0f + 16.0f;
         float ty_px = (float)y * 32.0f + 16.0f;
         float dx = pl->x - tx_px, dy = pl->y - ty_px;
-        if (dx * dx + dy * dy <= 45.0f * 45.0f) {
+        if (dx * dx + dy * dy > 45.0f * 45.0f || !sv->map_loaded) return;
+
+        for (uint32_t i = 0; i < sv->map.entity_count && i < CS2D_MAX_ENTITIES; i++) {
+            const cs2d_entity_t *e = &sv->map.entities[i];
+            if (e->x != x || e->y != y || e->type != CS2D_ENT_TRIGGER_USE) continue;
+            int team_filter = e->int_settings[2];
+            if (team_filter != 0 && team_filter != pl->team) return;
+            if (sv->map.entity_state[i] != 0) return;
+
+            uint32_t now = cs2d_sv_now();
+            uint32_t delay_ms = (e->int_settings[3] > 0) ? (uint32_t)e->int_settings[3] : 0u;
+            if (delay_ms > 0 && sv->entity_reuse_ms[i] != 0 && now < sv->entity_reuse_ms[i]) return;
+            sv->entity_reuse_ms[i] = delay_ms > 0 ? now + delay_ms : 0u;
+
             cs2d_sv_lua_hook_usebutton(sv, id, (int)x, (int)y);
-            if (sv->map_loaded) {
-                for (uint32_t i = 0; i < sv->map.entity_count && i < CS2D_MAX_ENTITIES; i++) {
-                    const cs2d_entity_t *e = &sv->map.entities[i];
-                    if (e->x == x && e->y == y && e->type == CS2D_ENT_TRIGGER_USE) {
-                        int team_filter = e->int_settings[2];
-                        if (team_filter != 0 && team_filter != pl->team) continue;
-                        /* Toggle the Trigger_Use and run its linked trigger list (the Lua trigger
-                         * hook runs once per name, source 0). */
-                        cs2d_sv_trigger_at_position(sv, (int)x, (int)y, 0);
-                        if (e->trigger[0] != '\0') cs2d_sv_trigger_names(sv, e->trigger, 0);
-                        break;
-                    }
-                }
-            }
+            if (e->trigger[0] != '\0') cs2d_sv_trigger_names(sv, e->trigger, 0);
+
             uint8_t pkt[11];
             pkt[0] = 26;
             pkt[1] = (uint8_t)id;
@@ -3599,6 +3632,7 @@ void cs2d_sv_use(cs2d_server_t *sv, int id, int mode, int32_t data, uint16_t x, 
             memcpy(&pkt[7], &x, 2);
             memcpy(&pkt[9], &y, 2);
             sv_broadcast_joined(sv, pkt, 11);
+            return;
         }
     } else if (mode == 150) {
         /* Supply selection (CS2D.exe FUN_14028dba0, dedicated FUN_140138b32) */
@@ -4608,6 +4642,7 @@ bool cs2d_sv_change_map(cs2d_server_t *sv, const char *mapname)
     sv->map = *new_map;
     free(new_map);
     sv->map_loaded = true;
+    memset(sv->entity_reuse_ms, 0, sizeof(sv->entity_reuse_ms));
     snprintf(sv->set.sv_map, sizeof(sv->set.sv_map), "%s", clean_map);
 
     /* Recalculate SHA */

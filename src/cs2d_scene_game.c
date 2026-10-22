@@ -1576,7 +1576,10 @@ static void game_update(cs2d_client_t *client, float delta_time)
         }
     }
 
-    /* Offline the client runs the entity logic itself; online the server does and sends the results */
+    /* Offline the client runs the entity logic itself; online the server does and sends the results.
+     * The Trigger_Use re-use delay still runs locally online: the original client checks Te.timer /
+     * ints[3] in FUN_14014f820 before it sends [26, 100]. */
+    if (client->connected) cs2d_ents_tick_use_cooldowns(&client->ents, delta_time);
     if (!client->connected) {
         if (client->ents_round != client->game.round_number) {
             client->ents_round = client->game.round_number;
@@ -3020,9 +3023,14 @@ static void game_use_online(cs2d_client_t *client, cs2d_player_t *pl)
         }
         int use = cs2d_ents_use_at_tile(&client->ents, tx, ty, pl->team);
         if (use >= 0) {
+            /* Trigger_Use re-use delay (ints[3] ms, FUN_14014f820): a button on cooldown is
+             * skipped, so the probe goes on with the next tile instead of sending a use. */
+            const cs2d_entity_t *button = &client->game.map.entities[use];
+            if (client->ents.use_cooldown[use] > 0.0f) continue;
             mode = 100;
-            x = client->game.map.entities[use].x;
-            y = client->game.map.entities[use].y;
+            x = button->x;
+            y = button->y;
+            client->ents.use_cooldown[use] = (float)button->int_settings[3] / 1000.0f;
             break;
         }
         const cs2d_dynobj_t *o = cs2d_dynobj_at_tile(&client->dynobj, tx, ty);

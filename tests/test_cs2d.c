@@ -6695,6 +6695,104 @@ static bool test_server_entity_and_world_interactions(void)
     return true;
 }
 
+/*
+ * Trigger_Use (opcode 26 mode 100): the dedicated only validates the button and runs its trigger
+ * list; it does not toggle the button itself (cs2d_dedicated.exe FUN_140138a40, client
+ * FUN_14014f820). This is the fun_roleplay button at (275,154) (trigger "rp_ticket", style 14,
+ * ints[3] = 0) which used to be locked after its first press.
+ */
+static bool test_dedicated_trigger_use(void)
+{
+    printf("\n=== Testing Dedicated Server: Trigger_Use re-use & delay ===\n");
+    static cs2d_server_t sv;
+    memset(&sv, 0, sizeof(sv));
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+
+    sv.map_loaded = true;
+    sv.map.width = 16;
+    sv.map.height = 16;
+    sv.map.tiles = (uint8_t *)calloc(16 * 16, 1);
+    sv.map.collision = (uint8_t *)calloc(16 * 16, 1);
+    sv.map.base_collision = (uint8_t *)calloc(16 * 16, 1);
+    sv.map.object_collision = (uint8_t *)calloc(16 * 16, 1);
+    sv.map.modifiers = (uint8_t *)calloc(16 * 16, 1);
+    sv.map.tile_modes[0] = 0;
+
+    /* Button (5,5) fires "lamp"; the named Func_DynWall toggles. */
+    sv.map.entity_count = 2;
+    cs2d_entity_t *btn = &sv.map.entities[0];
+    memset(btn, 0, sizeof(*btn));
+    btn->type = CS2D_ENT_TRIGGER_USE;
+    btn->x = 5; btn->y = 5;
+    btn->int_settings[0] = 14;                 /* style: Lighted Yellow */
+    btn->int_settings[2] = 0;                  /* Triggered by: everyone */
+    snprintf(btn->trigger, sizeof(btn->trigger), "lamp");
+    cs2d_entity_t *lamp = &sv.map.entities[1];
+    memset(lamp, 0, sizeof(*lamp));
+    lamp->type = CS2D_ENT_FUNC_DYNWALL;
+    lamp->x = 6; lamp->y = 5;
+    snprintf(lamp->name, sizeof(lamp->name), "lamp");
+
+    sv.players[1].used = true;
+    sv.players[1].joined = true;
+    sv.players[1].alive = true;
+    sv.players[1].team = CS2D_TEAM_T;
+    sv.players[1].x = 5 * 32.0f + 16.0f;
+    sv.players[1].y = 5 * 32.0f + 16.0f;
+
+    /* 1. Two presses in a row: the button stays in state 0 and toggles its trigger each time */
+    cs2d_sv_use(&sv, 1, 100, 0, 5, 5);
+    if (sv.map.entity_state[0] != 0)
+        TEST_FAIL("Trigger_Use", "pressing must not toggle the button itself");
+    if (sv.map.entity_state[1] != 1)
+        TEST_FAIL("Trigger_Use", "the linked entity was not triggered");
+    cs2d_sv_use(&sv, 1, 100, 0, 5, 5);
+    if (sv.map.entity_state[1] != 0)
+        TEST_FAIL("Trigger_Use", "a button in state 0 must be usable again (found only once)");
+
+    /* 2. Re-Use Delay (ints[3] ms): the second press inside the delay is ignored */
+    btn->int_settings[3] = 5000;
+    cs2d_sv_use(&sv, 1, 100, 0, 5, 5);
+    if (sv.map.entity_state[1] != 1) TEST_FAIL("Trigger_Use delay", "first press did not fire");
+    cs2d_sv_use(&sv, 1, 100, 0, 5, 5);
+    if (sv.map.entity_state[1] != 1)
+        TEST_FAIL("Trigger_Use delay", "a press inside the re-use delay must be ignored");
+    sv.entity_reuse_ms[0] = 0;   /* let the 5 s timer expire (0 = usable) */
+    cs2d_sv_use(&sv, 1, 100, 0, 5, 5);
+    if (sv.map.entity_state[1] != 0)
+        TEST_FAIL("Trigger_Use delay", "the button did not work again after the delay");
+    btn->int_settings[3] = 0;
+
+    /* 3. A button a trigger disabled (state 1) cannot be used */
+    sv.map.entity_state[0] = 1;
+    cs2d_sv_use(&sv, 1, 100, 0, 5, 5);
+    if (sv.map.entity_state[1] != 0)
+        TEST_FAIL("Trigger_Use state", "a state 1 button must be ignored");
+    sv.map.entity_state[0] = 0;
+
+    /* 4. Team filter (ints[2] = 2, CT): player 1 is T, so nothing happens */
+    btn->int_settings[2] = 2;
+    cs2d_sv_use(&sv, 1, 100, 0, 5, 5);
+    if (sv.map.entity_state[1] != 0)
+        TEST_FAIL("Trigger_Use team", "the Triggered by filter was ignored");
+    btn->int_settings[2] = 0;
+
+    /* 5. Out of reach (46 px): ignored */
+    sv.players[1].x = 5 * 32.0f + 16.0f + 46.0f;
+    cs2d_sv_use(&sv, 1, 100, 0, 5, 5);
+    if (sv.map.entity_state[1] != 0)
+        TEST_FAIL("Trigger_Use reach", "a button beyond 45 px must be ignored");
+
+    free(sv.map.tiles);
+    free(sv.map.collision);
+    free(sv.map.base_collision);
+    free(sv.map.object_collision);
+    free(sv.map.modifiers);
+    TEST_PASS("Dedicated server: Trigger_Use is re-usable, honours ints[3] delay / state / team / reach");
+    return true;
+}
+
 static bool test_server_phase2_respawn_and_speeder(void)
 {
     printf("\n=== Testing Dedicated Server Phase 2: Team Suicide, Respawn Modes & Anti-Speeder ===\n");
@@ -7140,6 +7238,30 @@ static bool test_server_phase4_lua(void)
         "freehook('select', 'hook_select')\n"
     );
     if (!rc) TEST_FAIL("select hook", "addhook('select') must register and the hook must run");
+
+    /* Chat hooks: say / sayteam run first, then the UTF-8 variants with every UTF-8 byte as
+     * "xHH" ("Hi" -> "x48x69"). Measured on cs2d_dedicated.exe (2026-10-21): a return 1 from
+     * say suppresses the message and does not run sayutf8; sayutf8 is called otherwise. */
+    rc = cs2d_sv_lua_dostring(&sv,
+        "chat_log = ''\n"
+        "function h_say(id, msg) chat_log = chat_log..'S['..msg..']' return 0 end\n"
+        "function h_say8(id, msg) chat_log = chat_log..'8['..msg..']' return 0 end\n"
+        "function h_team(id, msg) chat_log = chat_log..'T['..msg..']' return 0 end\n"
+        "function h_team8(id, msg) chat_log = chat_log..'U['..msg..']' return 0 end\n"
+        "addhook('say', 'h_say') addhook('sayutf8', 'h_say8')\n"
+        "addhook('sayteam', 'h_team') addhook('sayteamutf8', 'h_team8')\n"
+    );
+    if (!rc) TEST_FAIL("chat hooks setup", "failed registering say/sayteam/sayutf8/sayteamutf8");
+
+    uint16_t chat_hi[] = { 'H', 'i' };
+    cs2d_sv_chat(&sv, 1, 1, 2, chat_hi);
+    cs2d_sv_chat(&sv, 1, 2, 2, chat_hi);
+    rc = cs2d_sv_lua_dostring(&sv,
+        "assert(chat_log == 'S[Hi]8[x48x69]T[Hi]U[x48x69]', chat_log)\n"
+        "freehook('say', 'h_say') freehook('sayutf8', 'h_say8')\n"
+        "freehook('sayteam', 'h_team') freehook('sayteamutf8', 'h_team8')\n"
+    );
+    if (!rc) TEST_FAIL("chat hooks", "say/sayutf8 or sayteam/sayteamutf8 argument/order mismatch");
 
     /* Connection lifecycle hooks: connect_initplayer(id), connect(id), disconnect(id, reason id).
      * They were defined but never invoked (and connect had the wrong argument list). */
@@ -12600,133 +12722,176 @@ static bool test_dedicated_npc_hooks(void)
     return true;
 }
 
-int main(void)
+/*
+ * Suite runner: RUN_TEST counts every executed suite and names the ones that fail, so the
+ * total never has to be edited by hand when a test is added. An optional command line argument
+ * runs only the suites whose function name contains it (ASCII case-insensitive), e.g.
+ *     test_cs2d.exe trigger_use
+ */
+static int          s_test_passed;
+static int          s_test_total;
+static const char  *s_test_filter;
+
+static char test_lower_ascii(char c)
+{
+    return (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;
+}
+
+static bool test_name_has(const char *name, const char *needle)
+{
+    size_t n = strlen(needle);
+    for (; *name; name++) {
+        size_t i = 0;
+        while (i < n && name[i] && test_lower_ascii(name[i]) == test_lower_ascii(needle[i])) i++;
+        if (i == n) return true;
+    }
+    return false;
+}
+
+static bool run_test_case(const char *name, bool (*fn)(void))
+{
+    if (s_test_filter && s_test_filter[0] && !test_name_has(name, s_test_filter)) return true;
+    s_test_total++;
+    if (fn()) {
+        s_test_passed++;
+        return true;
+    }
+    printf("  [FAILED] %s\n", name);
+    return false;
+}
+#define RUN_TEST(fn) run_test_case(#fn, fn)
+
+int main(int argc, char **argv)
 {
     setbuf(stdout, NULL);
+    s_test_filter = argc > 1 ? argv[1] : NULL;
     printf("============================================================\n");
     printf("   CS2D Reconstructed Game Logic Test Suite (C99)\n");
     printf("============================================================\n");
 
-    int passed = 0;
-    int total = 112;
 
-    if (test_weapons()) passed++;
-    if (test_player_logic()) passed++;
-    if (test_map_loading()) passed++;
-    if (test_game_loop()) passed++;
-    if (test_network_protocol()) passed++;
-    if (test_live_server_query()) passed++;
-    if (test_entities_and_sprites()) passed++;
-    if (test_ui_layout()) passed++;
-    if (test_ui_textbox()) passed++;
-    if (test_ui_dropdown_numberbox()) passed++;
-    if (test_ui_scroll()) passed++;
-    if (test_console()) passed++;
-    if (test_entities_prison()) passed++;
-    if (test_env_decal()) passed++;
-    if (test_player_physics()) passed++;
-    if (test_shell_reload()) passed++;
-    if (test_breakables()) passed++;
-    if (test_server_info_and_team_menu()) passed++;
-    if (test_kill_messages()) passed++;
-    if (test_recoil_and_swing()) passed++;
-    if (test_serverlist()) passed++;
-    if (test_file_transfer()) passed++;
-    if (test_editor()) passed++;
-    if (test_editor_entity_props()) passed++;
-    if (test_spectator()) passed++;
-    if (test_construction()) passed++;
-    if (test_images_and_npcs()) passed++;
-    if (test_weapon_select()) passed++;
-    if (test_buy_menu()) passed++;
-    if (test_lua_menu()) passed++;
-    if (test_shadow_chunks()) passed++;
-    if (test_entity_culling()) passed++;
-    if (test_radar_icons()) passed++;
-    if (test_chat_and_server_messages()) passed++;
-    if (test_projectiles_and_fields()) passed++;
-    if (test_item_and_player_shadows()) passed++;
-    if (test_vsync_command()) passed++;
-    if (test_scoreboard()) passed++;
-    if (test_tile_blending()) passed++;
-    if (test_hud_action_progress_bar()) passed++;
-    if (test_light_engine()) passed++;
-    if (test_fx_light_particles()) passed++;
-    if (test_image_decode()) passed++;
-    if (test_sprite_atlas_packer()) passed++;
-    if (test_new_game_maplist()) passed++;
-    if (test_gen_entities()) passed++;
-    if (test_tilefx()) passed++;
-    if (test_hudtxt()) passed++;
-    if (test_hudscale()) passed++;
-    if (test_game_menu()) passed++;
-    if (test_hostages()) passed++;
-    if (test_prop_class()) passed++;
-    if (test_fragment_walls()) passed++;
-    if (test_tdo_shot_spread()) passed++;
-    if (test_sound()) passed++;
-    if (test_weapon_modes()) passed++;
-    if (test_special_items()) passed++;
-    if (test_consumables_and_stackables_pickup()) passed++;
-    if (test_settile()) passed++;
-    if (test_font_metrics()) passed++;
-    if (test_screenshot_paths()) passed++;
-    if (test_random_and_dropwep()) passed++;
-    if (test_server_join()) passed++;
-    if (test_server_phase2_items_and_chat()) passed++;
-    if (test_server_move_aim_messages()) passed++;
-    if (test_server_spray_vote_leaderboard_messages()) passed++;
-    if (test_server_entity_and_world_interactions()) passed++;
-    if (test_server_phase2_respawn_and_speeder()) passed++;
-    if (test_server_phase3_rcon_and_commands()) passed++;
-    if (test_server_phase4_lua()) passed++;
-    if (test_server_phase5_bomb_hostages_bots()) passed++;
-    if (test_server_phase6_lua()) passed++;
-    if (test_server_phase7_transfer_and_spray()) passed++;
-    if (test_server_connect_attempt_hook()) passed++;
-    if (test_standard_gamemode()) passed++;
-    if (test_construction_mode()) passed++;
-    if (test_construction_wrench_and_turret()) passed++;
-    if (test_construction_bullets_and_teleport()) passed++;
-    if (test_construction_teleport()) passed++;
-    if (test_construction_dispenser_and_supply()) passed++;
-    if (test_construction_spawn_money()) passed++;
-    if (test_construction_rounds_and_explosion()) passed++;
-    if (test_construction_tile_effects()) passed++;
-    if (test_construction_laser_mine_and_cvars()) passed++;
-    if (test_server_projectiles()) passed++;
-    if (test_server_cli_and_map_sanitize()) passed++;
-    if (test_server_network_and_protocol()) passed++;
-    if (test_sv_gamemode_and_env_items()) passed++;
-    if (test_sv_deathmatch_and_timelimit()) passed++;
-    if (test_server_client_lua_communication()) passed++;
-    if (test_server_jump_table_opcodes()) passed++;
-    if (test_server_reconnect_and_pw()) passed++;
-    if (test_dedicated_dynamic_images()) passed++;
-    if (test_dedicated_dynobj_shared_space()) passed++;
-    if (test_dedicated_hudtxt()) passed++;
-    if (test_dedicated_spawnprojectile_command()) passed++;
-    if (test_dedicated_lua_binds()) passed++;
-    if (test_client_lua_bind_events()) passed++;
-    if (test_dedicated_mouse_properties()) passed++;
-    if (test_dedicated_settile()) passed++;
-    if (test_dedicated_lua_items_and_weapons()) passed++;
-    if (test_dedicated_snapshot_world_state()) passed++;
-    if (test_dedicated_p1_rules()) passed++;
-    if (test_dedicated_p2_rules()) passed++;
-    if (test_dedicated_p3_rules()) passed++;
-    if (test_dedicated_idle_join()) passed++;
-    if (test_dedicated_trigger_graph()) passed++;
-    if (test_dedicated_map_teleport()) passed++;
-    if (test_dedicated_kick_message()) passed++;
-    if (test_dedicated_utf8_messages()) passed++;
-    if (test_dedicated_bot_and_npc_ai()) passed++;
-    if (test_dedicated_npc_hooks()) passed++;
+    RUN_TEST(test_weapons);
+    RUN_TEST(test_player_logic);
+    RUN_TEST(test_map_loading);
+    RUN_TEST(test_game_loop);
+    RUN_TEST(test_network_protocol);
+    RUN_TEST(test_live_server_query);
+    RUN_TEST(test_entities_and_sprites);
+    RUN_TEST(test_ui_layout);
+    RUN_TEST(test_ui_textbox);
+    RUN_TEST(test_ui_dropdown_numberbox);
+    RUN_TEST(test_ui_scroll);
+    RUN_TEST(test_console);
+    RUN_TEST(test_entities_prison);
+    RUN_TEST(test_env_decal);
+    RUN_TEST(test_player_physics);
+    RUN_TEST(test_shell_reload);
+    RUN_TEST(test_breakables);
+    RUN_TEST(test_server_info_and_team_menu);
+    RUN_TEST(test_kill_messages);
+    RUN_TEST(test_recoil_and_swing);
+    RUN_TEST(test_serverlist);
+    RUN_TEST(test_file_transfer);
+    RUN_TEST(test_editor);
+    RUN_TEST(test_editor_entity_props);
+    RUN_TEST(test_spectator);
+    RUN_TEST(test_construction);
+    RUN_TEST(test_images_and_npcs);
+    RUN_TEST(test_weapon_select);
+    RUN_TEST(test_buy_menu);
+    RUN_TEST(test_lua_menu);
+    RUN_TEST(test_shadow_chunks);
+    RUN_TEST(test_entity_culling);
+    RUN_TEST(test_radar_icons);
+    RUN_TEST(test_chat_and_server_messages);
+    RUN_TEST(test_projectiles_and_fields);
+    RUN_TEST(test_item_and_player_shadows);
+    RUN_TEST(test_vsync_command);
+    RUN_TEST(test_scoreboard);
+    RUN_TEST(test_tile_blending);
+    RUN_TEST(test_hud_action_progress_bar);
+    RUN_TEST(test_light_engine);
+    RUN_TEST(test_fx_light_particles);
+    RUN_TEST(test_image_decode);
+    RUN_TEST(test_sprite_atlas_packer);
+    RUN_TEST(test_new_game_maplist);
+    RUN_TEST(test_gen_entities);
+    RUN_TEST(test_tilefx);
+    RUN_TEST(test_hudtxt);
+    RUN_TEST(test_hudscale);
+    RUN_TEST(test_game_menu);
+    RUN_TEST(test_hostages);
+    RUN_TEST(test_prop_class);
+    RUN_TEST(test_fragment_walls);
+    RUN_TEST(test_tdo_shot_spread);
+    RUN_TEST(test_sound);
+    RUN_TEST(test_weapon_modes);
+    RUN_TEST(test_special_items);
+    RUN_TEST(test_consumables_and_stackables_pickup);
+    RUN_TEST(test_settile);
+    RUN_TEST(test_font_metrics);
+    RUN_TEST(test_screenshot_paths);
+    RUN_TEST(test_random_and_dropwep);
+    RUN_TEST(test_server_join);
+    RUN_TEST(test_server_phase2_items_and_chat);
+    RUN_TEST(test_server_move_aim_messages);
+    RUN_TEST(test_server_spray_vote_leaderboard_messages);
+    RUN_TEST(test_server_entity_and_world_interactions);
+    RUN_TEST(test_dedicated_trigger_use);
+    RUN_TEST(test_server_phase2_respawn_and_speeder);
+    RUN_TEST(test_server_phase3_rcon_and_commands);
+    RUN_TEST(test_server_phase4_lua);
+    RUN_TEST(test_server_phase5_bomb_hostages_bots);
+    RUN_TEST(test_server_phase6_lua);
+    RUN_TEST(test_server_phase7_transfer_and_spray);
+    RUN_TEST(test_server_connect_attempt_hook);
+    RUN_TEST(test_standard_gamemode);
+    RUN_TEST(test_construction_mode);
+    RUN_TEST(test_construction_wrench_and_turret);
+    RUN_TEST(test_construction_bullets_and_teleport);
+    RUN_TEST(test_construction_teleport);
+    RUN_TEST(test_construction_dispenser_and_supply);
+    RUN_TEST(test_construction_spawn_money);
+    RUN_TEST(test_construction_rounds_and_explosion);
+    RUN_TEST(test_construction_tile_effects);
+    RUN_TEST(test_construction_laser_mine_and_cvars);
+    RUN_TEST(test_server_projectiles);
+    RUN_TEST(test_server_cli_and_map_sanitize);
+    RUN_TEST(test_server_network_and_protocol);
+    RUN_TEST(test_sv_gamemode_and_env_items);
+    RUN_TEST(test_sv_deathmatch_and_timelimit);
+    RUN_TEST(test_server_client_lua_communication);
+    RUN_TEST(test_server_jump_table_opcodes);
+    RUN_TEST(test_server_reconnect_and_pw);
+    RUN_TEST(test_dedicated_dynamic_images);
+    RUN_TEST(test_dedicated_dynobj_shared_space);
+    RUN_TEST(test_dedicated_hudtxt);
+    RUN_TEST(test_dedicated_spawnprojectile_command);
+    RUN_TEST(test_dedicated_lua_binds);
+    RUN_TEST(test_client_lua_bind_events);
+    RUN_TEST(test_dedicated_mouse_properties);
+    RUN_TEST(test_dedicated_settile);
+    RUN_TEST(test_dedicated_lua_items_and_weapons);
+    RUN_TEST(test_dedicated_snapshot_world_state);
+    RUN_TEST(test_dedicated_p1_rules);
+    RUN_TEST(test_dedicated_p2_rules);
+    RUN_TEST(test_dedicated_p3_rules);
+    RUN_TEST(test_dedicated_idle_join);
+    RUN_TEST(test_dedicated_trigger_graph);
+    RUN_TEST(test_dedicated_map_teleport);
+    RUN_TEST(test_dedicated_kick_message);
+    RUN_TEST(test_dedicated_utf8_messages);
+    RUN_TEST(test_dedicated_bot_and_npc_ai);
+    RUN_TEST(test_dedicated_npc_hooks);
 
     printf("\n============================================================\n");
-    printf("Tests Passed: %d / %d\n", passed, total);
+    printf("Tests Passed: %d / %d\n", s_test_passed, s_test_total);
+    if (s_test_total == 0) {
+        printf("No test suite matches '%s'.\n", s_test_filter ? s_test_filter : "");
+        return 2;
+    }
     printf("============================================================\n");
 
-    return (passed == total) ? 0 : 1;
+    return (s_test_passed == s_test_total) ? 0 : 1;
 }
 

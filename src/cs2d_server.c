@@ -3909,6 +3909,7 @@ bool cs2d_server_start(cs2d_server_t *sv, const char *map, int port, bool offlin
         return false;
     }
     cs2d_net_sha256_file(path, sv->map_sha);
+    memset(sv->entity_reuse_ms, 0, sizeof(sv->entity_reuse_ms));
 
     /* The join secret: 10 letters (proxy: "TuorxHPAAT"); the generator is not decompiled yet */
     srand(GetTickCount());

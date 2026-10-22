@@ -357,6 +357,10 @@ typedef struct {
     cs2d_sv_item_t     items[CS2D_SV_MAX_GROUND_ITEMS];
     int                next_item_id;
     uint32_t           env_item_timer[CS2D_MAX_ENTITIES];
+    /* Trigger_Use re-use delay (Te.ints[3] ms): the earliest tick at which the button at that
+     * entity index may be used again. The original keeps it in Te.timer (+0x58) and compares
+     * it in FUN_140138a40 (client FUN_14014f820); 0 = usable now. */
+    uint32_t           entity_reuse_ms[CS2D_MAX_ENTITIES];
     /* the one-second timer and its counters (0x1401e505d) */
     uint32_t           second_ms;
     int                ping_ctr, pinglist_ctr;

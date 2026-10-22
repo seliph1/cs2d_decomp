@@ -1,4 +1,34 @@
 # Work log (append-only, newest first)
+## 2026-10-21 — Cline — dedicated: sayutf8/sayteamutf8 hooks and Trigger_Use re-use
+
+- **Chat hooks:** `cs2d_sv_chat` only ran `say` / `sayteam`; `sayutf8` / `sayteamutf8` were
+  implemented but never called (WQ2D registers `menu.sayutf8` / `menu.sayteamutf8` for its chat,
+  commands and RP menu). A probe on `cs2d_dedicated.exe` showed `say` runs first, then `sayutf8`
+  with the UTF-8 bytes hex-encoded as `xHH` (`"hello"` = `x68x65x6Cx6Cx6F`); a return 1 from the
+  first skips the second, and either return 1 suppresses the message. `src/cs2d_sv_game.c` now
+  builds the hex string (`sv_chat_hex_utf8`) and calls both hooks in that order.
+- **Trigger_Use one-shot:** `cs2d_sv_use` mode 100 called `cs2d_sv_trigger_at_position`, which
+  toggled the button's own state on every press; with no reset the client then rejected it forever
+  (state must be 0). fun_roleplay's `rp_ticket` button at (275,154) (ints[3] = 0) could only be
+  used once. The dedicated (`FUN_140138a40`) does **not** toggle the button: it validates
+  type/state/team/reach/re-use-delay and calls `Te.triggerentities(1)` (the button's `trigger`
+  list). Implemented that, plus the `ints[3]` re-use delay (`sv->entity_reuse_ms`, reset at round
+  start / map load) and the same local delay on the client (`cs2d_ents_tick_use_cooldowns`).
+- **Test runner:** `main` had a hardcoded `total = 112` that had to be edited for every new suite.
+  It now uses `RUN_TEST(test_x)`, which counts the executed suites, prints `[FAILED] test_x` for a
+  failing one, and accepts a suite-name filter (`test_cs2d.exe trigger_use`, ASCII
+  case-insensitive; exit 2 when nothing matches).
+- **Verified:** `test_cs2d.exe` -> **113 / 113** (new `test_dedicated_trigger_use`; chat hooks
+  added to `test_server_phase4_lua`). Filtered run `test_cs2d.exe Trigger_Use` -> 1 / 1.
+  - Live, our server + our client (`connect <ip> <port> <password>`; the join needs
+    `sv_password`): `tools/agent/out/br_live5_srv.log` shows three `usebutton 275 154 state=false`
+    in a row and the client keeps the button at state 0 (fun_roleplay `rp_ticket`).
+  - `tools/agent/out/say_live_srv.log`: a real client message hits `say` then `sayutf8`
+    (`x68x65x6C...`), and `sayteam` then `sayteamutf8`; the bot probe (`say_srv4.log`) matches the
+    original's order/hex output.
+  - Probes: `tools/agent/lua/{say,say_suppress,trigger_use,button_reuse}_probe.lua`.
+
+
 ## 2026-10-20 — Cline — dedicated: NPC Lua hooks wired (objectdamage/objectkill/hit/die/hitzone/projectile_impact)
 
 - **Mapping (help.php `lua_hooks`, Object category):** the hooks that touch NPCs are

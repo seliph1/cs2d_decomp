@@ -87,6 +87,10 @@ void cs2d_ents_set_state(cs2d_entity_world_t *w, int index, uint8_t state);
 /* Advances Trigger_Delay timers and use cooldowns */
 void cs2d_ents_update(cs2d_entity_world_t *w, float dt);
 
+/* Advances only the Trigger_Use re-use delays; the client calls it online too (the server owns
+ * the trigger graph there, but the original client still gates the local use key with ints[3]) */
+void cs2d_ents_tick_use_cooldowns(cs2d_entity_world_t *w, float dt);
+
 /* Trigger_Use at a tile usable by `team` (state 0, ints[2] team filter), or -1 */
 int  cs2d_ents_use_at_tile(const cs2d_entity_world_t *w, int tx, int ty, cs2d_team_t team);
 

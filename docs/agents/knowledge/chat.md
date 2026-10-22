@@ -47,6 +47,18 @@ chat prompt `FUN_14029f7b0`, opcode 240 handler `FUN_1402c8100` (`recv 240 msg`)
     server does the same for Lua `msg`/`menu`/`hudtxt` strings (2026-10-20).
   - Server text may also arrive as `"UTF-8:\xNN..."` (Changelog; WQ2D `utf8.convert`), including the
     `\xC2xA9` continuation-byte spelling; `cs2d_net_utf8_unescape` decodes it before the wire conversion.
+- **Lua chat hooks (`say`, `sayteam`, `sayutf8`, `sayteamutf8`):** measured on
+  `cs2d_dedicated.exe` 2026-10-21 with a Lua probe + `ai_say` (log `tools/agent/out/say_orig.log`):
+  - A say message runs `say(id, text)` first and then `sayutf8(id, hex)`; a team message runs
+    `sayteam` then `sayteamutf8`. Order in the log: `say`, `sayutf8`.
+  - A return of 1 from `say`/`sayteam` suppresses the message **and** skips the UTF-8 variant. A
+    return of 1 from `sayutf8`/`sayteamutf8` also suppresses it (the earlier hook already ran).
+  - `sayutf8`/`sayteamutf8` get the UTF-8 bytes of the text hex-encoded as a lowercase `x` plus
+    two uppercase digits: `"hello"` = `x68x65x6Cx6Cx6F` (Changelog.txt). Multi-byte characters are
+    encoded byte by byte (`"olá"` = `x6Fx6CxC3xA1...`). The original builds it with the `x%02X`
+    format string in `cs2d_dedicated.exe` (file offset 0x715a8e).
+  - Our `cs2d_sv_chat` (`src/cs2d_sv_game.c`, `sv_chat_hex_utf8`) implements this; regression:
+    `test_server_phase4_lua` (`chat_log == 'S[Hi]8[x48x69]T[Hi]U[x48x69]'`).
 - **Kill feed (`Thud_msg.add_kill` 0x1401aef60, `draw_kill` 0x14010f8d0; code `cs2d_client_add_kill`,
   `render_kill_msgs`):**
   - Client path of `[19]` (FUN_1401eaf60, DAT_140ddf400 == 0): `add_kill(killer, weapon, victim, assist, -1, "")`

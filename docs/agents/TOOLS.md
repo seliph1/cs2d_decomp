@@ -205,9 +205,14 @@ Lua probes:
 | `spec_probe.lua` | Adds a T and a CT bot; logs `specswitch` (whom each spectator follows, `SP` lines) and team changes |
 | `settile_probe.lua` | settile before the first join (snapshot `[252,7,9]`) and 4 s after it (`[62]`), with rotation / color / overlay / blend and a tile set back to its map frame; prints `tile()` values (`ST` lines) |
 | `pixdiff_probe.lua` | Pixel-comparison scene: `spawnplayer 1 1424 816` (tile 44,25 of `prison_funst3r`) on the `join` **and** `team` hooks and a `setpos` on top, so the original and our client end up on the same tile; the `team` hook is what makes it work for our client, which has to pick a team first (see "Pixel comparison") |
+| `say_probe.lua`, `say_suppress_probe.lua` | Register all four chat hooks and drive `ai_say` / `ai_sayteam` with a bot: log the call order and the `xHH` text (`say` then `sayutf8`); the suppress probe returns 1 from `say` to check that `sayutf8` is skipped |
+| `trigger_use_probe.lua` | Prints `int0..int9` and the state of the fun_roleplay `Trigger_Use` buttons (e.g. (275,154) `rp_ticket`; its `ints[3]` re-use delay is 0) |
+| `button_reuse_probe.lua` | Puts the joining player on the (275,154) button tile and logs every `usebutton` + the button state (re-use check) |
 
 Notes:
 
+- A password-protected dedicated needs the password in the `connect` step (see below); a probe
+  that drives a *bot* (`ai_say`, `ai_*`) does not join and is unaffected.
 - The dedicated's `-lua <path>` is **relative to `sys/lua`**. The scripts pass `../../tools/agent/lua/<file>`.
 - The dedicated does not read stdin. Use Lua `timer(ms, "fn")` plus `parse("<server command>")` to act
   on it, and `print` to report.
@@ -221,6 +226,7 @@ The harness runs one step every 5 frames, then saves `screens/capture.bmp` and e
 | Step | Effect |
 |---|---|
 | any console command | e.g. `map prison_funst3r`, `connect 127.0.0.1 36980`, `tp 105 57`, `equip 30` (`equip` takes an id; the name is "AK-47") |
+| `connect <ip> [port] [password]` | The third argument is the join password (`client->net_password`, sent in the `[252,2]` join request). Use it for a password-protected dedicated (`sv_password`); without it the server answers status 1 and the client stops at the password prompt, which a capture cannot type into. |
 | `!wait N` | Wait N frames |
 | `!press K` | Press and release a game key |
 | `!hold K down\|up` | Press or release a game key and keep it (`tab` = scoreboard) |
