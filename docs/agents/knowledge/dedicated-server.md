@@ -838,15 +838,18 @@ Measured by running the original `cs2d_dedicated.exe` and our `cs2d_server.exe` 
   fun_roleplay's longest trigger is 175 bytes and its longest `strs[0]` is 255; only `strs[0]`
   exceeds 63. `cs2d_entity_t` keeps `trigger[256]` and a dedicated `str0[256]` (the other nine
   strings stay 64) to avoid the 2 GB static-data limit of the test binary.
-- **Round start order (2026-10-24, probe on both servers, fun_roleplay):** a script's `parse("sv_gamemode 1")` during load only queues the
-  restart: `endround 5` at once, then the first loop's `ms100`/`second` hooks, then `startround 5` (our `cs2d_sv_step_round` now runs after
-  `cs2d_sv_lua_frame`). In `cs2d_sv_round_start` the **`startround` hook runs before the Trigger_Start entities** (WQ2D's `rp.startround`
-  -> `light_switch` gives the original's first hook call `light true`, then `rain false` ...). `parse()` during script load runs at once
-  in both. `rp_data.lua` sets `rp.light=1`, so `rp.daylight` does not trigger `light` on the first tick.
-- **Remaining difference (2026-10-24):** the first ~564 hook calls (names, order, source) now match. Left: in the same tick the original makes a
-  second `light true` and `t2 true` right after the Trigger_Start cascade (ours: `t2` only at sec 3, no second `light`); a few
-  Lua results depend on the wall clock (`crd2`/`crd3`, `h_path`/`h_water`); the original itself varies between runs (851 and 862
-  hook calls in 30 s, `state1` 1621 / 1511), so exact totals cannot be matched.
+- **Round start order (2026-10-24, probes with Lua tracebacks on both servers, fun_roleplay):** a script's `parse("sv_gamemode 1")` during
+  load only queues the restart: `endround 5` at once, then the first loop's timers / `ms100` / `second` hooks, then `startround 5` (our
+  `cs2d_sv_step_round` runs after `cs2d_sv_lua_frame`). Inside the round start the Trigger_Start cascade runs **before** the `startround`
+  hook. The original's first hook calls are: WQ2D's load-time timer `timer(1000,"rp.light_switch","false",1)` -> `light true`, the
+  cascade (`rain false` ...), then `rp.startround` -> `light true` (the round start reset the Env_Light state in between).
+  **Lua timers use the main loop's last frame time as their start** (frozen while scripts load; before the first frame the server start), so
+  timers created mid-load are already due in the first loop (`l_timer`). `parse()` during script load runs at once in both servers.
+  `rp_data.lua` sets `rp.light=1`, so `rp.daylight` does not trigger `light` on the first tick.
+- **Remaining difference (2026-10-24):** the first ~565 hook calls (names, order, source) match; the totals are close (866 vs 862 in 30 s).
+  Left: `t2 true` etc. (`timer(3000,"rp.train_cycle")` made at the end of load) fires in the original's first tick but in ours at sec 2
+  (our load is faster than the original's, so it is not yet due); a few Lua results depend on the wall clock (`crd2`/`crd3`,
+  `h_path`/`h_water`); the original itself varies between runs (851 / 862 hook calls, `state1` 1621 / 1511).
   Recipe: copy `tools/agent/lua/trigger_graph_probe.lua` to `sys/lua/autorun/zz_tg.lua`, run `cs2d_dedicated.exe` / `cs2d_server.exe -offline
   -map fun_roleplay` 30 s each, `grep '^TG '`, diff the names; remove the copy and `git checkout sys/server.cfg`.
 

@@ -1541,14 +1541,14 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
         if (c && sv->players[i].joined) cs2d_sv_flush(sv, c);
     }
 
-    /* Hook startround: executed AFTER spawning all players and sending [22] */
-    cs2d_sv_lua_hook_startround(sv, reason);
-
     /* Round start fires every Trigger_Start (help.php; the original's round-start trigger run was
      * captured with a probe). This is what initialises the RP map: its Trigger_If entities run
-     * Lua (rp.spawnitem, doors, dungeons, ...), so it must happen after the Lua scripts loaded. It runs AFTER the startround hook: probe on
-     * the original (fun_roleplay): rp.startround's `light true` precedes the first Trigger_Start (`rain`). */
+     * Lua (rp.spawnitem, doors, dungeons, ...), so it must happen after the Lua scripts loaded. It runs BEFORE the startround hook:
+     * probe on the original (fun_roleplay): timer `light true`, the Trigger_Start cascade, then rp.startround's `light true`. */
     cs2d_sv_trigger_start_entities(sv);
+
+    /* Hook startround: executed AFTER spawning all players and sending [22] */
+    cs2d_sv_lua_hook_startround(sv, reason);
 }
 
 /* FUN_14015ce30(0): the standard mode's win conditions. A team without players cannot play the round

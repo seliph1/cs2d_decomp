@@ -9,9 +9,10 @@ Keep only the 5 newest entries here; move older ones to the top of `worklog/arch
 - Fixed: delay forwarding calls the hook with source 0; per-entity timers `delay_fire_ms[]` replace the 64-slot queue (509 delays in
   the map) and fire in entity order; round start now cancels running delays (state reset). Hook calls 851 = 851. Test
   `test_dedicated_trigger_graph` extended (116/116). Residuals in OPEN_ISSUES.
-- Same day: `sv_gamemode` change from a script/console only queues the restart (`endround` at once, `startround` from `cs2d_sv_step_round`, now
-  after `cs2d_sv_lua_frame`), and the `startround` hook runs before the Trigger_Start entities (probes `ZZ*` on both servers). First ~564
-  hook calls identical. `test_sv_gamemode_and_env_items` adapted (116/116).
+- Same day, with Lua tracebacks: `sv_gamemode` change from a script/console only queues the restart (`endround` at once, `startround` from
+  `cs2d_sv_step_round`, after `cs2d_sv_lua_frame`); Lua timers start from the last frame time (frozen during load), so WQ2D's mid-load
+  1 s timer fires in the first loop before the round start. Order confirmed: timer `light` -> Trigger_Start cascade -> `startround`
+  (`light`). First ~565 hook calls identical (866 vs 862 in 30 s). `test_sv_gamemode_and_env_items` adapted (116/116).
 
 ## 2026-10-24 — Claude — dedicated: leave/kick text captured on the original
 

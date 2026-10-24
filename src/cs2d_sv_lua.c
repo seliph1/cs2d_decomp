@@ -507,7 +507,10 @@ static int l_timer(lua_State *L)
     for (int i = 0; i < CS2D_SV_MAX_TIMERS; i++) {
         if (!lua->timers[i].active) {
             lua->timers[i].active = true;
-            lua->timers[i].start_ms = cs2d_sv_now();
+            /* The timer clock is the main loop's last frame time, frozen while scripts load (probe on the
+             * original: WQ2D's `timer(1000, "rp.light_switch", "false", 1)`, created mid-load, fires in the
+             * first loop before `startround`). Before the first frame it is the server start. */
+            lua->timers[i].start_ms = sv->last_frame_ms ? sv->last_frame_ms : sv->start_ms;
             lua->timers[i].interval_ms = ms;
             lua->timers[i].count = count;
             snprintf(lua->timers[i].func, sizeof(lua->timers[i].func), "%s", func);
