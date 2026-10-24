@@ -330,15 +330,6 @@ typedef struct {
     int      rcon_fails;
 } cs2d_sv_iplimit_t;
 
-/* Trigger_Delay (95): the named trigger list fires after ints[1] ms (or ints[0] seconds). */
-#define CS2D_SV_MAX_PENDING_TRIGGERS 64
-typedef struct {
-    bool     active;
-    uint32_t fire_ms;
-    int      source;
-    char     names[256];
-} cs2d_sv_pending_trigger_t;
-
 typedef struct {
     SOCKET             sock;
     bool               offline;
@@ -438,8 +429,8 @@ typedef struct {
     char                 alias_name[8][32];
     char                 alias_cmd[8][160];
     int                  alias_count;
-    /* Trigger_Delay entities waiting to fire (cs2d_sv_trigger_entity) */
-    cs2d_sv_pending_trigger_t pending_triggers[CS2D_SV_MAX_PENDING_TRIGGERS];
+    /* Trigger_Delay (94) timers: entity index -> cs2d_sv_now() when it fires (valid while its state is 1) */
+    uint32_t           delay_fire_ms[CS2D_MAX_ENTITIES];
 } cs2d_server_t;
 
 void cs2d_sv_settings_default(cs2d_sv_settings_t *s);

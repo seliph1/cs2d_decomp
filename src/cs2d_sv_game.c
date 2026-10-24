@@ -1227,10 +1227,10 @@ static void sv_trigger_names_depth_ex(cs2d_server_t *sv, const char *names, int 
         if (*p) {
             /* help.php: the trigger hook runs once per list entry, even when no entity matches,
              * and source is false for map actions, true for the script `trigger` command.
-             * Trigger_Delay forwards its list without that Lua hook (measured on the original). */
+             * Trigger_Delay forwarding also runs it (see cs2d_sv_step_trigger_delays). */
             if (!lua_trigger_hook || cs2d_sv_lua_hook_trigger(sv, p, source) != 1) {
                 /* Every entity with that name is affected (duplicate names are used to toggle
-                 * groups of sprites). Trigger_Delay forwarding is handled silently below. */
+                 * groups of sprites). Trigger_Delay forwarding goes through cs2d_sv_step_trigger_delays. */
                 for (uint32_t i = 0; i < sv->map.entity_count && i < CS2D_MAX_ENTITIES; i++) {
                     const cs2d_entity_t *e = &sv->map.entities[i];
                     if (e->name[0] == '\0' || _stricmp(e->name, p) != 0) continue;
@@ -1251,20 +1251,6 @@ static void sv_trigger_names_depth(cs2d_server_t *sv, const char *names, int sou
 void cs2d_sv_trigger_names(cs2d_server_t *sv, const char *names, int source)
 {
     sv_trigger_names_depth(sv, names, source, 0);
-}
-
-static void sv_schedule_trigger(cs2d_server_t *sv, const char *names, int source, uint32_t delay_ms)
-{
-    if (!sv || !names || !names[0]) return;
-    for (int i = 0; i < CS2D_SV_MAX_PENDING_TRIGGERS; i++) {
-        cs2d_sv_pending_trigger_t *pt = &sv->pending_triggers[i];
-        if (pt->active) continue;
-        pt->active = true;
-        pt->fire_ms = cs2d_sv_now() + delay_ms;
-        pt->source = source;
-        snprintf(pt->names, sizeof(pt->names), "%s", names);
-        return;
-    }
 }
 
 static void sv_trigger_entity(cs2d_server_t *sv, int idx, int source, int depth)
@@ -1305,7 +1291,7 @@ static void sv_trigger_entity(cs2d_server_t *sv, int idx, int source, int depth)
             uint32_t delay = (e->int_settings[1] > 0) ? (uint32_t)e->int_settings[1]
                                                       : (uint32_t)e->int_settings[0] * 1000u;
             sv_entity_state_set(sv, idx, 1, true);
-            sv_schedule_trigger(sv, e->trigger, source, delay);
+            sv->delay_fire_ms[idx] = cs2d_sv_now() + delay;
         }
         break;
     }
@@ -1358,24 +1344,17 @@ void cs2d_sv_trigger_start_entities(cs2d_server_t *sv)
 
 void cs2d_sv_step_trigger_delays(cs2d_server_t *sv)
 {
-    if (!sv) return;
+    if (!sv || !sv->map_loaded) return;
     uint32_t now = cs2d_sv_now();
-    for (int i = 0; i < CS2D_SV_MAX_PENDING_TRIGGERS; i++) {
-        cs2d_sv_pending_trigger_t *pt = &sv->pending_triggers[i];
-        if (!pt->active || (int32_t)(now - pt->fire_ms) < 0) continue;
-        pt->active = false;
-        /* Delay entities return to state 0 when they fire (knowledge/entities.md). */
-        for (uint32_t j = 0; j < sv->map.entity_count && j < CS2D_MAX_ENTITIES; j++) {
-            cs2d_entity_t *e = &sv->map.entities[j];
-            if (e->type == CS2D_ENT_TRIGGER_DELAY && _stricmp(e->trigger, pt->names) == 0 &&
-                sv->map.entity_state[j] != 0) {
-                sv_entity_state_set(sv, (int)j, 0, true);
-                break;
-            }
-        }
-        /* Delay forwarding does not run the Lua trigger hook (measured on the original: a
-         * Trigger_Delay whose delay elapsed never called the hook for its names). */
-        sv_trigger_names_depth_ex(sv, pt->names, pt->source, 0, false);
+    /* Entity order, not scheduling order (probe on the original: the delays that elapse together
+     * forward their lists in entity order). A Delay goes back to state 0 when it fires
+     * (knowledge/entities.md) and its names run through the Lua trigger hook with source false. */
+    for (uint32_t i = 0; i < sv->map.entity_count && i < CS2D_MAX_ENTITIES; i++) {
+        const cs2d_entity_t *e = &sv->map.entities[i];
+        if (e->type != CS2D_ENT_TRIGGER_DELAY || sv->map.entity_state[i] != 1) continue;
+        if ((int32_t)(now - sv->delay_fire_ms[i]) < 0) continue;
+        sv_entity_state_set(sv, (int)i, 0, true);
+        sv_trigger_names_depth_ex(sv, e->trigger, 0, 0, true);
     }
 }
 
@@ -1431,10 +1410,6 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
     memset(sv->projectiles, 0, sizeof(sv->projectiles));
     cs2d_sv_init_hostages(sv);
     cs2d_sv_init_env_items(sv);
-    /* Round start fires every Trigger_Start (help.php; the original's round-start trigger run was
-     * captured with a probe). This is what initialises the RP map: its Trigger_If entities run
-     * Lua (rp.spawnitem, doors, dungeons, ...), so it must happen after the Lua scripts loaded. */
-    cs2d_sv_trigger_start_entities(sv);
 
     /* Update team scores according to round end reason (FUN_1402520b0 / cs2d_game_apply_round_reason) */
     uint64_t bit = (reason >= 0 && reason <= 61) ? (1ULL << reason) : 0;
@@ -1568,6 +1543,12 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
 
     /* Hook startround: executed AFTER spawning all players and sending [22] */
     cs2d_sv_lua_hook_startround(sv, reason);
+
+    /* Round start fires every Trigger_Start (help.php; the original's round-start trigger run was
+     * captured with a probe). This is what initialises the RP map: its Trigger_If entities run
+     * Lua (rp.spawnitem, doors, dungeons, ...), so it must happen after the Lua scripts loaded. It runs AFTER the startround hook: probe on
+     * the original (fun_roleplay): rp.startround's `light true` precedes the first Trigger_Start (`rain`). */
+    cs2d_sv_trigger_start_entities(sv);
 }
 
 /* FUN_14015ce30(0): the standard mode's win conditions. A team without players cannot play the round

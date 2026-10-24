@@ -9707,6 +9707,10 @@ static bool test_sv_gamemode_and_env_items(void)
     /* gamemode 1 should change gamemode and restart the round */
     cs2d_sv_exec(&sv, "gamemode 1");
     if (sv.set.sv_gamemode != 1) TEST_FAIL("Gamemode restart", "gamemode 1 did not update sv_gamemode");
+    /* The restart is queued (endround at once) and runs from the main loop, not inside the command
+     * (probe on the original: endround 5, the first Lua `second`, then startround 5). */
+    if (sv.round_number != 1 || sv.round_end != 5) TEST_FAIL("Gamemode restart", "gamemode change must only queue the round restart");
+    cs2d_sv_step_round(&sv);
     if (sv.round_number != 2) TEST_FAIL("Gamemode restart", "round did not restart after gamemode changed");
 
     /* Setting to the same gamemode should not restart again */
@@ -9716,6 +9720,7 @@ static bool test_sv_gamemode_and_env_items(void)
     /* sv_gamemode 2 should change gamemode and restart */
     cs2d_sv_exec(&sv, "sv_gamemode 2");
     if (sv.set.sv_gamemode != 2) TEST_FAIL("Gamemode restart", "sv_gamemode 2 did not update sv_gamemode");
+    cs2d_sv_step_round(&sv);
     if (sv.round_number != 3) TEST_FAIL("Gamemode restart", "round did not restart after sv_gamemode changed");
 
     /* ------------------------------------------------------------- */
@@ -12056,13 +12061,18 @@ static bool test_dedicated_trigger_graph(void)
     cs2d_sv_trigger_names(&sv, "once", 0);
     if (sv.map.entity_state[1] != 1) TEST_FAIL("trigger once", "Trigger_Once fired twice");
 
-    /* Trigger_Delay: state 1 while counting, forwards silently when the delay elapses. */
+    /* Trigger_Delay: state 1 while counting, forwards its list when the delay elapses. */
     cs2d_sv_trigger_names(&sv, "delay", 0);
     if (sv.map.entity_state[4] != 1) TEST_FAIL("trigger delay", "delay did not start");
-    for (int i = 0; i < CS2D_SV_MAX_PENDING_TRIGGERS; i++) {
-        if (sv.pending_triggers[i].active) sv.pending_triggers[i].fire_ms = cs2d_sv_now() - 1;
-    }
+    sv.delay_fire_ms[4] = cs2d_sv_now() - 1;
+    /* The forwarded names reach the Lua trigger hook with source false, even for a script-started
+     * delay (probe on the original with fun_roleplay: `light` -> `c4_lde false`). */
+    if (!cs2d_sv_lua_dostring(&sv, "dl_n = 0; dl_src = nil\n"
+            "function dl_hook(n, s) if n == 'door' then dl_n = dl_n + 1; dl_src = s end end\n"
+            "addhook('trigger', 'dl_hook')")) TEST_FAIL("trigger delay", "hook setup");
     cs2d_sv_step_trigger_delays(&sv);
+    if (!cs2d_sv_lua_dostring(&sv, "assert(dl_n == 1 and dl_src == false, 'delay forward hook: ' .. tostring(dl_n) .. ' ' .. tostring(dl_src))"))
+        TEST_FAIL("trigger delay", "forwarded name missed the trigger hook or used source true");
     if (sv.map.entity_state[4] != 0 || sv.map.entity_state[1] != 0) {
         TEST_FAIL("trigger delay", "delay did not finish/forward");
     }

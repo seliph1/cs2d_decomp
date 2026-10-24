@@ -21,10 +21,9 @@ the same one.
   (the original shows "Disconnect Reason" in `FUN_1401c7500`; test `test_dedicated_kick_message`), but `cs2d_client.c`
   only removes the player when `id != local_player_id`; our client still lacks the kick/disconnect UI.
 
-- **Dedicated server: WQ2D roleplay trigger cascades (2026-10-20, `knowledge/dedicated-server.md`):** after 16 s our server ends with
-  1618 vs 1574 entities in state 1 and 587 vs 565 `trigger` calls (late Trigger_If/Delay cascades: `d4entrance`,
-  `sc*_light`, `d4mp*`); objects and items match (27/57 turrets, 120 items). Investigate the exact forwarding
-  semantics of `Trigger_Delay` and the `Trigger_If` conditions > 0. Regression: `test_dedicated_trigger_graph`.
+- **Dedicated server: WQ2D roleplay trigger cascades (2026-10-24, `knowledge/dedicated-server.md`):** Trigger_Delay forwarding, restart
+  timing and `startround`-before-Trigger_Start fixed; the first ~564 hook calls match the original. Left: a second `light true` + `t2 true`
+  in the first tick after the cascade, wall-clock dependent Lua results; the original varies between runs (recipe in the knowledge file).
 
 - **Round restart / win conditions, offline client (2026-10-16, `knowledge/standard-gamemode.md`):** the dedicated is fixed
   (event-driven `cs2d_sv_check_win`); the offline client (`src/cs2d_game.c`) still checks every frame and keeps the

@@ -2,6 +2,17 @@
 
 Keep only the 5 newest entries here; move older ones to the top of `worklog/archive.md`.
 
+## 2026-10-24 — Claude — dedicated: Trigger_Delay forwarding (WQ2D trigger cascades)
+
+- Probe `tools/agent/lua/trigger_graph_probe.lua` (in `sys/lua/autorun`, both servers headless on fun_roleplay) showed the original
+  runs the `trigger` hook for names a Trigger_Delay forwards (source always false) - the 2026-10-20 "silent" note was wrong.
+- Fixed: delay forwarding calls the hook with source 0; per-entity timers `delay_fire_ms[]` replace the 64-slot queue (509 delays in
+  the map) and fire in entity order; round start now cancels running delays (state reset). Hook calls 851 = 851. Test
+  `test_dedicated_trigger_graph` extended (116/116). Residuals in OPEN_ISSUES.
+- Same day: `sv_gamemode` change from a script/console only queues the restart (`endround` at once, `startround` from `cs2d_sv_step_round`, now
+  after `cs2d_sv_lua_frame`), and the `startround` hook runs before the Trigger_Start entities (probes `ZZ*` on both servers). First ~564
+  hook calls identical. `test_sv_gamemode_and_env_items` adapted (116/116).
+
 ## 2026-10-24 — Claude — dedicated: leave/kick text captured on the original
 
 - Live capture (`tools/agent/lua/leave_text_probe.lua` via `capture_two.sh`, `mp_maxclientsip 5` + `sv_password` cleared in the probe; logs

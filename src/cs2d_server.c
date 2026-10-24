@@ -2600,8 +2600,10 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
             sv_broadcast_setting(sv, "sv_gamemode", old_str);
             cs2d_server_print("sv_gamemode set to \"%d\"", new_mode);
             if (new_mode != old_mode) {
+                /* The round restarts from the main loop (cs2d_sv_step_round), after that loop's Lua
+                 * timers: probe on the original with maps/fun_roleplay.lua's `parse("sv_gamemode 1")`:
+                 * endround 5 at once, first `second`/`ms100` hooks, then startround 5. */
                 cs2d_sv_round_end(sv, 5, 0);
-                cs2d_sv_round_start(sv, 5);
             }
         }
         return true;
@@ -2864,8 +2866,10 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
             int old_mode = atoi(old_val);
             int new_mode = atoi(a1);
             if (new_mode != old_mode) {
+                /* The round restarts from the main loop (cs2d_sv_step_round), after that loop's Lua
+                 * timers: probe on the original with maps/fun_roleplay.lua's `parse("sv_gamemode 1")`:
+                 * endround 5 at once, first `second`/`ms100` hooks, then startround 5. */
                 cs2d_sv_round_end(sv, 5, 0);
-                cs2d_sv_round_start(sv, 5);
             }
         }
         return true;
@@ -3988,7 +3992,6 @@ void cs2d_server_frame(cs2d_server_t *sv)
 
     cs2d_sv_ai_frame(sv);
     cs2d_sv_relay_movement(sv);
-    cs2d_sv_step_round(sv);
     cs2d_sv_step_bomb(sv);
     cs2d_sv_step_hostages(sv);
     cs2d_sv_step_items(sv);
@@ -4001,6 +4004,7 @@ void cs2d_server_frame(cs2d_server_t *sv)
      * return the animated x/y/rot/... while Lua scripts (the C4 projectile system) poll them. */
     cs2d_dynobj_update_tweens(&sv->dynobj, now);
     cs2d_sv_lua_frame(sv);
+    cs2d_sv_step_round(sv);     /* after the Lua timers: a restart queued by a script starts after its first `second` */
 
     sv->frames++;
     sv_frame_stats(sv, now);

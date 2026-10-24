@@ -809,8 +809,10 @@ Measured by running the original `cs2d_dedicated.exe` and our `cs2d_server.exe` 
     `Trigger_If` (96) runs its condition and only then fires `trigger`; condition type 0 is the Lua
     chunk `"_cs2d_trigger_if=" + strs[0]` (the map uses `(1) action code` and pure expressions).
     `Trigger_Once` (95) fires only on state 0 -> 1. `Trigger_Delay` (94) sets state 1, waits
-    `ints[1]` ms (else `ints[0]` s) and forwards its list **without invoking the Lua trigger hook**
-    (probe: a delay whose timer elapsed produced no trigger hook for its names). `Trigger_Move` (91)
+    `ints[1]` ms (else `ints[0]` s) and forwards its list **through the Lua trigger hook, always with
+    source false** (2026-10-24 probe `tools/agent/lua/trigger_graph_probe.lua` on fun_roleplay: script `trigger light`
+    -> `c4_lde false`; `bank_l` -> `bank_li,bank_tr,bank_func false`; the 2026-10-20 "silent" reading was wrong).
+    Delays that elapse together fire in **entity order** (per-entity timer `delay_fire_ms[]`, no 64-slot queue). `Trigger_Move` (91)
     and `Trigger_Hit` (92) fire only on walkover/hit, never when their name is triggered.
   - A plain entity (Func_DynWall, Env_Sprite, Gen_Weather, Trigger_Use, ...) only toggles its state.
     Its own `trigger` field is **not** propagated. A Trigger_Use fires its list only when a player
@@ -836,10 +838,17 @@ Measured by running the original `cs2d_dedicated.exe` and our `cs2d_server.exe` 
   fun_roleplay's longest trigger is 175 bytes and its longest `strs[0]` is 255; only `strs[0]`
   exceeds 63. `cs2d_entity_t` keeps `trigger[256]` and a dedicated `str0[256]` (the other nine
   strings stay 64) to avoid the 2 GB static-data limit of the test binary.
-- **Remaining difference:** after a 16 s startup our server matched the original's first 564
-  trigger-hook calls byte for byte (same names/order), the object type counts and the 120 ground
-  items, but ended with 1618 vs 1574 entities in state 1 and 587 vs 565 hook calls. The extras are
-  later Trigger_If/Delay cascades (e.g. `d4entrance`, `sc*_light`, `d4mp*`); see OPEN_ISSUES.
+- **Round start order (2026-10-24, probe on both servers, fun_roleplay):** a script's `parse("sv_gamemode 1")` during load only queues the
+  restart: `endround 5` at once, then the first loop's `ms100`/`second` hooks, then `startround 5` (our `cs2d_sv_step_round` now runs after
+  `cs2d_sv_lua_frame`). In `cs2d_sv_round_start` the **`startround` hook runs before the Trigger_Start entities** (WQ2D's `rp.startround`
+  -> `light_switch` gives the original's first hook call `light true`, then `rain false` ...). `parse()` during script load runs at once
+  in both. `rp_data.lua` sets `rp.light=1`, so `rp.daylight` does not trigger `light` on the first tick.
+- **Remaining difference (2026-10-24):** the first ~564 hook calls (names, order, source) now match. Left: in the same tick the original makes a
+  second `light true` and `t2 true` right after the Trigger_Start cascade (ours: `t2` only at sec 3, no second `light`); a few
+  Lua results depend on the wall clock (`crd2`/`crd3`, `h_path`/`h_water`); the original itself varies between runs (851 and 862
+  hook calls in 30 s, `state1` 1621 / 1511), so exact totals cannot be matched.
+  Recipe: copy `tools/agent/lua/trigger_graph_probe.lua` to `sys/lua/autorun/zz_tg.lua`, run `cs2d_dedicated.exe` / `cs2d_server.exe -offline
+  -map fun_roleplay` 30 s each, `grep '^TG '`, diff the names; remove the copy and `git checkout sys/server.cfg`.
 
 ## Bot AI and NPC AI (2026-10-20)
 
