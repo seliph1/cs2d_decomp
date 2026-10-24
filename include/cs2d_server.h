@@ -272,9 +272,15 @@ typedef struct {
     bool     is_defusing;
     float    last_valid_x, last_valid_y;
     uint32_t last_move_ms;
+    int      speed_score;     /* Tpl +0x178: anti-speeder excess score (FUN_1401ca500) */
+    int      speed_events;    /* Tpl +0x17c: number of over-limit moves (FUN_1401ca500) */
     uint32_t death_ms;
     bool     bot;             /* +0x198 */
     int      ping;            /* +0xd0 */
+    int      clock_prev;      /* +0xd4: client clock of the previous [229] reply */
+    int      clock_diff;      /* +0xd8: client clock delta between the last two [229] replies */
+    float    clock_ratio;     /* +0xdc: clock_diff / 2000 (the server pings every 2 s) */
+    int      clock_strikes;   /* +0xe0: mp_anticlock strikes */
     char     ip[32];
     int      port;
     /* Bot AI (bots/Standard AI.lua): the engine side of the ai_* API. The script keeps its own

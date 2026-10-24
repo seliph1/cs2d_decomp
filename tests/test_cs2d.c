@@ -7042,6 +7042,29 @@ static bool test_server_phase2_respawn_and_speeder(void)
     if (ok || sv.players[1].x != cur_x)
         TEST_FAIL("Anti-speeder", "excessive speed move was not blocked");
 
+    /* E. Stale packets that cross a teleport (func_teleport / [15]) or a respawn must not punish: the
+     * original needs speed_score > 30 AND speed_events > 50 (FUN_1401ca500 0x1401cb13a-0x1401cb228). */
+    sv.set.mp_antispeeder = 2; /* kick */
+    sv.players[1].speed_score = sv.players[1].speed_events = 0;
+    float ox = sv.players[1].x, oy = sv.players[1].y;
+    cs2d_sv_set_pos(&sv, 1, ox + 400.0f, oy);
+    for (int i = 0; i < 20; i++)
+        cs2d_sv_validate_move(&sv, 1, ox, oy, 10); /* in-flight packets from before the [15] */
+    if (!sv.players[1].used || !sv.players[1].alive)
+        TEST_FAIL("Anti-speeder teleport", "stale packets after a teleport punished the player");
+    cs2d_sv_spawn_at(&sv, 1, ox, oy);
+    for (int i = 0; i < 20; i++)
+        cs2d_sv_validate_move(&sv, 1, ox + 300.0f, oy, 10);
+    if (!sv.players[1].used || !sv.players[1].alive)
+        TEST_FAIL("Anti-speeder respawn", "stale packets after a respawn punished the player");
+    /* A sustained speeder is still punished */
+    sv.players[1].speed_score = sv.players[1].speed_events = 0;
+    float sx = sv.players[1].last_valid_x, sy = sv.players[1].last_valid_y;
+    for (int i = 0; i < 80 && sv.players[1].used; i++)
+        cs2d_sv_validate_move(&sv, 1, sx + 200.0f, sy, 10); /* rejected each time, so the base stays put */
+    if (sv.players[1].used)
+        TEST_FAIL("Anti-speeder sustained", "a sustained speeder was never punished");
+
     TEST_PASS("Dedicated server Phase 2: Team suicide, deathmatch respawn [39], solid collision and anti-speeder");
     free(sv.conns[0].pending);
     cs2d_map_free(&sv.map);
@@ -11612,6 +11635,30 @@ static bool test_dedicated_p1_rules(void)
     if (sv.players[2].ping < 40 || sv.players[2].ping > 60) {
         TEST_FAIL("ping measurement", "expected ~50 ms from the [229] reply");
     }
+
+    /* Anti-clock (0x1401d7690): client clock delta / 2000 > 1.1 is a strike, the first sample and normal
+     * deltas are not; mp_anticlock 3 kicks above 2 strikes (table {0, 8, 4, 2}). */
+    sv.set.mp_anticlock = 3;
+    if (!sv.conns[0].pending) sv.conns[0].pending = (cs2d_sv_pending_t *)calloc(CS2D_SV_MAX_PENDING, sizeof(cs2d_sv_pending_t));
+    sv.players[2].clock_prev = 0;
+    sv.players[2].clock_strikes = 0;
+    static const int32_t cli_clock[] = { 1000, 3000, 6000, 9000, 12000 };
+    static const int want_strikes[] = { 0, 0, 1, 2, 3 };
+    for (int i = 0; i < 5; i++) {
+        memcpy(&ping_pkt[5], &cli_clock[i], 4);
+        cs2d_sv_recv_payload(&sv, &sv.conns[0], ping_pkt, sizeof(ping_pkt));
+        if (sv.players[2].clock_strikes != want_strikes[i] && i < 4)
+            TEST_FAIL("anticlock strikes", "unexpected strike count after a [229] reply");
+        if (i == 3 && !sv.players[2].used) TEST_FAIL("anticlock kick", "kicked at 2 strikes (limit is above 2)");
+    }
+    if (sv.players[2].used) TEST_FAIL("anticlock kick", "3 strikes at mp_anticlock 3 must kick (Speedhack Detected)");
+    sv.set.mp_anticlock = 1;
+    sv.players[2].used = true;
+    sv.players[2].joined = true;
+    sv.players[2].alive = true;
+    sv.conns[0].active = true;
+    sv.conns[0].player = 2;
+    sv.players[2].ping = 0;
 
     /* The same measurement from the normal in-game ping reply [249, srv_ts]. */
     sv.players[2].ping = 0;

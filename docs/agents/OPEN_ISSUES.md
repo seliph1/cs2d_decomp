@@ -6,10 +6,10 @@ the same one.
 
 ## Dedicated server — residuals
 
-- **Dedicated server: `mp_anticlock` clock tracking (2026-10-20):** the cvar now selects
-  `[229]`/`[249]` and the `[247]` ping list is locked by tests, but the anti-speedhack part of the
-  `[229]` reply (`clock_diff` / `clock_ratio`, 0x1402e2aa0, kick "Speedhack Detected") is not
-  implemented; only the RTT (`Tpl +0xd0`) is used.
+- **Dedicated server: anti-speeder residuals (2026-10-24, `knowledge/dedicated-server.md`):** the strike accumulators and the [229] clock check follow the original, but the
+  per-move distance limit is still our calibrated 160 px / 650 px/s. The original derives it from the time since the last step and `mp_antispeeder` level (jump table
+  `0x1406cda6c`, `DAT_1407df93c`, weapon speed) and clamps instead of rejecting; the "packet flow" (> 64 moves/s) and "dist" detectors (`+0x180`..`+0x18c`) and the 2 s
+  `[10]` reset are not ported. The [229] handler also has a flood limit (`FUN_1400d4f80(id, ip, 0xe5, 100, 5000)`) and a `mp_pinglimit` strike counter we do elsewhere.
 
 - **Dedicated server: bot and NPC AI, residuals (2026-10-20, `knowledge/dedicated-server.md`):** bot secondary attack only relays `[8]`
   (no bot grenade projectile); shotgun bots apply one pellet hit; the per-skill turn/range tables are runtime arrays

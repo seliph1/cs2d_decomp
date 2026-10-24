@@ -200,6 +200,12 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   - Anti-speeder (`FUN_1401ca500`): calculates distance moved since `last_move_ms`. If `dist > 160.0f` and velocity
     `dist / dt > 650.0f` px/s, server logs `"MP_ANTISPEEDER: %s is too fast - reset position!"` to console and sends reliable
     `[10, id, last_valid_x, last_valid_y]` back to the mover.
+- **Anti-speeder strike model (FUN_1401ca500, REA + objdump 2026-10-24):** the function is the server's move step `(pl, x, y, walk)`; the reported distance to `Tpl +0x240/+0x244` is compared with an allowed
+  distance (elapsed ms x speed, ping tiers 100/200/500, `mp_antispeeder` level selects a tolerance via the jump table `0x1406cda6c`). Over the limit it adds `1 + excess` to `+0x178` and 1 to `+0x17c`;
+  a valid move subtracts 1 from each. `+0x178 > 30 && +0x17c > 50` -> "MP_ANTISPEEDER: Speedhack detected (speed)!". Other detectors: moves/s `+0x180 > 64` and summed distance `+0x184` per second
+  ("packet flow" / "dist", strikes `+0x188`/`+0x18c`, needing > 4 with ping <= 199 or > 9 with ping <= 249). Counters are only zeroed in the Tpl constructor (0x140042241): teleport and respawn do not reset them.
+- **[229] anti-clock (handler FUN_1401d7640 @ 0x1401d7690):** reply `[229, srv_ts, cli_ts]`; ping = now - start - srv_ts (< 30000); `+0xd8 = cli_ts - +0xd4`, `+0xdc = diff x 0.0005`; ratio > 1.0 + `DAT_1405a64e0` (0.1)
+  -> `+0xe0++`, else `-1`; `mp_anticlock` N > 0 kicks (`kick <id> "Speedhack Detected"`) above `{0,8,4,2}[N]` strikes (array from `0x1406dafe0`). 0x1402e2aa0 is NOT this handler (CRT formatter).
 - **Per-spawn Team Change Limit & Zombies Team Rules (`FUN_1401624c0`, `FUN_140160740`):**
   - `pl->team_changes` (`Tpl +0x2a0`) is reset to `0` on `cs2d_sv_spawn` (`FUN_140160740` line 198) and incremented on every
     completed team switch (`FUN_1401624c0` line 464).

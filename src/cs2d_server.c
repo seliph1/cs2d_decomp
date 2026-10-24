@@ -2925,11 +2925,31 @@ static bool sv_recv_game(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r, int o
     }
     case 229: { /* clock ping reply: [229, srv ts, cli ts] */
         int32_t ts = rd_int(r);
-        rd_int(r);
+        int32_t cli_ts = rd_int(r);
         cs2d_sv_player_t *pp = (c->player > 0) ? &sv->players[c->player] : NULL;
         if (pp && pp->used) {
+            /* FUN_1401d7690 (0xe5): ping = (now - start) - echoed ts, accepted below 30 s; the client clock
+             * delta over the 2 s ping interval is the anti-clock ratio. */
             uint32_t rtt = (sv_now() - sv->start_ms) - (uint32_t)ts;
-            if (rtt <= 30000u) pp->ping = (int)rtt;
+            int prev = pp->clock_prev;
+            if (rtt < 30000u) {
+                pp->ping = (int)rtt;
+                pp->clock_diff = cli_ts - pp->clock_prev;
+                pp->clock_ratio = (float)pp->clock_diff * 0.0005f;
+                pp->clock_prev = cli_ts;
+            }
+            /* ratio > 1.0 + DAT_1405a64e0 (0.1, initial value, never rewritten) is a strike, anything else
+             * (or the first sample) removes one; mp_anticlock N kicks above the table {0, 8, 4, 2}[N]
+             * strikes (array built at 0x140211f34 from 0x1406dafe0), "kick <id> "Speedhack Detected"". */
+            static const int limit[4] = { 0, 8, 4, 2 };
+            if (prev < 1 || pp->clock_ratio <= 1.1f) {
+                if (pp->clock_strikes > 0) pp->clock_strikes--;
+            } else {
+                pp->clock_strikes++;
+                int lv = sv->set.mp_anticlock;
+                if (lv > 0 && lv < 4 && limit[lv] < pp->clock_strikes)
+                    cs2d_sv_kick(sv, c->player, "Speedhack Detected");
+            }
         }
         return true;
     }

@@ -2,6 +2,15 @@
 
 Keep only the 5 newest entries here; move older ones to the top of `worklog/archive.md`.
 
+## 2026-10-24 — Claude — dedicated: anti-speeder false positives + mp_anticlock [229]
+
+- Cause of the kicks on `func_teleport` / round restart: our `cs2d_sv_validate_move` punished the first move >160 px & >650 px/s from `last_valid`. After `cs2d_sv_set_pos` / spawn
+  `last_valid` is the new place, so the client's in-flight [10]/[11] still carrying the old position (one RTT) looked like a teleport hack. The original never punishes one packet:
+  FUN_1401ca500 keeps `Tpl+0x178` (score += 1 + excess) and `+0x17c` (events += 1) on over-limit moves, decays both by 1 on every valid move, and only
+  `+0x178 > 30 && +0x17c > 50` prints "Speedhack detected (speed)" and punishes. Ported (`speed_score` / `speed_events`); the 160 px / 650 px/s limit itself stays calibrated.
+- `mp_anticlock` [229] clock check ported from the dedicated handler FUN_1401d7640 (`0x1401d7690`): `clock_diff` = client clock delta, `clock_ratio` = diff x 0.0005,
+  strike if ratio > 1.1, else -1; `mp_anticlock` N kicks above `{0,8,4,2}[N]` strikes with "Speedhack Detected". The address 0x1402e2aa0 from OPEN_ISSUES is inside a CRT
+  formatter (FUN_1402dfae0), not the handler. Tests: `test_server_phase2_respawn_and_speeder` (teleport / respawn / sustained), P1 anticlock strikes + kick. 116/116.
 ## 2026-10-24 — Claude — dedicated: Trigger_Delay forwarding (WQ2D trigger cascades)
 
 - Probe `tools/agent/lua/trigger_graph_probe.lua` (in `sys/lua/autorun`, both servers headless on fun_roleplay) showed the original

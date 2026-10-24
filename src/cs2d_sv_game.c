@@ -2792,9 +2792,15 @@ bool cs2d_sv_validate_move(cs2d_server_t *sv, int id, float new_x, float new_y, 
     if (dt < 0.010f) dt = 0.010f; /* clamp to avoid divide-by-zero on burst */
 
     float speed = dist / dt;
-    /* Normal CS2D knife run speed is ~260 px/s; allow burst up to ~650 px/s or 160 px single jump */
+    /* Normal CS2D knife run speed is ~260 px/s; allow burst up to ~650 px/s or 160 px single jump
+     * (limit calibrated, not read from the original). */
     if (dist > 160.0f && speed > 650.0f) {
-        cs2d_server_print("MP_ANTISPEEDER: %s is too fast - reset position!", pl->name);
+        /* The original never punishes a single packet: an over-limit move adds 1 + excess to Tpl +0x178
+         * and 1 to +0x17c, a valid move subtracts 1 from each (floor 0), and only +0x178 > 30 AND
+         * +0x17c > 50 triggers "Speedhack detected (speed)" (FUN_1401ca500 0x1401cb13a-0x1401cb228).
+         * So a stale packet that crosses a teleport / respawn [15] / [21] in flight only resets the client. */
+        pl->speed_score += 1 + (int)(dist - 160.0f);
+        pl->speed_events++;
         if (c) {
             cs2d_pkt_t *p = cs2d_sv_packet(sv, c, true, false);
             cs2d_pkt_w_byte(p, 10);
@@ -2802,6 +2808,9 @@ bool cs2d_sv_validate_move(cs2d_server_t *sv, int id, float new_x, float new_y, 
             cs2d_pkt_w_short(p, (uint16_t)(int)pl->last_valid_x);
             cs2d_pkt_w_short(p, (uint16_t)(int)pl->last_valid_y);
         }
+        if (pl->speed_score <= 30 || pl->speed_events <= 50) return false;
+        cs2d_server_print("MP_ANTISPEEDER: Speedhack detected (speed)! %s", pl->name);
+        pl->speed_score = pl->speed_events = 0;
         /* mp_antispeeder punishment (help.php: 0 off, 1 kick+tempban, 2 kick, 3 kill, 4/5/6 slap 10/25/50).
          * The position reset above stays the basic protection; 1 is treated as a kick (no tempban list yet). */
         switch (sv->set.mp_antispeeder) {
@@ -2817,7 +2826,11 @@ bool cs2d_sv_validate_move(cs2d_server_t *sv, int id, float new_x, float new_y, 
         return false;
     }
 
-    /* Move is valid: commit */
+    /* Move is valid: the strike counters decay by 1 (0x1401cb153 / 0x1401cb17a) */
+    if (pl->speed_score > 0)  pl->speed_score--;
+    if (pl->speed_events > 0) pl->speed_events--;
+
+    /* commit */
     int old_tx = (int)(pl->x * 0.03125f);
     int old_ty = (int)(pl->y * 0.03125f);
     int new_tx = (int)(new_x * 0.03125f);
