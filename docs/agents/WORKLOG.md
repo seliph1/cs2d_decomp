@@ -2,6 +2,35 @@
 
 Keep only the 5 newest entries here; move older ones to the top of `worklog/archive.md`.
 
+## 2026-10-24 — Claude — dedicated: leave/kick text captured on the original
+
+- Live capture (`tools/agent/lua/leave_text_probe.lua` via `capture_two.sh`, `mp_maxclientsip 5` + `sv_password` cleared in the probe; logs
+  `tools/agent/out/{ded,proxy}_two_ltkick3|ltleave*`): the original dedicated prints **no console line** on leave or kick (only the Lua hook lines);
+  a normal leave sends `[253,2,0]` then the `[226,1,0,0," - ",3]` draw, a kick with a quoted reason `[253,id,16,u8 str]`; `kick 2 testreason`
+  (unquoted) gave reason 2 without text. The `leave` hook gets the **numeric** reason (0 / 2 / 16).
+- Fixed: removed our "has left the game / has been kicked" console prints; `leave` hook now receives the numeric reason (was the text);
+  join failure text "too many clients with this ip" (was "from this IP"). Test `test_dedicated_leave_hook_reason` (116/116).
+- `kick` argument parsing of unquoted reasons in our `cs2d_sv_exec` not compared yet.
+
+## 2026-10-24 — Claude — dedicated: [247] counters, ids, join snapshot tail
+
+- `[247]` header (inline `0x1401e4ce0`): byte 3 `DAT_1407dfe28` = **min of a 180-entry ring** (`0x1405acdc8`) of "loop deltas needed to pass 999 ms"
+  (`0x14019d3a0..0x14019d94a`, deltas in ring `0x1405acdd0`), pushed every loop; u16 #1 `DAT_1407dfe34/8` = bytes **sent** last second, u16 #2
+  `DAT_1407dfe30/8` = bytes **received** (Tudp `0x1407e06dc` / `0x1407e06d8`, bytes, not bits; recvfrom counts every datagram). Ours was fps, bits and
+  in/out swapped. Sent/received assignment from call-argument shapes (recvfrom vs sendto), not from import names: moderate confidence.
+- Fields renamed `bytes_sent_sec/bytes_recv_sec`; `sv_frame_stats` added; rings assumed to start at 0 (so the byte is 0 for the first 180 loops).
+- `[252,6]` tail `FUN_1401dba60` = PhysicsPlatform / PhysicsObject / PhysicsController lists (empty here); `FUN_140098050(1,-1)` = lowest free id 1..32 (verified).
+- `[253]` leave text: not found as a literal; see OPEN_ISSUES. Tests 115/115.
+
+## 2026-10-24 — Claude — dedicated: join section 11 (wbank) built from the weapon tables
+
+- `FUN_140112bc0` (loadweaponcfg) ends by building the wbank `PTR_DAT_14059d3a8`: 5 bytes per weapon with slot 1/2 in id order
+  (`id, recoil_accuracy d408, recoil_recover d400, recoil_attack d3f8, firedelay d488`). It reads `sys/weapons_recoil.cfg` when the
+  setting at `[0x1405a6590]+4` (taken as `mp_recoil`) is non-zero, else `sys/weapons.cfg` (strings 0x1405bc0a0 / 0x1405bc0e0).
+- `cs2d_weapons_wbank_raw` (`src/cs2d_weapons.c`) replaces the literal in `cs2d_server.c`; recoil bytes for `mp_recoil 0` are the
+  capture's defaults (weapons.cfg only sets firedelay); id 92 appended as in the capture. Test `test_join_wbank_raw` (115/115).
+- Open: where the built-in recoil defaults come from (FUN_1400e0fb0), `mp_recoil 1` unverified; `[252,6]` 3 bytes, section 13 untouched.
+
 ## 2026-10-21 — Cline — dedicated: drop/collect hook arguments (rp.lua Laser drop)
 
 - **Error:** `Lua Hook Error (drop:c4hook.drop): sys/lua/WQ2D/rp.lua:12624: bad argument #1 to

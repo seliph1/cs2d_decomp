@@ -630,7 +630,8 @@ void cs2d_sv_sanitize_map_name(char *dst, size_t dst_size, const char *src)
     }
 }
 
-/* FUN_140098050(1, -1): the lowest free player id (estimated: allocation order not verified) */
+/* FUN_140098050(1, -1): the lowest free player id in 1..32 (0x20), i.e. the first id no Tpl in the player list holds;
+ * none free returns null (verified in REA: loop iVar10 = 1..0x20 over DAT_1407dfe58) */
 static int sv_alloc_player(cs2d_server_t *sv)
 {
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
@@ -732,7 +733,8 @@ static void sv_write_join_settings_tail(cs2d_pkt_t *p, const cs2d_sv_settings_t 
     cs2d_pkt_w_byte(p, (uint8_t)s->sv_offscreendamage);
     cs2d_pkt_w_byte(p, (uint8_t)(s->leaderboard != 0)); /* && DAT_1405a63e8 */
     cs2d_pkt_w_byte(p, (uint8_t)s->physics);
-    /* FUN_1401dba60: 3 zero bytes with the default config (not decompiled yet) */
+    /* FUN_1401dba60: count byte + entries of PhysicsPlatform / PhysicsObject / PhysicsController (client twin in
+     * docs/dump 1402e0000.c); we model no physics objects, so the three counts are 0 */
     cs2d_pkt_w_byte(p, 0);
     cs2d_pkt_w_byte(p, 0);
     cs2d_pkt_w_byte(p, 0);
@@ -1111,28 +1113,18 @@ void cs2d_sv_send_join_snapshot(cs2d_server_t *sv, cs2d_sv_conn_t *c)
         cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 9); cs2d_pkt_w_byte(p, 0);
     }
 
-    /* Section 11: weapon settings, wbank of PTR_DAT_14059d3a8 = [u16 size][u32 raw size][zlib]. The raw
-     * table (170 bytes) is the one the shipped sys/weapons.cfg produced in proxy_ph1.log; building it from
-     * the weapon tables is not ported yet */
+    /* Section 11: weapon settings, wbank of PTR_DAT_14059d3a8 = [u16 size][u32 raw size][zlib]. The
+     * raw table is built by cs2d_weapons_wbank_raw (FUN_140112bc0) */
     {
-        static const uint8_t raw[] = {
-            0x01,0x01,0x7c,0x03,0x09,0x02,0x01,0x7c,0x03,0x09,0x03,0x01,0x7c,0x06,0x0d,0x04,0x01,0x7c,0x04,0x09,
-            0x05,0x01,0x7c,0x04,0x07,0x06,0x01,0x7c,0x04,0x05,0x0a,0x04,0x7c,0x0f,0x19,0x0b,0x04,0x7c,0x0a,0x07,
-            0x14,0x01,0x7c,0x00,0x03,0x15,0x02,0x7c,0x00,0x02,0x16,0x00,0x7c,0x00,0x02,0x17,0x01,0x7c,0x00,0x02,
-            0x18,0x00,0x7c,0x00,0x04,0x1e,0x00,0x7c,0x01,0x03,0x1f,0x00,0x7c,0x01,0x04,0x20,0x00,0x7c,0x01,0x03,
-            0x21,0x00,0x7c,0x01,0x04,0x22,0x00,0x7c,0x01,0x19,0x23,0x00,0x7c,0x01,0x41,0x24,0x00,0x7c,0x01,0x06,
-            0x25,0x00,0x7c,0x01,0x06,0x26,0x00,0x7c,0x01,0x03,0x27,0x00,0x7c,0x01,0x03,0x28,0x03,0x7c,0x01,0x02,
-            0x29,0x00,0x7c,0x00,0x02,0x2d,0x00,0x7c,0x01,0x1e,0x2e,0x00,0x7c,0x01,0x03,0x2f,0x00,0x7c,0x01,0x32,
-            0x30,0x00,0x7c,0x01,0x14,0x31,0x00,0x7c,0x01,0x14,0x58,0x00,0x7c,0x00,0x05,0x5a,0x04,0x7c,0x01,0x02,
-            0x5b,0x04,0x7c,0x01,0x03,0x5c,0x00,0x00,0x00,0x02
-        };
+        uint8_t raw[256];
+        size_t raw_n = cs2d_weapons_wbank_raw(sv->set.mp_recoil, raw, sizeof(raw));
         uint8_t z[512];
         uLongf zn = sizeof(z);
-        compress2(z, &zn, raw, sizeof(raw), Z_DEFAULT_COMPRESSION);
+        compress2(z, &zn, raw, (uLong)raw_n, Z_DEFAULT_COMPRESSION);
         p = sv_packet(sv, c, true, true);
         cs2d_pkt_w_byte(p, 252); cs2d_pkt_w_byte(p, 7); cs2d_pkt_w_byte(p, 11);
         cs2d_pkt_w_short(p, (uint16_t)(zn + 4));
-        cs2d_pkt_w_int(p, (int32_t)sizeof(raw));
+        cs2d_pkt_w_int(p, (int32_t)raw_n);
         for (uLongf i = 0; i < zn; i++) cs2d_pkt_w_byte(p, z[i]);
     }
 
@@ -1430,7 +1422,7 @@ static void sv_recv_join1(cs2d_server_t *sv, cs2d_sv_conn_t *c, sv_rd_t *r)
         } else if (sv->set.sv_maxclientsperip > 0 &&
                    sv_count_ip(sv, ip_str) >= sv->set.sv_maxclientsperip) {
             /* DAT_1405a6514 clients per IP -> status 23 */
-            sv_join_fail_log(c, name, "can't join (too many clients from this IP)");
+            sv_join_fail_log(c, name, "can't join (too many clients with this ip)");
             status = 23;
         } else if (!ver_ok) {
             sv_join_fail_log(c, name, "can't join (wrong game version)");
@@ -1771,16 +1763,10 @@ static void sv_remove_player(cs2d_server_t *sv, int id, int reason, const char *
 {
     if (id < 1 || id > CS2D_SV_MAX_PLAYERS || !sv->players[id].used) return;
     bool has_reason = (reason_str && reason_str[0] != '\0');
-    if (reason == 2 || reason >= 16) {
-        if (has_reason) {
-            cs2d_server_print("%s has been kicked (%s)", sv->players[id].name, reason_str);
-        } else {
-            cs2d_server_print("%s has been kicked", sv->players[id].name);
-        }
-    } else {
-        cs2d_server_print("%s has left the game", sv->players[id].name);
-    }
-    cs2d_sv_lua_hook_leave(sv, id, has_reason ? reason_str : "");
+    /* The original prints nothing to its console here (proxy + dedicated log 2026-10-24: a normal leave and a kick
+     * left only the Lua hook lines); the `leave` hook gets the numeric reason id (0 / 2 / 16 observed), not the text. */
+    cs2d_sv_lua_hook_leave(sv, id, reason);
+
     /* mp_deathdrop and mp_killbuildings also apply when a player leaves (help.php) */
     cs2d_sv_death_drop(sv, id);
     cs2d_sv_kill_player_buildings(sv, id, sv->set.mp_killbuildings);
@@ -3630,7 +3616,6 @@ void cs2d_sv_handle_datagram(cs2d_server_t *sv, const struct sockaddr_in *from, 
     if (!c) return;
     c->last_recv = sv_now();
     c->bytes_in += (uint32_t)n;
-    sv->bytes_in_acc += (uint32_t)n;
 
     /* Control triples: 1 = ACK of our reliable id; 2..4 carry connection data (3 = 0x32 in the first
      * packet of the original client, not identified) */
@@ -3659,7 +3644,7 @@ void cs2d_sv_handle_datagram(cs2d_server_t *sv, const struct sockaddr_in *from, 
 /* Periodic messages (0x1401e505d, once per second: DAT_1407dff88)                                  */
 /* ------------------------------------------------------------------------------------------------ */
 
-/* [247] ping list (0x1401e505d): [247, n u8, ticks u8, in/8 u16, out/8 u16, n x {id u8, ping u16}]
+/* [247] ping list (0x1401e505d): [247, n u8, ticks u8, sent/8 u16, received/8 u16, n x {id u8, ping u16}]
  * over every player in a team (Tpl +0x230 > 0). `ticks` is DAT_1407dfe28, the two u16 are
  * DAT_1407dfe34 / DAT_1407dfe30 / 8. The ping is 0xfffe for a bot (Tpl +0x198), else
  * min(Tpl +0xd0, 30000); the client writes it into Tpl.ping and draws the scoreboard latency
@@ -3678,11 +3663,11 @@ size_t cs2d_sv_build_pinglist(const cs2d_server_t *sv, uint8_t *out, size_t max_
     out[k++] = 247;
     out[k++] = (uint8_t)cnt;
     out[k++] = (uint8_t)sv->fps;                                  /* DAT_1407dfe28 */
-    uint16_t bin = (uint16_t)(sv->bytes_in_sec / 8);              /* DAT_1407dfe34 / 8 */
-    uint16_t bout = (uint16_t)(sv->bytes_out_sec / 8);            /* DAT_1407dfe30 / 8 */
-    memcpy(out + k, &bin, 2);
+    uint16_t bsent = (uint16_t)(sv->bytes_sent_sec / 8);          /* DAT_1407dfe34 / 8 */
+    uint16_t brecv = (uint16_t)(sv->bytes_recv_sec / 8);          /* DAT_1407dfe30 / 8 */
+    memcpy(out + k, &bsent, 2);
     k += 2;
-    memcpy(out + k, &bout, 2);
+    memcpy(out + k, &brecv, 2);
     k += 2;
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
         const cs2d_sv_player_t *o = &sv->players[i];
@@ -3700,8 +3685,8 @@ static void sv_second(cs2d_server_t *sv)
     uint32_t now = sv_now();
     cs2d_sv_ai_second(sv);
     sv->frames = 0;
-    sv->bytes_in_sec = sv->bytes_in_acc * 8;
-    sv->bytes_out_sec = sv->bytes_out_acc * 8;
+    sv->bytes_recv_sec = sv->bytes_in_acc;
+    sv->bytes_sent_sec = sv->bytes_out_acc;
     sv->bytes_in_acc = sv->bytes_out_acc = 0;
 
     /* The per-player seconds counter at Tpl +0x3fc (capped at 499) drives the mp_dmspawnmoney limit */
@@ -3946,6 +3931,30 @@ bool cs2d_server_start(cs2d_server_t *sv, const char *map, int port, bool offlin
     return true;
 }
 
+/* Main loop timing of cs2d_dedicated.exe (0x14019d3a0..0x14019d94a, server only). Each loop adds the time since
+ * the previous loop (ms) to a 180-entry ring (0x1405acdd0, newest first); the number of newest entries needed for
+ * their sum to pass 999 ms (at most 180) goes into a second ring (0x1405acdc8); DAT_1407dfe28, the "ticks" byte of
+ * [247], is the minimum of that ring. Both rings start at 0 (assumed: BlitzMax int arrays; not read at runtime). */
+static void sv_frame_stats(cs2d_server_t *sv, uint32_t now)
+{
+    if (sv->last_frame_ms > 0) {
+        memmove(sv->frame_dt + 1, sv->frame_dt, sizeof(sv->frame_dt) - sizeof(sv->frame_dt[0]));
+        sv->frame_dt[0] = now - sv->last_frame_ms;
+        uint32_t sum = 0;
+        int cnt = 0;
+        while (cnt < 180) {
+            sum += sv->frame_dt[cnt++];
+            if (sum > 999) break;
+        }
+        memmove(sv->fps_hist + 1, sv->fps_hist, sizeof(sv->fps_hist) - sizeof(sv->fps_hist[0]));
+        sv->fps_hist[0] = (uint32_t)cnt;
+        uint32_t mn = sv->fps_hist[0];
+        for (int i = 1; i < 180; i++) if (sv->fps_hist[i] < mn) mn = sv->fps_hist[i];
+        sv->fps = (int)mn;
+    }
+    sv->last_frame_ms = now;
+}
+
 void cs2d_server_frame(cs2d_server_t *sv)
 {
     s_active_sv = sv;
@@ -3955,6 +3964,7 @@ void cs2d_server_frame(cs2d_server_t *sv)
         cs2d_socklen_t fl = sizeof(from);
         int n = recvfrom(sv->sock, (char *)buf, sizeof(buf), 0, (struct sockaddr *)&from, &fl);
         if (n < 0) break;
+        sv->bytes_in_acc += (uint32_t)n; /* Tudp counts every recvfrom, also the info queries (0x1407e06d8) */
         cs2d_sv_handle_datagram(sv, &from, buf, n);
     }
 
@@ -3993,9 +4003,8 @@ void cs2d_server_frame(cs2d_server_t *sv)
     cs2d_sv_lua_frame(sv);
 
     sv->frames++;
+    sv_frame_stats(sv, now);
     if (now - sv->second_ms >= 1000) {
-        uint32_t elapsed = now - sv->second_ms;
-        sv->fps = (uint32_t)(((uint64_t)sv->frames * 1000) / elapsed);
         sv->second_ms = now;
         sv_second(sv);
     }

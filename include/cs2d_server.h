@@ -364,9 +364,12 @@ typedef struct {
     /* the one-second timer and its counters (0x1401e505d) */
     uint32_t           second_ms;
     int                ping_ctr, pinglist_ctr;
-    int                frames, fps;     /* DAT_1407dfe28 */
-    uint32_t           bytes_in_sec, bytes_out_sec; /* DAT_1407dfe34 / DAT_1407dfe30 (bits) */
-    uint32_t           bytes_in_acc, bytes_out_acc;
+    int                frames, fps;     /* fps = DAT_1407dfe28: min of fps_hist (see sv_frame_stats) */
+    uint32_t           last_frame_ms;   /* DAT_1407dffd8: previous loop time (0 = none yet) */
+    uint32_t           frame_dt[180];   /* ring 0x1405acdd0: loop time deltas in ms, newest first */
+    uint32_t           fps_hist[180];   /* ring 0x1405acdc8: frames covering the last second, newest first */
+    uint32_t           bytes_sent_sec, bytes_recv_sec; /* DAT_1407dfe34 / DAT_1407dfe30 (bytes per second) */
+    uint32_t           bytes_in_acc, bytes_out_acc; /* recvfrom / sendto totals of this second (Tudp 0x1407e06d8 / 0x1407e06dc) */
     /* serverinfo lines (sys/serverinfo.txt) */
     char             (*info_lines)[256];
     int                info_count;

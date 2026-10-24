@@ -2792,13 +2792,13 @@ void cs2d_sv_lua_hook_join(cs2d_server_t *sv, int id)
 static int push_leave(lua_State *L, void *ctx) {
     hook_args_t *a = (hook_args_t *)ctx;
     lua_pushinteger(L, a->a);
-    lua_pushstring(L, a->s1 ? a->s1 : "");
+    lua_pushinteger(L, a->b);
     return 2;
 }
 
-void cs2d_sv_lua_hook_leave(cs2d_server_t *sv, int id, const char *reason)
+void cs2d_sv_lua_hook_leave(cs2d_server_t *sv, int id, int reason)
 {
-    hook_args_t a = { .a = id, .s1 = reason };
+    hook_args_t a = { .a = id, .b = reason };
     dispatch_hook(sv, "leave", 2, push_leave, &a, NULL, 0);
 }
 

@@ -6793,6 +6793,29 @@ static bool test_dedicated_trigger_use(void)
     return true;
 }
 
+/* Join snapshot [252,7,11] raw wbank (FUN_140112bc0): the table the shipped sys/weapons.cfg produced in proxy_ph1.log */
+static bool test_join_wbank_raw(void)
+{
+    printf("\n=== Testing Dedicated Server: join section 11 wbank ===\n");
+    static const uint8_t cap[] = {
+        0x01,0x01,0x7c,0x03,0x09,0x02,0x01,0x7c,0x03,0x09,0x03,0x01,0x7c,0x06,0x0d,0x04,0x01,0x7c,0x04,0x09,
+        0x05,0x01,0x7c,0x04,0x07,0x06,0x01,0x7c,0x04,0x05,0x0a,0x04,0x7c,0x0f,0x19,0x0b,0x04,0x7c,0x0a,0x07,
+        0x14,0x01,0x7c,0x00,0x03,0x15,0x02,0x7c,0x00,0x02,0x16,0x00,0x7c,0x00,0x02,0x17,0x01,0x7c,0x00,0x02,
+        0x18,0x00,0x7c,0x00,0x04,0x1e,0x00,0x7c,0x01,0x03,0x1f,0x00,0x7c,0x01,0x04,0x20,0x00,0x7c,0x01,0x03,
+        0x21,0x00,0x7c,0x01,0x04,0x22,0x00,0x7c,0x01,0x19,0x23,0x00,0x7c,0x01,0x41,0x24,0x00,0x7c,0x01,0x06,
+        0x25,0x00,0x7c,0x01,0x06,0x26,0x00,0x7c,0x01,0x03,0x27,0x00,0x7c,0x01,0x03,0x28,0x03,0x7c,0x01,0x02,
+        0x29,0x00,0x7c,0x00,0x02,0x2d,0x00,0x7c,0x01,0x1e,0x2e,0x00,0x7c,0x01,0x03,0x2f,0x00,0x7c,0x01,0x32,
+        0x30,0x00,0x7c,0x01,0x14,0x31,0x00,0x7c,0x01,0x14,0x58,0x00,0x7c,0x00,0x05,0x5a,0x04,0x7c,0x01,0x02,
+        0x5b,0x04,0x7c,0x01,0x03,0x5c,0x00,0x00,0x00,0x02
+    };
+    uint8_t raw[256];
+    size_t n = cs2d_weapons_wbank_raw(0, raw, sizeof(raw));
+    if (n != sizeof(cap)) TEST_FAIL("wbank length", "expected 170 bytes");
+    if (memcmp(raw, cap, sizeof(cap)) != 0) TEST_FAIL("wbank bytes", "differs from the proxy capture");
+    TEST_PASS("Dedicated server: section 11 wbank built from the weapon tables matches the capture");
+    return true;
+}
+
 /*
  * drop/collect hook arguments (help.php):
  *   drop(id, iid, type, ammoin, ammo, mode, xpos, ypos)  -> 1 cancels the drop
@@ -6893,6 +6916,35 @@ static bool test_dedicated_drop_collect_hooks(void)
     cs2d_sv_lua_close(sv);
     free(sv);
     TEST_PASS("Dedicated server: drop(id,iid,type,ammoin,ammo,mode,x,y) and collect(...) arguments");
+    return true;
+}
+
+/* leave hook: the second argument is the numeric reason id (proxy + dedicated Lua probe 2026-10-24,
+ * tools/agent/lua/leave_text_probe.lua: kick 2 "test reason" -> 16, kick 2 -> 2), never the reason text */
+static bool test_dedicated_leave_hook_reason(void)
+{
+    printf("\n=== Testing Dedicated Server: leave hook reason id ===\n");
+    cs2d_server_t *sv = (cs2d_server_t *)calloc(1, sizeof(*sv));
+    if (!sv) TEST_FAIL("leave hook", "out of memory");
+    sv->sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv->set);
+    sv->set.mp_luaserver[0] = '\0';
+    if (!cs2d_sv_lua_init(sv) || !sv->lua) TEST_FAIL("leave hook", "Lua init failed");
+    if (!cs2d_sv_lua_dostring(sv,
+        "leave_log=''\n"
+        "function h_leave(id,r) leave_log=leave_log..id..':'..type(r)..':'..tostring(r)..';' end\n"
+        "addhook('leave','h_leave')\n"))
+        TEST_FAIL("leave hook", "hook setup failed");
+    sv->players[1].used = sv->players[1].joined = true;
+    sv->players[2].used = sv->players[2].joined = true;
+    sv->players[3].used = sv->players[3].joined = true;
+    cs2d_sv_kick(sv, 1, "test reason");
+    cs2d_sv_kick(sv, 2, NULL);
+    if (!cs2d_sv_lua_dostring(sv, "assert(leave_log == '1:number:16;2:number:2;', leave_log)"))
+        TEST_FAIL("leave hook", "expected numeric reasons 16 (with text) and 2 (without)");
+    cs2d_sv_lua_close(sv);
+    free(sv);
+    TEST_PASS("Dedicated server: the leave hook receives the numeric reason id");
     return true;
 }
 
@@ -11577,11 +11629,11 @@ static bool test_dedicated_p1_rules(void)
     sv.players[3].used = true;  sv.players[3].team = 1; sv.players[3].bot = true; sv.players[3].ping = 0xfffe;
     sv.players[4].used = true;  sv.players[4].team = 0; sv.players[4].ping = 5;
     sv.fps = 50;
-    sv.bytes_in_sec = 80;   /* / 8 = 10 */
-    sv.bytes_out_sec = 16;  /* / 8 = 2 */
+    sv.bytes_sent_sec = 80;  /* / 8 = 10 */
+    sv.bytes_recv_sec = 16;  /* / 8 = 2 */
     uint8_t pinglist[128];
     static const uint8_t pinglist_want[] = {
-        247, 3, 50, 10, 0, 2, 0,      /* [247, n=3, ticks=50, in=10, out=2] */
+        247, 3, 50, 10, 0, 2, 0,      /* [247, n=3, ticks=50, sent=10, received=2] */
         1, 0x10, 0x00,                 /* player 1: 16 ms */
         2, 0x30, 0x75,                 /* player 2: 42000 clamped to 30000 */
         3, 0xfe, 0xff                  /* player 3 (bot): 0xfffe */
@@ -11595,7 +11647,7 @@ static bool test_dedicated_p1_rules(void)
         TEST_FAIL("ping list [247]", "a short buffer must be refused");
     }
     memset(sv.players, 0, sizeof(sv.players));
-    sv.fps = sv.bytes_in_sec = sv.bytes_out_sec = 0;
+    sv.fps = sv.bytes_sent_sec = sv.bytes_recv_sec = 0;
 
     /* server spawn commands (help.php): spawnitem / spawnobject / spawnprojectile */
     memset(sv.items, 0, sizeof(sv.items));
@@ -12941,7 +12993,9 @@ int main(int argc, char **argv)
     RUN_TEST(test_server_spray_vote_leaderboard_messages);
     RUN_TEST(test_server_entity_and_world_interactions);
     RUN_TEST(test_dedicated_trigger_use);
+    RUN_TEST(test_join_wbank_raw);
     RUN_TEST(test_dedicated_drop_collect_hooks);
+    RUN_TEST(test_dedicated_leave_hook_reason);
     RUN_TEST(test_server_phase2_respawn_and_speeder);
     RUN_TEST(test_server_phase3_rcon_and_commands);
     RUN_TEST(test_server_phase4_lua);

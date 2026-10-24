@@ -277,9 +277,7 @@ Lua function and script must work; final test = the server scripts in `C:\C4`. D
 vendored** (user, 2026-10-15; LuaJIT may become a build option later); **bots: AI ported 2026-10-20** (was "present,
 no AI"). Knowledge: `knowledge/dedicated-server.md`; test: `tools/agent/capture_server.sh`. Phases 1-8 and the
 2026-10-19 gap audit are done (history in `worklog/archive.md`, "Moved from OPEN_ISSUES"); what is left:
-- **Join snapshot:** section 11 is still the 170-byte capture literal (build it from the weapon tables), section 13 is
-  always `""`; `FUN_1401dba60` (3 bytes at the end of `[252,6]`) is hardcoded zeros; player id allocation order
-  (`FUN_140098050`); `[247]` counters are ours (fps / bytes); `[253]` leave text.
+- **Join snapshot:** section 11 is built (`cs2d_weapons_wbank_raw`, 2026-10-24) but its recoil bytes for `mp_recoil 0` are the capture defaults (not decompiled) and `mp_recoil 1` uses the cfg values (unverified). Section 13 (`FUN_140107b70`, the mod list `PTR_DAT_1405a6748`) is `""` only because we load no mods. `FUN_1401dba60` (end of `[252,6]`) writes 3 lists - PhysicsPlatform (`DAT_1407df510`), PhysicsObject (`df5e0`), PhysicsController (`df400`), each a count byte + entries (id, x/y +32678, angle, ...); we have no physics engine (`sv_physics` is only echoed), so the 3 zeros are the empty case. Missing: the physics objects themselves. Player id allocation (`FUN_140098050`) is verified = our lowest free id 1..32.
 - **Estimated, not measured:** resend interval / timeout (500 ms / 30 s).
 - **Secret generator:** still a random 10 letters; `PTR_PTR_1405a6800`'s generator is not decompiled.
 - **CVars still inert:** `mp_autogamemode`, `mp_shotweakening` (needs a server-side shot ray; our damage arrives from

@@ -684,3 +684,46 @@ void cs2d_calculate_damage(
         }
     }
 }
+
+/*
+ * Section 11 of the join snapshot [252,7,11] (cs2d_dedicated.exe FUN_140112bc0, end of loadweaponcfg): 5 bytes per
+ * weapon whose slot (PTR_DAT_14059d428) is 1 or 2, in id order: id, recoil_accuracy (d408), recoil_recover (d400),
+ * recoil_attack (d3f8), firedelay (d488). The file read is sys/weapons_recoil.cfg when mp_recoil != 0, else
+ * sys/weapons.cfg (strings at 0x1405bc0a0 / 0x1405bc0e0). weapons.cfg only sets firedelay, so with mp_recoil 0 the
+ * recoil bytes are the dedicated's built-in defaults below (read from the 170-byte table of proxy_ph1.log, which
+ * the shipped weapons.cfg produced); the id 92 is an item we do not model (appended as in that capture).
+ */
+static const uint8_t g_wbank_recoil_default[][4] = {
+    {1,1,124,3}, {2,1,124,3}, {3,1,124,6}, {4,1,124,4}, {5,1,124,4}, {6,1,124,4},
+    {10,4,124,15}, {11,4,124,10}, {20,1,124,0}, {21,2,124,0}, {22,0,124,0}, {23,1,124,0},
+    {24,0,124,0}, {30,0,124,1}, {31,0,124,1}, {32,0,124,1}, {33,0,124,1}, {34,0,124,1},
+    {35,0,124,1}, {36,0,124,1}, {37,0,124,1}, {38,0,124,1}, {39,0,124,1}, {40,3,124,1},
+    {41,0,124,0}, {45,0,124,1}, {46,0,124,1}, {47,0,124,1}, {48,0,124,1}, {49,0,124,1},
+    {88,0,124,0}, {90,4,124,1}, {91,4,124,1},
+};
+
+size_t cs2d_weapons_wbank_raw(int mp_recoil, uint8_t *out, size_t cap)
+{
+    if (!g_weapons_initialized) cs2d_weapons_init();
+    size_t n = 0;
+    for (int id = 0; id < CS2D_MAX_WEAPONS; id++) {
+        const cs2d_weapon_def_t *w = &g_weapon_table[id];
+        if (!w->name || (w->cs2d_slot != 1 && w->cs2d_slot != 2)) continue;
+        if (n + 5 > cap) break;
+        uint8_t acc = 0, rec = 124, atk = 0;
+        if (mp_recoil != 0) {
+            acc = (uint8_t)w->recoil_accuracy; rec = (uint8_t)w->recoil_recover; atk = (uint8_t)w->recoil_attack;
+        } else {
+            for (size_t i = 0; i < sizeof(g_wbank_recoil_default) / sizeof(g_wbank_recoil_default[0]); i++) {
+                if (g_wbank_recoil_default[i][0] == id) {
+                    acc = g_wbank_recoil_default[i][1]; rec = g_wbank_recoil_default[i][2];
+                    atk = g_wbank_recoil_default[i][3];
+                }
+            }
+        }
+        out[n++] = (uint8_t)id; out[n++] = acc; out[n++] = rec; out[n++] = atk;
+        out[n++] = (uint8_t)(w->fire_delay_ticks > 255 ? 255 : w->fire_delay_ticks);
+    }
+    if (n + 5 <= cap) { out[n++] = 92; out[n++] = 0; out[n++] = 0; out[n++] = 0; out[n++] = 2; }
+    return n;
+}

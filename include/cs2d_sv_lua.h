@@ -87,7 +87,7 @@ int  cs2d_sv_lua_sethookstate(cs2d_server_t *sv, const char *hook_name, int stat
 
 /* Specific hook triggers */
 void cs2d_sv_lua_hook_join(cs2d_server_t *sv, int id);
-void cs2d_sv_lua_hook_leave(cs2d_server_t *sv, int id, const char *reason);
+void cs2d_sv_lua_hook_leave(cs2d_server_t *sv, int id, int reason); /* reason id, not text (help.php; proxy 2026-10-24) */
 int  cs2d_sv_lua_hook_team(cs2d_server_t *sv, int id, int team, int look);
 int  cs2d_sv_lua_hook_spawn(cs2d_server_t *sv, int id, char *out_items, size_t max_items);
 void cs2d_sv_lua_hook_die(cs2d_server_t *sv, int victim, int killer, int weapon, int x, int y, int killerobject);

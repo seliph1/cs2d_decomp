@@ -9,6 +9,9 @@ void cs2d_weapons_init(void);
 /* Load weapon configuration from sys/weapons.cfg or sys/weapons_recoil.cfg (FUN_140112bc0) */
 bool cs2d_weapons_load_cfg(const char *filepath);
 
+/* Raw wbank of the join snapshot section 11 (FUN_140112bc0): 5 bytes per slot 1/2 weapon; returns the length */
+size_t cs2d_weapons_wbank_raw(int mp_recoil, uint8_t *out, size_t cap);
+
 /* Get weapon definition by ID (1..91) */
 const cs2d_weapon_def_t *cs2d_weapon_get(uint8_t weapon_id);
 
