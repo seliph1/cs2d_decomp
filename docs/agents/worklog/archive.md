@@ -1,5 +1,766 @@
 # Work log archive (older entries, newest first). Do not read in full; grep it.
 
+## 2026-10-20 — Cline — dedicated: ping meter (`mp_anticlock` + `[247]`)
+
+- **Goal:** the original client must show the scoreboard latency of every player.
+- **Wire path (verified):** every 2nd second the server sends `[229, srv_ts]` (default) or
+  `[249, srv_ts]`; the original client replies with the same timestamp; the server stores
+  `(now - start_ms) - ts` in `Tpl +0xd0` and every 3rd second broadcasts
+  `[247, n, ticks, in/8 u16, out/8 u16, n x {id, ping}]`. The scoreboard (`Thud_scoreboard`
+  0x14012f2c0) is fed only by that list (`0xfffe` = Bot, `0xffff` = Server).
+- **Real cvar:** the dedicated's name table has `mp_anticlock` (0x140141e51 / `DAT_1405a64e4`), not
+  the invented `sv_antiaccel`. With `mp_anticlock 0` the original sends `[249]` (proxy
+  `proxy_anticlock0.log`); the default sends `[229]`. Our settings only accepted the fake name, so
+  the repository's `sys/server.cfg` line (`mp_anticlock 0`) was ignored, and the original dedicated
+  reports `sv_antiaccel` as an unknown command. Renamed the field/cvar and added it to the getter.
+- **Testability:** extracted `cs2d_sv_build_pinglist` (the payload builder used by the 1 s timer).
+- **Verified:** the original client against `cs2d_server.exe` shows `Latency 16` (screenshot
+  `tools/agent/out/srv_ping_score.png`); after the rename, with `mp_anticlock 0`, our server sends
+  `[249]`, the client replies and `[247]` reports 15 ms. `test_cs2d.exe` -> **110 / 110** (new
+  assertions: mp_anticlock get/set, `[249]` measurement, exact `[247]` bytes, short-buffer refusal).
+- **Residual:** the original also derives `clock_diff` / `clock_ratio` from the `[229]` reply and
+  kicks for "Speedhack Detected"; our port only uses it for latency (logged in OPEN_ISSUES).
+
+## 2026-10-20 — Cline — [253] do kick não chegava ao cliente expulso
+
+- **Sintoma (cliente original contra o nosso dedicated):** ao ser expulso, o cliente só perdia a
+  conexão; não mostrava o motivo do kick.
+- **Causa:** `sv_remove_player` marcava `players[id].used = false` **antes** do loop de `[253]`, então
+  `conn_of_player(id)` retornava NULL e o próprio cliente expulso não recebia
+  `[253, id, 16, len, reason]`. O original (`FUN_1401502a0`) percorre a lista de jogadores ainda
+  joined e inclui o que está saindo; no cliente `FUN_1402eee40` -> `FUN_1401c7500`, a mensagem
+  "Disconnect Reason: ..." só é mostrada quando o id do `[253]` é o jogador local.
+- **Correção:** o broadcast de `[253]` roda com o jogador ainda `used`; `used = false` passou para
+  depois do loop. Para `reason >= 16` a string u8 é sempre anexada (mesmo vazia), como em
+  `0x140150b12`.
+- **Handshake de saída (2026-10-20):** o cliente que clica em Disconnect envia `[253,0]` e **espera
+  a resposta `[253, id, 0]` do servidor** para concluir (`FUN_1401c7500` em modo client devolve sem
+  fechar; `FUN_1402eee40` -> `FUN_1401c7500(..., 0, ...)` fecha). O handler `[253]` agora dá
+  `sv_flush` na conexão depois de `sv_remove_player`, antes de `active = false`; sem isso o cliente
+  fica eternamente em "Disconnecting / Please wait". `sv_conn_reset` (novo hello do mesmo endereço)
+  descarta o buffer, então um handshake duplicado não gera esse `[253]`.
+- **Teste:** `test_dedicated_kick_message` confere `fd 01 10 0b "Test reason"` na conexão do
+  expulso, a resposta `fd 01 00` na fila do cliente que saiu normalmente, e o mesmo anúncio no outro
+  jogador. `test_cs2d.exe` -> **110 / 110**.
+
+
+
+## 2026-10-20 — Cline — Dedicated: UTF-8 text fields and Func_Teleport walkover
+
+- **Symptoms:** WQ2D Lua messages with accents arrived in game as `"nÃ£o"`; walking onto the map's
+  `Func_Teleport` entities in `fun_roleplay` did not move the player.
+- **Causes:** `cs2d_sv_msg`, the Lua menu/hudtxt builders and the `sys/serverinfo.txt` lines expanded
+  each UTF-8 byte to one UTF-16 code unit, so accented text was double-encoded. The server walkover
+  (`cs2d_sv_validate_move`) only handled the Tdo Teleporter Entrance/Exit buildings and never the
+  `CS2D_ENT_FUNC_TELEPORT` map entity (222 in fun_roleplay).
+- **Fixes:** new `cs2d_net_utf8_to_utf16` (valid UTF-8, surrogate pairs, Latin-1 fallback) used by
+  `cs2d_sv_msg`, `sv_sound`, menu `[235]`, hudtxt `[234]`, server info `[240,51]`, our client's chat /
+  Lua-menu echo, and the client's UTF-16 -> UTF-8 decoder; Windows console now uses `CP_UTF8`.
+  `cs2d_sv_validate_move` teleports to the centre of `(ints[0], ints[1])` for an active Func_Teleport
+  and sends `[15]`; `Trigger_Move` is now gated by entity state like the client.
+- **Follow-up (escaped UTF-8):** the engine's textual form documented by the Changelog
+  (`"UTF-8:\x68\x65..."`) is now decoded by `cs2d_net_utf8_unescape`, including WQ2D's
+  `\xC2xA9` spelling (first byte `\xNN`, continuation bytes bare `xNN`). Applied to `msg`/`msg2`/
+  `sv_msg`, Lua `menu`, `hudtxt`, `print` and `parse` (WQ2D's `parse(utf8.convert(cmd))`).
+- **Center tag:** `cs2d_sv_msg` now mirrors `FUN_140153900` (`0x1401546a0`): text ending in the
+  uppercase `@C` loses those two characters and is sent as `[240, 0, 2, ...]` (center), otherwise
+  mode 1. The client's mode-2 path calls `Thud_msg.add_center`.
+- **Tests:** `test_dedicated_map_teleport` (state 0 teleports, state 1 does not, `[15]` bytes) and
+  `test_dedicated_utf8_messages` (`[240]`/`[234]`/`[235]`, surrogate pair, the `©` example,
+  `parse` of an escaped command, and `@C` -> mode 2 with the tag removed). `test_cs2d.exe` -> **109 / 109**.
+
+
+
+## 2026-10-20 — Cline — Join original travava em "Loading map state" (seção 4 sem terminador)
+
+- **Sintoma (cliente original contra o nosso dedicated):** a tela ficava em `Loading server data... /
+  Loading map state...` e o console repetia `ERROR: unexpected joindata 5 (step 4 expected)` (depois 6,
+  10, 7, 8, 9, 11, 12, 13 e 200).
+- **Causa:** o cliente original só sai da seção 4 (estados de entidade) quando recebe um pacote
+  `[252,7,4,0]`. O nosso `cs2d_sv_send_join_snapshot` enviava a seção 4 uma única vez, com até 255
+  registros e **sem o count-0**; o cliente continuava esperando `joindata 4` e rejeitava todas as
+  seções seguintes.
+- **Correção:** seção 4 agora é enviada em blocos de 180 registros (como o original) e termina com
+  `[252,7,4,0]`. Regressão em `test_dedicated_trigger_graph` (varre os datagramas pendentes atrás de
+  `fc 07 04 00`). `test_cs2d.exe` -> **107 / 107**.
+
+
+## 2026-10-20 — Cline — WQ2D roleplay: trigger graph, bot reqcld, API types
+
+- **Symptom:** the WQ2D RP script loaded but did not initialise `fun_roleplay`: `rp.shutdown` was
+  rejected, two `geoip_lookup` timer errors appeared for the bots, `login.query` was never loaded,
+  and the map's Trigger_Start / Trigger_If chains never ran (no doors, items, lights or dungeons).
+- **Root causes and fixes:**
+  - `shutdown` was missing from the hook table (it exists in 1.0.1.8; probe: `rp.shutdown` adds to
+    `mapchange` and `shutdown`). Added.
+  - `player(bot,"ip")` was empty; the original returns `"0.0.0.0"`. Set in `cs2d_sv_bot_add`;
+    `player(bot,"ping")` now reports 0 while the internal value stays 0xfffe.
+  - Bots now answer `reqcld` (clientdata modes 0..6; mode 4 carries the file SHA-256), so
+    `menu.join`/`menu.clientdata` load `login.query` like the original.
+  - Implemented the server-side entity trigger graph in `cs2d_sv_game.c`: Trigger_Start at round
+    start, Trigger_If (Lua `_cs2d_trigger_if=` chunk), Trigger_Once, Trigger_Delay (silent
+    forwarding), Trigger_Move on walkover; `trigger`/`triggerposition` and [31]/Trigger_Use paths
+    now use it. The Lua `trigger` hook runs once per list name and receives a boolean source;
+    `triggerentity` can cancel a single entity. Plain entities only toggle their state and do not
+    propagate their own trigger list.
+  - API corrections verified with a probe: `game("dedicated")` boolean, `game("timeleft")`,
+    `map("xsize"/"ysize")` = highest tile index, `map("tilesize")` 0, `map("botnodes")`,
+    `map("nobuying"/"noweapons")`, `entity("state")` boolean, full `strs[0]`.
+  - `steamstats` returns false (was an always-truthy empty table), fixing
+    `index.lua:2254 attempt to compare number with table`.
+  - `move`/`movetile`/`walkover` hooks are now called; the buy window is skipped before the first
+    round clock; entity trigger/str0 buffers are 256 bytes (only `strs[0]` needs it, keeping the
+    test binary under the 2 GB static-data limit).
+- **Verification:** `fun_roleplay` startup has no LUA/hook/timer errors, `login.query` loads twice,
+  the first 564 trigger-hook calls match the original exactly, object counts (27 Triple Turret / 57
+  Turret) and 120 items match. Residual: 43 extra state-1 entities / 22 extra hook calls after 16 s
+  (later If/Delay cascades; logged in OPEN_ISSUES). `test_cs2d.exe` -> **107 / 107**.
+
+
+
+## 2026-10-20 — Cline — Fix: imagens-projétil do C4 colidindo/paradas (Ttween não existia no servidor)
+
+- **Sintoma:** `cm.create_projectile` / `cm.projectile_update` (`sys/lua/c4/classmod2.lua`) fazem
+  imagens se moverem com `tween_move` e leem `object(img.id,"x"/"y"/"rot")` a cada `always`. No nosso
+  dedicado a imagem ficava na posição de criação (a colisão era verificada sempre no ponto de spawn,
+  daí o "colide no frame 1") e nunca chegava ao alvo.
+- **Causa:** `cs2d_sv_tween_*` apenas montavam e transmitiam `[54]`; **não criavam o `Ttween` local**.
+  O original (`cs2dlua_tween_move` 0x14009dda0 / `Ttween.update` 0x14027fc50) mantém a lista de tweens
+  no servidor e escreve `Tdo.x/y/rot/alpha/color/scale/frame` a cada frame. Sem isso `object()` e
+  `imageparam()` nunca refletiam a animação.
+- **Correção:** cada `cs2d_sv_tween_*` agora chama `cs2d_dynobj_read_tween` com o próprio pacote
+  `[54]` (a partir de `pkt + 1`, após o opcode) e `cs2d_server_frame` roda
+  `cs2d_dynobj_update_tweens` antes do hook `always`.
+- **Bugs de protocolo corrigidos junto:** `tween_move(id,time,x,y[,rot])` aceita o 5º parâmetro e usa
+  o modo 1 (`[54,1,dur,x,y,rot]`, corpo 10); antes só existia o modo 0. `tween_animate(id,speed,mode)`
+  agora tem a assinatura correta e envia `[54,8,speed,mode]` (corpo 5, só o modo; o cliente mantém o
+  frame atual). O leitor `cs2d_dynobj_read_tween` foi ajustado (modo 1 = 10, modo 8 = 5).
+- **`closeplayers`/`hascloseplayers`:** agora exigem jogador existente, vivo, de time (`team >= 1`,
+  `health >= 1`), como `cs2dlua_closeplayers`; slots vazios/mortos não são mais retornados (podiam
+  gerar hit falso no ponto de spawn).
+- **Teste:** `test_dedicated_dynamic_images` ganhou casos de `tween_move` (modo 0 e 1),
+  `tween_animate` e do filtro de `closeplayers`. `test_cs2d.exe` -> **106 / 106**.
+
+
+## 2026-10-20 — Cline — `object()` completo, `player("screenw"/"screenh"/"widescreen")` e espaço Tdo unificado
+
+- **`object(id, prop)` completo** (`cs2dlua_object` em `CS2D.exe` 0x1400dfc40): além dos campos já
+  existentes, agora expõe `typename`, `rootrot` (`rrot`), `rotvar`, `target`, `entity`, `entityx`,
+  `entityy` e `idle` como **número** (`Tdo.idle`, não booleano). `tilex/tiley` usam o arredondamento
+  do original `(int)((x + 1) * 0.03125)` (diferente de `objectat`, que usa `x / 32`). Objeto ou
+  propriedade inexistente -> `false`; `object(0, "table")` continua listando todos os Tdo.
+- **`closeobjects`**: passou a medir a distância euclidiana até a **posição do objeto** (canto
+  superior esquerdo), não até o centro (+16), como `cs2dlua_closeobjects` 0x140059330.
+- **`player(id, "screenw"/"screenh")`** já existiam; adicionado `widescreen` (0/1, inverso do
+  setting 4:3) e cobertos por teste (defaults 850x480, `[232,1]` sobrescreve).
+- **Espaço Tdo unificado (correção):** imagens (typ 40), construções (1..23) e NPCs (typ 30) já
+  dividiam `sv->dynobj` e o mesmo `next_free_id`. O erro estava no round start: só as imagens eram
+  removidas. O original faz `Tdo.freeall()` + `FUN_140190e10` (recria Env_Building e Env_NPC **na
+  ordem das entidades**), então construções de jogador também somem e os IDs voltam a coincidir com
+  o cliente. `cs2d_dynobj_spawn_map_objects` substitui `..._map_buildings` e também cria `Env_NPC`
+  (typ 31 do mapa: rot ints[0], tipo ints[1], health ints[2], `ints[3]==1` não spawna). Saúde padrão
+  dos NPCs (`Tdo.add` 0x1409ed7f0, init 0x14031a195): 1 zombie **150**, 2 headcrab **30**, 3 snark
+  **20**, 4 vortigaunt **200**, 5 soldier **100**. `Tdo.entity` agora é preenchido (spawn do mapa).
+- **Health de construções:** `spawnobject` usa `max_health` do tipo (como `Tdo.inibuilding` no
+  servidor) e `spawnnpc` usa a tabela de saúde do NPC.
+- **Cliente:** em `[22]` faz `dynobj_clear` e roda o mesmo `cs2d_dynobj_spawn_map_objects`, como o
+  `FUN_140190e10` do `CS2D.exe`.
+- **Teste:** `test_dedicated_dynobj_shared_space` (imagem + construção + NPC no mesmo ID space,
+  round start restaura só entidades do mapa) e novas asserções em `object()`/`player()`.
+  `test_cs2d.exe` -> **106 / 106**.
+
+
+## 2026-10-20 — Cline — Fix: `player(id, "mousex"/"mousemapx"/"mousedist")` no dedicated
+
+- **Sintoma:** as propriedades de mouse do `player()` retornavam a posição do jogador
+  (`mousemapx/y`) ou zero (`mousex/y/mousedist`), então `cm.mouse(uid)` do mod C4 mirava no
+  próprio jogador.
+- **Causa:** eram stubs. O servidor original **deriva** o cursor do `rot` + `aim` que o cliente já
+  manda em `[70]/[71]/[72]`, sem tráfego extra (`cs2d_dedicated.exe` 0x1400c936c..).
+- **Fórmula confirmada** com `tools/agent/lua/mouse_probe.lua` no servidor original e no nosso
+  (cliente original): `mousex = 425 + sin(rot)*aim`, `mousey = 240 - cos(rot)*aim` (tela virtual
+  850x480), `mousemapx = x + (mousex-425)`, `mousemapy = y + (mousey-240)`,
+  `mousedist = (int)distância`. Jogador morto ou sem `[70]/[71]/[72]` ainda recebido -> **-1**.
+- **Implementação:** `sv_lua_mouse` em `src/cs2d_sv_lua.c`; `aim_valid` em `cs2d_sv_player_t`,
+  marcado nos opcodes 70/71/72 e limpo no spawn.
+- **Teste:** `test_dedicated_mouse_properties` com os valores medidos no original
+  (`x=1360 y=816 rot=118.07007 aim=254 -> 649/359, 1584/935, 253`) e os casos -1.
+  `test_cs2d.exe` -> **105 / 105**.
+
+## 2026-10-20 — Cline — Fix: `addbind` não chegava ao cliente original (snapshot sem a lista de binds)
+
+- **Sintoma:** o mod C4 registra `addbind("Q")`, `"E"`, `"leftshift"`, `"space"`, `"mouse1"`,
+  `"mouse2"`, mas o hook `key` nunca disparava no cliente original.
+- **Causa:** o `[252,6]` do nosso servidor escrevia **0 binds** (`src/cs2d_server.c`, byte b+22). O
+  `CS2D.exe` só envia `[227]/[228]` para teclas anunciadas nessa lista (confirmado com um probe no
+  `cs2d_dedicated.exe`: 6 binds -> `06 51 00 45 00 a0 00 20 00 02 00 01 00`). Sem a lista, o cliente
+  não reporta nenhuma tecla.
+- **Correção:** `cs2d_sv_build_join_settings` agora recebe o estado Lua e escreve `count u8 + n * u16`
+  com as **VK codes** reais (`cs2d_bind_key_code`). `addbind/removebind/removeallbinds` também
+  transmitem `[224, count u16, count * key u16]` (`lua_bind.SendBindListToClients`, `0x14005be90`), e
+  `sv_resolve_key_name` resolve o VK code para o nome canônico (incluindo `f1`/`kp_*`, que colidem com
+  ASCII e por isso usam `cs2d_bind_vk_name`).
+- **Nomes:** `addbind` valida o nome, normaliza `F1` -> `f1` (a tabela original usa minúsculas) e
+  recusa duplicados/desconhecidos, como `lua_bind.AddBindString`.
+- **Teste:** novo `test_dedicated_lua_binds` cobre `[224]`, o `[252,6]`, duplicados, `F1`, remoção e
+  o hook `key` recebendo `Q` (0x51), `f1` (0x70) e `mouse1` (1); `test_client_lua_bind_events` cobre o
+  envio `[227]/[228]` do cliente. `test_cs2d.exe` -> **104 / 104**.
+- **Cliente:** `cs2d_client` agora guarda a lista de binds de `[252,6]`/`[224]`, mapeia teclas,
+  mouse e wheel para VK codes e envia `[227]/[228]` só para as teclas anunciadas; ao perder o foco,
+  solta as binds pressionadas. Validado de ponta a ponta com `bind_probe.lua`: `Q`, `mouse1` e
+  `mwheelup` chegam ao hook `key` do servidor.
+- **Probe:** `tools/agent/lua/bind_probe.lua` registra os binds e mostra a lista no pacote real.
+
+## 2026-10-20 — Cline — Fix: `spawnprojectile` do dedicated (C4 mod sem projéteis no cliente original)
+
+- **Sintoma:** o mod em `sys/lua/c4` (`cm.spawnprojectile`, que chama
+  `parse("spawnprojectile uid type x y dist rot")`) não gerava projéteis no `CS2D.exe` original.
+- **Causa:** o parser em `cs2d_sv_exec` esperava `spawnprojectile <type> <tx> <ty> <dir> <flydist>` e
+  `cs2d_sv_spawn_projectile` tratava x/y como **tiles** (`* 32`). A ordem real (help.php e
+  `Tpro.spawnprojectile`, `CS2D.exe 0x1400a8d50`) é `player type x y flydist dir`, com coordenadas em
+  **pixels** e `flydist 0` = projétil no chão. O comando antigo gerava um projétil de tipo errado,
+  pertencente ao "server" (player 0), fora do mapa.
+- **Correção:** parser e assinatura de `cs2d_sv_spawn_projectile` agora seguem a ordem do help.php;
+  x/y são pixels; o `player` vai no byte 1 do `[58]`; `flydist <= 0` deixa `is_flying = false`; ids de
+  projétil passaram a ser por dono (1..255, como `Tpro.add`) em vez de um contador global que estourava
+  o byte.
+- **Teste:** novo `test_dedicated_spawnprojectile_command` (ordem dos argumentos, coordenadas em pixels,
+  layout do `[58]`, `flydist 0` no chão) e ajuste do `test_dedicated_p1_rules` para a sintaxe correta.
+  `test_cs2d.exe` → **102 / 102**.
+- **Nota:** o teste de API Lua do Phase 4 agora desativa `mp_luaserver`, porque o `sys/lua/server.lua`
+  atual carrega o mod C4, cujo `menu_backend.lua` define um global `menu` que sombreia a função nativa
+  `menu()` (falha pré-existente, não relacionada a projéteis).
+
+## 2026-10-19 — Cline — Fix: cliente expulso ("Idle") logo ao entrar
+
+- **Sintoma:** com o `sys/server.cfg` de teste (`mp_idlekick 1`, `mp_idletime` default 60) o cliente era
+  chutado no primeiro segundo depois do join, antes de escolher time.
+- **Causa:** `sv_recv_join1` cria a instância com `memset` e não inicializava `last_move_ms`. O
+  `sv_second` compara esse campo com `cs2d_sv_now()` (`GetTickCount`), então 0 significa "ocioso desde o
+  boot do Windows" — a diferença já passava de `mp_idletime` e o kick "Idle" (reason 16) saía no tick
+  seguinte ao join.
+- **Correção:** `pl->last_move_ms = cs2d_sv_now()` ao criar o jogador (`src/cs2d_server.c`), com o
+  contador de idle passando a valer a partir do join.
+- **Teste:** novo `test_dedicated_idle_join` — monta o `[252,1]` real com
+  `cs2d_net_build_join_stage1`, simula servidor com 2 min de uptime, verifica que um tick de 1 s não
+  expulsa e que passado `mp_idletime` sem movimento o kick continua. `test_cs2d.exe` → **101 / 101**.
+- **Evidência do original:** `sys/logs/11-Oct-2026_09-09-30.txt` — join `real` às 09:09:33 e
+  `real has been kicked for being idle` às 09:10:34 (61 s com o default de 60), confirmando que o
+  contador começa no join.
+
+## 2026-10-19 — Cline — Dedicated P3: reqhttp, sons, FX, grenade rebuy, damagetile
+
+- **`reqhttp`/`httpdata`:** GET HTTP assíncrono (TCP 80, connect bloqueante + leitura não bloqueante
+  no `cs2d_sv_lua_frame`, timeout de 5 s); resposta entregue como `(requestid, state, data)`, com
+  `mode 1` virando tabela de bytes.
+- **Sons:** `sv_sound` usa `[240,0,10,len,UTF16 path]` (modo 10); `sv_sound2`/`sv_soundpos` usam
+  `[65,x+0x8000,y+0x8000,len,path]`; `sv_stopsound` usa o modo 11. Cliente: modo 10 toca
+  `sfx/<path>` (volume opcional após `|`) e modo 11 para as vozes correspondentes.
+- **FX:** `[48, type, x+0x8000, y+0x8000, p1, p2, (type>=100) rgb]`; comandos `explosion` (tipo 1 +
+  dano radial com falloff linear) e `effect` (fire 100, smoke/colorsmoke 101, flare/sparkles 102,
+  blood 8). Cliente implementa explosão, sangue, fogo, fumaça e sparkles.
+- **Regras:** `mp_grenaderebuy` (flag por granada lançada/derrubada, reset no spawn) e
+  `mp_mapgoalscore` (pontuação de resgate de refém).
+- **`damagetile`** para construções no tile.
+- **Verificação:** `build.bat` limpo; `test_cs2d.exe` → **100 / 100** (teste P3 estendido com
+  formatos de som, explosão/effect, httpdata, grenade rebuy e damagetile).
+
+## 2026-10-19 — Cline — Dedicated P2: morte/drop, tempban, construções, votos e comandos de mundo
+
+- **Dano/armadura:** `mp_kevlar` agora é double (default 0.35, `DAT_1405a6508`) e o cálculo segue
+  FUN_1401658c0 (armadura perde o dano bruto enquanto durar; armaduras especiais 201..205 escalam o
+  HP sem perder pontos). Teste de fase 2 atualizado para o valor autêntico (armor 50 -> 10).
+- **Morte/saída:** `mp_deathdrop` (0..4) derruba itens com `[24]` ao morrer e ao sair; `mp_killbuildings`
+  (0..3) remove/keepa construções do jogador ao sair; `mp_killbuildingmoney` e
+  `mp_killteambuildings` (0 unkillable, 1 killable, 2 killable+penalty) aplicados no dano/morte de Tdo.
+- **Zumbis:** `mp_zombiedmg`, `mp_zombiekillscore`, `mp_zombiekillequip` e `mp_zombierecover`.
+- **Admin:** `mp_tempbantime` com expiração em `cs2d_sv_ban_t.expire_ms`; `mp_kickpercent` e
+  `mp_mapvoteratio` contam votos de toda a base e executam kick/tempban/mapchange; `mp_antispeeder 1`
+  usa tempban; `mp_turretdamage` configurável.
+- **Comandos:** `damageobject`, `killobject`, `triggerposition`, `restart`/`restartround`, `resources`.
+- **Verificação:** `build.bat` limpo; `test_cs2d.exe` → **99 / 99** (novo `test_dedicated_p2_rules`).
+
+## 2026-10-19 — Cline — Dedicated P1: hooks inválidos, config/exec, flood guard, regras e spawn
+
+- **Hooks:** `frame`, `http`, `filetransfer`, `post_endround`, `oncollision`, `oncollisionhit`,
+  `onhit` e `shutdown` removidos da lista válida (não existem em 1.0.1.8).
+- **Config:** `sys/server.cfg` passa por `cs2d_sv_exec` (`cs2d_sv_exec_config`); `exec`/`include`,
+  `alias`/`aliases` e `mp_wpndmg` implementados; nomes simplificados de armas (`ak47`) resolvem.
+- **Limites:** flood guard por IP (`FUN_1400d4c90`, janelas 60/200/30 por 60 s + ignore), cache de
+  falhas de RCON, `mp_connectionlimit`, `mp_maxclientsip` (status 23) e `mp_reservations` (expulsa
+  não-reservado); medição de ping por `[229]`/`[249]` + `mp_pinglimit`; idle (`mp_idle*`).
+- **Regras:** `mp_buytime` (float), `mp_unbuyable`, `mp_damagefactor`, `mp_wpndmg`,
+  `mp_weaponfadeout`, `mp_dropgrenades`, `mp_teamkillpenalty`, `mp_tkpunish`,
+  `mp_hostagepenalty`, `mp_vulnerablehostages`, `mp_unbuildable`, `mp_antispeeder` 1..6,
+  `mp_roundlimit`/`mp_winlimit` (mapchange), `sv_gm`.
+- **Comandos:** `spawnitem` (clip/reserve), `spawnobject`, `spawnnpc`, `spawnprojectile`, `banname`,
+  `bans`, `unbanall`, `connections`, `mapinfo`, `maps`, `serverinfo`.
+- **Correção de mapa:** `cs2d_sv_change_map` agora zera `round_number` e `mapchange_pending` (antes o
+  contador de rounds nunca reiniciava, o que faria `mp_roundlimit` trocar de mapa em loop).
+- **Verificação:** `build.bat` limpo; `test_cs2d.exe` → **98 / 98** (novo `test_dedicated_p1_rules`).
+- **Restante (P2):** `reqhttp`/`steamstats`/`ai_*` (stubs), `sv_sound*`, `damagetile`/
+  `damageobject`/`killobject`/`explosion`/`effect`/`flash*`, cvars de economia/zombie/mapvote.
+
+## 2026-10-19 — Cline — Dedicated P0: hooks de conexão + snapshot 4/6
+
+- **Hooks de conexão (help.php):** `connect_initplayer(id)` no fim de `sv_recv_join1` (instância criada),
+  `connect(id)` no início de `sv_recv_join5` (antes de `joined`/`join`), `disconnect(id, reason id)` no
+  fim de `sv_remove_player` (jogador já removido); bots disparam `connect` + `join` na hora. `connect`
+  passou a receber só o `id` (a assinatura antiga ip/porta/usgn/nome estava errada) e `disconnect` o
+  reason numérico (não a string do `leave`).
+- **Snapshot seção 4:** `[252,7,4,count]` + `{x u16, y u16, state u8}` com os estados não-zero de
+  `map.entity_state`; `[31]` grava o estado, Trigger_Use (`[26,100]`) alterna e faz broadcast de `[31]`,
+  e o round start zera todos os estados (`knowledge/entities.md`).
+- **Snapshot seção 6:** `[252,7,6,count]` + `{id u8, type u8, player u8, x u16, y u16}` com os
+  projéteis que já pousaram (`is_flying == false`).
+- **Verificação:** `build.bat` limpo; `test_cs2d.exe` → **97 / 97** (novo `test_dedicated_snapshot_world_state`
+  e asserções de `connect`/`connect_initplayer`/`disconnect` na fase 4).
+
+## 2026-10-19 — Cline — Dedicated: auditoria de lacunas + hook `select`
+
+- **Bug corrigido:** `cs2d_sv_lua_is_valid_hook` não listava `"select"`, então `addhook("select", ...)`
+  era rejeitado (o `dispatch_hook("select", ...)` já existia em `cs2d_sv_lua_hook_select`).
+  Regressão adicionada em `test_server_phase4_lua` (registra, dispara e libera o hook).
+- **Auditoria (código + strings UTF-16/refs de `cs2d_dedicated.exe` + `docs/cs2d_help_db_complete.json`):**
+  - hooks reais em 1.0.1.8 sem chamador no port: `connect`, `connect_initplayer`, `disconnect`
+    (`connect` também tem assinatura errada: a doc é `connect(id)`, nosso wrapper recebe ip/porta/usgn/nome);
+  - hooks aceitos pelo nosso `addhook` que não existem no binário: `frame`, `http`, `filetransfer`,
+    `post_endround`, `oncollision`, `oncollisionhit`, `onhit`, `shutdown`;
+  - stubs Lua: `reqhttp` (nada), `steamstats` (tabela vazia), 19 `ai_*` (sem IA por decisão);
+  - snapshot: seções 4 (estados de entidades) e 6 (projéteis no chão) sempre vazias, seção 11 é literal
+    de captura;
+  - ~50 cvars documentadas sem campo/comportamento, flood guard `FUN_1400d4c90` ausente,
+    `server.cfg` carregado fora do `cs2d_sv_exec`, gerador do secret ainda aleatório.
+- **Verificação:** `build.bat` limpo; `test_cs2d.exe` → **96 / 96**.
+- **Restante:** lista priorizada em `OPEN_ISSUES.md` ("Dedicated gap audit").
+
+Add one entry per session: `## YYYY-MM-DD — <agent> — <topic>`, followed by a few bullets covering:
+
+- what changed;
+- how it was verified;
+- what is left (move it to `OPEN_ISSUES.md`).
+
+Keep entries short; the details go in `KNOWLEDGE.md` or in code comments.
+
+Only the 5 newest entries live here; when adding one, move the oldest to the top of `worklog/archive.md` (do not read the archive in full; grep it).
+
+## 2026-10-18 — Antigravity — Dedicated Server: API Lua de Itens e Armas (`itemtype`, `item`, `playerammo`, `playerweapons`, `closeitems`)
+
+- **Implementação Autêntica das 5 Funções da API Lua no Servidor Dedicado (`cs2d_dedicated.exe`)**:
+  - `itemtype(type, prop)` (`FUN_14009b4c0`):
+    - Validação de límites `0 <= type < CS2D_MAX_WEAPONS` e existência de definição (`def && def->name`); retorna booleano `false` para armas indefinidas (como itens de mods/scripts customizados: 80, 202, 290) ou propriedades não reconhecidas.
+    - Suporte a todas as 13 propriedades oficiais: `"name"` (retorna string do nome da arma, ou `false` se não for arma CS2D, permitindo o idiomático `if itemtype(id, "name") == false then`), `"dmg"`, `"dmg_z1"`, `"dmg_z2"`, `"rate"`, `"reload"`, `"ammo"`, `"ammoin"`, `"price"`, `"range"`, `"dispersion"`, `"slot"` (retorna `def->cs2d_slot`) e `"recoil"` (retorna `def->recoil_accuracy`).
+  - `item(id, prop)` (`FUN_140099a70`):
+    - `item(0, "table")`: retorna tabela 1-indexed com os IDs de todos os itens ativos caídos no chão (`player == 0`); qualquer outra propriedade com id 0 retorna `false`.
+    - `id > 0`: busca de item ativo no chão. Se não existir, retorna `false`.
+    - Suporte a `"exists"`, `"name"`, `"type"`, `"player"` (0 no chão), `"ammo"`, `"ammoin"`, `"mode"`, `"dropped"`, `"physicsid"`.
+    - **Correções críticas de paridade**: `"x"` e `"y"` retornam coordenadas **em TILES inteiros** (`it->tile_x`, `it->tile_y`) e não em pixels; `"droptimer"` retorna o tempo decorrido desde o drop em **segundos inteiros** (`(now - it->drop_time_ms) / 1000`).
+  - `playerammo(id, type)` (`FUN_14004caf0`):
+    - Se o jogador for válido e possuir a arma solicitada, retorna **dois valores inteiros**: `clip, reserve` (`pl->clip[type], pl->reserve[type]`).
+    - Se o jogador não existir ou não carregar a arma especificada, retorna um único valor booleano `false`.
+  - `playerweapons(id)` (`FUN_14004bd20`):
+    - Retorna tabela Lua 1-indexed contendo os IDs dos tipos das armas carregadas pelo jogador (`pl->items`).
+    - Retorna tabela vazia `{}` caso o jogador seja inválido ou não carregue itens.
+  - `closeitems(id [, range])` (`FUN_14004bf30`):
+    - Calcula distância Chebyshev em tiles (`max(abs(dx), abs(dy)) <= range`) em relação à posição do jogador em tiles `(int)(pl->x / 32), (int)(pl->y / 32)`. Range padrão é 64 tiles.
+    - Utiliza o algoritmo nativo de buckets por distância inteira (`0 .. min(range, 5)`), garantindo que os itens mais próximos (distância 0..4 tiles) apareçam primeiro na tabela resultante.
+    - Retorna tabela vazia `{}` para jogador inválido.
+- **Verificação**:
+  - Adicionado teste de regressão completo `test_dedicated_lua_items_and_weapons` em `tests/test_cs2d.c`, cobrindo exaustivamente todas as 13 propriedades de `itemtype`, casos de borda negativos/inválidos, `playerweapons` e `playerammo` com múltiplos retornos, propriedades de `item` (incluindo tiles inteiros e droptimer em segundos), e ordenação por proximidade de buckets em `closeitems`.
+  - Compilação limpa de `test_cs2d.exe`, `cs2d_client.exe` e `cs2d_server.exe` com `build.bat`.
+  - Suíte de testes aprovada com 100% de sucesso: **96 / 96** testes passando (`test_cs2d.exe`).
+
+## 2026-10-18 — Antigravity — Dedicated Server: `settile` (`Tcustomtile`), Opcode [62], Snapshot Seção 9 [252,7,9] & Lua/Console
+
+- **Implementação do Sistema `settile` (`Tcustomtile`) no Servidor Dedicado (`cs2d_dedicated.exe`)**:
+  - `cs2d_sv_settile` (`FUN_14011ed00`):
+    - Executa `Tcustomtile.startbatch`, `Tcustomtile.addcheck` (`FUN_140092770`) e `Tcustomtile.endbatch` (`FUN_1400fb050`).
+    - Atualiza os tiles, modificadores e `tile_data` do mapa do servidor, recalculando `map->base_collision` e `map->collision` (integrando-se com `cs2d_map_is_solid` e `freeline` em tempo real).
+    - Faz broadcast confiável do opcode `[62, x u16, y u16, tile u8, rot u8, r u8, g u8, b u8, overlay u8, blend u8]` (12 bytes) para todos os jogadores com `joined == true`.
+  - **Join Snapshot Seção 9 (`FUN_1401e1130` / `0x1401e1555`)**:
+    - Substituído o stub vazio pela serialização autêntica de `sv->map.custom_tiles` em blocos de até 70 itens (`0x46`):
+      `[252, 7, 9, chunk_count]` seguido por 11 bytes por tile: `{x u16, y u16, tile u8, rot&3 u8, r u8, g u8, b u8, overlay u8, blend u8}`.
+    - Emite pacote de fechamento com count 0 `[252, 7, 9, 0]`, permitindo que clientes conectando após modificações de `settile` recebam todos os tiles customizados.
+  - **Execução no Console / CLI / RCON (`FUN_14011f210`)**:
+    - Comando `settile <x> <y> <tile> [rot] [r] [g] [b] [overlay] [blenddir] [blendtype]`.
+    - Trata defaults autênticos: rot 0, cores RGB 255/255/255, overlay 0, cálculo do byte de blend via `dir - 8 + type * 8`.
+  - **Subsolo Lua**:
+    - Registrada a função nativa global `settile(...)` na VM Lua do servidor dedicado (`src/cs2d_sv_lua.c`).
+    - Suporte a comandos `settile` via `parse("settile ...")`.
+    - Query `tile(x, y, prop)` (`FUN_1400c0df0`) atualizada e alinhada 1:1 com a desassemblagem do Ghidra:
+      - `"hascustomframe"`: retorna booleano se o tile possui custom frame em `Tcustomtile.get`.
+      - `"originalframe"`: retorna o tile antigo se customizado, ou o frame atual se intocado.
+      - `"walkable"`: verifica se o tile é chão transponível.
+      - `"rot"`: retorna a rotação em graus (0, 90, 180, 270) baseada em `modifier & 3`.
+      - `"blend"`: retorna o ID do blend frame caso `(modifier & 0xc0) == 0x40`, ou `0` caso contrário.
+      - `"color"`: retorna tabela Lua `{r=..., g=..., b=...}` caso `(modifier & 0xc0) == 0x80`, tabela vazia `{}` para outro modificador ou `0` se sem modificador.
+      - `"brightness"`: retorna valor percentual `0..100` (`mod > 3`) ou `false`.
+      - `"property"`, `"wall"`, `"obstacle"`, `"deadly"`, `"height"`, `"entity"`.
+- **Verificação**:
+  - Adicionado teste completo de regressão `test_dedicated_settile` em `tests/test_cs2d.c`: validação do broadcast do opcode 62 (12 bytes reliable), atualização da colisão e modifiers do mapa, execução via `cs2d_sv_exec`, via `parse()`, via chamada direta em Lua `settile()`, validação das queries Lua `tile()`, transmissão e parsing da Seção 9 do snapshot via `cs2d_customtile_read_snapshot`, e reversão de tile para os valores originais com limpeza da lista.
+  - Suíte completa de testes aprovada com 100% de sucesso: **95 / 95** testes passando (`test_cs2d.exe`).
+  - Binários `test_cs2d.exe`, `cs2d_client.exe` e `cs2d_server.exe` compilados sem erros.
+
+## 2026-10-18 — Antigravity — Dedicated Server: Correção do Ciclo de Vida de Imagens Dinâmicas Lua e `hudimg.lua` no Cliente Original
+
+- **Diagnóstico e Correção de `hudimg.lua` no Cliente Original (`CS2D.exe`)**:
+  - **Ordem de Execução do `cs2d_sv_round_start` e Hooks (`src/cs2d_sv_game.c`)**:
+    - No original (`cs2d_dedicated.exe` / `CS2D.exe`), a sequência estrita no início da rodada é: `startround_prespawn` -> `spawn` dos jogadores -> broadcast do Opcode 22 -> `startround`.
+    - No código anterior, o hook `startround` estava sendo invocado antes do broadcast do Opcode 22 e antes do `cs2d_dynobj_kill` de limpeza de imagens da rodada anterior, o que destruía as novas imagens imediatamente tanto no servidor quanto no cliente (já que `CS2D.exe` chama `FUN_1402520b0` / `Tdo.freeall` ao receber o Opcode 22).
+    - Ajustada a ordem para: limpar imagens antigas -> `startround_prespawn` -> spawn de jogadores com hook `spawn` -> broadcast e flush do Opcode 22 -> hook `startround`.
+  - **Confiabilidade e Agrupamento dos Pacotes de Imagem (`0x140129a50`, `src/cs2d_sv_lua.c`)**:
+    - A desassemblagem do executável dedicado original confirmou que modificadores de imagem (`imagecolor`, `imageblend`, `imagescale`, `imagepos`, `imagealpha`, `imageframe`) invocam `Createpacket(1, 0)` (`reliable = 1`, `new = 0`), agrupando-se no mesmo datagrama confiável com `image(...)`.
+    - Alterado `send_to_player` para `fresh = false` e configuradas todas as mensagens de modificação e remoção de imagem como `reliable = true`.
+  - **Resolução Padrão do Cliente (`src/cs2d_server.c`)**:
+    - O cliente original não envia o Opcode 232 (`clientsetting`) no handshake inicial. Como `screen_w` e `screen_h` iniciavam zerados, scripts como `hudimg.lua` posicionavam todas as imagens em `(0, 0)` quando `mp_hudscale == 0`.
+    - Inicializados `screen_w = 850` e `screen_h = 480` por padrão na alocação da conexão do jogador.
+  - **Exposição de `cs2d_sv_flush` (`include/cs2d_server.h`, `src/cs2d_server.c`)**:
+    - Exposta a função `cs2d_sv_flush` para permitir flush explícito de buffers após transições críticas de rodada.
+- **Verificação**:
+  - Test suite completa aprovada com **94 / 94** testes passando (`test_cs2d.exe`), incluindo teste dedicado de imagens dinâmicas e HUD texts.
+
+## 2026-10-18 — Antigravity — Dedicated Server: HUD Texts (`hudtxt`, `hudtxt2`, `hudtxtclear`, `hudtxtalphafade`, `hudtxtcolorfade`, `hudtxtmove`, [234], [54])
+
+- **Implementação Completa dos 6 Comandos e Funções de HUD Text no Servidor Dedicado**:
+  - `hudtxt(id [, text, x, y, align, valign, size])` e `hudtxt2(player, id [, text, x, y, align, valign, size])` (`FUN_14011c0d0`):
+    - Validação de limite `id < 0 || id >= 200` com mensagem idêntica ao original: `©255000000ERROR: hudtxt(2) - text id out of bounds (0-199 expected)!`.
+    - Limite máximo de texto clampado a 400 caracteres UTF-16 (`0x190`).
+    - Tamanho padrão de fonte `size = 13` (`0xd`) quando omitido ou `<= 0`.
+    - Formato do pacote (enviado com `reliable = true`): `[234, id u8, chars u16, chars*u16, (x+0x4000) u16, (y+0x4000) u16, align u8, valign u8, size u8]`.
+  - `hudtxtclear([player])` (`FUN_14011c5e0`):
+    - Limpa todos os textos enviando pacote reliable `[234, 255]`.
+  - Tweens de HUD Text (Opcode 54, `FUN_1401a8c00`):
+    - Identificador de alvo mapeado como `(200 - id)` em u16 (diferenciando de tweens de imagens dinâmicas).
+    - Enviados com `reliable = false` via UDP não confiável (`plVar[0x19]->send(1, 0)`).
+    - `hudtxtalphafade(player, id, duration, alpha)` (`FUN_14011cc20`): Opcode 54 modo 4, clamp de alpha [0.0, 1.0].
+    - `hudtxtcolorfade(player, id, duration, r, g, b)` (`FUN_14011c800`): Opcode 54 modo 5, clamp RGB [0, 255].
+    - `hudtxtmove(player, id, duration, x, y)` (`FUN_14011cea0`): Opcode 54 modo 0, coordenadas com offset +32768.
+    - Mensagens de erro em id inválido idênticas às originais (`ERROR: hudtxtalphafade ...`, etc.).
+- **Disponibilidade Total nas 3 Camadas de Execução**:
+  - Funções nativas da API Lua registradas no ambiente (`hudtxt`, `hudtxt2`, `hudtxtclear`, `hudtxtalphafade`, `hudtxtcolorfade`, `hudtxtmove`).
+  - Execução via `parse("hudtxt ...")` no script Lua (compatível com `wrapper.lua` e scripts padrão).
+  - Execução no console do servidor / CLI / RCON (`cs2d_sv_exec`).
+- **Verificação**:
+  - Teste de regressão dedicado `test_dedicated_hudtxt` adicionado em `tests/test_cs2d.c`, cobrindo chamadas diretas em Lua, comandos string via `parse()`, comandos de console CLI via `cs2d_sv_exec()`, validação byte a byte do pacote binário do opcode 234 e dos 3 tweens do opcode 54, além de validação de IDs fora dos limites.
+  - Test suite aprovada com 100% de sucesso: **94 / 94** testes passando (`test_cs2d.exe`).
+
+
+## 2026-10-18 — Antigravity — Dedicated Server: Objetos Dinâmicos de Imagem Lua (`Tdo` 40), Todos os Modos de Imagem, Parâmetros e Snapshot
+
+- **Unificação dos Objetos Dinâmicos de Imagem (`Tdo` 40, `CS2D_DO_IMAGE`)**:
+  - Revertida a estrutura isolada `lua->images` para gerenciar as imagens diretamente na lista de objetos dinâmicos do mundo (`sv->dynobj`), exatamente como no binário original do dedicado (`cs2d_dedicated.exe`, categoria 4 de `Tdo`).
+  - Adicionados campos de dimensão (`width`, `height`) em `cs2d_dynobj_t` e exposta função portátil `cs2d_image_dimensions` em `cs2d_image.c` (usando `stbi_info` sem carregar pixels), adicionando `src/cs2d_image.c` ao build do servidor dedicado (`cs2d_server.exe`).
+  - Integração total com `object(id, "type") == 40`, `object(id, "exists")`, `object(0, "table")` e queries espaciais.
+- **Suporte a Todas as Funções de Imagem e Confiabilidade de Rede (`FUN_14012f2b0`)**:
+  - `image(path, x, y, mode [, player])`: validação fiel (`FUN_14011aab0`), suportando tags nativas (`<light>`, `<avatar_...>`, `<tile:...>`, `<flag:...>`) e arquivos de spritesheet (`<spritesheet:path:w:h[:mask]>`). Se o arquivo não existir ou for inválido, emite mensagem autêntica `©255000000LUA ERROR: image - can't load image at '<path>'` e retorna 0. Transmissão com `reliable = true` no opcode `[51, 0, path, id, x+32768, y+32768, mode, player]`.
+  - Opcodes de modificação com transmissão `unreliable = false` (conforme desassemblagem original):
+    - `imagepos`: `[51, 5, id, x+32768, y+32768, rot*182.04445]`
+    - `imagealpha`: `[51, 2, id, (int)(alpha*255)]` (clamp [0.0, 1.0])
+    - `imagecolor`: `[51, 1, id, r, g, b]`
+    - `imagescale`: `[51, 4, id, sx f32, sy f32]`
+    - `imageblend`: `[51, 3, id, blend]` (clamp [0, 3])
+    - `imageframe`: `[51, 7, id, frame]` (1-based byte em rede)
+    - `imageshadow`: `[51, 9, id, shadow]`
+    - `imagephysicsparent`: `[51, 8, id, parent_type, parent_id, mode]` (adicionado e registrado na API Lua)
+    - `imagehitzone`: `[59, id, mode, xo+32768, yo+32768, abs(w), abs(h)]`
+    - `freeimage`: `[51, 6, id]`, destruindo o objeto via `cs2d_dynobj_kill`
+  - Implementação completa de `imageparam(id, param)` (`FUN_14012e5c0`) suportando os 9 parâmetros: `x`, `y`, `rot`, `alpha`, `path`, `frame` (1-based), `width`, `height`, `framecount` (0 para imagens normais, contagem de células para spritesheet), e retornando `false` caso o parâmetro ou o id da imagem não exista.
+- **Suporte a Todos os Modos de Imagem e Filtragem de Snapshot**:
+  - Modos 0 (floor), 1 (top), 2 (HUD), 3 (super top), 4 (background), e modos de seguir jogador 101..132, 133..164, 201..232, 233..263.
+  - Imagens com `mode == 2` e `player > 0` são direcionadas exclusivamente para o respectivo jogador.
+  - Snapshot de entrada (Join):
+    - Seção 5 (`[252, 7, 5]`): inclui todos os objetos `CS2D_DO_IMAGE` visíveis (filtrando imagens HUD de outros jogadores).
+    - Seção 7 (`[252, 7, 7]`): serializa blocos de até 20 imagens com cor, alpha, scale, blend, frame, shadow e hitzone, finalizando com o terminador vazio `[252, 7, 7, 0]`.
+- **Limpeza de Round (`cs2d_sv_round_start`)**:
+  - Todas as imagens dinâmicas (`CS2D_DO_IMAGE`) são limpas do mundo no início de um novo round, reproduzindo o comportamento nativo do dedicado original.
+- **Verificação**:
+  - Adicionado teste completo `test_dedicated_dynamic_images` em `tests/test_cs2d.c` validando caminhos inválidos, tags nativas, spritesheets, modificadores, `imageparam`, API `object`, modos de imagem, filtragem de snapshot entre jogadores e limpeza em novo round.
+  - Suíte completa de testes aprovada: **93 / 93** testes passando (`test_cs2d.exe`).
+
+
+
+
+## 2026-10-22 — (tidy) Moved from OPEN_ISSUES: fixed items and done dedicated phases
+
+- **Dedicated server: cliente original preso em "Loading map state" (2026-10-20, `docs/agents/knowledge/net-join.md`):**
+  fixed - a seção 4 do snapshot (`[252,7,4,...]`, estados de entidade) não tinha o pacote terminador
+  `[252,7,4,0]`; o cliente original ficava em `joindata 4` e rejeitava as seções 5, 6, 10, ..., 200 com
+  `ERROR: unexpected joindata N (step 4 expected)`. Agora a seção é enviada em blocos de 180 e termina com
+  count 0. Regressão em `test_dedicated_trigger_graph` (107/107).
+
+
+- **Dedicated server: Ttween no servidor / projéteis de imagem do C4 (2026-10-20, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - `cs2d_sv_tween_*` agora criam o `Ttween` local além de transmitir `[54]`, e `cs2d_server_frame` executa
+  `cs2d_dynobj_update_tweens` antes do hook `always` (`Ttween.update` 0x14027fc50). `object()`/`imageparam()` passam a
+  devolver x/y/rot/alpha/scale/frame animados, restaurando `cm.create_projectile`/`cm.projectile_update` do mod C4
+  (antes a imagem ficava no spawn e colidia no frame 1). Corrigidos também `tween_move` com rotação opcional (modo 1,
+  corpo 10), `tween_animate(id,speed,mode)` (`[54,8,speed,mode]`, corpo 5) e o filtro de `closeplayers`/`hascloseplayers`
+  (somente jogadores existentes, vivos e de time). Regressão em `test_dedicated_dynamic_images` (106/106).
+
+- **Dedicated server: `object()` completo, `player("screenw")` e espaço Tdo compartilhado (2026-10-20, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - `object(id, prop)` agora cobre todos os valores oficiais (`exists`, `typename`, `type`, `health`, `mode`, `team`, `player`,
+  `x`, `y`, `rot`, `tilex`, `tiley`, `countdown`, `rootrot`, `idle`, `rotvar`, `target`, `upgrade`, `entity`, `entityx`, `entityy`, `alpha`),
+  com `tilex/tiley = (int)((x+1)/32)` como no `cs2dlua_object`; `closeobjects` mede a partir da posição do objeto (não do centro);
+  `player(id, "screenw"/"screenh")` confirmados (defaults 850x480, `[232,1]`) e `widescreen` adicionado.
+  Imagens, construções e NPCs compartilham `sv->dynobj`: o round start agora faz `Tdo.freeall` + recria Env_Building/Env_NPC
+  em ordem de entidade (`cs2d_dynobj_spawn_map_objects`), com saúde padrão de NPC 150/30/20/200/100 (zombie/headcrab/snark/vortigaunt/soldier)
+  e `Tdo.entity` preenchido; `spawnobject` usa `max_health` do tipo. Regressão: `test_dedicated_dynobj_shared_space` (106/106).
+
+- **Dedicated server: Lua Items & Weapons API (`itemtype`, `item`, `playerammo`, `playerweapons`, `closeitems`) (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - Implementação e calibração 1:1 das 5 funções de consulta de itens e armas no servidor dedicado:
+  `itemtype(type, prop)` (`FUN_14009b4c0`): cobre as 13 propriedades oficiais (`"name"`, `"dmg"`, `"dmg_z1"`, `"dmg_z2"`, `"rate"`, `"reload"`, `"ammo"`, `"ammoin"`, `"price"`, `"range"`, `"dispersion"`, `"slot"`, `"recoil"`), retornando `def->cs2d_slot` para `"slot"`, `def->recoil_accuracy` para `"recoil"`, e booleano `false` para tipos fora de limites, armas indefinidas/customizadas (ex: id 80, 202, 290) ou propriedades desconhecidas (permitindo a verificação `if itemtype(id, "name") == false then -- Not cs2d item`);
+  `item(id, prop)` (`FUN_140099a70`): `item(0, "table")` retorna array 1-indexed com os IDs de itens ativos caídos no chão (`player == 0`); suporta `"exists"`, `"name"`, `"type"`, `"player"`, `"ammo"`, `"ammoin"`, `"mode"`, `"x"`, `"y"`, `"dropped"`, `"droptimer"` e `"physicsid"`; corrigidas as coordenadas `"x"` e `"y"` para retornarem coordenadas **em TILES inteiros** (`it->tile_x`, `it->tile_y`) e `"droptimer"` para retornar em **segundos inteiros** decorridos desde o drop (`(now - it->drop_time_ms) / 1000`); IDs inexistentes ou propriedades desconhecidas retornam booleano `false`;
+  `playerammo(id, type)` (`FUN_14004caf0`): verifica se o jogador possui a arma e retorna **dois valores** (`clip, reserve`), ou booleano `false` caso não possua ou o jogador seja inexistente;
+  `playerweapons(id)` (`FUN_14004bd20`): retorna tabela 1-indexed contendo os IDs dos tipos de armas que o jogador carrega (`pl->items`), ou tabela vazia `{}` caso o jogador seja inválido;
+  `closeitems(id [, range])` (`FUN_14004bf30`): calcula alcance via distância Chebyshev em tiles (`max(|dx|, |dy|) <= range`), organizando os itens em buckets de distância inteira de 0 a 5, retornando a tabela de IDs de itens do chão ordenados por proximidade com os mais próximos primeiro;
+  bloqueado por teste de regressão `test_dedicated_lua_items_and_weapons` (96/96 testes passando).
+- **Dedicated server: Custom Tiles / settile [62], Snapshot Section 9 [252,7,9] & Lua/Console (2026-10-18, `docs/agents/knowledge/settile.md`):**
+  fixed - Implementação autêntica do sistema `settile` (`Tcustomtile`) e Seção 9 do Snapshot de entrada no servidor dedicado:
+  `cs2d_sv_settile` (`FUN_14011ed00`): aplica alterações no mapa do servidor via `Tcustomtile.addcheck` e `endbatch`, atualiza `map->base_collision` e `map->collision` (garantindo que `cs2d_map_is_solid` e `freeline` reflitam novas paredes e obstáculos em tempo de execução), e faz broadcast confiável do opcode `[62]` (12 bytes: `x u16, y u16, tile u8, rot u8, r, g, b, overlay, blend`) para todos os jogadores com `joined == true`;
+  Join Snapshot Seção 9 (`FUN_1401e1130` / `0x1401e1555`): serializa `sv->map.custom_tiles` em lotes de até 70 itens (`[252, 7, 9, chunk_count]` com 11 bytes por item), finalizando com terminador `[252, 7, 9, 0]`, permitindo que jogadores que entrem após um `settile` recebam todos os tiles customizados;
+  execução via console / CLI / RCON (`cs2d_sv_exec` `FUN_14011f210` / `FUN_140195d00`): suporta rotação (0..3), cores RGB, overlay e direções/tipos de blend (`left 2`, `topright 1`, etc.);
+  disponível simultaneamente via `parse("settile ...")` e via função nativa global da API Lua `settile(...)`;
+  query Lua `tile(x, y, prop)` (`FUN_1400c0df0`) atualizada para cobrir todas as propriedades: `"hascustomframe"`, `"originalframe"`, `"walkable"`, `"rot"`, `"blend"`, `"color"`, `"brightness"`, `"height"`, `"entity"`, `"property"`, `"wall"`, `"obstacle"`, `"deadly"`, espelhando fielmente os retornos do binário original;
+  bloqueado por teste `test_dedicated_settile` (95/95 testes passando).
+- **Dedicated server: HUD Texts [234], Tweens [54] & Comandos (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - Implementação autêntica de todos os 6 comandos/funções de HUD text no dedicado:
+  `hudtxt(id [, text, x, y, align, valign, size])` e `hudtxt2(player, id [, text, x, y, align, valign, size])` (`FUN_14011c0d0`),
+  `hudtxtclear([player])` (`FUN_14011c5e0`), `hudtxtalphafade(player, id, duration, alpha)` (`FUN_14011cc20`),
+  `hudtxtcolorfade(player, id, duration, r, g, b)` (`FUN_14011c800`) e `hudtxtmove(player, id, duration, x, y)` (`FUN_14011cea0`);
+  validação de limites `0 <= id < 200` com mensagens idênticas ao original (`ERROR: hudtxt(2) - text id out of bounds ...`);
+  limite de 400 caracteres UTF-16, tamanho padrão 13, deslocamento de coordenadas x/y em +16384 (0x4000) e envio `reliable = true` no opcode 234;
+  tweens enviados com alvo `(200 - id)` em pacotes não-confiáveis `[54]` (`reliable = false`) nos modos 4 (alpha), 5 (cor) e 0 (movimento com offset +32768);
+  disponível simultaneamente via funções nativas da API Lua, via `parse("hudtxt ...")` e via console do servidor / CLI / RCON (`cs2d_sv_exec`);
+  bloqueado por teste `test_dedicated_hudtxt` (94/94 testes passando).
+- **Dedicated server: Objetos Dinâmicos de Imagem e Modos no Servidor Dedicado (2026-10-18, `docs/agents/knowledge/dynobj.md`):**
+  fixed - Implementação autêntica de imagens como objetos dinâmicos (`Tdo`, `typ = 40`, `CS2D_DO_IMAGE`):
+  imagens agora residem na lista unificada `sv->dynobj`, integrando-se nativamente com `object(id, "type")` e `object(0, "table")`;
+  implementadas e exportadas todas as 12 funções da API Lua: `image`, `imagepos`, `imagealpha`, `imagecolor`, `imagescale`,
+  `imageblend`, `imageframe`, `imagehitzone`, `imageparam`, `imageshadow`, `freeimage` e `imagephysicsparent`;
+  `image` (`FUN_14011aab0`): validação de caminhos e tags especiais (`<light>`, `<avatar_...>`, `<tile:...>`, `<flag:...>`, `<spritesheet:...>`),
+  leitura de dimensões reais de BMP/PNG via `stbi_info`, e envio confiável de `[51, 0, id, path, x, y, mode, player]`;
+  operações de alteração de imagem transmitem via pacotes confiáveis agrupados (`Createpacket(1, 0)`) conforme binário original `cs2d_dedicated.exe`;
+  ordem de início de rodada em `cs2d_sv_round_start` ajustada para limpar imagens antigas antes de spawnar e emitir o hook `startround` após o broadcast/flush do Opcode 22 (evitando que `CS2D.exe` destrua as imagens com `Tdo.freeall`);
+  resolução padrão do cliente inicializada em 850x480 para compatibilidade com `hudimg.lua` em `mp_hudscale 0`;
+  `imageparam` (`FUN_14012e5c0`): suporta todos os 9 parâmetros (`x`, `y`, `rot`, `alpha`, `path`, `frame`, `width`, `height`, `framecount`),
+  retornando `false` caso não exista ou parâmetro inválido;
+  snapshots de entrada: seção 5 (`[252,7,5]`) serializa objetos `CS2D_DO_IMAGE` (filtrando imagens privadas HUD modo 2 de outros players)
+  e seção 7 (`[252,7,7]`) envia bloco completo de propriedades em blocos de até 20 imagens com terminador 0.
+  Bloqueado por `test_dedicated_dynamic_images` (94/94 testes passando).
+- **Dedicated server: Exibição no Console de Registro de Hooks e Binds (`addhook`, `freehook`, `sethookstate`, `debuglua`) (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - Validação e exibição de mensagens de hooks e binds idênticas ao `cs2d_dedicated.exe` original:
+  `addhook` (`FUN_1400d59f0`): valida nomes contra a tabela nativa de 84 hooks; se válido e `debuglua` ativo, exibe `Lua: Adding function '<func>' to hook '<hook>'`; se inválido, emite `LUA ERROR: Cannot add '<func>' to hook '<hook>' (hook does not exist)!`;
+  `freehook` (`FUN_1400d60e0`): exibe `Lua: Removing function '<func>' from hook '<hook>'`;
+  `sethookstate` (`FUN_1400d63e0`): atualiza `h->enabled` e exibe `Lua: Enabling hook '<hook>'` ou `Lua: Disabling hook '<hook>'`;
+  `addbind` & `removebind` (`FUN_1400d5800`): exibem `Lua: Adding key bind '<key>'`, `LUA ERROR: Cannot add '<key>' key bind (...)`, `Lua: Removing key bind '<key>'`, `LUA ERROR: Cannot remove '<key>' key bind (...)`;
+  implementado cvar `debuglua` (`0x1405a6398`, default 1) com controle e consulta via console.
+  Bloqueado por `test_server_phase4_lua` (92/92 testes passando).
+- **Dedicated server: Reconnect & Password Handshake Reset (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - Handshake de reconexão do cliente original `CS2D.exe` ao conectar em servidor protegido por senha:
+  ao receber prompt de senha e clicar em "Connect", o cliente recria o socket e envia `[252, 0]` reiniciando de sequence number 2 a partir do mesmo endpoint;
+  em `src/cs2d_server.c`, `sv_find_conn` agora detecta `hello == true` em conexões ativas pré-existentes e executa `sv_conn_reset` (limpando o bitmap `seen`, buffers pendentes e resetando `next_seq = 2`) e remove jogador prévio (`sv_remove_player`).
+  Isso impede que o servidor descarte o novo `[252, 0]` como pacote duplicado, permitindo a entrada normal de clientes originais com senha.
+  Exposto `cs2d_sv_handle_datagram` em `include/cs2d_server.h` para testes unitários de rede.
+  Bloqueado por `test_server_reconnect_and_pw` (92/92 testes passando).
+- **Dedicated server: Mapeamento de Opcodes Residuais na Jump Table (2026-10-18, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - Análise e mapeamento 1:1 de todos os 247 opcodes da jump table `0x1406cdb14` (`FUN_1401e3cf0`);
+  [12] `rot u16` (`FUN_1401cbce0`): atualiza rotação `pl->rot = (float)rot * 0.005493164f` e `pl->rot_flag = 1`;
+  [13] corrida + rotação (`FUN_1401cc0b0`) e [14] caminhada + rotação (`FUN_1401cc310`): consomem `x u16, y u16, rot u16`, validam movimento e atualizam rotação;
+  [18] (`0x1401e4350`): no-op autêntico (`xor esi, esi; jmp next`);
+  [243] (`FUN_1401be4a0`): consome `slen u16` + `slen * 2` bytes de string UTF-16LE;
+  [54] (`FUN_1400bf930`): consome `mode u8, target u16` de dynamic tweens;
+  [100] (`FUN_1401c3500`): trata comando relay sub 2;
+  Todos os opcodes Server-to-Client que no modo dedicado retornam código 3/4 (`15`, `21`, `22`, `25`, `29`, `33`, `35..38`, `40`, `42`, `44..49`, `51`, `52`, `55`, `58`, `59`, `61..66`, `69`, `224`, `226`, `234`, `237`, `239`, `247`, `248`) retornam `false` em `sv_recv_game`, encerrando o loop de datagrama de forma limpa;
+  Opcodes não utilizados na jump table (`73..79`, `88..99`, `101..223`, `231`, `233`, `244..246`) saltam para `0x1401e3e80` (`esi = 2`) no binário original, caindo no `default:` retornando `false` sem avisos de erro.
+  Bloqueado por `test_server_jump_table_opcodes` (91/91 testes passando).
+- **Dedicated server: Comunicação Cliente > Lua (2026-10-17, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - [53] `reqcld` command & `clientdata` opcode (`FUN_140129a50`, `FUN_1401780d0`, `FUN_1401d16f0`): sends reliable `[53, mode u8 (, param string)]` from server; consumes response for modes 0 (screen cursor), 1 (scroll offset), 2 (map cursor), 3 (light bool), 4 (loaded bool + SHA256 string), 5 (weapon mod info), 6 (render3d bool), and dispatches Lua hook `clientdata(id, mode, d1, d2)`;
+  [227] & [228] `key press` & `key release` (`FUN_1401bb510`, `FUN_1401bb620`): parses `[op, key u16]`, maps key code to canonical name (`sv_resolve_key_name`) checking custom `addbind` keys in Lua state first and falling back to `cs2d_bind_key_name`, and calls Lua hook `key(id, key_name, state)`;
+  [232] `clientsetting` (`FUN_1401bb730`): handles sub 1 (screen resolution w/h), sub 2 (aspect 4:3), sub 3 (windowed), updates player state and dispatches hook `clientsetting(id, setting, val1, val2)`; updates Lua `player(id, "screenw")`, `"screenh"`, `"screen4by3"`, `"windowed"`;
+  [80] `player physics rotation` (`FUN_1401d4910`): reads flags and converts `dir u16` to `pl->rot = (float)dir * 0.005493164f`;
+  [81..87] physics updates return false in dedicated mode, terminating datagram loop;
+  [225] `voicechat` (`FUN_1401d68b0`): parses sub 0 (ping), sub 1 (voice data relay when `sv_voicechat != 0`), sub 2, and fires Lua hook `voice(id)`. Locked by `test_server_client_lua_communication` (90/90 tests passing).
+- **Dedicated server: Interações Cliente-Mundo/Entidades (2026-10-17, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - [31] `entityevent` (`FUN_1401cead0`) parses 5-byte payload `[31, x u16, y u16, mode u8]`, executes entity actions (`cs2d_sv_trigger_env_items`), triggers Lua hooks `triggerentity` & `trigger`, and relays 6-byte reliable `[31, x, y, mode]` to other players;
+  [50] `portalfire` (`FUN_1401d11a0`) parses 9-byte payload `[50, color u8, tx i32, ty i32]`, updates player portal coordinates/state, and broadcasts 11-byte reliable `[50, pid, color, tx, ty]` to all players;
+  [56] `weapon impulse` (`FUN_1401d26a0`) parses 1-byte payload `[56, val u8]` and relays 3-byte reliable `[56, pid, val]` to other players;
+  [57] `flashlight` (`FUN_1401d28b0` -> `FUN_140106350`) parses 1-byte payload `[57, state u8]`, checks `mp_flashlight != 0`, sets `pl->flashlight = state`, broadcasts 3-byte `[57, pid, state]`, and fires Lua hook `flashlight`;
+  [60] `specflash` (`FUN_1401d2d40`) parses 1-byte payload `[60, state u8]`, sets `pl->specflash = state`, and broadcasts 3-byte reliable `[60, pid, state]`;
+  [68] `firedirection` (`FUN_1401d3840`) parses 2-byte payload `[68, dir u16]`, updates `pl->rot = (float)dir / 182.04445f`, and relays unreliable `[70, pid, dir]` to dead players spectating;
+  [35, 36, 37, 65] server-to-client opcodes confirmed via disassembly of `0x1401cf350`, `0x1401cf4b0`, `0x1401cf630`, `0x1401d3430`: return 3 immediately when received on a dedicated server (`DAT_1407dfe48 != 0`), terminating datagram loop and cleanly dropping remainder of packet;
+  [26] `use` with `mode 100` (`usebutton`): checks the `Trigger_Use` (93) state, team (`int_settings[2]`) and Euclidean reach `<= 45 px` of its tile centre, honours the `ints[3]` re-use delay (2026-10-21: `sv->entity_reuse_ms`), fires Lua hook `usebutton(id, x, y)` and then the button's trigger list. It does **not** toggle the button itself (the old toggle locked every button after one press; fun_roleplay (275,154) `rp_ticket`). Locked by `test_dedicated_trigger_use` and `test_server_entity_and_world_interactions`.
+- **Dedicated server: Dispatch de Opcodes [28] Spray, [43] Vote, [230] Leaderboard e Guarda < 7 (2026-10-17, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - [28] spray (`FUN_1401bcd60`) desync corrected: now consumes full 6-byte in-game payload (`sub=0, x u16, y u16, mode u8`), calls `cs2d_sv_lua_hook_spray` and relays `[28, player, 0, x, y, mode]` reliably to other players (preventing trailing bytes from being misinterpreted as opcode 0);
+  [43] vote (`FUN_1401d0050`) implemented: parses `type u8` and `value u16` for votekick (type 1) and votemap (type 2), updates `pl->votekick`/`pl->votemap`, triggers Lua hook `vote` and broadcasts reliable `[43, voter, type, value]`;
+  [230] leaderboard (`FUN_1401d8360`) implemented: sub 0 replies with `[230, 0, timestamp i32]` and sub 1 consumes `rank u16` cleanly;
+  network loop `sv_recv_messages` (`FUN_1401e3cf0`) now cleanly drops opcodes `< 7` (padding zeros, trailing control bytes such as lone `0x03`) without logging unhandled client opcode errors. Locked by `test_server_spray_vote_leaderboard_messages` (88/88 tests passing).
+- **Dedicated server: Deathmatch (DM), Team Deathmatch (TDM), mp_randomspawn & mp_timelimit (2026-10-17, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - `mp_randomspawn 1` port of `0x140160da0` - `0x140160dae` / `0x140162313` calling `0x1400d5650` for gamemodes 1 (DM) and 2 (TDM)
+  probing valid map tiles; DM spawn fallback to any spawn (`Info_T` or `Info_CT`) when a map lacks the player's team spawns;
+  map rotation via `mp_timelimit` port of `0x1401a3058` - `0x1401a30c5` and `sys/mapcycle.cfg` sequential rotation via
+  `cs2d_sv_next_map` (`0x14013b430`); Lua queries `game("maptimeleft")` (returns remaining seconds or `1000000.0` if unlimited)
+  and `game("nextmap")`. Locked by `test_sv_deathmatch_and_timelimit` (87/87 tests passing).
+- **Dedicated server: Gamemode Auto-Restart, Shotgun Reload Sync & Env_Item (2026-10-17, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - changing `sv_gamemode` or `gamemode` in runtime now restarts the round automatically (`[22, 5]`);
+  shotgun shell reload lag compensation (`mode 101` / `0x65`) now re-arms `pl->reload_end_ms`, preventing double-loading
+  and 2x reload speed desync with `CS2D.exe`; `Env_Item` (ID 21) map entities are now instantiated on the ground on round
+  start, maintained across modes 0/1/2/3, and transmitted to joining players via Section 3 (`[252, 7, 3]`). Locked by
+  `test_sv_gamemode_and_env_items` (86/86 tests passing).
+- **Dedicated server: bot and NPC AI (2026-10-20, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed/partial - the server now loads `bots/Standard AI.lua` and calls `ai_onspawn`,
+  `ai_update_living`, `ai_update_dead`, `ai_hear_radio` and `ai_hear_chat`; the whole `ai_*` engine
+  API, `bot_*` cvars, `ai_flash`, `setentityaistate`/`aistate` and `randomentity` (two return values,
+  AI-state/int0 filters) are implemented. `bot_add` also broadcasts `[20,id,team,look]` now (the
+  join notice has no team; without it the clients kept the bot as a Spectator while its AI ran).
+  NPC `Tdo` 30 now ports `FUN_140283f20`: the `FUN_140283760` picker (405x220 + clear 32 px line,
+  team > 0 only), the `FUN_140283a10` tile waypoints, raw-degree `m_rot` in `[36,7]` (the old
+  `* 182.04445` made the clients spin while the server chased) and the server-only attack timer with
+  the `FUN_1401ed310` damage values; player shots stop on and damage NPCs (they used to be
+  indestructible). The NPC/object Lua hooks are wired too: `objectdamage`/`objectkill` (NPC included),
+  `hit` 7th argument (attacking object id), `die`/`kill` killerobject (kill player-only) and
+  assistant, `objectupgrade`, `hitzone` (image id, player id, object id, weapon, x, y, damage) and
+  `projectile_impact` modes 0/1/2/3/100. Regression: `test_dedicated_bot_and_npc_ai` and
+  `test_dedicated_npc_hooks` (112/112). Residuals: bot secondary attack only relays `[8]` (no bot
+  grenade projectile), shotgun bots apply one pellet hit, the per-skill turn/range tables are runtime
+  arrays (ours calibrated), a lost/reordered reliable `[36,7]` can leave a temporary client offset
+  until the next waypoint, the damage-assist tracker (and the `assist` hook) is not implemented, and
+  the Tactical Shield (and its `shieldhit` / attacker-object-id hook) is not modelled in the damage
+  path.
+
+
+- **Dedicated server: WQ2D RP não inicializava (2026-10-20, `docs/agents/knowledge/dedicated-server.md`):**
+  fixed - adicionado o hook `shutdown` (existe no 1.0.1.8), `player(bot,"ip")` = `"0.0.0.0"`, `ping` de bot = 0 na API,
+  resposta imediata de `reqcld` para bots (modes 0..6, mode 4 com SHA-256), motor de triggers do servidor
+  (`Trigger_Start/If/Once/Delay/Move`, `trigger`/`triggerposition`, `[31]` e Trigger_Use), hook `trigger` por nome
+  com source booleano, `triggerentity` cancelável, `move`/`movetile`/`walkover`, `game("dedicated")` boolean,
+  `game("timeleft")`, `map("xsize"/"ysize"/"tilesize"/"botnodes"/"nobuying"/"noweapons")`, `entity("state")` boolean,
+  `strs[0]` completo, `steamstats` false e buffers de entity de 256 bytes. Regressão: `test_dedicated_trigger_graph`
+  (**107/107**). Residual: após 16 s o nosso servidor termina com 1618 vs 1574 entidades em state 1 e 587 vs 565
+  chamadas de `trigger` (cascatas tardias de Trigger_If/Delay: `d4entrance`, `sc*_light`, `d4mp*`); objetos e itens
+  batem (27/57 turrets, 120 itens). Investigar a semântica exata do forwarding de `Trigger_Delay` e das condições
+  `Trigger_If` > 0.
+
+
+- **Cliente: [253] do jogador local (2026-10-20):** o dedicated já envia `[253,id,16,reason]` também
+  para o cliente expulso (o original mostra "Disconnect Reason" em `FUN_1401c7500`; teste
+  `test_dedicated_kick_message`, 110/110), mas `cs2d_client.c` ainda só remove o jogador quando
+  `id != local_player_id`; falta a UI de kick/desconexão no nosso cliente.
+
+
+## Dedicated server (cs2d_server.exe) — started 2026-10-15
+Goal (user): 1:1 port of `cs2d_dedicated.exe`, tested with the original CS2D.exe; every hook, console command,
+Lua function and script must work; final test = the server scripts in `C:\C4`. Done in phases over several
+sessions. Decisions: **Lua = PUC Lua 5.1.4 vendored** (user, 2026-10-15; LuaJIT may become a build option later); **bots: only present, no AI** (user, 2026-10-15). Knowledge:
+`knowledge/dedicated-server.md`; test: `tools/agent/capture_server.sh`.
+- **Phase 1 (done 2026-10-15):** transport, connections, join, snapshot, server info, ping block. Gaps inside it:
+  `[252,10]` spray data is dropped (no `[28]` relay, Tpl `+0x3c8`), `[252,50]` map transfer (status 13), the Lua
+  `connect` / `connect_initplayer` hooks (`connect_attempt` is done, 2026-10-16: `sv_recv_join1`), ban list,
+  flood guard `FUN_1400d4c90`, secret generator, player id allocation order
+  (`FUN_140098050`), resend interval / timeout (estimated 500 ms / 30 s), section 11 raw table is a capture
+  literal (build it from the weapon tables), sections 2..9 always empty, `FUN_1401dba60` (3 zero bytes), `[247]`
+  counters are ours (fps / bytes), `[253]` leave text, U.S.G.N. / serverlist (we never register: always offline).
+- **Phase 2 (in progress, 2026-10-15):** done: team choice (look 5 / auto team / random skin / balance refusal
+  10-11), the `mp_postspawn` first spawn, spawn (`[21]` byte-equal), `[10]/[11]/[70]` input and the per-frame
+  relay `FUN_1401a68e0`, `[248]` join notice, "game commencing" trigger, round end (`FUN_14015c840`, `[226]`),
+  round start (`FUN_1402520b0`, `[22]`), `[253]` leave reason parsing, weapon selection `[9]` (`FUN_140158060`),
+  primary fire `[7]` (`FUN_140191a70`), secondary attack relay `[8]` (`FUN_1401fd590`), damage `[17]`
+  (`FUN_1401658c0`), kill `[19]` (`FUN_1401647d0`), buy `[23]` (`FUN_1401cd710`), weapon drop `[24]` (`FUN_14016bbd0`),
+  authoritative ground item collection `[25]` and 15s fadeout `[40]`, weapon reload `[16]` (`FUN_14018b1c0`),
+  in-game chat `[240]` (`FUN_140153900`), spectator camera target `[67]` & pos `[32]` with aim relay `[70]-[72]`,
+  team switch suicide (`FUN_1401624c0`), respawn modes & timers per mode (`sv_gamemode`, `mp_respawndelay`, `[39]`),
+  position validation & anti-speeder (`FUN_1401c99a0`, `FUN_1401ca500`), per-spawn team change limit (`+0x2a0`, refusal code 12),
+  Zombies team switch refusal (code 13) & >30s force-T rule, and spawn-time auto-teambalance (`FUN_140160740`).
+  Gaps inside what is done: mp_startmoney default (800 is not verified).
+
+- **Phase 3 (done 2026-10-15):** in-game name change `[238]` (`FUN_14010ddb0`, per-spawn `+0x2a4` limit 255, dead deferred `pending_name` 254 applied on spawn), RCON `[236]` (`rconcheck`), `[241]` (`rcon`), `[242]` (`public rcon`), `sv_rcon` / `sv_rconusers`, playerdata setter & broadcaster `[42]` (`FUN_140159840` modes 0..11), teleport `[15]` (`FUN_140102950`), team scores `[64]` (`FUN_140051ac0`), server messages `[240,0,1]`, `kick` (`FUN_1401502a0`), `slap` / `deathslap` (`FUN_140167e40`), and console command parser `cs2d_sv_exec` (`FUN_140140a00`: `server.cfg` cvars, `setmoney`, `sethealth`, `setmaxhealth`, `setarmor`, `setscore`, `setdeaths`, `setassists`, `setmvp`, `setrank`, `speedmod`, `equip`, `strip`, `setweapon`, `setpos`, `setname`, `setteamscores`, `sv_msg`, `sv_msg2`, `maket`, `makect`, `makespec`, `slap`, `deathslap`, `kick`, `killplayer`, `spawnplayer`, `sv_restart`, `sv_restartround`, `endround`, `listplayers`). `[237]` live cvar broadcast done 2026-10-16 with every id measured from `FUN_14015d960` (see `knowledge/dedicated-server.md`). `changemap`, `map` and the ban commands were done in Phase 5.
+- **Phase 4 (done 2026-10-15):** Lua subsystem integrated with vendored PUC Lua 5.1.4 (`third_party/lua51/lua_all.c`, `src/cs2d_sv_lua.c`, `include/cs2d_sv_lua.h`).
+  Full `addhook` priority ascending execution & return value veto/cancellation semantics; auto-loads entry point `mp_luaserver`, `sys/lua/autorun/*.lua`, `maps/<map>.lua` (`wrapper.lua` not auto-loaded, loaded manually via script if needed);
+  native hooks wired (`join`, `leave`, `team`, `spawn`, `select`, `attack`, `attack2`, `hit`, `kill`, `die`, `buy`, `drop`, `collect`, `reload`, `say`, `sayteam`, `name`, `endround`, `startround`, `menu`, `serveraction`, `objectdamage`, `objectkill`, `objectupgrade`, `hitzone`, `projectile_impact`, `projectile`, `turretscan`);
+  `player(id, prop)` (40+ properties & tables), `playerweapons`, `playerammo`; `parse` with HUD text opcode `[234]` and tween `[54]`; dynamic images (`image`, `freeimage`, manipulation & tweens);
+  timers (`timer`, `freetimer`); menu sending and response `[235]`. Locked in `test_server_phase4_lua` (66/66 tests pass).
+- **Phase 5 (done 2026-10-15):** bomb plant [30,1..3], defuse [26,3] / [30,4..5], explode [30,6] with 350px blast damage radius, round end modes 20 & 21; hostages ([29,1..5], use [26] follow/release, rescue rewards at Info_RescuePoint, damage & death); projectiles [27] (grenades consumed & relayed) and [41] (kill projectile); flashlight [57]; bot management (`bot_add`, `bot_kick`, `bot_kill` with ping 0xfffe and conn -1); ban management (`banip`, `banusgn`, `bansteam`, `unban`, `listbans`, join check status 4 refusal with reason); map change `cs2d_sv_change_map` (`[239,1]`, dynamic heap loading, SHA256, hostages re-init); snapshot sections 2 (hostages) and 3 (ground items) serialization. Locked in `test_server_phase5_bomb_hostages_bots` (67/67 tests pass).
+- **Phase 6 (done 2026-10-16):** Lua C API complete 1:1 coverage decompiled from `cs2d_dedicated.exe` (`FUN_14013a980`).
+  All 18 missing functions implemented: `map`, `tile`, `tileproperty`, `itemtype`, `item`, `object`, `objectat`, `closeobjects`, `closeplayers` (`FUN_14004cc30`), `hascloseplayers` (`FUN_14004ce50`), `freeline` (LOS raycasting), `entity`, `entitylist`, `stats`, `addbind`, `removebind`, `removeallbinds`, `reqcld`, `reqhttp`.
+  Expanded `player` queries (`tablebot`, `tablehuman`, `players`, `mousemapx/y`, `mapmousex/y`, `mousex/y/dist`, `language`, `favweapon`) and `game` queries (`version`, `dedicated`, `phase`, `round`, `ticks`, `time`, `maptimeleft`, `port`, `sysfolder`, `bombplanted`, generic cvar fallback).
+  Dynamic object integration with `cs2d_dynobj` world. Generic cvar storage (`sv->cvars[128]`), settings `mp_luaserver`, `mp_luamap`.
+  Console log hook `hook "log"` wired to `cs2d_server_print`. Locked in `test_server_phase6_lua` (68/68 tests pass).
+- **Phase 7 (done 2026-10-16):** Live client interaction against CS2D.exe, 100% Lua commands (88/88) and hooks (79/79) coverage, file transfer system (`[252,50]` and `sv_maptransfer`), dynamic objects snapshot section 5 (`[252,7,5]`), spray logo storage and relay (`[252,10]`, `[28]`, `sv_spraytransfer`). Locked in `test_server_phase7_transfer_and_spray` (69/69 tests pass).
+- **Phase 8 (done 2026-10-17):** Network transport & protocol parity complete.
+  - Initial datagram control triple `03 32 00` (kind 3, netrate 50) implemented in `cs2d_client.c`, producing identical wire bytes (`02 00 03 32 00 fc 00`).
+  - Tudp reliable retransmission queue (`Fudp_update` 500 ms resend and ACK kind 1 clearance) implemented in both client and dedicated.
+  - Opcode 253 disconnect/kick format aligned (`reason < 16` -> 3 bytes, `reason >= 16` -> string length + string).
+  - Dropped weapon fadeout Opcode 40 after 15s verified and tested.
+  - `mp_startmoney` default (800) and clamp (`0x3e80` = 16000) verified. Locked in `test_server_network_and_protocol` (84/84 tests pass).
+
+- **Gap audit (2026-10-19, code + `cs2d_dedicated.exe` UTF-16 strings/refs + `docs/cs2d_help_db_complete.json`):**
+  prioritized what the port still lacks. Evidence per item in `knowledge/dedicated-server.md` and the
+  code comments cited below.
+  - **Fixed:** the documented `select` hook was missing from `cs2d_sv_lua_is_valid_hook`, so
+    `addhook("select", ...)` was rejected although `cs2d_sv_lua_hook_select` dispatches it. Regression
+    in `test_server_phase4_lua` (96/96 now).
+  - **Done 2026-10-19 (P0):** `connect_initplayer(id)` fires when the player instance is created (join
+    step 1), `connect(id)` in the last join step (step 5, before `join`) and `disconnect(id, reason id)`
+    after the player is removed; `connect` now takes the documented single `id`; bots fire
+    `connect` + `join` instantly. Regression in `test_server_phase4_lua` (97/97).
+  - **Done 2026-10-19 (P1):** `frame`, `http`, `filetransfer`, `post_endround`, `oncollision`,
+    `oncollisionhit`, `onhit` and `shutdown` were removed from the valid-hook table; `addhook` now
+    rejects them like 1.0.1.8.
+  - **Lua stubs (P3):** `steamstats` returns an empty table (no Steam integration in this build); the
+    19 `ai_*` functions are no-ops (bots have no AI by decision - scripts must not rely on them).
+    `reqhttp` is implemented (see P3 below).
+  - **Done 2026-10-19 (P0):** snapshot sections 4 (entity states, only non-zero) and 6 (ground
+    projectiles) are now built from `map.entity_state` / `sv->projectiles`; `[31]` keeps the state
+    (a Trigger_Use press no longer changes it, 2026-10-21), and round start clears it
+    (`knowledge/entities.md`). Test: `test_dedicated_snapshot_world_state`.
+  - **Join snapshot (P2):** section 11 is still the 170-byte capture literal instead of being built
+    from the weapon tables, and section 13 is always `""`.
+  - **Done 2026-10-19 (P1):** typed fields + parsing for `mp_roundlimit`, `mp_winlimit`,
+    `mp_buytime` (float), `mp_buymenu` (string), `mp_unbuyable`, `mp_unbuildable`, `mp_damagefactor`,
+    `mp_wpndmg`, `mp_teamkillpenalty`, `mp_tkpunish`, `mp_hostagepenalty`, `mp_vulnerablehostages`,
+    `mp_dropgrenades`, `mp_grenaderebuy`, `mp_weaponfadeout`, `mp_floodprot`,
+    `mp_floodprotignoretime`, `mp_antispeeder`, `mp_pinglimit`, `mp_connectionlimit`,
+    `mp_maxclientsip` (alias of `sv_maxclientsperip`), `mp_reservations`, `mp_maxrconfails`,
+    `mp_tempbantime`, `mp_idleaction`, `mp_idlekick`, `mp_idletime`, `mp_deathdrop`, `sv_lan`,
+    `sv_checkusgnlogin`, `sv_gm` (alias of `sv_gamemode`), plus ping measurement from `[229]`/`[249]`.
+    Behaviours wired: round/win limits (mapchange), buytime, unbuyable, damagefactor, wpndmg,
+    weapon fadeout, grenade drop block, teamkill kick/punish, hostage vulnerability/penalty,
+    unbuildable, idle/kick/ping kick, anti-speeder punishments 1..6, reservations/connection/IP limits,
+    RCON failure cache.
+  - **Done 2026-10-19 (P2):** `mp_deathdrop` (death and leave), `mp_killbuildings`,
+    `mp_killbuildingmoney`, `mp_killteambuildings`, `mp_kevlar` (authentic FUN_1401658c0 armor
+    formula incl. special armors 201..205), `mp_turretdamage`, `mp_zombiedmg`,
+    `mp_zombiekillscore`, `mp_zombiekillequip`, `mp_zombierecover`, `mp_kickpercent`,
+    `mp_mapvoteratio`, `mp_tempbantime` (ban entries now expire; anti-speeder mode 1 and vote kicks
+    use it).
+  - **Done 2026-10-19 (P3):** `mp_grenaderebuy` (thrown/dropped grenades cannot be re-bought until the
+    next spawn when 0), `mp_mapgoalscore` (hostage-rescue score), `reqhttp` + `httpdata(requestid,
+    state, data)` (non-blocking HTTP GET polled from the Lua frame, 5 s timeout) and `damagetile`.
+  - **CVars still inert (P3):** `mp_autogamemode`, `mp_shotweakening` (needs a server-side shot ray;
+    our damage arrives from [17]), `mp_lagcompensationdivisor`, `mp_trace`, `mp_natholepunching`,
+    `mp_localrconoutput`, `mp_radar`/`mp_hud`/`mp_smokeblock`/`mp_buymenu` (client display,
+    stored/broadcast through `[237]` only).
+  - **Done 2026-10-19 (P1) commands:** `spawnitem` (with optional clip/reserve), `spawnobject`,
+    `spawnnpc`, `spawnprojectile`, `exec`/`include`, `alias`/`aliases`, `banname`, `bans`,
+    `unbanall`, `connections`, `mapinfo`, `maps`, `serverinfo`, `mp_wpndmg`, `sv_gm`.
+  - **Done 2026-10-19 (P2) commands:** `damageobject` (damage/repair with source player),
+    `killobject`, `triggerposition`, `restart`/`restartround`, `resources`.
+  - **Done 2026-10-19 (P3):** `sv_sound`/`sv_sound2`/`sv_soundpos`/`sv_stopsound` (opcode 240
+    modes 10/11 + positional [65]), `damagetile`, `explosion` ([48] type 1 + radial damage),
+    `effect` (fire/smoke/colorsmoke/flare/sparkles/blood).
+  - **Commands still missing (P3):** `flashplayer` and `flashposition` (client needs the [48] flash
+    effect 4/5 and the screen overlay; [48] screen shake type 2 is also not drawn yet).
+  - **Done 2026-10-19 (P1): `server.cfg` now runs through `cs2d_sv_exec`** (`cs2d_sv_exec_config`,
+    used by `main_dedicated.c`), so `mp_building_price`/`exec`/`alias`/... lines execute; unknown keys
+    still fall back to the generic cvar store.
+  - **Done 2026-10-19 (P1): flood guard `FUN_1400d4c90`** (per-IP window + ignore list) applied to the
+    `[252]` sub-ops with their documented counts (60/200/30 per 60 s) and to RCON failures.
+  - **Secret generator (P2):** still a random 10 letters; `PTR_PTR_1405a6800`'s generator is not
+    decompiled.
+  - **Lower priority:** `[252,10]` spray path is byte-tested but not re-checked with the original
+    client; `FUN_1401dba60` (3 bytes at the end of `[252,6]`) still hardcoded zeros; U.S.G.N. login /
+    serverlist intentionally offline.
+
+
 ## 2026-10-17 — Antigravity — Dedicated Server: Resposta de Server Browser, Ping Echo [FA] e Info Reply [FB]
 
 - **Ping Echo Connectionless e In-Session (`[FA]` / 250, `FUN_1400d4ed0`)**:
