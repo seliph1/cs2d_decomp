@@ -3868,6 +3868,7 @@ void cs2d_sv_step_hostages(cs2d_server_t *sv)
 /* ========================================================================= */
 
 static bool sv_tile_blocks(const cs2d_server_t *sv, int tx, int ty);
+static bool sv_tile_blocks_bullet(const cs2d_server_t *sv, int tx, int ty);
 
 static bool sv_projectile_is_impact(int type)
 {
@@ -4190,9 +4191,9 @@ void cs2d_sv_step_projectiles(cs2d_server_t *sv)
             int tx_next = (int)(next_x * 0.03125f);
             int ty_next = (int)(next_y * 0.03125f);
 
-            bool hit_solid_x = sv_tile_blocks(sv, tx_next, ty_cur);
-            bool hit_solid_y = sv_tile_blocks(sv, tx_cur, ty_next);
-            bool hit_solid = hit_solid_x || hit_solid_y || sv_tile_blocks(sv, tx_next, ty_next);
+            bool hit_solid_x = sv_tile_blocks_bullet(sv, tx_next, ty_cur);
+            bool hit_solid_y = sv_tile_blocks_bullet(sv, tx_cur, ty_next);
+            bool hit_solid = hit_solid_x || hit_solid_y || sv_tile_blocks_bullet(sv, tx_next, ty_next);
 
             bool hit_player = false;
             bool hit_hostage = false;
@@ -5215,6 +5216,18 @@ static bool sv_tile_blocks(const cs2d_server_t *sv, int tx, int ty)
     return false;
 }
 
+/* Same as sv_tile_blocks but for a bullet ray: an Obstacle tile blocks movement only and lets bullets
+ * through (cs2d_map_mode_collision: "blocks movement, allows bullets"); walls, map edges and solid
+ * objects still stop it. */
+static bool sv_tile_blocks_bullet(const cs2d_server_t *sv, int tx, int ty)
+{
+    const cs2d_map_t *map = &sv->map;
+    if (tx < 0 || ty < 0 || (uint32_t)tx >= map->width || (uint32_t)ty >= map->height) return true;
+    if (cs2d_map_prop_class(cs2d_map_get_tile_mode(map, (uint32_t)tx, (uint32_t)ty)) == 0) return true;
+    if (map->object_collision && map->object_collision[(size_t)ty * map->width + tx]) return true;
+    return false;
+}
+
 /* Tdo image hit zone (imagehitzone / [59], help.php "hitzone"). The image x/y is its centre; the
  * zone is the axis-aligned rect x + xo .. x + xo + w, y + yo .. y + yo + h (no rotation).
  * Returns 0 = no zone, 1 = non-blocking zone (shot continues) or 2 = blocking zone (mode > 100,
@@ -5267,7 +5280,7 @@ static int sv_trace_shot(cs2d_server_t *sv, float x, float y, float rot, float d
         prev_px = px;
         prev_py = py;
         /* the muzzle sits inside the shooting building's own tile: that tile never blocks the bullet */
-        if (!(tx == sx && ty == sy) && sv_tile_blocks(sv, tx, ty)) {
+        if (!(tx == sx && ty == sy) && sv_tile_blocks_bullet(sv, tx, ty)) {
             if (obj_out) {
                 const cs2d_dynobj_t *o = cs2d_dynobj_at_tile(&sv->dynobj, tx, ty);
                 if (o) *obj_out = o->id;
