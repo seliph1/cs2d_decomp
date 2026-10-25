@@ -987,3 +987,8 @@ still leave a temporary offset until the next waypoint.
 - **Join section 11 (wbank, `[252,7,11]`)**: built at the end of `FUN_140112bc0`: 5 bytes (`id, recoil_accuracy, recoil_recover, recoil_attack, firedelay`) per slot 1/2 weapon, id order, zlib `[u16 size][u32 raw size][zlib]`; file = `weapons_recoil.cfg` if mp_recoil else `weapons.cfg`. Code: `cs2d_weapons_wbank_raw`; test `test_join_wbank_raw`.
 - **Join `[252,6]` tail (`FUN_1401dba60`)**: 3 lists PhysicsPlatform `DAT_1407df510`, PhysicsObject `df5e0`, PhysicsController `df400` (names from the client twin, `docs/dump/cs2d/_global/1402e0000.c`), each u8 count + entries. **Player id** (`FUN_140098050(1,-1)`): lowest id in 1..32 not held by a Tpl; none free -> null.
 - **`[247]` header**: ticks byte = min over a 180-entry ring of "loops to pass 999 ms" (`0x14019d3a0`); u16 #1 = bytes sent/8 (`DAT_1407dfe34`), u16 #2 = bytes received/8 (`DAT_1407dfe30`), counters `0x1407e06dc` / `0x1407e06d8` (Tudp). Code: `sv_frame_stats`.
+
+## spawnobject / spawnnpc (REA, 2026-10-24)
+
+- `spawnobject <type> <x> <y> <rot> <mode> <team> <player>` = `FUN_14011d6c0` -> `FUN_1400fa060`; x/y in tiles, spawned at `tile*32` (corner). Errors printed: wrong tile properties / there already is an object / out of map bounds.
+- `spawnnpc <npc type> <x> <y> <rot>` = `FUN_14011d910` -> `FUN_1400fa060(-1, 30, tx*32+16, ty*32+16, rot, 0, 0, npctype, 1)`: NPC at the tile centre, mode/team 0.

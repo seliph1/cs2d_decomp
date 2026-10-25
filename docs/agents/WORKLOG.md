@@ -2,6 +2,11 @@
 
 Keep only the 5 newest entries here; move older ones to the top of `worklog/archive.md`.
 
+## 2026-10-24 — Claude — dedicated: `spawnnpc` / `spawnobject` position and argument order
+
+- Original `spawnnpc` (`FUN_14011d910`) spawns NPCs at the tile CENTRE (`tile*32 + 16`); we used the corner. `spawnobject` (`FUN_14011d6c0` -> `FUN_1400fa060`) keeps `tile*32`.
+- Argument order fixed from the same functions: `spawnobject <type> <x> <y> <rot> <mode> <team> <player>`, `spawnnpc <npc type> <x> <y> <rot>` (the 4th arg of spawnnpc is rotation, not team). `cs2d_sv_spawn_object` got a `center` flag; regression in `test_dedicated_commands` (spawnnpc block).
+
 ## 2026-10-24 — Claude — dedicated: `effect` command [48] types and clamps
 
 - Our `effect` sent wrong types (fire 100, smoke 101+gray rgb, flare 102). Original `FUN_14011e170` -> `FUN_140102be0`: fire 6, smoke 7, blood 8, flare 100, colorsmoke 101, sparkles 102; p1 clamped (100 / blood 35 / sparkles 50); no rgb under 100.

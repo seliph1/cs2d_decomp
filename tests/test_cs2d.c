@@ -11730,6 +11730,17 @@ static bool test_dedicated_p1_rules(void)
     if (cs2d_dynobj_count(&sv.dynobj) < 1) TEST_FAIL("spawnobject", "object was not created");
     cs2d_dynobj_clear(&sv.dynobj);
 
+    /* spawnnpc <type> <x> <y> <rot> spawns at the tile centre (tile * 32 + 16, FUN_14011d910);
+     * spawnobject keeps the tile corner (tile * 32, FUN_14011d6c0) */
+    if (!cs2d_sv_exec(&sv, "spawnnpc 1 5 6 90")) TEST_FAIL("spawnnpc", "command failed");
+    bool npc_ok = false;
+    for (int i = 0; i < CS2D_DYNOBJ_MAX; i++) {
+        const cs2d_dynobj_t *o = &sv.dynobj.objs[i];
+        if (o->active && o->typ == CS2D_DO_NPC) npc_ok = (int)o->x == 5 * 32 + 16 && (int)o->y == 6 * 32 + 16;
+    }
+    if (!npc_ok) TEST_FAIL("spawnnpc", "NPC must spawn at the tile centre");
+    cs2d_dynobj_clear(&sv.dynobj);
+
     /* mp_teamkillpenalty: the second/limit-th teamkill kicks the attacker */
     memset(sv.players, 0, sizeof(sv.players));
     sv.players[1].used = true; sv.players[1].alive = true; sv.players[1].team = 1; sv.players[1].health = 100;

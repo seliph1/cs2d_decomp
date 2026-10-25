@@ -901,12 +901,15 @@ int cs2d_sv_spawn_item(cs2d_server_t *sv, int type, int tx, int ty, int clip, in
     return sv_spawn_item_ex(sv, type, tx, ty, clip, reserve);
 }
 
-/* spawnobject / spawnnpc (help.php): [49, id u16, typ u8, x u16, y u16, rot u16, mode u8, team u8, player u8] */
-void cs2d_sv_spawn_object(cs2d_server_t *sv, int typ, int tx, int ty, int mode, int team, int player, float rot)
+/* spawnobject / spawnnpc (help.php): [49, id u16, typ u8, x u16, y u16, rot u16, mode u8, team u8, player u8]
+ * Position (cs2d_dedicated.exe): spawnobject FUN_14011d6c0 passes tile * 32 (the tile corner), spawnnpc
+ * FUN_14011d910 passes tile * 32 + 16 (the tile centre); `center` selects the NPC case. */
+void cs2d_sv_spawn_object(cs2d_server_t *sv, int typ, int tx, int ty, int mode, int team, int player, float rot,
+                          bool center)
 {
     if (!sv || typ <= 0 || typ >= CS2D_DYNOBJ_TYPES) return;
-    float px = (float)(tx * CS2D_TILE_SIZE);
-    float py = (float)(ty * CS2D_TILE_SIZE);
+    float px = (float)(tx * CS2D_TILE_SIZE + (center ? CS2D_TILE_SIZE / 2 : 0));
+    float py = (float)(ty * CS2D_TILE_SIZE + (center ? CS2D_TILE_SIZE / 2 : 0));
     cs2d_dynobj_t *o = cs2d_dynobj_spawn(&sv->dynobj, -1, typ, px, py, rot, mode, team, player);
     if (!o) return;
     /* Tdo.inibuilding sets max_health[typ] on the server; spawnnpc uses the NPC type's default health */

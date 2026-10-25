@@ -2784,25 +2784,27 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
         return cs2d_sv_spawn_item(sv, type, atoi(a2), atoi(a3), clip, res) != 0;
     }
     if (_stricmp(cmd, "spawnobject") == 0) {
+        /* FUN_14011d6c0: spawnobject <type> <x> <y> <rot> <mode> <team> <player> (tiles) */
         char a4[32], a5[32], a6[32], a7[32];
         sv_next_arg(&cur, a1, sizeof(a1));
         sv_next_arg(&cur, a2, sizeof(a2));
         sv_next_arg(&cur, a3, sizeof(a3));
-        int mode = sv_next_arg(&cur, a4, sizeof(a4)) ? atoi(a4) : 0;
-        int team = sv_next_arg(&cur, a5, sizeof(a5)) ? atoi(a5) : 0;
-        int player = sv_next_arg(&cur, a6, sizeof(a6)) ? atoi(a6) : 0;
-        float rot = sv_next_arg(&cur, a7, sizeof(a7)) ? (float)atof(a7) : 0.0f;
-        cs2d_sv_spawn_object(sv, atoi(a1), atoi(a2), atoi(a3), mode, team, player, rot);
+        float rot = sv_next_arg(&cur, a4, sizeof(a4)) ? (float)atof(a4) : 0.0f;
+        int mode = sv_next_arg(&cur, a5, sizeof(a5)) ? atoi(a5) : 0;
+        int team = sv_next_arg(&cur, a6, sizeof(a6)) ? atoi(a6) : 0;
+        int player = sv_next_arg(&cur, a7, sizeof(a7)) ? atoi(a7) : 0;
+        cs2d_sv_spawn_object(sv, atoi(a1), atoi(a2), atoi(a3), mode, team, player, rot, false);
         return true;
     }
     if (_stricmp(cmd, "spawnnpc") == 0) {
-        /* help.php: NPCs are objects of type 30, the NPC type is stored in the player attribute */
+        /* FUN_14011d910: spawnnpc <npc type> <x> <y> <rot> (tiles); NPCs are objects of type 30 with
+         * the NPC type in the player attribute, mode / team 0, spawned at the tile centre */
         char a4[32];
         sv_next_arg(&cur, a1, sizeof(a1));
         sv_next_arg(&cur, a2, sizeof(a2));
         sv_next_arg(&cur, a3, sizeof(a3));
-        int team = sv_next_arg(&cur, a4, sizeof(a4)) ? atoi(a4) : 0;
-        cs2d_sv_spawn_object(sv, 30, atoi(a2), atoi(a3), 0, team, atoi(a1), 0.0f);
+        float rot = sv_next_arg(&cur, a4, sizeof(a4)) ? (float)atof(a4) : 0.0f;
+        cs2d_sv_spawn_object(sv, 30, atoi(a2), atoi(a3), 0, 0, atoi(a1), rot, true);
         return true;
     }
     if (_stricmp(cmd, "spawnprojectile") == 0) {

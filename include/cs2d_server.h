@@ -595,7 +595,8 @@ void cs2d_sv_positional_sound(cs2d_server_t *sv, int x, int y, const char *path,
 void cs2d_sv_death_drop(cs2d_server_t *sv, int id);                       /* mp_deathdrop */
 void cs2d_sv_kill_player_buildings(cs2d_server_t *sv, int player, int mode); /* mp_killbuildings */
 int  cs2d_sv_spawn_item(cs2d_server_t *sv, int type, int tx, int ty, int clip, int reserve);
-void cs2d_sv_spawn_object(cs2d_server_t *sv, int typ, int tx, int ty, int mode, int team, int player, float rot);
+void cs2d_sv_spawn_object(cs2d_server_t *sv, int typ, int tx, int ty, int mode, int team, int player, float rot,
+                          bool center);
 int  cs2d_sv_spawn_projectile(cs2d_server_t *sv, int player, int type, int x, int y, int flydist, int dir);
 
 int  cs2d_sv_bot_add(cs2d_server_t *sv, int team, int look, const char *name);
