@@ -588,6 +588,8 @@ void cs2d_sv_reqcld(cs2d_server_t *sv, int id, int mode, const char *param);    
 /* Server-side spawn commands (help.php): spawnitem / spawnobject / spawnnpc / spawnprojectile */
 /* [48] FX and the explosion command */
 void cs2d_sv_send_fx(cs2d_server_t *sv, int type, int x, int y, int p1, int p2, int r, int g, int b);
+void cs2d_sv_flash_player(cs2d_server_t *sv, int player, int intensity);
+void cs2d_sv_shake(cs2d_server_t *sv, int player, int power);
 void cs2d_sv_explosion(cs2d_server_t *sv, int x, int y, int size, int damage, int source);
 /* Server sounds: mode 10 play / 11 stop (opcode 240) and positional sound (opcode 65) */
 void cs2d_sv_server_sound(cs2d_server_t *sv, int mode, const char *path, int target);

@@ -898,6 +898,31 @@ bool cs2d_parse_color_code(const char *in, uint8_t *out_r, uint8_t *out_g, uint8
     return false;
 }
 
+/* Screen flash += amount, capped 1.3 (vtable +0x88 add, then +0x80 set when the value passes 1.3; the screen
+ * overlay is cs2d_render_gen_flash, FUN_140131710) */
+static void cs2d_client_flash_add(cs2d_client_t *client, float amount)
+{
+    client->gen.flash += amount;
+    if (client->gen.flash > 1.3f) client->gen.flash = 1.3f;
+}
+
+/* FUN_14011c3a0(x1, y1, x2, y2, step, 0): walks from (x1, y1) to (x2, y2) and fails on a wall tile (g_prop_class 0).
+ * The step (xmm4) and the PhysicsBullet.LineCollidesObjects pre-check are not recovered: the step is assumed to be
+ * 8 px and physics objects are ignored. */
+static bool client_flash_line_clear(const cs2d_map_t *map, float x1, float y1, float x2, float y2)
+{
+    float dx = x2 - x1, dy = y2 - y1;
+    float dist = sqrtf(dx * dx + dy * dy);
+    int steps = (int)(dist / 8.0f);
+    for (int i = 1; i <= steps; i++) {
+        float px = x1 + dx * (float)i / (float)steps, py = y1 + dy * (float)i / (float)steps;
+        int tx = (int)(px * 0.03125f), ty = (int)(py * 0.03125f);
+        if (px < 0.0f || py < 0.0f || tx >= (int)map->width || ty >= (int)map->height) continue;
+        if (cs2d_map_prop_class(cs2d_map_get_tile_mode(map, (uint32_t)tx, (uint32_t)ty)) == 0) return false;
+    }
+    return true;
+}
+
 void cs2d_client_flashlight(cs2d_client_t *client, int pid, int state, bool send)
 {
     if (!client || pid < 1 || pid > CS2D_MAX_PLAYERS) return;
@@ -2705,7 +2730,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                 /* Server -> Client: [48, type u8, x+0x8000 u16, y+0x8000 u16, p1 u16, p2 u16,
                  * (type >= 100) r,g,b u8, (type >= 200) len u8 + path] (FUN_14014e350 -> FUN_14014cf50).
                  * Implemented: explosion (1), fire (6), smoke (7), blood (8), flare (100), colorsmoke (101), sparkles (102).
-                 * Screen shake (2) and the flash effects (4/5) are not ported yet. */
+                 * Screen shake (2) and the flash effects (4/5): FUN_14014cf50 cases 2 / 4 / 5. */
                 if (pos + 10 > recvd) break;
                 uint8_t fxt = buffer[pos + 1];
                 int fx_x = (int)(buffer[pos + 2] | (buffer[pos + 3] << 8)) - 0x8000;
@@ -2725,7 +2750,27 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         flen = 14 + plen;
                     }
                 }
-                if (fxt == 1) {
+                if (fxt == 2) {
+                    /* shake: p1 = target player, p2 = power; only the target reacts. 0 stops it, a larger power
+                     * raises it (cap 1000); x / y are unused */
+                    if (fp1 == client->local_player_id) {
+                        if (fp2 == 0) client->gen.shake = 0.0f;
+                        else if (client->gen.shake < (float)fp2) client->gen.shake = (float)(fp2 < 1000 ? fp2 : 1000);
+                    }
+                } else if (fxt == 5) {
+                    /* flashplayer: x = target player (0 = everyone), p1 = intensity: flash += p1 * 0.01, capped 1.3 */
+                    if (fx_x == client->local_player_id || fx_x == 0) cs2d_client_flash_add(client, (float)fp1 * 0.01f);
+                } else if (fxt == 4) {
+                    /* flashposition: a living local player within 640 x 480 px with a clear line to the point;
+                     * full strength (p1 * 0.01) inside 325 x 245, else p1 * 0.003 */
+                    const cs2d_player_t *me = &client->game.players[client->local_player_id];
+                    float ddx = fabsf(me->pos.x - (float)fx_x), ddy = fabsf(me->pos.y - (float)fx_y);
+                    if (me->health > 0 && ddx < 640.0f && ddy < 480.0f &&
+                        client_flash_line_clear(&client->game.map, me->pos.x, me->pos.y, (float)fx_x, (float)fx_y)) {
+                        float k = (ddx >= 325.0f || ddy >= 245.0f) ? 0.003f : 0.01f;
+                        cs2d_client_flash_add(client, (float)fp1 * k);
+                    }
+                } else if (fxt == 1) {
                     cs2d_fx_explosion(&client->fx, (float)fx_x, (float)fx_y, fp1 > 0 ? (float)fp1 : 5.0f);
                 } else if (fxt == 8) {
                     int n = fp1 < 35 ? fp1 : 35;

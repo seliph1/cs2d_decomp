@@ -3228,6 +3228,34 @@ void cs2d_sv_send_fx(cs2d_server_t *sv, int type, int x, int y, int p1, int p2, 
     }
 }
 
+/* flashplayer <player> <intensity> (FUN_14011daf0, cs2d_dedicated.exe): intensity clamped 0..100, then a reliable
+ * [48, 5, player+0x8000, 0x8000, intensity, 0] to every joined client; each client tests the player id itself
+ * (0 = everyone). */
+void cs2d_sv_flash_player(cs2d_server_t *sv, int player, int intensity)
+{
+    if (!sv) return;
+    if (intensity < 0) intensity = 0;
+    if (intensity > 100) intensity = 100;
+    cs2d_sv_send_fx(sv, 5, player, 0, intensity, 0, 0, 0, 0);
+}
+
+/* shake <player> <power> (FUN_14011d2c0): only for an existing player, an unreliable
+ * [48, 2, 0x8000, 0x8000, player, power] to that player alone; the power is not clamped on the server (the client
+ * caps it at 1000). */
+void cs2d_sv_shake(cs2d_server_t *sv, int player, int power)
+{
+    if (!sv || player < 1 || player > CS2D_SV_MAX_PLAYERS || !sv->players[player].used) return;
+    cs2d_sv_conn_t *c = cs2d_sv_conn_of_player(sv, player);
+    if (!c || !sv->players[player].joined) return;
+    cs2d_pkt_t *p = cs2d_sv_packet(sv, c, false, false);
+    cs2d_pkt_w_byte(p, 48);
+    cs2d_pkt_w_byte(p, 2);
+    cs2d_pkt_w_short(p, 0x8000);
+    cs2d_pkt_w_short(p, 0x8000);
+    cs2d_pkt_w_short(p, (uint16_t)player);
+    cs2d_pkt_w_short(p, (uint16_t)power);
+}
+
 /* explosion <x> <y> <size> <damage> [player]: [48] type 1 for the visuals and radial damage
  * (linear falloff, at least 1 HP; damage/falloff estimated from help.php). */
 void cs2d_sv_explosion(cs2d_server_t *sv, int x, int y, int size, int damage, int source)

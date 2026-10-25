@@ -11992,6 +11992,44 @@ static bool test_dedicated_p3_rules(void)
         }
     }
 
+    /* flashplayer (FUN_14011daf0): [48, 5, player+0x8000, 0x8000, intensity (0..100), 0], same bytes to every client */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    if (!cs2d_sv_exec(&sv, "flashplayer 1 250")) TEST_FAIL("flashplayer", "command failed");
+    if (sv.conns[0].out.pos != 10 || sv.conns[0].out.buf[0] != 48 || sv.conns[0].out.buf[1] != 5 ||
+        (sv.conns[0].out.buf[2] | (sv.conns[0].out.buf[3] << 8)) != 1 + 0x8000 ||
+        (sv.conns[0].out.buf[4] | (sv.conns[0].out.buf[5] << 8)) != 0x8000 ||
+        (sv.conns[0].out.buf[6] | (sv.conns[0].out.buf[7] << 8)) != 100 ||
+        (sv.conns[0].out.buf[8] | (sv.conns[0].out.buf[9] << 8)) != 0) {
+        TEST_FAIL("flashplayer", "expected [48,5,id+0x8000,0x8000,100,0]");
+    }
+    /* flashposition (FUN_14011e010 -> FUN_140102be0 type 4): intensity clamped 0..100, p2 = 0 */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    if (!cs2d_sv_exec(&sv, "flashposition 320 160 -5")) TEST_FAIL("flashposition", "command failed");
+    if (sv.conns[0].out.pos != 10 || sv.conns[0].out.buf[1] != 4 ||
+        (sv.conns[0].out.buf[2] | (sv.conns[0].out.buf[3] << 8)) != 320 + 0x8000 ||
+        (sv.conns[0].out.buf[4] | (sv.conns[0].out.buf[5] << 8)) != 160 + 0x8000 ||
+        (sv.conns[0].out.buf[6] | (sv.conns[0].out.buf[7] << 8)) != 0) {
+        TEST_FAIL("flashposition", "expected [48,4,x,y,0,0]");
+    }
+    /* shake (FUN_14011d2c0): only to an existing player, [48, 2, 0x8000, 0x8000, player, power], power not clamped */
+    sv.players[1].used = true;
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    if (!cs2d_sv_exec(&sv, "shake 1 150")) TEST_FAIL("shake", "command failed");
+    if (sv.conns[0].out.pos != 10 || sv.conns[0].out.buf[1] != 2 ||
+        (sv.conns[0].out.buf[2] | (sv.conns[0].out.buf[3] << 8)) != 0x8000 ||
+        (sv.conns[0].out.buf[6] | (sv.conns[0].out.buf[7] << 8)) != 1 ||
+        (sv.conns[0].out.buf[8] | (sv.conns[0].out.buf[9] << 8)) != 150) {
+        TEST_FAIL("shake", "expected [48,2,0x8000,0x8000,1,150]");
+    }
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    cs2d_sv_exec(&sv, "shake 0 150");
+    cs2d_sv_exec(&sv, "shake 2 150");
+    if (sv.conns[0].out.pos != 0) TEST_FAIL("shake", "player 0 / a missing player must send nothing");
+
     free(sv.conns[0].pending);
     sv.conns[0].pending = NULL;
     sv.conns[0].active = false;

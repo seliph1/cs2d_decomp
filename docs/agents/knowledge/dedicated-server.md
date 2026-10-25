@@ -489,6 +489,11 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
 - **[48] FX** (`FUN_14014e350` -> `FUN_14014cf50`): `[48, type, x+0x8000, y+0x8000, p1 u16, p2 u16,
   (type>=100) r,g,b, (type>=200) len u8 + path]`. Types: 1 explosion, 2 screen shake, 3 object fx,
   4 flashposition, 5 flashplayer, 6 fire, 7 smoke (gray), 8 blood, 100 flare (Tp 14 + rgb), 101 colorsmoke, 102 sparkles.
+  **Flash / shake commands (REA ded, 2026-10-24):** `flashplayer <id> <int>` = `FUN_14011daf0`: int clamped 0..100, reliable `[48,5,id+0x8000,0x8000,int,0]`
+  to every joined client (client tests id, 0 = all). `flashposition <x> <y> <int>` = `FUN_14011e010` -> `FUN_140102be0(4,x,y,clamp(int),0)`. `shake <player> <power>` =
+  `FUN_14011d2c0`: only for an existing player, UNRELIABLE `[48,2,0x8000,0x8000,player,power]` to that player alone, power unclamped (arg 2 is cut to 9 chars before Int).
+  Client (`FUN_14014cf50` cases 2/4/5): shake: p1 == local id -> p2==0 clears `g_screenshake`, else raises it to min(p2,1000); flashplayer: flash += p1*0.01 (cap 1.3);
+  flashposition: local alive, |dx|<640, |dy|<480, line clear (`FUN_14011c3a0`), flash += p1*0.01 inside 325x245 else p1*0.003 (cap 1.3).
   Console `effect <name> x y p1 p2 r g b` = `FUN_14011e170` -> `FUN_140102be0` (REA, ded): name -> type (fire 6, smoke 7, blood 8,
   flare 100, colorsmoke 101, sparkles 102); p1 clamped before sending (100; blood 35 and floor 0; sparkles 50), p2 sent as is,
   r,g,b only for type >= 100. Client applies the same function (6/7: Tp 14 / Tp 3 with `rand(0,p2)` radius, 7 gray rand 30..120).

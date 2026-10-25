@@ -2485,6 +2485,25 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
         cs2d_sv_send_fx(sv, type, atoi(a1), atoi(a2), p1, p2, r, g, b);
         return true;
     }
+    if (_stricmp(cmd, "flashplayer") == 0 || _stricmp(cmd, "shake") == 0) { /* FUN_14011daf0 / FUN_14011d2c0 */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        a2[9] = '\0'; /* the second argument is cut to 9 characters before Int() */
+        if (_stricmp(cmd, "shake") == 0) cs2d_sv_shake(sv, atoi(a1), atoi(a2));
+        else cs2d_sv_flash_player(sv, atoi(a1), atoi(a2));
+        return true;
+    }
+    if (_stricmp(cmd, "flashposition") == 0) { /* FUN_14011e010 -> FUN_140102be0(4, x, y, clamp(p1, 0, 100)) */
+        sv_next_arg(&cur, a1, sizeof(a1));
+        sv_next_arg(&cur, a2, sizeof(a2));
+        sv_next_arg(&cur, a3, sizeof(a3));
+        a3[9] = '\0';
+        int inten = atoi(a3);
+        if (inten < 0) inten = 0;
+        if (inten > 100) inten = 100;
+        cs2d_sv_send_fx(sv, 4, atoi(a1), atoi(a2), inten, 0, 0, 0, 0);
+        return true;
+    }
     if (_stricmp(cmd, "explosion") == 0) {
         char a4[32], a5[32];
         sv_next_arg(&cur, a1, sizeof(a1));

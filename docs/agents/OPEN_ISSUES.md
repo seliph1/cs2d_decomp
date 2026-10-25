@@ -282,8 +282,8 @@ no AI"). Knowledge: `knowledge/dedicated-server.md`; test: `tools/agent/capture_
 - **CVars still inert:** `mp_autogamemode`, `mp_shotweakening` (needs a server-side shot ray; our damage arrives from
   `[17]`), `mp_lagcompensationdivisor`, `mp_trace`, `mp_natholepunching`, `mp_localrconoutput`,
   `mp_radar`/`mp_hud`/`mp_smokeblock`/`mp_buymenu` (client display, stored/broadcast through `[237]` only).
-- **Missing commands:** `flashplayer` and `flashposition` (client needs the `[48]` flash effect 4/5 and the screen
-  overlay; `[48]` screen shake type 2 is not drawn yet).
+- **Flash / shake (2026-10-24):** `flashplayer`, `flashposition`, `shake` and the client [48] types 2/4/5 are done. Unverified: the line test step (assumed 8 px) and the extra
+  `+0x260` object check (`vtable+0x90 > 0`) of flashposition; the flashbang projectile (`Tpro`, 850x480 test) does not feed `gen.flash` yet.
 - **Lua stubs:** `steamstats` returns an empty table (no Steam integration in this build).
 - **Lower priority:** the `[252,10]` spray path is byte-tested but not re-checked with the original client;
   U.S.G.N. login / serverlist intentionally offline.
