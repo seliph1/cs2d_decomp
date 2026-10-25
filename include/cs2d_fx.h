@@ -118,6 +118,7 @@ void cs2d_fx_knifeslash(cs2d_fx_t *fx, float px, float py, float angle_deg);
 /* Projectile & field visual effects */
 void cs2d_fx_smoke_puff(cs2d_fx_t *fx, float x, float y, float r, float g, float b, float size, float speed);
 void cs2d_fx_fire_puff(cs2d_fx_t *fx, float x, float y, float size);
+void cs2d_fx_flare_puff(cs2d_fx_t *fx, float x, float y, float size, float r, float g, float b);
 void cs2d_fx_sparkle(cs2d_fx_t *fx, float x, float y, float r, float g, float b);
 void cs2d_fx_blood_splat(cs2d_fx_t *fx, float x, float y, int count);
 void cs2d_fx_snow_puff(cs2d_fx_t *fx, float x, float y, int count);

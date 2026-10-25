@@ -488,7 +488,10 @@ regenerate with REA `procedure_pseudo_code` and save `raw_result`). Our port: `s
   - `sv_stopsound <file> [player]`: `[240, 0, 11, len, UTF-16LE path]` (mode 11 = stopServer).
 - **[48] FX** (`FUN_14014e350` -> `FUN_14014cf50`): `[48, type, x+0x8000, y+0x8000, p1 u16, p2 u16,
   (type>=100) r,g,b, (type>=200) len u8 + path]`. Types: 1 explosion, 2 screen shake, 3 object fx,
-  4 flashposition, 5 flashplayer, 8 blood, 100 fire, 101 smoke (colorized), 102 sparkles.
+  4 flashposition, 5 flashplayer, 6 fire, 7 smoke (gray), 8 blood, 100 flare (Tp 14 + rgb), 101 colorsmoke, 102 sparkles.
+  Console `effect <name> x y p1 p2 r g b` = `FUN_14011e170` -> `FUN_140102be0` (REA, ded): name -> type (fire 6, smoke 7, blood 8,
+  flare 100, colorsmoke 101, sparkles 102); p1 clamped before sending (100; blood 35 and floor 0; sparkles 50), p2 sent as is,
+  r,g,b only for type >= 100. Client applies the same function (6/7: Tp 14 / Tp 3 with `rand(0,p2)` radius, 7 gray rand 30..120).
 - **Grenade re-buy** (`mp_grenaderebuy`): a thrown or dropped grenade sets a per-life flag; with the
   cvar at 0 the same grenade cannot be bought again until the next spawn.
 - **Map goals** (`mp_mapgoalscore`): gates the +2 score for rescuing a hostage.
@@ -913,19 +916,28 @@ loads `bots/Standard AI.lua` after the server/map scripts.
   attack timer is reset; only when it has arrived does the **server** (the branch is gated by
   `DAT_140ddf400`, so clients never attack) run it:
   - target picker `FUN_140283760`: closest player with `team > 0` and health > 0 in a 405 x 220 box
-    and a clear `FUN_14011c3a0(x1,y1,x2,y2,32,0)` line (32 px steps, `g_prop_class == 1`); a
-    spectator (team 0), a dead player or a player behind a wall is never picked;
+    and a clear `FUN_14011c3a0(x1,y1,x2,y2,5.0,0)` line (**5 px** steps: `0x14028394b` pushes `0x40a00000`;
+    earlier notes said 32, which skipped thin walls). Only `g_prop_class 0` (collision 1: wall, closed DynWall wall,
+    building wall) blocks it; an obstacle does not. A spectator (team 0), a dead player or a player behind a wall is never picked;
   - path step `FUN_140283a10`: probe 45 px ahead, require that tile to be walkable, then choose an
     adjacent walkable tile (free side tile first, else the diagonal), set `m_x/m_y` to its **tile
-    centre** and `m_rot` to the **raw degree** angle (`(int)m_rot`; **not** the 182.04445 fixed point
+    centre** (our addition: the waypoint is rejected when the straight segment crosses a blocked tile; from a tile edge the
+    45 px probe can hop an obstacle / DynWall tile, and the walk has no map test) and `m_rot` to the **raw degree** angle (`(int)m_rot`; **not** the 182.04445 fixed point
     of the player rotation packets) and send reliable `[36,id,7]`;
   - types 1..3 (`countdown` threshold 11) melee when the player is inside a 32 x 32 box and start a
     cooldown of -50 / -20 / -15 frames; farther away they set a new waypoint at the player's
     position. Damage (`FUN_1401ed310` -> `FUN_1401ec180`): zombie 10, headcrab 2, snark 1;
   - Vortigaunt: `FUN_1401ed310` kind 0 melee 15 when within 32 px; kind 1 starts `+0x6c` (charge)
     when farther, and after 40 idle frames kind 2 fires `Tdo.shoot` (400 px, 40 damage, weapon 0xf9);
-  - soldier (threshold 8, no 32 px test): `Tdo.shoot` with weapon 0xf8, 5 damage, 400 px; then it
-    walks to the last seen position (`+0x110/+0x114`), like the Vortigaunt.
+  - soldier (threshold 8, no 32 px test): `Tdo.shoot` with weapon 0xf8, 5 damage, 400 px, then **returns**: it
+    stands still while the player is in sight (burst every 8 frames). Only when no target is found does it walk to the
+    last seen position (`+0x110/+0x114`), like the Vortigaunt (kind 1 charge also returns: it stands ~40 frames, so the
+    beam, fired along the frozen `rot`, can be dodged). Our port used to fall through into that walk after every shot
+    (always approaching, aim swaying); fixed 2026-10-24. **Added (not in the original):** a target farther than 380 px
+    (view box corners reach ~460) is approached with `FUN_140283a10` instead of fired at.
+  - **Snark death** (`Tdo.kill` case 0x1e/3, server only): `FUN_1401f1130(x, y, 75, 30, attacker 0, weapon 0xf9, falloff 0)`
+    (floats `0x140bd6aa8` / `0x140bd6a98`): players within 75 px take `(75 - d) * 30 / 75`, objects through Tdo.damage;
+    `sv_object_kill` does it after removing the snark (no re-entry).
 - **NPC damage:** `Tdo.damage` skips the max-health array for typ `0x1e` (NPC), so the building
   table must not clamp NPC health; the NPC's health is its type default (150 / 30 / 20 / 200 / 100).
   A player's shot stops on the NPC's tile (`Tshoot.Shoot` scans the Tdo before the players), and

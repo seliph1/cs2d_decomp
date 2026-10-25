@@ -109,12 +109,14 @@ static bool ai_los_clear(const cs2d_server_t *sv, float x1, float y1, float x2, 
     return true;
 }
 
-/* FUN_14011c3a0(x1, y1, x2, y2, 32, 0): the NPC target picker's clear line. It marches in 32 px
- * steps and stops once both axes are within 2 * step of the target (the target tile itself is
- * never tested, so a player standing next to a wall is still visible). */
+/* FUN_14011c3a0(x1, y1, x2, y2, 5.0, 0), called by the NPC target picker (CS2D.exe 0x14028394b
+ * pushes 0x40a00000 = 5.0f as the step). It marches in 5 px steps and stops once both axes are
+ * within 2 * step of the target (the target tile itself is never tested). Only a tile of
+ * g_prop_class 0 (wall: collision 1, which includes a closed Func_DynWall wall and building walls)
+ * blocks the sight; an obstacle (collision 2) does not. Out-of-map tiles are skipped. */
 static bool ai_npc_los_clear(const cs2d_server_t *sv, float x1, float y1, float x2, float y2)
 {
-    if (!sv || !sv->map.width) return false;
+    if (!sv || !sv->map.width || !sv->map.collision) return false;
     float dx = x2 - x1, dy = y2 - y1;
     float dist = sqrtf(dx * dx + dy * dy);
     if (dist < 1.0f) return true;
@@ -122,15 +124,16 @@ static bool ai_npc_los_clear(const cs2d_server_t *sv, float x1, float y1, float 
     float px = x1, py = y1;
     int last_x = -1000, last_y = -1000;
     for (int guard = 0; guard < 100000; guard++) {
-        px += ux * 32.0f;
-        py += uy * 32.0f;
-        if (fabsf(px - x2) < 64.0f && fabsf(py - y2) < 64.0f) return true;
+        px += ux * 5.0f;
+        py += uy * 5.0f;
+        if (fabsf(px - x2) < 10.0f && fabsf(py - y2) < 10.0f) return true;
         int tx = (int)(px * 0.03125f);
         int ty = (int)(py * 0.03125f);
         if (tx == last_x && ty == last_y) continue;  /* same tile: the original skips the test */
-        if (!ai_tile_free(sv, tx, ty)) return false;
         last_x = tx;
         last_y = ty;
+        if (px < 0.0f || py < 0.0f || (uint32_t)tx >= sv->map.width || (uint32_t)ty >= sv->map.height) continue;
+        if (sv->map.collision[(size_t)ty * sv->map.width + (size_t)tx] == 1) return false;
     }
     return false;
 }
@@ -750,6 +753,10 @@ void cs2d_sv_ai_second(cs2d_server_t *sv)
 static const float s_npc_speed[6] = { 0.0f, 1.0f, 2.5f, 6.0f, 7.0f, 3.0f };
 static const float s_npc_turn[6]  = { 0.0f, 5.0f, 5.0f, 4.0f, 20.0f, 7.0f };
 
+/* Ranged NPCs (Vortigaunt / soldier) fire from this far: Tdo.shoot's 400 px minus a margin for
+ * the 12 px hit box and the Rnd(-3, 3) spread (estimated). */
+#define AI_NPC_RANGE 380.0f
+
 /* FUN_140283760: the closest living player inside the NPC's 405 x 220 view box with a clear
  * 32 px line of sight (FUN_14011c3a0(..., 32, 0)). Spectators (team 0) and dead players are
  * never picked, which is why an NPC must not chase a spectator or a player behind a wall. */
@@ -800,8 +807,21 @@ static bool ai_npc_set_waypoint(cs2d_server_t *sv, cs2d_dynobj_t *o, float tx, f
             return false;
         }
     }
-    o->m_x = (float)(nx * 32 + 16);
-    o->m_y = (float)(ny * 32 + 16);
+    /* The walk (FUN_140283120) has no map test, and from the far edge of its tile the 45 px probe can
+     * land two tiles away, hopping an obstacle / DynWall tile in between. Reject a waypoint whose
+     * straight segment crosses a blocked tile (our addition: the server and the clients run the same
+     * deterministic motion, so only the waypoint choice can keep an NPC out of obstacles). */
+    float wx = (float)(nx * 32 + 16), wy = (float)(ny * 32 + 16);
+    float sdx = wx - o->x, sdy = wy - o->y;
+    int seg_steps = (int)(sqrtf(sdx * sdx + sdy * sdy) / 8.0f) + 1;
+    for (int s = 1; s <= seg_steps; s++) {
+        float t = (float)s / (float)seg_steps;
+        int sx = (int)((o->x + sdx * t) * 0.03125f), sy = (int)((o->y + sdy * t) * 0.03125f);
+        if ((sx == cx && sy == cy) || (sx == nx && sy == ny)) continue;
+        if (!ai_tile_free(sv, sx, sy)) return false;
+    }
+    o->m_x = wx;
+    o->m_y = wy;
     o->m_rot = (float)(a * 57.29577951308232);
     ai_npc_send_move(sv, o);
     return true;
@@ -940,23 +960,29 @@ void cs2d_sv_ai_npc_frame(cs2d_server_t *sv)
                 ai_npc_set_waypoint(sv, o, p->x, p->y);
                 continue;
             }
+            /* Types 4 / 5 (FUN_140283f20 lines 1243..1283): attack, remember the position and
+             * return. They stay put while the player is in sight; the walk below only runs when
+             * no target was found. */
+            o->target = target;
+            o->npc_last_x = (int)p->x;
+            o->npc_last_y = (int)p->y;
+            /* Out of range (Tdo.shoot reaches 400 px, the view box is 405 x 220 so its corners are
+             * farther): approach instead of firing into the air. The original has no range test;
+             * this follows the observed behaviour "walk closer only when spotted but out of range". */
+            if (!in_melee && ai_dist2(o->x, o->y, p->x, p->y) > AI_NPC_RANGE * AI_NPC_RANGE) {
+                o->countdown = 0;
+                ai_npc_set_waypoint(sv, o, p->x, p->y);
+                continue;
+            }
             if (type == 4) {
-                o->target = target;
                 o->countdown = -50;
-                if (in_melee) {
-                    ai_npc_attack(sv, o, target, 0);
-                    continue;
-                }
-                ai_npc_attack(sv, o, target, 1);   /* start the charge */
-                o->npc_last_x = (int)p->x;
-                o->npc_last_y = (int)p->y;
+                if (in_melee) ai_npc_attack(sv, o, target, 0);
+                else ai_npc_attack(sv, o, target, 1);   /* start the charge: stands still ~40 frames */
             } else {                               /* type 5: soldier */
-                o->target = target;
                 o->countdown = 0;
                 ai_npc_attack(sv, o, target, 0);   /* Tdo.shoot: 400 px, 5 damage */
-                o->npc_last_x = (int)p->x;
-                o->npc_last_y = (int)p->y;
             }
+            continue;
         }
 
         /* Types 4 and 5 keep walking towards the last seen position (+0x110 / +0x114). */

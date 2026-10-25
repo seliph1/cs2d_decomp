@@ -4964,8 +4964,25 @@ static void sv_object_kill(cs2d_server_t *sv, cs2d_dynobj_t *o, int player)
         cs2d_sv_set_playerdata(sv, player, 2, sv->players[player].money + def->kill_reward);
     }
     if (o->typ == CS2D_DO_SITE && o->t1_ms) o->t1_ms = 0;
+    bool snark = (o->typ == CS2D_DO_NPC && o->player == 3);
+    float snark_x = o->x, snark_y = o->y;
     cs2d_dynobj_kill(&sv->dynobj, obj_id, NULL); /* Tdo.kill: the explosion of the client is a Tp */
     sv_broadcast_obj_remove(sv, obj_id);
+    if (snark) {
+        /* Tdo.kill case 0x1e / 3 (CS2D.exe 0x1401fa64f): the server calls FUN_1401f1130(x, y, 75, 30,
+         * attacker 0, weapon 0xf9, falloff 0) - the radius / damage are the floats at 0x140bd6aa8 /
+         * 0x140bd6a98. Players within 75 px take (75 - d) * 30 / 75; objects (other NPCs included)
+         * go through the same Tdo.damage falloff. Done after the removal so the snark is not hit. */
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            const cs2d_sv_player_t *pl = &sv->players[i];
+            if (!pl->used || !pl->alive || pl->team < 1 || pl->health < 1) continue;
+            float d = sqrtf((pl->x - snark_x) * (pl->x - snark_x) + (pl->y - snark_y) * (pl->y - snark_y));
+            if (d > 75.0f) continue;
+            int dmg = (int)((75.0f - d) * 30.0f / 75.0f);
+            if (dmg >= 1) cs2d_sv_damage(sv, i, 0, dmg, 0xf9);
+        }
+        cs2d_sv_explosion_objects(sv, snark_x, snark_y, 75.0f, 30, 0);
+    }
 }
 
 /*

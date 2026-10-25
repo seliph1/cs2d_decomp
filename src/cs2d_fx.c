@@ -376,6 +376,15 @@ void cs2d_fx_smoke_puff(cs2d_fx_t *fx, float x, float y, float r, float g, float
     p->drag     = 1.5f;
 }
 
+void cs2d_fx_flare_puff(cs2d_fx_t *fx, float x, float y, float size, float r, float g, float b)
+{
+    if (!fx) return;
+    cs2d_fx_fire_puff(fx, x, y, size);
+    /* "flare" is the fire particle (Tp 14) tinted with the command's r,g,b (FUN_140102be0, type 100) */
+    cs2d_fx_particle_t *p = &fx->p[fx->count - 1];
+    p->r = r / 255.0f; p->g = g / 255.0f; p->b = b / 255.0f;
+}
+
 void cs2d_fx_fire_puff(cs2d_fx_t *fx, float x, float y, float size)
 {
     if (!fx) return;

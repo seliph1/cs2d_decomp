@@ -2,6 +2,18 @@
 
 Keep only the 5 newest entries here; move older ones to the top of `worklog/archive.md`.
 
+## 2026-10-24 — Claude — dedicated: `effect` command [48] types and clamps
+
+- Our `effect` sent wrong types (fire 100, smoke 101+gray rgb, flare 102). Original `FUN_14011e170` -> `FUN_140102be0`: fire 6, smoke 7, blood 8, flare 100, colorsmoke 101, sparkles 102; p1 clamped (100 / blood 35 / sparkles 50); no rgb under 100.
+- Fixed `cs2d_server.c` and the client [48] handler (6/7 added, 100 = tinted fire particle via `cs2d_fx_flare_puff`). Test extended in `test_cs2d.c`. Client particle look is still approximate (not checked against a capture).
+
+## 2026-10-24 — Claude — dedicated: NPC behaviour (soldier / Vortigaunt / snark / obstacles)
+
+- Soldier and Vortigaunt always approached and swayed: after the attack / charge the port fell through into the "walk to last seen position" code; the original `FUN_140283f20`
+  returns there (stand still while the player is in sight, charge = ~40 idle frames so the beam is dodgeable). Added (calibrated, not original): approach when the target is > 380 px.
+- NPC sight line `FUN_14011c3a0` steps **5 px** (not 32) and only collision 1 (g_prop_class 0) blocks; waypoints are rejected when the segment crosses a blocked tile (obstacle / DynWall hop).
+- Snark death explosion: `FUN_1401f1130(x, y, 75, 30, 0, 0xf9)` in `sv_object_kill`. Tests in `test_dedicated_bot_and_npc_ai`. Not checked against a live original run.
+
 ## 2026-10-24 — Claude — dedicated: anti-speeder false positives + mp_anticlock [229]
 
 - Cause of the kicks on `func_teleport` / round restart: our `cs2d_sv_validate_move` punished the first move >160 px & >650 px/s from `last_valid`. After `cs2d_sv_set_pos` / spawn

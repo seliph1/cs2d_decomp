@@ -2704,7 +2704,7 @@ void cs2d_client_poll_network(cs2d_client_t *client)
             } else if (opcode == CS2D_NET_FX) {
                 /* Server -> Client: [48, type u8, x+0x8000 u16, y+0x8000 u16, p1 u16, p2 u16,
                  * (type >= 100) r,g,b u8, (type >= 200) len u8 + path] (FUN_14014e350 -> FUN_14014cf50).
-                 * Implemented: explosion (1), blood (8), fire (100), smoke/colorsmoke (101), sparkles (102).
+                 * Implemented: explosion (1), fire (6), smoke (7), blood (8), flare (100), colorsmoke (101), sparkles (102).
                  * Screen shake (2) and the flash effects (4/5) are not ported yet. */
                 if (pos + 10 > recvd) break;
                 uint8_t fxt = buffer[pos + 1];
@@ -2731,7 +2731,9 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                     int n = fp1 < 35 ? fp1 : 35;
                     if (n < 1) n = 1;
                     cs2d_fx_blood_splat(&client->fx, (float)fx_x, (float)fx_y, n);
-                } else if (fxt == 100 || fxt == 101 || fxt == 102) {
+                } else if (fxt == 6 || fxt == 7 || fxt == 100 || fxt == 101 || fxt == 102) {
+                    /* FUN_140102be0: 6 fire, 7 smoke (gray rand 30..120), 100 flare (fire particle + rgb),
+                     * 101 colorsmoke, 102 sparkles; amount capped at 100 (sparkles 50). */
                     int n = fp1;
                     int cap = (fxt == 102) ? 50 : 100;
                     if (n > cap) n = cap;
@@ -2742,7 +2744,13 @@ void cs2d_client_poll_network(cs2d_client_t *client)
                         float rr = radius * (float)((k * 37) % 100) / 100.0f;
                         float px = (float)fx_x + cosf(ang) * rr;
                         float py = (float)fx_y + sinf(ang) * rr;
-                        if (fxt == 100) cs2d_fx_fire_puff(&client->fx, px, py, 1.0f + (float)(k % 3));
+                        if (fxt == 6) cs2d_fx_fire_puff(&client->fx, px, py, 1.0f + (float)(k % 3));
+                        else if (fxt == 100) cs2d_fx_flare_puff(&client->fx, px, py, 1.0f + (float)(k % 3),
+                                                                (float)fr, (float)fg, (float)fb);
+                        else if (fxt == 7) {
+                            float gray = (float)(30 + (k * 37) % 91);
+                            cs2d_fx_smoke_puff(&client->fx, px, py, gray, gray, gray, 1.0f, 0.2f);
+                        }
                         else if (fxt == 101) cs2d_fx_smoke_puff(&client->fx, px, py,
                                                                 (float)fr, (float)fg, (float)fb, 1.0f, 0.2f);
                         else cs2d_fx_sparkle(&client->fx, px, py, (float)fr, (float)fg, (float)fb);

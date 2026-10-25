@@ -11947,13 +11947,38 @@ static bool test_dedicated_p3_rules(void)
         (sv.conns[0].out.buf[6] | (sv.conns[0].out.buf[7] << 8)) != 64) {
         TEST_FAIL("explosion FX", "expected [48,1,x,y,size,0]");
     }
-    /* effect fire -> [48, 100, x, y, p1, p2, r, g, b] */
+    /* effect flare -> [48, 100, x, y, p1, p2, r, g, b] (FUN_14011e170 -> FUN_140102be0) */
     sv.conns[0].out.pos = 0;
     sv.conns[0].out_open = false;
-    if (!cs2d_sv_exec(&sv, "effect fire 100 100 5 50 10 20 30")) TEST_FAIL("effect", "command failed");
+    if (!cs2d_sv_exec(&sv, "effect flare 100 100 5 50 10 20 30")) TEST_FAIL("effect", "command failed");
     if (sv.conns[0].out.pos != 13 || sv.conns[0].out.buf[0] != 48 || sv.conns[0].out.buf[1] != 100 ||
         sv.conns[0].out.buf[10] != 10 || sv.conns[0].out.buf[11] != 20 || sv.conns[0].out.buf[12] != 30) {
         TEST_FAIL("effect FX", "expected [48,100,...,r,g,b]");
+    }
+    /* fire = type 6, no r,g,b; p1 clamped to 100 */
+    sv.conns[0].out.pos = 0;
+    sv.conns[0].out_open = false;
+    if (!cs2d_sv_exec(&sv, "effect fire 100 100 500 50 10 20 30")) TEST_FAIL("effect", "fire failed");
+    if (sv.conns[0].out.pos != 10 || sv.conns[0].out.buf[1] != 6 ||
+        (sv.conns[0].out.buf[6] | (sv.conns[0].out.buf[7] << 8)) != 100 ||
+        (sv.conns[0].out.buf[8] | (sv.conns[0].out.buf[9] << 8)) != 50) {
+        TEST_FAIL("effect fire", "expected [48,6,x,y,100,50] without rgb");
+    }
+    /* smoke = 7, blood = 8 (p1 cap 35), sparkles = 102 (cap 50), colorsmoke = 101 */
+    static const struct { const char *cmd; int type, p1, len; } fxc[] = {
+        { "effect smoke 1 1 9 9 1 2 3", 7, 9, 10 },
+        { "effect blood 1 1 99 9", 8, 35, 10 },
+        { "effect sparkles 1 1 99 9 1 2 3", 102, 50, 13 },
+        { "effect colorsmoke 1 1 7 9 1 2 3", 101, 7, 13 },
+    };
+    for (size_t fi = 0; fi < sizeof(fxc) / sizeof(fxc[0]); fi++) {
+        sv.conns[0].out.pos = 0;
+        sv.conns[0].out_open = false;
+        if (!cs2d_sv_exec(&sv, fxc[fi].cmd)) TEST_FAIL("effect", "command failed");
+        if (sv.conns[0].out.pos != fxc[fi].len || sv.conns[0].out.buf[1] != fxc[fi].type ||
+            (sv.conns[0].out.buf[6] | (sv.conns[0].out.buf[7] << 8)) != fxc[fi].p1) {
+            TEST_FAIL(fxc[fi].cmd, "wrong [48] type / clamped p1 / length");
+        }
     }
 
     free(sv.conns[0].pending);
@@ -12675,7 +12700,10 @@ static bool test_dedicated_bot_and_npc_ai(void)
             cs2d_dynobj_kill(&sv.dynobj, sv.dynobj.objs[k].id, NULL);
     }
     sv.map.tile_modes[1] = CS2D_TILE_WALL;
-    for (uint32_t ty = 0; ty < h; ty++) sv.map.tiles[ty * w + 10] = 1;
+    for (uint32_t ty = 0; ty < h; ty++) {
+        sv.map.tiles[ty * w + 10] = 1;
+        sv.map.collision[ty * w + 10] = 1;      /* the server map always carries the collision grid */
+    }
     /* No other target for the isolated wall test. */
     pa->team = 0;
     pa->alive = false;
@@ -12715,6 +12743,100 @@ static bool test_dedicated_bot_and_npc_ai(void)
     cs2d_sv_shot_at_building(&sv, a, wep);
     if (cs2d_dynobj_get(&sv.dynobj, npc4_id) != NULL)
         TEST_FAIL("npc ai", "the NPC did not die from a player shot");
+
+    /* ---- NPC behaviour rules (FUN_140283f20 / FUN_140283760 / FUN_140283a10, Tdo.kill case 0x1e) ---- */
+    for (int k = 0; k < CS2D_DYNOBJ_MAX; k++) {
+        if (sv.dynobj.objs[k].active && sv.dynobj.objs[k].typ == CS2D_DO_NPC)
+            cs2d_dynobj_kill(&sv.dynobj, sv.dynobj.objs[k].id, NULL);
+    }
+    for (uint32_t ty = 0; ty < h; ty++) {      /* remove the wall column */
+        sv.map.tiles[ty * w + 10] = 0;
+        sv.map.collision[ty * w + 10] = 0;
+    }
+    pa->team = 0;
+    pa->alive = false;
+    pa->health = 0;
+    pb->alive = true;
+    pb->team = 2;
+
+    /* Obstacle (collision 2, e.g. a Func_DynWall obstacle) between a zombie and the player: the
+     * obstacle does not block the sight (only g_prop_class 0 does), but the zombie must never walk
+     * into it. From the far edge of tile 3 the 45 px probe lands in tile 5 and would hop tile 4. */
+    sv.map.collision[8 * w + 4] = 2;
+    pb->x = 6 * 32.0f + 16.0f;
+    pb->y = 8 * 32.0f + 16.0f;
+    pb->health = 100;
+    cs2d_dynobj_t *zom = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_NPC, 3 * 32.0f + 31.0f, 8 * 32.0f + 16.0f,
+                                           0.0f, 0, 0, 1);
+    if (!zom) TEST_FAIL("npc ai", "could not spawn the obstacle zombie");
+    zom->health = 150;
+    for (int i = 0; i < 400; i++) cs2d_sv_ai_npc_frame(&sv);
+    if (zom->x >= 4 * 32.0f) TEST_FAIL("npc ai", "the zombie walked into an obstacle tile");
+    cs2d_dynobj_kill(&sv.dynobj, zom->id, NULL);
+    sv.map.collision[8 * w + 4] = 0;
+
+    /* Soldier: stands still and fires while the player is in range (it does not walk towards it). */
+    cs2d_dynobj_t *sol = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_NPC, 2 * 32.0f + 16.0f, 8 * 32.0f + 16.0f,
+                                           90.0f, 0, 0, 5);
+    if (!sol) TEST_FAIL("npc ai", "could not spawn the soldier");
+    sol->health = 100;
+    sol->rot = sol->m_rot = 90.0f;
+    for (int i = 0; i < 60; i++) cs2d_sv_ai_npc_frame(&sv);   /* before the 100 HP player dies */
+    if (fabsf(sol->x - (2 * 32.0f + 16.0f)) > 1.0f || fabsf(sol->y - (8 * 32.0f + 16.0f)) > 1.0f)
+        TEST_FAIL("npc ai", "an in-range soldier must not walk (it stops and fires)");
+    if (pb->health >= 100) TEST_FAIL("npc ai", "the soldier did not shoot the player");
+
+    /* Soldier: a player seen from farther than the shot range (box 405 wide, shot 400) is approached. */
+    pb->x = 15 * 32.0f + 16.0f;               /* dx = 416 > 405: not seen */
+    pb->health = 100;
+    sol->x = 2 * 32.0f + 16.0f;
+    pb->x = 2 * 32.0f + 16.0f + 392.0f;       /* seen (392 < 405) but beyond the 380 px range */
+    float sol_x0 = sol->x;
+    for (int i = 0; i < 120; i++) cs2d_sv_ai_npc_frame(&sv);
+    if (sol->x <= sol_x0 + 8.0f) TEST_FAIL("npc ai", "an out-of-range soldier must approach the player");
+    cs2d_dynobj_kill(&sv.dynobj, sol->id, NULL);
+
+    /* Vortigaunt: stands still while the beam charges and the player can dodge it. */
+    pb->x = 6 * 32.0f + 16.0f;
+    pb->y = 8 * 32.0f + 16.0f;
+    pb->health = 100;
+    cs2d_dynobj_t *vor = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_NPC, 2 * 32.0f + 16.0f, 8 * 32.0f + 16.0f,
+                                           90.0f, 0, 0, 4);
+    if (!vor) TEST_FAIL("npc ai", "could not spawn the Vortigaunt");
+    vor->health = 200;
+    vor->rot = vor->m_rot = 90.0f;
+    bool charged = false, fired = false;
+    for (int i = 0; i < 200 && !fired; i++) {
+        cs2d_sv_ai_npc_frame(&sv);
+        if (vor->upgrade > 0 && !charged) {
+            charged = true;
+            pb->y = 8 * 32.0f + 16.0f + 100.0f;   /* dodge: leave the beam line while it charges */
+        }
+        if (charged && vor->upgrade == 0) fired = true;
+        if (charged && fabsf(vor->x - (2 * 32.0f + 16.0f)) > 1.0f)
+            TEST_FAIL("npc ai", "the Vortigaunt must not walk while charging");
+    }
+    if (!charged || !fired) TEST_FAIL("npc ai", "the Vortigaunt did not charge and fire");
+    if (pb->health != 100) TEST_FAIL("npc ai", "a dodged Vortigaunt beam must miss");
+    cs2d_dynobj_kill(&sv.dynobj, vor->id, NULL);
+
+    /* Snark: dies with the Tdo.kill explosion (FUN_1401f1130: 75 px, 30 damage, linear falloff). */
+    pb->x = 8 * 32.0f + 16.0f;
+    pb->y = 4 * 32.0f + 16.0f;
+    pb->health = 100;
+    cs2d_dynobj_t *snk = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_NPC, pb->x - 40.0f, pb->y, 0.0f, 0, 0, 3);
+    if (!snk) TEST_FAIL("npc ai", "could not spawn the snark");
+    snk->health = 20;
+    int snk_id = snk->id;
+    cs2d_sv_object_damage(&sv, snk_id, 20, 0);
+    if (cs2d_dynobj_get(&sv.dynobj, snk_id) != NULL) TEST_FAIL("npc ai", "the snark did not die");
+    if (pb->health != 100 - (int)((75.0f - 40.0f) * 30.0f / 75.0f))
+        TEST_FAIL("npc ai", "the snark death explosion must deal (75 - d) * 30 / 75");
+    pb->health = 100;
+    snk = cs2d_dynobj_spawn(&sv.dynobj, -1, CS2D_DO_NPC, pb->x - 120.0f, pb->y, 0.0f, 0, 0, 3);
+    snk->health = 20;
+    cs2d_sv_object_damage(&sv, snk->id, 20, 0);
+    if (pb->health != 100) TEST_FAIL("npc ai", "the snark explosion must not reach beyond 75 px");
 
     cs2d_sv_lua_close(&sv);
     cs2d_dynobj_clear(&sv.dynobj);

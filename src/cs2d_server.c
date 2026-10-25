@@ -2468,14 +2468,20 @@ bool cs2d_sv_exec(cs2d_server_t *sv, const char *cmd_line)
         int g = sv_next_arg(&cur, a7, sizeof(a7)) ? atoi(a7) : 0;
         int b = sv_next_arg(&cur, a8, sizeof(a8)) ? atoi(a8) : 0;
         (void)a9;
-        int type = 0;
-        if (_stricmp(name, "fire") == 0) type = 100;
-        else if (_stricmp(name, "smoke") == 0) { type = 101; r = 120; g = 120; b = 120; }
+        /* Console command FUN_14011e170 -> FUN_140102be0 (cs2d_dedicated.exe): the name selects the [48] type
+         * (fire 6, smoke 7, blood 8, flare 100, colorsmoke 101, sparkles 102) and p1 is clamped before it is
+         * sent (100 / 100 / blood 35, floor 0 / 100 / 100 / sparkles 50). Types < 100 carry no r,g,b; p2 is
+         * sent unchanged. */
+        int type = 0, cap = 100;
+        if (_stricmp(name, "fire") == 0) type = 6;
+        else if (_stricmp(name, "smoke") == 0) type = 7;
+        else if (_stricmp(name, "blood") == 0) { type = 8; cap = 35; }
+        else if (_stricmp(name, "flare") == 0) type = 100;
         else if (_stricmp(name, "colorsmoke") == 0) type = 101;
-        else if (_stricmp(name, "flare") == 0) type = 102;
-        else if (_stricmp(name, "sparkles") == 0) type = 102;
-        else if (_stricmp(name, "blood") == 0) type = 8;
+        else if (_stricmp(name, "sparkles") == 0) { type = 102; cap = 50; }
         if (type == 0) return false;
+        if (p1 > cap) p1 = cap;
+        if (type == 8 && p1 < 0) p1 = 0;
         cs2d_sv_send_fx(sv, type, atoi(a1), atoi(a2), p1, p2, r, g, b);
         return true;
     }
