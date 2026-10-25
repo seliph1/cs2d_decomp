@@ -11,11 +11,11 @@ the same one.
   `0x1406cda6c`, `DAT_1407df93c`, weapon speed) and clamps instead of rejecting; the "packet flow" (> 64 moves/s) and "dist" detectors (`+0x180`..`+0x18c`) and the 2 s
   `[10]` reset are not ported. The [229] handler also has a flood limit (`FUN_1400d4f80(id, ip, 0xe5, 100, 5000)`) and a `mp_pinglimit` strike counter we do elsewhere.
 
-- **Dedicated server: bot and NPC AI, residuals (2026-10-20, `knowledge/dedicated-server.md`):** bot secondary attack only relays `[8]`
-  (no bot grenade projectile); shotgun bots apply one pellet hit; the per-skill turn/range tables are runtime arrays
-  (ours calibrated); a lost/reordered reliable `[36,7]` can leave a temporary client offset until the next waypoint;
-  the damage-assist tracker (and the `assist` hook) is not implemented; the Tactical Shield (and its `shieldhit` /
-  attacker-object-id hook) is not modelled in the damage path.
+- **Dedicated server: bot and NPC AI, residuals (2026-10-24, `knowledge/dedicated-server.md`):** bot secondary attack only relays `[8]`
+  (no bot grenade projectile); the per-skill turn/range tables are runtime arrays (ours calibrated); a lost/reordered
+  reliable `[36,7]` can leave a temporary client offset until the next waypoint; the Tactical Shield (41) is not modelled
+  in the damage path (no blocking, `shieldhit` is never fired; the hook now has its 6 help.php arguments) and needs REA of
+  `FUN_1401658c0` (attack direction, blocked fraction). Bot shots now use the player path (`cs2d_sv_shot_at_players`).
 
 - **Client: local player [253] (2026-10-20):** the dedicated already sends `[253,id,16,reason]` to the kicked client too
   (the original shows "Disconnect Reason" in `FUN_1401c7500`; test `test_dedicated_kick_message`), but `cs2d_client.c`

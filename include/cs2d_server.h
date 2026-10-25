@@ -249,6 +249,7 @@ typedef struct {
     uint8_t  items[64];       /* +0x3f0 int array: the item types given at spawn, in order */
     int      item_count;
     int      weapon;          /* +0x2e0 held weapon type (0 = none) */
+    int      shot_random;     /* Tpl.random: index into TRandom.SeedTable for the next pellet (humans: the [7] byte) */
     int16_t  clip[CS2D_MAX_WEAPONS];
     int16_t  reserve[CS2D_MAX_WEAPONS];
     bool     is_reloading;    /* +0x320: reload state */
@@ -550,6 +551,11 @@ void cs2d_sv_explosion_objects(cs2d_server_t *sv, float x, float y, float radius
 /* A shot of player `id` that reaches a building: the Tshoot.Shoot server branch (an enemy wall / turret /
  * dispenser takes the weapon's damage). Called from cs2d_sv_fire for every non-melee shot. */
 void cs2d_sv_shot_at_building(cs2d_server_t *sv, int id, const cs2d_weapon_def_t *wep);
+
+/* The player hits of a primary attack the server has to resolve itself (bots have no client to send [17]):
+ * the same pellets, spread seed (Tpl.random / TRandom), reach and bullet trace a human shot gets on the
+ * shooter's client, then cs2d_sv_damage for the first enemy the trace reaches. Called by the bot AI. */
+void cs2d_sv_shot_at_players(cs2d_server_t *sv, int id, const cs2d_weapon_def_t *wep);
 /* Tdo image hit zone test at one shot sample (imagehitzone / [59] + the "hitzone" hook).
  * Returns 0 = none, 1 = non-blocking, 2 = blocking (the shot stops). *damage is updated when
  * the hook returns a replacement (> 0) or a negative value (set to 0). */

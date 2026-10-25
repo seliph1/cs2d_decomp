@@ -10,6 +10,7 @@
 #include "cs2d_server.h"
 #include "cs2d_weapons.h"
 #include "cs2d_network.h"
+#include "cs2d_random.h"
 #include "cs2d_sv_lua.h"
 #include "cs2d_sv_ai.h"
 
@@ -183,6 +184,11 @@ void cs2d_sv_write_spawn(cs2d_pkt_t *p, int id, const cs2d_sv_player_t *pl)
  *
  * In Deathmatch (mode 1) and Team Deathmatch (mode 2) with mp_randomspawn == 1
  * (0x140160da0 - 0x140160dae, 0x140162313 -> 0x1400d5650), players spawn on random walkable tiles. */
+/* Damage-assist tracker [victim][attacker]: HP the victim lost to each attacker since spawn (saturates at 255;
+ * the assist threshold is 40). Process-wide, not in cs2d_sv_player_t: the test binary holds ~50 static servers
+ * and is already at the image size ceiling. */
+static uint8_t sv_dmg_from[CS2D_SV_MAX_PLAYERS + 1][CS2D_SV_MAX_PLAYERS + 1];
+
 static bool sv_pick_spawn(cs2d_server_t *sv, int id, float *ox, float *oy)
 {
     const cs2d_sv_player_t *pl = &sv->players[id];
@@ -298,6 +304,7 @@ void cs2d_sv_spawn_at(cs2d_server_t *sv, int id, float custom_x, float custom_y)
     pl->health = 100;
     pl->armor = 0;
     pl->speedmod = 0;
+    memset(sv_dmg_from[id], 0, sizeof(sv_dmg_from[id]));
     pl->alive = true;
     pl->aim = 0.0f;
     pl->aim_valid = false;
@@ -1452,6 +1459,7 @@ void cs2d_sv_round_start(cs2d_server_t *sv, int reason)
             }
             pl->health = 100;
             pl->armor = 0;
+            memset(sv_dmg_from[i], 0, sizeof(sv_dmg_from[i]));
             pl->alive = true;
             pl->move_flag = pl->rot_flag = 0;
             pl->is_reloading = false;
@@ -1728,6 +1736,10 @@ void cs2d_sv_fire(cs2d_server_t *sv, int id, int seed)
         }
     }
 
+    /* [7, seed]: the shooter's Tpl.random, 0 read as 1, stored before the shot runs (proxy, see
+     * cs2d_scene_game.c fire_shot). Bots keep their own counter (cs2d_sv_shot_at_players). */
+    if (seed > 0 || pl->shot_random < 1) pl->shot_random = seed > 0 ? seed : 1;
+
     cs2d_sv_lua_hook_attack(sv, id);
 
     /* Construction: the Wrench's primary attack repairs (or upgrades) an own building in reach instead
@@ -1937,13 +1949,30 @@ void cs2d_sv_damage_ex(cs2d_server_t *sv, int victim_id, int attacker_id, int dm
         remaining_dmg = applied - absorbed;
     }
 
+    /* Assist tracker (help.php, hook "assist": a player counts as assistant if he dealt at least
+     * 40 damage to the victim; only one player can). The HP actually lost is what we sum. */
+    if (attacker_id >= 1 && attacker_id <= CS2D_SV_MAX_PLAYERS && attacker_id != victim_id)
+    {
+        int sum = sv_dmg_from[victim_id][attacker_id] + (remaining_dmg < v->health ? remaining_dmg : v->health);
+        sv_dmg_from[victim_id][attacker_id] = (uint8_t)(sum > 255 ? 255 : sum);
+    }
+
     v->health -= remaining_dmg;
     if (v->health <= 0) {
         v->health = 0;
         /* Broadcast final damage state before or as part of kill */
         uint8_t dmg_msg[5] = { 17, (uint8_t)victim_id, (uint8_t)attacker_id, (uint8_t)v->health, (uint8_t)v->armor };
         sv_broadcast_joined(sv, dmg_msg, sizeof(dmg_msg));
-        cs2d_sv_kill_ex(sv, victim_id, attacker_id, 0, weapon, object_id);
+        /* The assistant is the non-killer with the most damage (>= 40); the hook can veto him. */
+        int assist_id = 0, best = 39;
+        for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+            if (i == attacker_id || i == victim_id || !sv->players[i].used) continue;
+            if (sv_dmg_from[victim_id][i] > best) { best = sv_dmg_from[victim_id][i]; assist_id = i; }
+        }
+        if (assist_id && attacker_id >= 1 && cs2d_sv_lua_hook_assist(sv, assist_id, victim_id, attacker_id) == 1)
+            assist_id = 0;
+        memset(sv_dmg_from[victim_id], 0, sizeof(sv_dmg_from[victim_id]));
+        cs2d_sv_kill_ex(sv, victim_id, attacker_id, assist_id, weapon, object_id);
         return;
     }
 
@@ -5402,6 +5431,49 @@ void cs2d_sv_shot_at_building(cs2d_server_t *sv, int id, const cs2d_weapon_def_t
     if (!o) return;
     if (o->typ != CS2D_DO_NPC && (!cs2d_dynobj_hit_debris(o->typ) || o->typ == CS2D_DO_BARRICADE)) return;
     cs2d_sv_object_damage(sv, obj_id, dmg, id);
+}
+
+/*
+ * The player hits of a primary attack, resolved by the server for a shooter without a client (a bot). It runs
+ * the shot the way the client's Tpl.attack does (cs2d_scene_game.c shot_bullets): M3 / XM1014 fire five
+ * pellets at 0, -5, +5, -9, +9 degrees, each turned by SeedTable[Tpl.random] % (2 * accuracy) - accuracy
+ * (Tpl.shoot 0x140209810, the counter advances (n + 1) % 200 per pellet); every other weapon shoots straight
+ * along the aim. Each bullet is the server trace (sv_trace_shot, Tshoot.Shoot) up to cs2d_weapon_shot_reach;
+ * the first player it meets takes the weapon damage if he is an enemy (a bystander only stops the bullet).
+ * Walls / buildings are cs2d_sv_shot_at_building's job and are not repeated here.
+ */
+void cs2d_sv_shot_at_players(cs2d_server_t *sv, int id, const cs2d_weapon_def_t *wep)
+{
+    static const float pellets[5] = { 0.0f, -5.0f, 5.0f, -9.0f, 9.0f };
+    if (!wep || wep->damage <= 0 || id < 1 || id > CS2D_SV_MAX_PLAYERS) return;
+    cs2d_sv_player_t *pl = &sv->players[id];
+    if (!pl->used || !pl->alive || pl->team < 1) return;
+    if (sv_round_frozen(sv)) return;   /* same gate as cs2d_sv_fire */
+
+    /* the SeedTable is process-wide and keyed by the seed sent in [252,6] */
+    static int seeded = -1;
+    if (seeded != sv->seed) { cs2d_random_seed(sv->seed); seeded = sv->seed; }
+
+    bool shotgun = (pl->weapon == CS2D_WEP_M3 || pl->weapon == CS2D_WEP_XM1014);
+    int acc = shotgun ? cs2d_weapon_accuracy((uint8_t)pl->weapon) : 0;
+    float reach = cs2d_weapon_shot_reach(wep);
+    for (int i = 0; i < (shotgun ? 5 : 1); i++) {
+        float a = pl->rot + (shotgun ? pellets[i] : 0.0f);
+        if (acc > 0) {
+            if (pl->shot_random < 1) pl->shot_random = 1;
+            int s = cs2d_random_table(pl->shot_random);
+            if (s >= 0) a += (float)(s % (2 * acc) - acc);
+            pl->shot_random = (pl->shot_random + 1) % 200;
+        }
+        int dmg = wep->damage;
+        int hit = sv_trace_shot(sv, pl->x, pl->y, a, reach, id, 0, wep->id, &dmg, NULL);
+        if (hit <= 0 || dmg <= 0) continue;
+        const cs2d_sv_player_t *t = &sv->players[hit];
+        bool enemy = (sv->set.sv_gamemode == 1) || (pl->team == 1 && t->team > 1) || (pl->team > 1 && t->team == 1);
+        if (!enemy) continue;
+        if (sv->set.sv_gamemode == 4 && t->team == 1 && wep->damage_z1 > 0) dmg = wep->damage_z1;
+        cs2d_sv_damage(sv, hit, id, dmg, wep->id);
+    }
 }
 
 /* A free floor tile within one tile of the object, at most 8 tries (FUN_14028b980 / FUN_14028dba0): the

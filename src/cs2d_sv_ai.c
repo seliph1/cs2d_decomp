@@ -417,35 +417,6 @@ bool cs2d_sv_ai_freeline(cs2d_server_t *sv, int id, float x, float y)
     if (!pl || !pl->alive) return false;
     return ai_los_clear(sv, pl->x, pl->y, x, y);
 }
-/* Damage of one bot shot. Bots have no client, so the dedicated resolves the hit itself (the
- * shooter's client does this for human players: [7] is only the effect relay, [17] the hit). */
-static void ai_shot_damage(cs2d_server_t *sv, int shooter_id, cs2d_sv_player_t *pl,
-                           const cs2d_weapon_def_t *def, float angle, float reach)
-{
-    if (!def) return;
-    float ux = sinf(angle * AI_PI / 180.0f);
-    float uy = -cosf(angle * AI_PI / 180.0f);
-    int best = 0;
-    float best_t = reach + 14.0f;
-    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
-        cs2d_sv_player_t *o = &sv->players[i];
-        if (!o->used || !o->alive || i == shooter_id) continue;
-        if (!ai_enemy(sv, pl, o)) continue;
-        float ox = o->x - pl->x, oy = o->y - pl->y;
-        float t = ox * ux + oy * uy;
-        if (t < 0.0f || t > reach + 14.0f) continue;
-        float px = ox - ux * t, py = oy - uy * t;
-        if (px * px + py * py > 14.0f * 14.0f) continue;   /* 24x24 player box */
-        if (t < best_t) { best_t = t; best = i; }
-    }
-    if (best <= 0) return;
-    cs2d_sv_player_t *v = &sv->players[best];
-    if (!ai_los_clear(sv, pl->x, pl->y, v->x, v->y)) return;
-    int dmg = def->damage;
-    if (sv->set.sv_gamemode == 4 && v->team == 1 && def->damage_z1 > 0) dmg = def->damage_z1;
-    if (dmg > 0) cs2d_sv_damage(sv, best, shooter_id, dmg, def->id);
-}
-
 static void ai_fire(cs2d_server_t *sv, int id, cs2d_sv_player_t *pl, int secondary)
 {
     const cs2d_weapon_def_t *def = cs2d_weapon_get((uint8_t)pl->weapon);
@@ -462,14 +433,10 @@ static void ai_fire(cs2d_server_t *sv, int id, cs2d_sv_player_t *pl, int seconda
     if (now < pl->ai_next_fire_ms) return;
     float delay = def->fire_delay > 0.0f ? def->fire_delay : 0.15f;
     pl->ai_next_fire_ms = now + (uint32_t)(delay * 1000.0f);
-    int skill = ai_skill(sv);
-    float spread = def->spread * (1.6f - (float)skill * 0.06f);
-    if (spread < 0.0f) spread = 0.0f;
-    float jitter = ((float)cs2d_sv_rand(-1000, 1000) / 1000.0f) * spread * 57.29578f;
-    float angle = pl->rot + jitter;
-    float reach = (float)(def->range > 0 ? def->range : 300);
-    cs2d_sv_fire(sv, id, cs2d_sv_rand(0, 255));
-    ai_shot_damage(sv, id, pl, def, angle, reach);
+    /* Same shot as a human's: [7] relay + building hit, then the pellets / spread / trace of Tpl.attack
+     * (cs2d_sv_shot_at_players). The bot's aim error comes from bots/Standard AI.lua, not from here. */
+    cs2d_sv_fire(sv, id, pl->shot_random);
+    cs2d_sv_shot_at_players(sv, id, def);
 }
 void cs2d_sv_ai_attack(cs2d_server_t *sv, int id, int secondary)
 {

@@ -130,7 +130,7 @@ void cs2d_sv_lua_hook_mapchange(cs2d_server_t *sv, const char *newmap);
 void cs2d_sv_lua_hook_spray(cs2d_server_t *sv, int id);
 void cs2d_sv_lua_hook_radio(cs2d_server_t *sv, int id, int msg);
 void cs2d_sv_lua_hook_startround_prespawn(cs2d_server_t *sv, int mode);
-void cs2d_sv_lua_hook_assist(cs2d_server_t *sv, int assist, int victim, int killer);
+int cs2d_sv_lua_hook_assist(cs2d_server_t *sv, int assist, int victim, int killer);
 void cs2d_sv_lua_hook_suicide(cs2d_server_t *sv, int id);
 void cs2d_sv_lua_hook_specswitch(cs2d_server_t *sv, int id, int target);
 void cs2d_sv_lua_hook_voice(cs2d_server_t *sv, int id);
@@ -183,7 +183,8 @@ int  cs2d_sv_lua_hook_hitzone(cs2d_server_t *sv, int image_id, int player, int o
 void cs2d_sv_lua_hook_httpdata(cs2d_server_t *sv, int request_id, int state, const char *data, size_t len);
 int  cs2d_sv_lua_hook_sayutf8(cs2d_server_t *sv, int id, const char *text);
 int  cs2d_sv_lua_hook_sayteamutf8(cs2d_server_t *sv, int id, const char *text);
-void cs2d_sv_lua_hook_shieldhit(cs2d_server_t *sv, int id, int weapon, int damage, int attacker);
+void cs2d_sv_lua_hook_shieldhit(cs2d_server_t *sv, int id, int source, int weapon, int direction, int object_id,
+                                int damage);
 /* "turretscan" (FUN_14028c630 slot +0x318): a turret is about to look for a target. The 4 arguments are
  * its object id, its team, x + 16 and y + 16; a returned player id (> 0) becomes the target directly. */
 int  cs2d_sv_lua_hook_turretscan(cs2d_server_t *sv, int object_id, int team, int x, int y);

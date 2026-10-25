@@ -12319,6 +12319,87 @@ static bool test_dedicated_map_teleport(void)
  * closes the connection: the original client shows "Disconnect Reason: ..." from it.
  * sv_remove_player used to clear players[id].used before the broadcast, so
  * conn_of_player() skipped exactly the client that needed the message. */
+static bool test_sv_damage_assist(void)
+{
+    printf("\n=== Testing Dedicated Server: damage assist tracker (help.php hook assist) ===\n");
+
+    /* heap: a second static cs2d_server_t would push the test .bss past 2 GB */
+    cs2d_server_t *svp = calloc(1, sizeof(*svp));
+    if (!svp) TEST_FAIL("assist", "calloc failed");
+    #define sv (*svp)
+    sv.sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv.set);
+    for (int i = 1; i <= 3; i++) {
+        sv.players[i].used = true;
+        sv.players[i].alive = true;
+        sv.players[i].team = (i == 3) ? CS2D_TEAM_T : CS2D_TEAM_CT;
+        sv.players[i].health = 100;
+        sv.players[i].maxhealth = 100;
+    }
+    /* Player 1 deals 50 (>= 40: assistant), player 2 finishes the victim (player 3). */
+    cs2d_sv_damage(&sv, 3, 1, 50, CS2D_WEP_AK47);
+    cs2d_sv_damage(&sv, 3, 2, 60, CS2D_WEP_AK47);
+    if (sv.players[3].alive) { free(svp); TEST_FAIL("assist", "victim must be dead"); }
+    if (sv.players[1].assists != 1) TEST_FAIL("assist", "the 50 damage dealer must get the assist");
+    if (sv.players[2].assists != 0) TEST_FAIL("assist", "the killer is never his own assistant");
+
+    /* Under 40 damage: no assist. */
+    sv.players[3].alive = true;
+    sv.players[3].health = 100;
+    cs2d_sv_damage(&sv, 3, 1, 30, CS2D_WEP_AK47);
+    cs2d_sv_damage(&sv, 3, 2, 90, CS2D_WEP_AK47);
+    if (sv.players[1].assists != 1) TEST_FAIL("assist", "30 damage is below the 40 threshold");
+    #undef sv
+    free(svp);
+    TEST_PASS("assist needs >= 40 damage, one assistant, never the killer");
+    return true;
+}
+
+static bool test_sv_bot_shot_path(void)
+{
+    printf("\n=== Testing Dedicated Server: a bot shot takes the same path as a player's (pellets, trace) ===\n");
+
+    cs2d_server_t *svp = calloc(1, sizeof(*svp));
+    if (!svp) TEST_FAIL("bot shot", "calloc failed");
+    cs2d_server_t *sv = svp;
+    sv->sock = INVALID_SOCKET;
+    cs2d_sv_settings_default(&sv->set);
+    sv->seed = 33081;
+    for (int i = 1; i <= 3; i++) {
+        sv->players[i].used = true;
+        sv->players[i].alive = true;
+        sv->players[i].team = (i == 1) ? CS2D_TEAM_CT : CS2D_TEAM_T;
+        sv->players[i].health = sv->players[i].maxhealth = 1000;
+    }
+    sv->players[1].x = 100; sv->players[1].y = 100; sv->players[1].rot = 90.0f;   /* aims east */
+    sv->players[2].x = 110; sv->players[2].y = 100;
+    sv->players[3].x = 300; sv->players[3].y = 300;
+
+    const cs2d_weapon_def_t *ak = cs2d_weapon_get(CS2D_WEP_AK47);
+    sv->players[1].weapon = CS2D_WEP_AK47;
+    cs2d_sv_shot_at_players(sv, 1, ak);
+    if (sv->players[2].health != 1000 - ak->damage) { free(svp); TEST_FAIL("bot shot", "AK-47 must hit the enemy in line once"); }
+    if (sv->players[3].health != 1000) { free(svp); TEST_FAIL("bot shot", "an enemy off the line took damage"); }
+
+    /* a teammate in front is not hurt */
+    sv->players[2].team = CS2D_TEAM_CT;
+    sv->players[2].health = 1000;
+    cs2d_sv_shot_at_players(sv, 1, ak);
+    if (sv->players[2].health != 1000) { free(svp); TEST_FAIL("bot shot", "friendly fire from a bot shot"); }
+
+    /* M3: five pellets, all inside the 12 px box at 10 px, the counter advances once per pellet */
+    sv->players[2].team = CS2D_TEAM_T;
+    sv->players[1].weapon = CS2D_WEP_M3;
+    sv->players[1].shot_random = 1;
+    const cs2d_weapon_def_t *m3 = cs2d_weapon_get(CS2D_WEP_M3);
+    cs2d_sv_shot_at_players(sv, 1, m3);
+    if (sv->players[2].health != 1000 - 5 * m3->damage) { free(svp); TEST_FAIL("bot shot", "M3 must apply five pellets"); }
+    if (sv->players[1].shot_random != 6) { free(svp); TEST_FAIL("bot shot", "Tpl.random must advance once per pellet"); }
+    free(svp);
+    TEST_PASS("bot shot: same trace, enemy-only damage, 5 shotgun pellets with the TRandom stream");
+    return true;
+}
+
 static bool test_dedicated_kick_message(void)
 {
     printf("\n=== Testing Dedicated Server: [253] reaches the kicked client ===\n");
@@ -13266,6 +13347,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_dedicated_trigger_graph);
     RUN_TEST(test_dedicated_map_teleport);
     RUN_TEST(test_dedicated_kick_message);
+    RUN_TEST(test_sv_damage_assist);
+    RUN_TEST(test_sv_bot_shot_path);
     RUN_TEST(test_dedicated_utf8_messages);
     RUN_TEST(test_dedicated_bot_and_npc_ai);
     RUN_TEST(test_dedicated_npc_hooks);

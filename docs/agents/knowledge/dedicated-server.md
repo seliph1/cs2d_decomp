@@ -966,7 +966,7 @@ attack paths. `help.php` argument lists, in order:
   for an NPC / turret / mine / gate / wire kill (killer is 0 for an NPC).
 - `kill(killer, victim, weapon, x, y, killerobject, assistant)` — **only when a player caused the
   death** (killer id >= 1, directly or through a building). An NPC kill fires `die` only, with its id
-  in killerobject. `assistant` is the assist id (our damage path currently passes 0).
+  in killerobject. `assistant` is the assist id: `cs2d_sv_damage_ex` sums the HP each attacker took off the victim (`sv_dmg_from`, reset on spawn/death); the non-killer with the most damage >= 40 (help.php, one assistant) is the assistant, and `assist(assist, victim, killer)` returning 1 drops him. Test `test_sv_damage_assist`. The 40 threshold is from help.php, not REA.
 - `hitzone(image id, player id, object id, weapon, x, y, damage)` — every shot sample that enters a
   `Tdo` 40 image hit zone (`imagehitzone`). An NPC shot passes player 0 and the NPC id as object id;
   a turret passes its owner and its own id; a player passes its id and 0. `image x/y` is the centre
@@ -982,7 +982,7 @@ attack paths. `help.php` argument lists, in order:
 hooks. `startround_prespawn` is already wired and runs before the NPC rebuild.
 
 Residuals: bot secondary attack (`ai_attack(id, 1)`) only relays `[8]` (grenades are spawned by a
-client in the original); shotgun bots apply a single pellet hit; the original per-skill target range
+client in the original); bot primary attacks run `cs2d_sv_fire` + `cs2d_sv_shot_at_players` (same pellets 0/-5/+5/-9/+9, TRandom `SeedTable[Tpl.random]` spread, `cs2d_weapon_shot_reach` and `sv_trace_shot` as a player/turret; no more per-skill jitter or private raycast: aim error is the Lua AI's `vai_aim` noise; `[7]` byte = `shot_random`); `shieldhit(id, source, weapon, direction, object, damage)` has its 6 arguments but the Tactical Shield is not modelled; the original per-skill target range
 arrays and turn table are runtime arrays, so ranges/turn are calibrated; the NPC and client
 `[36,7]` positions use the same deterministic motion, but a lost/reordered reliable packet can
 still leave a temporary offset until the next waypoint.

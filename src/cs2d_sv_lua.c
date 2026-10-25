@@ -3192,10 +3192,10 @@ void cs2d_sv_lua_hook_startround_prespawn(cs2d_server_t *sv, int mode)
     dispatch_hook(sv, "startround_prespawn", 1, push_1int, &a, NULL, 0);
 }
 
-void cs2d_sv_lua_hook_assist(cs2d_server_t *sv, int assist, int victim, int killer)
+int cs2d_sv_lua_hook_assist(cs2d_server_t *sv, int assist, int victim, int killer)
 {
     hook_args_t a = { .a = assist, .b = victim, .c = killer };
-    dispatch_hook(sv, "assist", 3, push_3int, &a, NULL, 0);
+    return dispatch_hook(sv, "assist", 3, push_3int, &a, NULL, 0);
 }
 
 void cs2d_sv_lua_hook_suicide(cs2d_server_t *sv, int id)
@@ -3560,10 +3560,12 @@ int cs2d_sv_lua_hook_sayteamutf8(cs2d_server_t *sv, int id, const char *text)
     return dispatch_hook(sv, "sayteamutf8", 2, push_say, &a, NULL, 0);
 }
 
-void cs2d_sv_lua_hook_shieldhit(cs2d_server_t *sv, int id, int weapon, int damage, int attacker)
+/* help.php: shieldhit(id, source, weapon, attackdirection, attacker object id, damage) - 6 arguments */
+void cs2d_sv_lua_hook_shieldhit(cs2d_server_t *sv, int id, int source, int weapon, int direction, int object_id,
+                                int damage)
 {
-    hook_args_t a = { .a = id, .b = weapon, .c = damage, .d = attacker };
-    dispatch_hook(sv, "shieldhit", 4, push_4int_vals, &a, NULL, 0);
+    hook_args_t a = { .a = id, .b = source, .c = weapon, .d = direction, .e = object_id, .f = damage };
+    dispatch_hook(sv, "shieldhit", 6, push_6int_vals, &a, NULL, 0);
 }
 
 int cs2d_sv_lua_hook_turretscan(cs2d_server_t *sv, int object_id, int team, int x, int y)

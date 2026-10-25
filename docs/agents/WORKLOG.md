@@ -2,6 +2,16 @@
 
 Keep only the 5 newest entries here; move older ones to the top of `worklog/archive.md`.
 
+## 2026-10-24 — Claude — dedicated: bot shots use the player shot path
+
+- Removed `ai_shot_damage` (private 14 px raycast + skill jitter + def->range). New `cs2d_sv_shot_at_players` (`cs2d_sv_game.c`): pellets, `Tpl.random` spread (`sv->seed` -> `cs2d_random_seed`), `cs2d_weapon_shot_reach`, `sv_trace_shot` (walls, hit zones, 12 px box), enemy-only `cs2d_sv_damage`. `cs2d_sv_player_t.shot_random` stores the `[7]` byte for humans. `build.bat` server line got `cs2d_random.c`. Test `test_sv_bot_shot_path` (118/118). Untested vs the original: whether the Lua bots' aim noise alone reproduces the original accuracy.
+
+## 2026-10-24 — Claude — dedicated: damage-assist tracker, shotgun bots, `shieldhit` signature
+
+- `cs2d_sv_damage_ex` now tracks HP lost per attacker (`sv_dmg_from[victim][attacker]`); on a kill the non-killer with >= 40 damage (help.php "assist" hook text) becomes the assistant, `assist` hook (now returns int) can veto, `[19]`/`kill` hook/`assists++` use it. Test `test_sv_damage_assist` (117/117).
+- Bots with M3/XM1014 fire 5 pellets (0, -5, +5, -9, +9 deg); `shieldhit` hook has its 6 help.php args (Tactical Shield blocking still not modelled, needs REA). Bot grenades, skill tables and `[36,7]` loss left as documented residuals.
+- Gotcha: `cmd /c "test_cs2d.exe"` says "not recognized" (no current-dir lookup); run `.	est_cs2d.exe`. The test `.bss` is ~1.97 GB (53 static `cs2d_server_t`): new tests should `calloc` their server.
+
 ## 2026-10-24 — Claude — dedicated: `flashplayer`, `flashposition`, `shake` + client [48] types 2/4/5
 
 - REA ded: `FUN_14011daf0` (flashplayer, reliable `[48,5,id+0x8000,0x8000,int,0]` to all), `FUN_14011e010` (flashposition via `FUN_140102be0` type 4), `FUN_14011d2c0` (shake, unreliable `[48,2,0x8000,0x8000,player,power]` to that player only). Client `FUN_14014cf50` cases 2/4/5 ported in `cs2d_client.c` (shake -> `gen.shake` cap 1000, flash += p1*0.01 / 0.003 cap 1.3, line test assumed 8 px step). Test in `test_dedicated_p3` block (`flashplayer`/`flashposition`/`shake`). 116/116. Details: `knowledge/dedicated-server.md` "[48] FX".
