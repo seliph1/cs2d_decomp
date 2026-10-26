@@ -1749,7 +1749,13 @@ void cs2d_sv_fire(cs2d_server_t *sv, int id, int seed)
         cs2d_sv_wrench_hit(sv, id);
     } else {
         const cs2d_weapon_def_t *wdef = cs2d_weapon_get((uint8_t)pl->weapon);
-        if (wdef) cs2d_sv_shot_at_building(sv, id, wdef);
+        if (wdef) {
+            cs2d_sv_shot_at_building(sv, id, wdef);
+            /* Players: Tshoot.Shoot's server branch (DAT_140ddf400 != 0, docs/dump/cs2d/Tshoot.c:779..863)
+             * damages them through FUN_1401ec180 when the [7] fire record is processed. Our client sends no
+             * [17] report for its bullets, so without this a human shot never hurt anybody. */
+            cs2d_sv_shot_at_players(sv, id, wdef);
+        }
     }
 
     /* Broadcast [7, id, seed] unreliable to other joined players */
@@ -4497,17 +4503,6 @@ int cs2d_sv_bot_add(cs2d_server_t *sv, int team, int look, const char *name)
     pl->look = (look >= 0 && look <= 3) ? look : cs2d_sv_rand(0, 3);
     pl->team_chosen = true;
 
-    /* The join notice [248] carries no team: a client only learns it from [20, id, team, look]
-     * (FUN_1401624c0 success path). Without it the bot stayed team 0 / Spectator on the clients
-     * while the server already ran its AI, which made it walk and shoot as a "spectator". */
-    uint8_t team_msg[4] = { 20, (uint8_t)slot, (uint8_t)t, (uint8_t)pl->look };
-    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
-        cs2d_sv_conn_t *oc = cs2d_sv_conn_of_player(sv, i);
-        if (!oc || !sv->players[i].joined) continue;
-        cs2d_pkt_t *pt = cs2d_sv_packet(sv, oc, true, false);
-        for (int k = 0; k < 4; k++) cs2d_pkt_w_byte(pt, team_msg[k]);
-    }
-
     /* Broadcast [248] join notice */
     for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
         cs2d_sv_conn_t *oc = cs2d_sv_conn_of_player(sv, i);
@@ -4522,6 +4517,18 @@ int cs2d_sv_bot_add(cs2d_server_t *sv, int team, int look, const char *name)
         cs2d_pkt_w_long(p248, 0);
         cs2d_pkt_w_lstr(p248, "");
         cs2d_pkt_w_byte(p248, 1);
+    }
+
+    /* The join notice [248] carries no team: a client only learns it from [20, id, team, look]
+     * (FUN_1401624c0 success path). It must come AFTER [248]: the client resets the slot to
+     * Spectator when it handles [248], so an earlier [20] was wiped and the bot stayed a "spectator"
+     * (walking, audible steps, shooting) on the clients while the server already ran its AI. */
+    uint8_t team_msg[4] = { 20, (uint8_t)slot, (uint8_t)t, (uint8_t)pl->look };
+    for (int i = 1; i <= CS2D_SV_MAX_PLAYERS; i++) {
+        cs2d_sv_conn_t *oc = cs2d_sv_conn_of_player(sv, i);
+        if (!oc || !sv->players[i].joined) continue;
+        cs2d_pkt_t *pt = cs2d_sv_packet(sv, oc, true, false);
+        for (int k = 0; k < 4; k++) cs2d_pkt_w_byte(pt, team_msg[k]);
     }
 
     /* help.php: bots have no connection process, so connect is INSTANTLY followed by join */
